@@ -7,10 +7,10 @@
  *   - Two ceiling skylights (VK: W13, VR: W14)
  *
  * Color semantics (unified):
- *   OPEN   = Green → visible/open state
- *   CLOSED = Red   → sealed/closed state
- *   Nuki: LOCKED = Green (secure), UNLOCKED = Red (unsecured)
- *   UNKNOWN = Yellow → no data yet received
+ *   OPEN/UNLOCKED = Green → accessible/open
+ *   CLOSED/LOCKED = Red   → sealed/secured
+ *   TRANSITIONING = Yellow → locking or unlocking in progress (Nuki only)
+ *   UNKNOWN/ERROR = Blue  → no data, jammed, or error state
  *
  * Day/Night mode (time-based, checked every render):
  *   Day   07:00–19:00 : bright colors, BRI 20
@@ -38,23 +38,25 @@
 // ---------------------------------------------------------------------------
 
 const DAY = {
-  NUKI_LOCKED: [0, 255, 0], // Green  — locked = secure
-  NUKI_UNLOCKED: [255, 0, 0], // Red    — unlocked = unsecured
-  NUKI_UNKNOWN: [255, 255, 0], // Yellow
+  NUKI_UNLOCKED: [0, 255, 0], // Green  — unlocked = open
+  NUKI_LOCKED: [255, 0, 0], // Red    — locked = closed
+  NUKI_TRANSITIONING: [255, 255, 0], // Yellow — locking/unlocking
+  NUKI_ERROR: [0, 0, 255], // Blue   — jammed/unknown/error
   OPEN: [0, 255, 0], // Green  — open
   CLOSED: [255, 0, 0], // Red    — closed
-  UNKNOWN: [255, 255, 0], // Yellow
+  UNKNOWN: [0, 0, 255], // Blue   — no data
   TIME: [255, 255, 213], // Warm white
   BRI: 20,
 };
 
 const NIGHT = {
-  NUKI_LOCKED: [0, 70, 0], // Dim green
-  NUKI_UNLOCKED: [70, 0, 0], // Dim red
-  NUKI_UNKNOWN: [100, 100, 0], // Dim yellow
+  NUKI_UNLOCKED: [0, 70, 0], // Dim green
+  NUKI_LOCKED: [70, 0, 0], // Dim red
+  NUKI_TRANSITIONING: [70, 70, 0], // Dim yellow
+  NUKI_ERROR: [0, 0, 70], // Dim blue
   OPEN: [0, 70, 0], // Dim green
   CLOSED: [70, 0, 0], // Dim red
-  UNKNOWN: [100, 100, 0], // Dim yellow
+  UNKNOWN: [0, 0, 70], // Dim blue
   TIME: [50, 30, 30], // Very dim
   BRI: 5,
 };
@@ -72,6 +74,8 @@ export default {
   // init — called once on scene load; subscribe to sensor topics
   // ---------------------------------------------------------------------------
   async init(context) {
+    // Initialise state on the module object — shared across render() calls.
+    // Must be done here (not at module level) so config-reload resets cleanly.
     this._state = {
       nukiState: null, // string from HA
       terraceOpen: null, // bool: true = open
@@ -117,6 +121,11 @@ export default {
   // render — called every 1000 ms
   // ---------------------------------------------------------------------------
   async render(device) {
+    // Guard: init() may not have completed yet on very first render
+    if (!this._state) {
+      return 500;
+    }
+
     const hour = new Date().getHours();
     const isDay = hour >= 7 && hour < 19;
     const mode = isDay ? "day" : "night";
@@ -173,8 +182,11 @@ export default {
         return C.NUKI_LOCKED;
       case "unlocked":
         return C.NUKI_UNLOCKED;
+      case "locking":
+      case "unlocking":
+        return C.NUKI_TRANSITIONING;
       default:
-        return C.NUKI_UNKNOWN;
+        return C.NUKI_ERROR; // null, "jammed", unknown string
     }
   },
 
