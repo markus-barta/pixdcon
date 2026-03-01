@@ -407,12 +407,20 @@ export default {
 
   /**
    * Battery icon x29–31, rows 0–7.
-   * Fill: bottom→top, left→right. 18px = 100%.
-   * Nub: charging=top (y0), discharging=bottom (y7).
+   *
+   * Total fillable pixels: 19 (3×6 body + 1 nub).
+   *
+   * Charging (nub top, y0):
+   *   Fill order: row6 → row5 → ... → row1 → nub(y0)
+   *   Nub is last to fill — only lights up near 100%.
+   *
+   * Discharging (nub bottom, y7):
+   *   Fill order: nub(y7) → row6 → row5 → ... → row1
+   *   Nub is first filled, last to empty — stays lit until nearly dead.
    */
   _batteryDraw(isDay) {
     const TOTAL_ROWS = 6;
-    const TOTAL_PX = 18;
+    const TOTAL_PX = 19; // 18 body + 1 nub
     const X_START = 29;
     const X_END = 31;
     const X_NUB = 30;
@@ -440,26 +448,56 @@ export default {
           : Math.max(1, Math.round((pct / 100) * TOTAL_PX));
 
     const cmds = [];
-    let filled = 0;
 
-    for (let row = TOTAL_ROWS; row >= 1; row--) {
-      const rowFilled = Math.min(3, Math.max(0, filledPx - filled));
-      if (rowFilled === 3) {
-        cmds.push({ dl: [X_START, row, X_END, row, fillColor] });
-      } else if (rowFilled === 0) {
-        cmds.push({ dl: [X_START, row, X_END, row, dimColor] });
-      } else {
-        cmds.push({
-          dl: [X_START, row, X_START + rowFilled - 1, row, fillColor],
-        });
-        cmds.push({ dl: [X_START + rowFilled, row, X_END, row, dimColor] });
+    if (isDischarging) {
+      // Nub at bottom — counts as pixel 1, last to empty
+      // filledPx includes nub: if filledPx >= 1 → nub lit
+      const nubLit = filledPx >= 1;
+      cmds.push({ dp: [X_NUB, 7, nubLit ? fillColor : dimColor] });
+
+      // Body: rows 6→1, remaining filled pixels after nub
+      const bodyFilled = Math.max(0, filledPx - 1);
+      let filled = 0;
+      for (let row = TOTAL_ROWS; row >= 1; row--) {
+        const rowFilled = Math.min(3, Math.max(0, bodyFilled - filled));
+        cmds.push(
+          ...this._rowCmds(row, rowFilled, X_START, X_END, fillColor, dimColor),
+        );
+        filled += 3;
       }
-      filled += 3;
+    } else {
+      // Charging or standby — nub at top, fills last
+      // Body: rows 6→1 first
+      let filled = 0;
+      for (let row = TOTAL_ROWS; row >= 1; row--) {
+        const rowFilled = Math.min(3, Math.max(0, filledPx - filled));
+        cmds.push(
+          ...this._rowCmds(row, rowFilled, X_START, X_END, fillColor, dimColor),
+        );
+        filled += 3;
+      }
+      // Nub: only lights up when all 18 body pixels are filled
+      const nubLit = filledPx >= 19;
+      if (isCharging) {
+        cmds.push({ dp: [X_NUB, 0, nubLit ? fillColor : dimColor] });
+      }
+      // standby: no nub drawn
     }
 
-    if (isCharging) cmds.push({ dp: [X_NUB, 0, fillColor] });
-    if (isDischarging) cmds.push({ dp: [X_NUB, 7, fillColor] });
-
     return cmds;
+  },
+
+  /** Build line draw commands for one battery row. */
+  _rowCmds(row, rowFilled, xStart, xEnd, fillColor, dimColor) {
+    if (rowFilled === 3) {
+      return [{ dl: [xStart, row, xEnd, row, fillColor] }];
+    } else if (rowFilled === 0) {
+      return [{ dl: [xStart, row, xEnd, row, dimColor] }];
+    } else {
+      return [
+        { dl: [xStart, row, xStart + rowFilled - 1, row, fillColor] },
+        { dl: [xStart + rowFilled, row, xEnd, row, dimColor] },
+      ];
+    }
   },
 };
