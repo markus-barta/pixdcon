@@ -19,18 +19,22 @@
  * Brightness is re-asserted every 5 min as safety net against missed transitions.
  *
  * MQTT source topics:
- *   homeassistant/lock/nuki_vr/state  → "locked" | "unlocked" | other string
- *   z2m/wz/contact/te-door            → {contact: bool}  true=closed
- *   z2m/vk/contact/w13               → {contact: bool}  true=closed
- *   z2m/vr/contact/w14               → {contact: bool}  true=closed
+ *   homeassistant/lock/nuki_vr/state                               → "locked"|"unlocked"|other
+ *   z2m/wz/contact/te-door                                         → {contact: bool} true=closed
+ *   z2m/vk/contact/w13                                             → {contact: bool} true=closed
+ *   z2m/vr/contact/w14                                             → {contact: bool} true=closed
+ *   homeassistant/sensor/sonnenbatterie_260365_state_battery_percentage_user/state → "0"–"100"
  *
- * Draw layout (pixel positions match Node-RED BZ flow):
- *   [3,0]          time text (HH:MM:SS)
- *   [29,7]–[31,7]  Nuki lock bar, bottom-right
- *   [14,6] 2×2     skylight W13
- *   [17,6] 2×2     skylight W14
- *   [0/1,7]–[2/3,7] terrace door seg 1 (shifts 1px right when open)
- *   [4,7]–[6,7]    terrace door seg 2
+ * Draw layout:
+ *   x1–27  time text HH:MM:SS
+ *   x13–14 skylight W13 (2×2 at row 6)
+ *   x16–17 skylight W14 (2×2 at row 6)
+ *   x25–27 Nuki bar (row 7)
+ *   x0–6   terrace door segments (row 7)
+ *   x28    space (separator)
+ *   x29–31 battery icon (3px wide, rows 1–6, fills from bottom)
+ *            row 0 + row 7 = empty (cap/base)
+ *            6 rows × 3 cols = 18 fill pixels = 100%
  */
 
 // ---------------------------------------------------------------------------
@@ -81,6 +85,7 @@ export default {
       terraceOpen: null, // bool: true = open
       w13Open: null, // bool: true = open
       w14Open: null, // bool: true = open
+      batteryPct: null, // number 0–100, null = unknown
     };
     this._lastMode = null;
     this._lastBriSet = 0;
@@ -108,6 +113,17 @@ export default {
     context.mqtt.subscribe("z2m/vr/contact/w14", (msg) => {
       this._state.w14Open = parseOpen(msg);
     });
+
+    // Sonnenbatterie SOC: plain number string "0"–"100"
+    context.mqtt.subscribe(
+      "homeassistant/sensor/sonnenbatterie_260365_state_battery_percentage_user/state",
+      (msg) => {
+        const pct = parseFloat(msg);
+        this._state.batteryPct = isNaN(pct)
+          ? null
+          : Math.max(0, Math.min(100, pct));
+      },
+    );
   },
 
   // ---------------------------------------------------------------------------
@@ -161,13 +177,14 @@ export default {
 
     await device.drawCustom({
       draw: [
-        { dt: [1, 0, timeStr, C.TIME] }, // time (shifted -2px left)
-        { dl: [25, 7, 27, 7, nukiColor] }, // nuki bar (-4px)
-        { dr: [13, 6, 2, 2, w13Color] }, // skylight W13 (-1px)
-        { dr: [16, 6, 2, 2, w14Color] }, // skylight W14 (-1px)
+        { dt: [1, 0, timeStr, C.TIME] }, // time
+        { dl: [25, 7, 27, 7, nukiColor] }, // nuki bar
+        { dr: [13, 6, 2, 2, w13Color] }, // skylight W13
+        { dr: [16, 6, 2, 2, w14Color] }, // skylight W14
         { dl: [tx, 7, tx + 2, 7, terraceColor] }, // terrace seg 1
         { dl: [4, 7, 6, 7, terraceColor] }, // terrace seg 2
-        // x 28–31 reserved for sonnenbatterie charge icon
+        // x28 = space separator
+        ...this._batteryDraw(C), // x29–31 battery icon
       ],
     });
 
@@ -195,5 +212,59 @@ export default {
   _openClosedColor(isOpen, C) {
     if (isOpen === null) return C.UNKNOWN;
     return isOpen ? C.OPEN : C.CLOSED;
+  },
+
+  /**
+   * Build draw commands for the battery icon at x29–31.
+   *
+   * Layout (3 cols wide, rows 0–7):
+   *   row 0 : empty (top cap)
+   *   rows 1–6 : fill area (6 rows × 3 cols = 18 pixels = 100%)
+   *   row 7 : empty (bottom base)
+   *
+   * Fill direction: bottom-up (row 6 first, row 1 last).
+   * Color: green >50%, yellow 20–50%, red ≤20%, blue = unknown.
+   *
+   * @returns {Array} AWTRIX draw command objects
+   */
+  _batteryDraw(C) {
+    const TOTAL_ROWS = 6; // rows 1–6
+    const X_START = 29;
+    const X_END = 31;
+
+    // Unknown state — draw outline only in dim blue
+    if (this._state.batteryPct === null) {
+      const cmds = [];
+      for (let row = 1; row <= 6; row++) {
+        cmds.push({ dl: [X_START, row, X_END, row, [0, 0, 40]] });
+      }
+      return cmds;
+    }
+
+    const pct = this._state.batteryPct;
+
+    // How many rows to fill (round, at least 1 if pct > 0)
+    const filledRows =
+      pct === 0 ? 0 : Math.max(1, Math.round((pct / 100) * TOTAL_ROWS));
+
+    // Color based on charge level
+    let color;
+    if (pct > 50)
+      color = C.NUKI_UNLOCKED; // green
+    else if (pct > 20)
+      color = C.NUKI_TRANSITIONING; // yellow
+    else color = C.NUKI_LOCKED; // red
+
+    const dimColor = color.map((v) => Math.max(0, Math.round(v * 0.15))); // empty rows very dim
+
+    const cmds = [];
+    for (let row = 1; row <= TOTAL_ROWS; row++) {
+      // Fill from bottom: row 6 = first to fill
+      const isFilled = row > TOTAL_ROWS - filledRows;
+      cmds.push({
+        dl: [X_START, row, X_END, row, isFilled ? color : dimColor],
+      });
+    }
+    return cmds;
   },
 };
