@@ -223,27 +223,33 @@ open http://192.168.1.56/screen
 
 #### UPDATE a scene (on hsb1)
 
-```bash
-# Edit locally, then copy to hsb1
-scp scenes/my-scene.js mba@hsb1.lan:~/docker/mounts/pidicon-light/scenes/my-scene.js
+Scenes are **baked into the Docker image** — source of truth is the git repo.
 
-# Restart to reload scene file from disk
-ssh mba@hsb1.lan "cd ~/docker && docker compose restart pidicon-light"
+```bash
+# 1. Edit scene locally in scenes/my-scene.js
+# 2. Commit and push → CI builds new image automatically
+git add scenes/my-scene.js
+git commit -m "fix(my-scene): ..."
+git push
+
+# 3. On hsb1: pull new image (or wait for Watchtower weekly)
+ssh mba@hsb1.lan "cd ~/docker && docker compose pull pidicon-light && docker compose up -d pidicon-light"
 ```
 
-> Config changes (`config.json`) hot-reload without restart.
-> Scene file changes require restart — scene modules are cached after first load.
+> **Config** (`config.json`) is the only mounted file — edit on hsb1 directly or via nixcfg repo.
+> Config changes **hot-reload** without restart.
+> Scene changes require a new image build + pull.
 
 #### DELETE a scene
 
 1. Remove scene name from `device.scenes` array in `config.json`
-2. Optionally remove the `scenes` map entry and delete the `.js` file
-3. Config hot-reloads; deleted scene is no longer executed
+2. Remove the `scenes` map entry and delete the `.js` file
+3. Commit + push → CI builds → pull on hsb1
 
 ### 4. Test Locally
 
 ```bash
-# Point config at local device
+# Point config at local device (relative paths work locally)
 cat > config.json << 'EOF'
 {
   "devices": [
@@ -263,30 +269,24 @@ EOF
 npm start
 ```
 
+> On hsb1 the config uses absolute paths (`/app/scenes/`) since scenes live in the image.
+> Locally use relative paths (`./scenes/`) — both work via SceneLoader path resolution.
+
 ### 5. Deploy to hsb1
 
 ```bash
-# 1. Copy scene file(s)
-scp scenes/my-scene.js mba@hsb1.lan:~/docker/mounts/pidicon-light/scenes/
+# Scene or code change:
+git add scenes/my-scene.js && git commit -m "..." && git push
+# → CI builds image → pull on hsb1:
+ssh mba@hsb1.lan "cd ~/docker && docker compose pull pidicon-light && docker compose up -d pidicon-light"
 
-# 2. Update config on hsb1 (hot-reloads automatically)
+# Config-only change (hot-reloads, no restart needed):
 scp config.json mba@hsb1.lan:~/docker/mounts/pidicon-light/config.json
 
-# 3. If scene file changed: restart container
-ssh mba@hsb1.lan "cd ~/docker && docker compose restart pidicon-light"
-
-# 4. Watch logs
+# Watch logs:
 ssh mba@hsb1.lan "docker logs -f pidicon-light"
-```
 
-#### New image release (CI handles build)
-
-```bash
-# Push to main → GitHub Actions builds + pushes ghcr.io/markus-barta/pidicon-light:latest
-git push
-
-# Watchtower auto-updates weekly, or force now:
-ssh mba@hsb1.lan "docker compose -f ~/docker/docker-compose.yml pull pidicon-light && docker compose -f ~/docker/docker-compose.yml up -d pidicon-light"
+# Watchtower handles weekly auto-updates automatically.
 ```
 
 ## Deployment on hsb1
