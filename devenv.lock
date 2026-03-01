@@ -1,0 +1,23 @@
+{
+  "lockfile-version": 3,
+  "packages": [
+    {
+      "name": "git",
+      "version": "2.47.1",
+      "system": "aarch64-darwin",
+      "path": "/nix/store/placeholder-git"
+    },
+    {
+      "name": "gh",
+      "version": "2.63.0",
+      "system": "aarch64-darwin",
+      "path": "/nix/store/placeholder-gh"
+    },
+    {
+      "name": "nodejs",
+      "version": "20.18.0",
+      "system": "aarch64-darwin",
+      "path": "/nix/store/placeholder-nodejs"
+    }
+  ]
+}

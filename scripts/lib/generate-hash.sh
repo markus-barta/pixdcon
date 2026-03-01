@@ -1,34 +1,27 @@
 #!/bin/bash
 
-# Shared function to generate unique 7-character hex hash
-# Checks for collisions in specified directory (default: +pm/)
+# Generate unique 7-character hex hash
+# Checks for collisions in specified directory
 #
 # USAGE (source this file):
 #   source scripts/lib/generate-hash.sh
 #   hash=$(generate_unique_hash [search_dir])
 
 generate_unique_hash() {
-	local search_dir="${1:-+pm}"
+  local search_dir="${1:-+pm}"
+  mkdir -p "$search_dir"
 
-	# Create directory if it doesn't exist (for first-time use)
-	mkdir -p "$search_dir"
-
-	while true; do
-		# Generate a 7-character hex hash using $RANDOM
-		local full_hash
-		full_hash=$(printf "%04x%04x" $RANDOM $RANDOM)
-		local hash=${full_hash:0:7}
-
-		# Check for collision by seeing if any file uses this hash
-		# Search recursively to handle both +pm/backlog/ and hosts/*/docs/backlog/
-		if ! find "$search_dir" -name "*--${hash}--*.md" 2>/dev/null | grep -q .; then
-			echo "$hash"
-			return 0
-		fi
-	done
+  while true; do
+    local hash=$(printf "%04x%04x" $RANDOM $RANDOM | cut -c1-7)
+    
+    if ! find "$search_dir" -name "*--${hash}--*.md" 2>/dev/null | grep -q .; then
+      echo "$hash"
+      return 0
+    fi
+  done
 }
 
 # Allow direct execution for testing
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-	generate_unique_hash "$@"
+  generate_unique_hash "$@"
 fi
