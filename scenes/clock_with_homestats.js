@@ -161,12 +161,13 @@ export default {
 
     await device.drawCustom({
       draw: [
-        { dt: [3, 0, timeStr, C.TIME] }, // time
-        { dl: [29, 7, 31, 7, nukiColor] }, // nuki bar
-        { dr: [14, 6, 2, 2, w13Color] }, // skylight W13
-        { dr: [17, 6, 2, 2, w14Color] }, // skylight W14
+        { dt: [1, 0, timeStr, C.TIME] }, // time (shifted -2px left)
+        { dl: [25, 7, 27, 7, nukiColor] }, // nuki bar (-4px)
+        { dr: [13, 6, 2, 2, w13Color] }, // skylight W13 (-1px)
+        { dr: [16, 6, 2, 2, w14Color] }, // skylight W14 (-1px)
         { dl: [tx, 7, tx + 2, 7, terraceColor] }, // terrace seg 1
         { dl: [4, 7, 6, 7, terraceColor] }, // terrace seg 2
+        // x 28–31 reserved for sonnenbatterie charge icon
       ],
     });
 
