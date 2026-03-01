@@ -431,13 +431,15 @@ export default {
     const isCharging = state === "charging";
     const isDischarging = state === "discharging";
 
-    let fillColor, dimColor;
+    let fillColor, dimColor, nubDimColor;
     if (isDay) {
       fillColor = isCharging ? [0, 255, 0] : [255, 0, 0];
       dimColor = isCharging ? [0, 30, 0] : [30, 0, 0];
+      nubDimColor = dimColor;
     } else {
       fillColor = isCharging ? [0, 60, 0] : [60, 0, 0];
       dimColor = [20, 0, 0];
+      nubDimColor = [40, 0, 0]; // more visible than body dim — nub outline always findable
     }
 
     const filledPx =
@@ -453,7 +455,7 @@ export default {
       // Nub at bottom — counts as pixel 1, last to empty
       // filledPx includes nub: if filledPx >= 1 → nub lit
       const nubLit = filledPx >= 1;
-      cmds.push({ dp: [X_NUB, 7, nubLit ? fillColor : dimColor] });
+      cmds.push({ dp: [X_NUB, 7, nubLit ? fillColor : nubDimColor] });
 
       // Body: rows 6→1, remaining filled pixels after nub
       const bodyFilled = Math.max(0, filledPx - 1);
@@ -479,7 +481,7 @@ export default {
       // Nub: only lights up when all 18 body pixels are filled
       const nubLit = filledPx >= 19;
       if (isCharging) {
-        cmds.push({ dp: [X_NUB, 0, nubLit ? fillColor : dimColor] });
+        cmds.push({ dp: [X_NUB, 0, nubLit ? fillColor : nubDimColor] });
       }
       // standby: no nub drawn
     }
