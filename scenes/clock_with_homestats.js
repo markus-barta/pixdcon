@@ -37,7 +37,7 @@
  * z2m/vk/contact/w13                                                            → {contact: bool}
  * z2m/vr/contact/w14                                                            → {contact: bool}
  * Sonnenbatterie: polled directly via API every 3s (not MQTT — HA publishes too slowly)
- *   http://$SONNEN_HOST/api/v2/status  Auth-Token: $SONNEN_API_TOKEN
+ *   http://$SONNEN_BATTERY_HOST/api/v2/status  Auth-Token: $SONNEN_BATTERY_API_TOKEN
  *   Fields used: BatteryCharging (bool), BatteryDischarging (bool), USOC (0–100)
  *
  * ── Draw layout ─────────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@ export default {
     });
 
     // --- Sonnenbatterie API poll (every 3s, direct — faster than HA MQTT) ------
-    // Env vars injected via agenix: SONNEN_HOST, SONNEN_API_TOKEN
+    // Env vars injected via agenix: SONNEN_BATTERY_HOST, SONNEN_BATTERY_API_TOKEN
     this._startSonnenPoll(context.logger);
 
     // --- Debug overrides ----------------------------------------------------
@@ -340,16 +340,16 @@ export default {
 
   /**
    * Start polling sonnenbatterie API every 3s.
-   * Uses SONNEN_HOST + SONNEN_API_TOKEN from env (injected via agenix).
+   * Uses SONNEN_BATTERY_HOST + SONNEN_BATTERY_API_TOKEN from env (injected via agenix).
    * Falls back gracefully if env vars not set (no crash, just null state).
    */
   _startSonnenPoll(logger) {
-    const host = process.env.SONNEN_HOST;
-    const token = process.env.SONNEN_API_TOKEN;
+    const host = process.env.SONNEN_BATTERY_HOST;
+    const token = process.env.SONNEN_BATTERY_API_TOKEN;
 
     if (!host || !token) {
       logger.warn(
-        "[clock_with_homestats] SONNEN_HOST / SONNEN_API_TOKEN not set — battery polling disabled",
+        "[clock_with_homestats] SONNEN_BATTERY_HOST / SONNEN_BATTERY_API_TOKEN not set — battery polling disabled",
       );
       return;
     }
