@@ -1,0 +1,29 @@
+{
+  "name": "pidicon-light",
+  "version": "0.1.0",
+  "description": "Minimalist pixel display controller - config-file driven, no Web UI",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier -w .",
+    "format:check": "prettier -c .",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "pixel-display",
+    "ulanzi",
+    "awtrix",
+    "pixoo",
+    "led-matrix"
+  ],
+  "author": "Markus Barta",
+  "license": "AGPL-3.0",
+  "devDependencies": {
+    "eslint": "^9.5.0",
+    "prettier": "^3.6.2"
+  }
+}

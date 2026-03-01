@@ -1,0 +1,17 @@
+services:
+  pidicon-light:
+    image: ghcr.io/markus-barta/pidicon-light:latest
+    container_name: pidicon-light
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Vienna
+      - PIDICON_CONFIG_PATH=/data/config.json
+    volumes:
+      - ./config.json:/data/config.json:ro
+      - ./scenes:/data/scenes:ro
+    env_file:
+      - /home/mba/secrets/pidicon-light.env
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "com.centurylinklabs.watchtower.scope=weekly"

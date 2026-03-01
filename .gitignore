@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+
+# Config (keep example, ignore real)
+config.json
+!config.example.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Runtime
+data/
+tmp/
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+coverage/
+test-results/
+
+# Build
+dist/
+build/
