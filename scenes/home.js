@@ -41,9 +41,6 @@ function nukiStateColor(state) {
   }
 }
 
-// Very dim card glow — ~6% of full color
-function bgOf([r, g, b]) { return [r >> 4, g >> 4, b >> 4]; }
-
 // ── draw primitives ───────────────────────────────────────────────────────────
 
 function px(d, x, y, r, g, b)             { d._setPixel(x, y, r, g, b); }
@@ -53,6 +50,19 @@ function fillRect(d, x, y, w, h, r, g, b) {
   for (let dy = 0; dy < h; dy++)
     for (let dx = 0; dx < w; dx++)
       d._setPixel(x + dx, y + dy, r, g, b);
+}
+
+/**
+ * Card with 1px state-colored border + dark tinted fill.
+ * Border at ~35% of state color; interior at ~6% (color >> 4).
+ */
+function drawCard(d, x, y, w, h, [r, g, b]) {
+  const br = (r * 0.35) | 0, bg = (g * 0.35) | 0, bb = (b * 0.35) | 0;
+  fillRect(d, x + 1, y + 1, w - 2, h - 2, r >> 4, g >> 4, b >> 4);
+  hLine(d, x,         x + w - 1, y,         br, bg, bb);
+  hLine(d, x,         x + w - 1, y + h - 1, br, bg, bb);
+  vLine(d, x,         y,         y + h - 1, br, bg, bb);
+  vLine(d, x + w - 1, y,         y + h - 1, br, bg, bb);
 }
 
 // ── icons ─────────────────────────────────────────────────────────────────────
@@ -172,18 +182,16 @@ export default {
 
     device.clear();
 
-    // ── card glow backgrounds ─────────────────────────────────────────────────
-    { const [r,g,b] = bgOf(cNuki);    fillRect(device,  1, 8,  30, 27, r,g,b); }
-    { const [r,g,b] = bgOf(cTerrace); fillRect(device, 33, 8,  30, 27, r,g,b); }
-    { const [r,g,b] = bgOf(cW13);     fillRect(device,  1, 36, 30, 27, r,g,b); }
-    { const [r,g,b] = bgOf(cW14);     fillRect(device, 33, 36, 30, 27, r,g,b); }
+    // ── cards: state-colored border + dark tinted fill ────────────────────────
+    // Layout: 2px outer margin, 4px center gutter (x=30..33), 3px row gap (y=34..36)
+    drawCard(device,  2,  9, 28, 25, cNuki);
+    drawCard(device, 34,  9, 28, 25, cTerrace);
+    drawCard(device,  2, 37, 28, 25, cW13);
+    drawCard(device, 34, 37, 28, 25, cW14);
 
-    // ── separator grid ────────────────────────────────────────────────────────
+    // ── header separator ─────────────────────────────────────────────────────
     const [sr, sg, sb] = SEP_COLOR;
-    hLine(device, 0, 63,  7, sr, sg, sb);
-    hLine(device, 0, 63, 35, sr, sg, sb);
-    vLine(device, 31, 8, 62, sr, sg, sb);
-    vLine(device, 32, 8, 62, sr, sg, sb);
+    hLine(device, 0, 63, 7, sr, sg, sb);
 
     // ── header ────────────────────────────────────────────────────────────────
     await device.drawTextRgbaAligned("HOME",       [1,  1], LABEL_COLOR);
@@ -196,10 +204,10 @@ export default {
     drawWindow(device, 48, 47, w14Open === true,         ...cW14);
 
     // ── labels ────────────────────────────────────────────────────────────────
-    await device.drawTextRgbaAligned("NUKI", [16, 30], LABEL_COLOR, "center");
-    await device.drawTextRgbaAligned("DOOR", [48, 30], LABEL_COLOR, "center");
-    await device.drawTextRgbaAligned("W 13", [16, 58], LABEL_COLOR, "center");
-    await device.drawTextRgbaAligned("W 14", [48, 58], LABEL_COLOR, "center");
+    await device.drawTextRgbaAligned("NUKI", [16, 27], LABEL_COLOR, "center");
+    await device.drawTextRgbaAligned("DOOR", [48, 27], LABEL_COLOR, "center");
+    await device.drawTextRgbaAligned("W 13", [16, 55], LABEL_COLOR, "center");
+    await device.drawTextRgbaAligned("W 14", [48, 55], LABEL_COLOR, "center");
 
     await device.push();
 

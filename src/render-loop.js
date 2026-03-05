@@ -92,7 +92,8 @@ export class RenderLoop {
     this.logger.info(
       `[RenderLoop:${this.deviceName}] Stop requested (frames rendered: ${this.frameCount})`,
     );
-    // Wake any mode-wait so the loop can exit cleanly
+    // Wake any sleep or mode-wait so the loop can exit cleanly
+    if (this._sleepWake) { this._sleepWake(); }
     if (this._modeChanged) {
       this._modeChanged();
       this._modeChanged = null;
@@ -109,6 +110,8 @@ export class RenderLoop {
     this.logger.info(
       `[RenderLoop:${this.deviceName}] Mode: ${prev} → ${mode}`,
     );
+    // Wake any current sleep so the mode takes effect immediately
+    if (this._sleepWake) { this._sleepWake(); }
     if (this._modeChanged) {
       this._modeChanged();
       this._modeChanged = null;
@@ -272,8 +275,23 @@ export class RenderLoop {
 
   // ---------------------------------------------------------------------------
 
+  /**
+   * Interruptible sleep — resolves early if setMode() or stop() is called.
+   * This ensures mode changes (especially stop) take effect promptly even
+   * during long backoff sleeps.
+   */
   _sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this._sleepWake = null;
+        resolve();
+      }, ms);
+      this._sleepWake = () => {
+        clearTimeout(timer);
+        this._sleepWake = null;
+        resolve();
+      };
+    });
   }
 
   /** For external status inspection (e.g. debugging). */
