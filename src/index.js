@@ -11,6 +11,7 @@ import { PixooDriver } from "../lib/pixoo-driver.js";
 import { MqttService } from "../lib/mqtt-service.js";
 import { ConfigWatcher } from "../lib/config-watcher.js";
 import { ConfigOverlay } from "../lib/config-overlay.js";
+import { ScenesWatcher } from "../lib/scenes-watcher.js";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
@@ -47,6 +48,7 @@ const logger = createLogger();
 
 let mqttService = null;
 let configWatcher = null;
+let scenesWatcher = null;
 let renderLoops = []; // Array of { device, loop }
 let sceneLoader = null;
 let configPath = null;   // Set once in main(), used in reloadConfig()
@@ -83,6 +85,21 @@ async function initializeMqtt() {
     logger.error(`[MQTT] Connection failed, continuing without MQTT`, error);
     return null;
   }
+}
+
+function startScenesWatcher() {
+  const dirs = sceneLoader.getSceneDirs();
+  scenesWatcher = new ScenesWatcher(dirs, async (filename) => {
+    const names = sceneLoader.findScenesByFilename(filename);
+    if (names.length === 0) {
+      logger.debug(`[pidicon-light] Scene file "${filename}" changed but no matching scene found`);
+      return;
+    }
+    for (const name of names) {
+      await sceneLoader.clearScene(name);
+    }
+  }, { logger });
+  scenesWatcher.start();
 }
 
 /**
@@ -176,6 +193,7 @@ async function applyOverlayReload() {
   try {
     const effectiveConfig = configOverlay.merge(baseConfig);
 
+    if (scenesWatcher) { scenesWatcher.stop(); scenesWatcher = null; }
     await stopAllDevices();
     await sceneLoader.clearCache();
 
@@ -184,6 +202,7 @@ async function applyOverlayReload() {
       logger,
       mqttService,
     });
+    startScenesWatcher();
 
     for (const device of effectiveConfig.devices) {
       await startDevice(device);
@@ -215,6 +234,7 @@ async function reloadConfig(newConfigContent) {
       ? configOverlay.merge(baseConfig)
       : baseConfig;
 
+    if (scenesWatcher) { scenesWatcher.stop(); scenesWatcher = null; }
     await stopAllDevices();
     await sceneLoader.clearCache(); // destroy() hooks + re-import from disk
 
@@ -224,6 +244,7 @@ async function reloadConfig(newConfigContent) {
       logger,
       mqttService,
     });
+    startScenesWatcher();
 
     for (const device of effectiveConfig.devices) {
       await startDevice(device);
@@ -246,6 +267,7 @@ async function shutdown(signal) {
   );
 
   if (configWatcher) await configWatcher.stop();
+  if (scenesWatcher) scenesWatcher.stop();
   if (configOverlay) configOverlay.unsubscribe();
 
   await stopAllDevices();
@@ -304,6 +326,7 @@ async function main() {
     logger,
     mqttService,
   });
+  startScenesWatcher();
 
   for (const device of effectiveConfig.devices) {
     await startDevice(device);

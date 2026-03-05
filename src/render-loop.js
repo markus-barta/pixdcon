@@ -198,6 +198,16 @@ export class RenderLoop {
           await this._sleep(result);
         }
 
+        // --- Hot-reload: scene evicted from cache — break inner loop ------
+        // The outer loop will call sceneLoader.load() again, picking up the
+        // new module from disk.
+        if (!this.sceneLoader.isLoaded(sceneName)) {
+          this.logger.info(
+            `[RenderLoop:${this.deviceName}] Scene "${sceneName}" hot-reloaded, restarting...`,
+          );
+          break;
+        }
+
         // --- Mode: pause — rendered once, now freeze ----------------------
         if (this._mode === "pause") {
           await this._waitForModeChange();
