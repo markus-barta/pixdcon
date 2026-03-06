@@ -148,8 +148,10 @@ export default {
       catch { return null; }
     };
 
-    context.mqtt.subscribe("homeassistant/lock/nuki_vr/state", (msg) => {
-      this._s.nukiState = msg.trim();
+    // Nuki MQTT bridge publishes numeric state: 1=locked 2=unlocking 3=unlocked 4=locking
+    const NUKI = { 1: "locked", 2: "unlocking", 3: "unlocked", 4: "locking" };
+    context.mqtt.subscribe("nuki/463F8F47/state", (msg) => {
+      this._s.nukiState = NUKI[parseInt(msg.trim())] ?? null;
     });
     context.mqtt.subscribe("z2m/wz/contact/te-door", (msg) => {
       this._s.terraceOpen = parseContact(msg);
