@@ -8,7 +8,7 @@
  *   y 26:    horizontal separator
  *   y 27-44: row 1 — [Battery SOC] [PV↑ Cons↓] [Boiler °C]
  *   y 45:    horizontal separator
- *   y 46-63: row 2 — [PS5] [TV] [PC]  ← device icons, syncbox ring on active PS5/PC
+ *   y 46-63: row 2 — [TV] [PS5] [PC]  ← device icons, syncbox ring on active
  *
  *   x 21, x 43: vertical separators
  *
@@ -176,15 +176,13 @@ function drawStackedWindows(d, cx, cy, topOpen, botOpen) {
 // ── Cell: Battery — horizontal bar (SOC% above) ───────────────────────────────
 //
 // 16px wide bar fills left-to-right, 4px tall. Nub on right. % text above.
-// Discharge animation: a bright "drain" pixel travels right→left through filled area.
 
-async function drawBattery(d, cx, cy, pct, state, frame) {
+async function drawBattery(d, cx, cy, pct, state) {
   const isCharging    = state === "charging";
   const isDischarging = state === "discharging";
   const color = isCharging ? C.chrgGreen : isDischarging ? C.dischRed : C.stbyGrey;
   const [fr, fg, fb] = color;
-  // Empty pixels at 25% opacity — clearly visible but distinct from filled
-  const [dr, dg, db] = [fr >> 2, fg >> 2, fb >> 2];
+  const [dr, dg, db] = [fr >> 3, fg >> 3, fb >> 3];
 
   const BAR_W  = 16;
   const BAR_H  = 4;
@@ -197,17 +195,6 @@ async function drawBattery(d, cx, cy, pct, state, frame) {
   for (let i = 0; i < BAR_W; i++) {
     const lit = i < filledPx;
     vLine(d, x0 + i, barY, barY + BAR_H - 1, ...(lit ? color : [dr, dg, db]));
-  }
-
-  // Discharge animation: bright pixel moves right→left through filled section
-  // One step per 2 frames (1 s/step at 500 ms render) → full drain sweep in ~filledPx s
-  if (isDischarging && filledPx > 1) {
-    const phase  = Math.floor(frame / 2) % filledPx;
-    const drainX = x0 + filledPx - 1 - phase;
-    const hr = Math.min(255, (fr * 1.8) | 0);
-    const hg = Math.min(255, (fg * 1.8) | 0);
-    const hb = Math.min(255, (fb * 1.8) | 0);
-    vLine(d, drainX, barY, barY + BAR_H - 1, hr, hg, hb);
   }
 
   // Nub on right (2×2, vertically centered in bar)
@@ -261,13 +248,16 @@ function drawSyncboxRing(d, cx, cy, hw, hh) {
   vLine(d, cx + hw, cy - hh, cy + hh, r, g, b);
 }
 
-// TV monitor: 15×9 wall-mounted (cx±7, cy-4..cy+4) — no stand
-function drawTV(d, cx, cy, isOn) {
+// TV monitor: 9×7 (cx±4, cy-3..cy+3)
+function drawTV(d, cx, cy, isOn, syncboxActive) {
   const [r, g, b] = _dimColor(C.tvColor, isOn ? 1.0 : 0.10);
-  hLine(d, cx - 7, cx + 7, cy - 4, r, g, b); // top
-  hLine(d, cx - 7, cx + 7, cy + 4, r, g, b); // bottom
-  vLine(d, cx - 7, cy - 4, cy + 4, r, g, b); // left
-  vLine(d, cx + 7, cy - 4, cy + 4, r, g, b); // right
+  hLine(d, cx - 4, cx + 4, cy - 3, r, g, b); // screen top
+  hLine(d, cx - 4, cx + 4, cy + 1, r, g, b); // screen bottom
+  vLine(d, cx - 4, cy - 3, cy + 1, r, g, b); // screen left
+  vLine(d, cx + 4, cy - 3, cy + 1, r, g, b); // screen right
+  d._setPixel(cx,         cy + 2, r, g, b);   // stand stem
+  hLine(d, cx - 2, cx + 2, cy + 3, r, g, b); // stand base
+  if (syncboxActive && isOn) drawSyncboxRing(d, cx, cy - 1, 5, 4); // ring around screen
 }
 
 // PS5 controller: tri-state off/sleep/on
@@ -436,7 +426,7 @@ export default {
 
     // ── Row 1: Energy ────────────────────────────────────────────────────────
 
-    await drawBattery(device, COLS[0].cx, ROWS[1].cy, s.battPct, s.battState ?? "standby", this._frame);
+    await drawBattery(device, COLS[0].cx, ROWS[1].cy, s.battPct, s.battState ?? "standby");
     if (isStale(s.battSeen)) drawErrorMark(device, 0, 1, this._frame);
 
     await drawPvCons(device, COLS[1].cx, ROWS[1].cy, s.productionW, s.consumptionW);
@@ -450,13 +440,12 @@ export default {
     // PS5 tristate: off <2W / sleep 2-25W / on >25W
     const ps5State = (s.ps5Power ?? 0) < 2 ? "off" : (s.ps5Power ?? 0) < 25 ? "sleep" : "on";
 
-    // Col order: PS5 | TV | PC
-    drawPS5(device, COLS[0].cx, ROWS[2].cy, ps5State,              s.syncInput === "input4");
-    drawTV (device, COLS[1].cx, ROWS[2].cy, (s.tvPower  ?? 0) > 10);
+    drawTV (device, COLS[0].cx, ROWS[2].cy, (s.tvPower  ?? 0) > 10, s.syncInput === "input1" /* TV HDMI in future */);
+    drawPS5(device, COLS[1].cx, ROWS[2].cy, ps5State,               s.syncInput === "input4");
     drawPC (device, COLS[2].cx, ROWS[2].cy, (s.pcPower  ?? 0) > 10, s.syncInput === "input2");
 
-    if (isStale(s.ps5Seen)) drawErrorMark(device, 0, 2, this._frame);
-    if (isStale(s.tvSeen))  drawErrorMark(device, 1, 2, this._frame);
+    if (isStale(s.tvSeen))  drawErrorMark(device, 0, 2, this._frame);
+    if (isStale(s.ps5Seen)) drawErrorMark(device, 1, 2, this._frame);
     if (isStale(s.pcSeen))  drawErrorMark(device, 2, 2, this._frame);
 
     await device.push();
