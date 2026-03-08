@@ -243,7 +243,7 @@ async function drawBattery(d, cx, cy, pct, state, frame) {
   // % text: color matches current SOC gradient position; 1px higher than bar
   if (pct !== null) {
     const labelColor = _gradientColor(Math.max(0, filledPx - 1), INNER).map((v) => Math.round(v * dim));
-    await d.drawTextRgbaAligned(`${Math.round(pct)}%`, [cx, barY - 8], labelColor, "center");
+    await d.drawTextRgbaAligned(`${Math.round(pct)}%`, [cx, barY - 7], labelColor, "center");
   }
 }
 
@@ -251,84 +251,44 @@ async function drawBattery(d, cx, cy, pct, state, frame) {
 
 async function drawPvCons(d, cx, cy, productionW, consumptionW) {
   const fmt = (w) => w === null ? "---" : (w / 1000).toFixed(1);
-
-  // Production: grey if 0/null (no sun), bright yellow if generating
-  const pvColor = (!productionW) ? C.dimWhite : [255, 220, 0];
-  await d.drawTextRgbaAligned(`↑${fmt(productionW)}`, [cx, cy - 6], pvColor, "center");
-
-  // Consumption: dark-red → red → bright-red by kW tier
-  const cons = consumptionW ?? 0;
-  const consColor = cons < 500 ? [120, 20, 20] : cons <= 1000 ? [200, 40, 40] : [255, 60, 60];
-  await d.drawTextRgbaAligned(`↓${fmt(consumptionW)}`, [cx, cy + 1], consColor, "center");
-}
-
-// Temperature → perceptual color: blue (cold) → yellow (mid) → red (hot)
-function _boilerTempColor(tempC) {
-  if (tempC === null) return C.dimWhite;
-  const t = Math.max(0, Math.min(1, (tempC - 20) / 60)); // 0=20°C .. 1=80°C
-  if (t < 0.5) {
-    const u = t * 2;
-    return [Math.round(40 + 210 * u), Math.round(100 + 100 * u), Math.round(220 - 200 * u)]; // blue→yellow
-  } else {
-    const u = (t - 0.5) * 2;
-    return [Math.round(250), Math.round(200 - 180 * u), Math.round(20 - 20 * u)]; // yellow→red
-  }
+  await d.drawTextRgbaAligned(`↑${fmt(productionW)}`,  [cx, cy - 5], C.amber, "center");
+  await d.drawTextRgbaAligned(`↓${fmt(consumptionW)}`, [cx, cy + 3], C.cyan,  "center");
 }
 
 // ── Cell: Boiler temperature + state indicator ────────────────────────────────
 //
-// 6×9 off-white casing, subtle outline. Temp in perceptual color (blue=cold/red=hot).
-// ° rendered as a single dim dot (not a char). 2×2 status LED.
-// State: ok=idle (amber), else=heating (animated red↔amber pulse).
+// White filled square (5×5, darker outline) resembles boiler casing.
+// 2×2 status light (ok=green / unknown=yellow / bad=red) inside casing.
 
-async function drawBoiler(d, cx, cy, boiler, frame) {
-  const textY    = cy - 6;   // 1px lower than before
-  const tempColor = _boilerTempColor(boiler.tempC);
+async function drawBoiler(d, cx, cy, boiler) {
+  const tempStr    = boiler.tempC !== null ? `${Math.round(boiler.tempC)}°` : "---";
+  const stateColor =
+    boiler.state === "ok"      ? C.ok   :
+    boiler.state === "unknown" ? C.warn : C.bad;
 
-  // Temperature number + manual ° dot
-  if (boiler.tempC !== null) {
-    const numStr = `${Math.round(boiler.tempC)}`;
-    const textW  = numStr.length * 4 - 1;  // 3×5 font, 4px/char except last
-    const dotX   = cx + Math.floor(textW / 2) + 2;
-    await d.drawTextRgbaAligned(numStr, [cx, textY], tempColor, "center");
-    const [tr, tg, tb] = tempColor;
-    d._setPixel(dotX, textY, (tr * 0.7) | 0, (tg * 0.7) | 0, (tb * 0.7) | 0);
-  } else {
-    await d.drawTextRgbaAligned("---", [cx, textY], C.dimWhite, "center");
-  }
+  await d.drawTextRgbaAligned(tempStr, [cx, cy - 7], C.amber, "center");
 
-  // Casing: 6×9, off-white, subtle outline
-  const casingX = cx - 3;
-  const casingY = cy;
+  // Boiler casing: 6×9, off-white fill, very subtle outline (slightly darker than white)
+  const casingX = cx - 3;  // centered: cx=53 → x 50..55
+  const casingY = cy;       // cy=35 → y 35..43
   fillRect(d, casingX, casingY, 6, 9, 160, 160, 155);
   hLine(d, casingX, casingX + 5, casingY,     200, 200, 196);
   hLine(d, casingX, casingX + 5, casingY + 8, 200, 200, 196);
   vLine(d, casingX,     casingY, casingY + 8, 200, 200, 196);
   vLine(d, casingX + 5, casingY, casingY + 8, 200, 200, 196);
-
-  // 2×2 status LED, 2px lower (casingY+5)
-  let lr, lg, lb;
-  if (boiler.state === "ok") {
-    [lr, lg, lb] = C.amber;  // idle — solid amber
-  } else {
-    // heating / error — pulse between red and amber
-    const t = (Math.sin(frame * 0.35) + 1) / 2;
-    lr = Math.round(200 + 55 * t);
-    lg = Math.round(30 + 125 * t);
-    lb = 0;
-  }
-  fillRect(d, casingX + 2, casingY + 5, 2, 2, lr, lg, lb);
+  // 2×3 status light centered in 4×7 inner area
+  fillRect(d, casingX + 2, casingY + 3, 2, 3, ...stateColor);
 }
 
 // ── Media icons ───────────────────────────────────────────────────────────────
 //
-// Icon + power dot colors follow device state:
-//   on=green  standby/sleep=amber  off=dark-gray
-// Power dot: 2×2 centered at (cx-1, cy+7).
+// TV:  9×7px — monitor outline + stand (landscape)
+// PS5: 7×5px body + grip bumps — controller silhouette (tri-state)
+// PC:  5×8px — tower outline + disk slot line
 
-const POWER_ON      = [  0, 200,  80];
-const POWER_STANDBY = [255, 155,   0];
-const POWER_OFF     = [ 35,  35,  35];
+function _dimColor([r, g, b], factor) {
+  return [Math.round(r * factor), Math.round(g * factor), Math.round(b * factor)];
+}
 
 // Syncbox active ring — drawn 1px outside icon bounds
 function drawSyncboxRing(d, cx, cy, hw, hh) {
@@ -342,43 +302,44 @@ function drawSyncboxRing(d, cx, cy, hw, hh) {
 // TV monitor: 15×9 wall-mounted (cx±7, cy-4..cy+4) — no stand
 // tri-state: off <2W / standby 2-26W / on >26W
 function drawTV(d, cx, cy, state) {
-  const [r, g, b] = state === "on" ? POWER_ON : state === "standby" ? POWER_STANDBY : POWER_OFF;
+  const factor = state === "on" ? 1.0 : state === "standby" ? 0.35 : 0.10;
+  const [r, g, b] = _dimColor(C.tvColor, factor);
   hLine(d, cx - 7, cx + 7, cy - 4, r, g, b); // top
   hLine(d, cx - 7, cx + 7, cy + 4, r, g, b); // bottom
   vLine(d, cx - 7, cy - 4, cy + 4, r, g, b); // left
   vLine(d, cx + 7, cy - 4, cy + 4, r, g, b); // right
-  fillRect(d, cx - 1, cy + 7, 2, 2, r, g, b); // power dot
 }
 
 // PS5 controller: tri-state off/sleep/on
 // Body: 5×5 outline (cx±2, cy±2) + side grips at (cx±3, cy+1..cy+2) + center dot
 function drawPS5(d, cx, cy, state, syncboxActive) {
-  const [r, g, b] = state === "on" ? POWER_ON : state === "sleep" ? POWER_STANDBY : POWER_OFF;
+  const factor = state === "on" ? 1.0 : state === "sleep" ? 0.35 : 0.10;
+  const [r, g, b] = _dimColor(C.ps5Color, factor);
 
   hLine(d, cx - 2, cx + 2, cy - 2, r, g, b); // top
   hLine(d, cx - 2, cx + 2, cy + 2, r, g, b); // bottom
   vLine(d, cx - 2, cy - 2, cy + 2, r, g, b); // left
   vLine(d, cx + 2, cy - 2, cy + 2, r, g, b); // right
+  // Grips (wider handles extending left/right at lower half)
   d._setPixel(cx - 3, cy + 1, r, g, b);
   d._setPixel(cx - 3, cy + 2, r, g, b);
   d._setPixel(cx + 3, cy + 1, r, g, b);
   d._setPixel(cx + 3, cy + 2, r, g, b);
-  d._setPixel(cx, cy, r, g, b); // touchpad dot
-  fillRect(d, cx - 1, cy + 7, 2, 2, r, g, b); // power dot
+  // Touchpad center dot
+  d._setPixel(cx, cy, r, g, b);
 
   if (syncboxActive && state !== "off") drawSyncboxRing(d, cx, cy, 4, 3);
 }
 
 // PC tower: 5×8 outline (cx±2, cy-4..cy+3) + disk slot line
 function drawPC(d, cx, cy, isOn, syncboxActive) {
-  const [r, g, b] = isOn ? POWER_ON : POWER_OFF;
+  const [r, g, b] = _dimColor(C.pcColor, isOn ? 1.0 : 0.10);
 
   hLine(d, cx - 2, cx + 2, cy - 4, r, g, b); // top
   hLine(d, cx - 2, cx + 2, cy + 3, r, g, b); // bottom
   vLine(d, cx - 2, cy - 4, cy + 3, r, g, b); // left
   vLine(d, cx + 2, cy - 4, cy + 3, r, g, b); // right
   hLine(d, cx - 1, cx + 1, cy - 1, r, g, b); // disk slot detail
-  fillRect(d, cx - 1, cy + 7, 2, 2, r, g, b); // power dot
 
   if (syncboxActive && isOn) drawSyncboxRing(d, cx, cy, 3, 5);
 }
@@ -536,7 +497,7 @@ export default {
     await drawPvCons(device, COLS[1].cx, ROWS[1].cy, s.productionW, s.consumptionW);
     if (isStale(s.energySeen)) drawErrorMark(device, 1, 1, this._frame);
 
-    await drawBoiler(device, COLS[2].cx, ROWS[1].cy, s.boiler, this._frame);
+    await drawBoiler(device, COLS[2].cx, ROWS[1].cy, s.boiler);
     if (isStale(s.boilerSeen)) drawErrorMark(device, 2, 1, this._frame);
 
     // ── Row 2: Media ─────────────────────────────────────────────────────────
