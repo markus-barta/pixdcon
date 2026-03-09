@@ -146,7 +146,7 @@ function drawErrorMark(d, col, row, frame) {
 // ── Icon: Nuki circle ─────────────────────────────────────────────────────────
 //
 // Layers (back→front):
-//   Filled gray disk r=3  — single solid background (replaces two outline rings)
+//   Filled gray disk r=4  — single solid background
 //   3×3 colored square    — sides full brightness, corners 50%; center fill 33%
 // Locked → full shapes. Unlocked → open top (skip dy<0 on both).
 
@@ -162,11 +162,11 @@ function drawNukiCircle(d, cx, cy, nukiState, alive) {
         ? C.open
         : C.closed;
 
-  // Filled gray disk at r=3; open = bottom half only (dy >= 0)
-  const dyStart = isOpen && !stale ? 0 : -3;
-  for (let dx = -3; dx <= 3; dx++)
-    for (let dy = dyStart; dy <= 3; dy++)
-      if (dx * dx + dy * dy <= 9) d._setPixel(cx + dx, cy + dy, 40, 40, 40);
+  // Filled gray disk at r=4; open = bottom half only (dy >= 0)
+  const dyStart = isOpen && !stale ? 0 : -4;
+  for (let dx = -4; dx <= 4; dx++)
+    for (let dy = dyStart; dy <= 4; dy++)
+      if (dx * dx + dy * dy <= 16) d._setPixel(cx + dx, cy + dy, 40, 40, 40);
 
   // 3×3 colored square ring; open = skip dy < 0 (top row)
   const minDy = isOpen && !stale ? 0 : -1;
@@ -949,7 +949,7 @@ export default {
     // NUKI col 0 — two circles stacked: VR (front) top, Keller (basement) bottom.
     // Row 0 = y 8..25 (18px). r=1 colored + r=2+r=3 gray outline. Top cy=13, bottom cy=21.
     const cx0 = COLS[0].cx;
-    drawNukiCircle(device, cx0, ROWS[0].y0 + 5, s.nukiVrState, s.nukiVrAlive); // top cy=13
+    drawNukiCircle(device, cx0, ROWS[0].y0 + 4, s.nukiVrState, s.nukiVrAlive); // top cy=12
     drawNukiCircle(device, cx0, ROWS[0].y1 - 4, s.nukiKeState, s.nukiKeAlive); // bottom cy=21
 
     // TERRACE dual sliding door (col 1) — error if z2m reports offline
