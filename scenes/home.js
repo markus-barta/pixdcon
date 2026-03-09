@@ -662,19 +662,19 @@ export default {
     const D = context.mqtt.deviceName ?? "pixoo-159";
     const S = `pidicon-light/${D}/home/settings`;
 
-    context.mqtt.subscribe(`${S}/bri_day`, (msg) => {
+    sub(`${S}/bri_day`, (msg) => {
       const v = parseInt(msg.trim(), 10);
       if (!isNaN(v) && v >= 1 && v <= 100) {
         this._bri.day = v;
       }
     });
-    context.mqtt.subscribe(`${S}/bri_night`, (msg) => {
+    sub(`${S}/bri_night`, (msg) => {
       const v = parseInt(msg.trim(), 10);
       if (!isNaN(v) && v >= 1 && v <= 100) {
         this._bri.night = v;
       }
     });
-    context.mqtt.subscribe("pidicon-light/debug/bri_override", (msg) => {
+    sub("pidicon-light/debug/bri_override", (msg) => {
       const s = msg.trim();
       if (s === "") {
         this._bri.override = null;
@@ -688,13 +688,13 @@ export default {
     });
 
     // ── Sun elevation (drives brightness curve) ───────────────────────────────
-    context.mqtt.subscribe("homeassistant/sun/sun/elevation", (msg) => {
+    sub("homeassistant/sun/sun/elevation", (msg) => {
       const v = parseFloat(msg.trim());
       if (!isNaN(v)) {
         this._s.sunElevation = v;
       }
     });
-    context.mqtt.subscribe("homeassistant/sun/sun/state", (msg) => {
+    sub("homeassistant/sun/sun/state", (msg) => {
       this._s.sunAbove = msg.trim() === "above_horizon";
     });
 
