@@ -11,7 +11,39 @@ All topics are **retained** — they survive container restarts and stay active 
 
 Device+scene scoped: `pidicon-light/<device>/<scene>/settings/<key>`
 
-For the kids bedroom display:
+### Home scene (pixoo-159)
+
+Brightness driven by sun elevation from HA MQTT (`homeassistant/sun/sun/elevation`).
+Curve: lerp −6°→10° = night→day. Floor=1 (never 0). 5-min heartbeat re-asserts value.
+
+| Topic                                             | Default | Range | Description                  |
+| ------------------------------------------------- | ------- | ----- | ---------------------------- |
+| `pidicon-light/pixoo-159/home/settings/bri_day`   | `100`   | 1–100 | Brightness at elevation ≥10° |
+| `pidicon-light/pixoo-159/home/settings/bri_night` | `7`     | 1–100 | Brightness at elevation ≤−6° |
+
+```bash
+# Set day brightness to 80
+mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
+  -t 'pidicon-light/pixoo-159/home/settings/bri_day' -m '80' -r
+
+# Set night brightness to 5
+mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
+  -t 'pidicon-light/pixoo-159/home/settings/bri_night' -m '5' -r
+
+# Reset to defaults
+mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
+  -t 'pidicon-light/pixoo-159/home/settings/bri_day' -m '' -r
+mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
+  -t 'pidicon-light/pixoo-159/home/settings/bri_night' -m '' -r
+```
+
+**Fallback chain (no MQTT data):**
+
+1. `sunElevation` from `homeassistant/sun/sun/elevation` → lerp curve
+2. `sunAbove` from `homeassistant/sun/sun/state` → binary day/night
+3. Time-based: 07:30–20:30 = day, else night
+
+### Kids bedroom display (ulanzi-56)
 
 | Topic                                                                    | Default | Range          | Description                                   |
 | ------------------------------------------------------------------------ | ------- | -------------- | --------------------------------------------- |
@@ -98,12 +130,12 @@ mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
 Global (not device/scene scoped — temporary testing only).  
 Clear any override with empty payload `""` to revert to real/settings values.
 
-| Topic                               | Values                                        | Description                          |
-| ----------------------------------- | --------------------------------------------- | ------------------------------------ |
-| `pidicon-light/debug/mode_override` | `day` / `night` / `""`                        | Force day or night mode              |
-| `pidicon-light/debug/bri_override`  | `1–255` / `""`                                | Override brightness (beats settings) |
-| `pidicon-light/debug/battery_pct`   | `0–100` / `""`                                | Override battery SOC                 |
-| `pidicon-light/debug/battery_state` | `charging` / `discharging` / `standby` / `""` | Override charge state                |
+| Topic                               | Values                                        | Description                                                 |
+| ----------------------------------- | --------------------------------------------- | ----------------------------------------------------------- |
+| `pidicon-light/debug/mode_override` | `day` / `night` / `""`                        | Force day or night mode                                     |
+| `pidicon-light/debug/bri_override`  | `1–100` / `""`                                | Override brightness (beats settings). Pixoo range is 1–100. |
+| `pidicon-light/debug/battery_pct`   | `0–100` / `""`                                | Override battery SOC                                        |
+| `pidicon-light/debug/battery_state` | `charging` / `discharging` / `standby` / `""` | Override charge state                                       |
 
 ### Debug curl commands
 

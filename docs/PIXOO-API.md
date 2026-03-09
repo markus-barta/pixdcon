@@ -89,6 +89,49 @@ Note: `error_code` is a **number** on success, a **string** on failure — check
 - Brightness persists across reboots (stored in device flash).
 - After ~300 `Draw/SendHttpGif` pushes the display can stop responding — firmware bug. Mitigate with `Draw/ResetHttpGifId` on init.
 - No brightness read-back via API — `Device/GetDeviceSetting` and `Device/GetAllConf` return "illegal json". Use `Channel/GetAllConf` instead.
+- **Never send `Brightness: 0`** — makes screen visually black but doesn't power off. Use `Channel/OnOffScreen` with `OnOff: 0` for that. Driver floor is 1.
+
+---
+
+## home.js Scene — Icon Design Notes
+
+Documented here since these patterns recur in scene development.
+
+### Nuki lock icon
+
+Two layers (back→front):
+
+1. **Gray disk r=4** — represents the physical lock body. Always drawn full circle regardless of open/closed state.
+   - Cardinal edge pixels `(±4,0)(0,±4)` overdrawn at 50% brightness → soft antialiased edge.
+2. **5×5 colored ring** — represents the LED indicator on the lock face.
+   - Locked/transitioning/stale: full ring drawn.
+   - Unlocked: bottom arc only (`dy >= 0`) — shackle open at top.
+   - Color: red=locked, green=unlocked, amber=transitioning, dark amber=stale/unknown.
+
+### Skylight tiles (W13, W14)
+
+Side-by-side 4×6px tiles. Frame: mid-gray. Fill: dark red (closed) / bright green (open).
+
+- **Closed**: full 4×6 frame + 2×4 fill.
+- **Open**: panel 1px shorter (tilt effect); gray shadow row at bottom (3D depth cue).
+
+### Sliding door (terrace)
+
+12×9px. Frame: mid-gray. Fill: very dark red (closed) / very dark green (open).
+
+- Handle pixel: bright red (closed) / bright green (open), inner edge of each panel at vertical center.
+- Closed: panels meet at center seam, handles face inward.
+- Open: panels slid to outer edges, handles face outward.
+
+### General palette conventions
+
+| Role             | Color                        | Notes                                          |
+| ---------------- | ---------------------------- | ---------------------------------------------- |
+| Frame/outline    | `[160,160,155]`              | Mid-gray — same for doors + skylights          |
+| Closed fill      | dark red                     | Doors: `[50,10,10]` / Skylights: `[120,15,15]` |
+| Open fill        | dark/bright green            | Doors: `[8,35,12]` / Skylights: `[30,160,50]`  |
+| Handle/indicator | Matches state                | Red closed, green open — skylight fill colors  |
+| Shadow/AA        | `[20,20,20]` or `[40,40,38]` | 50% black for AA; dark gray for 3D shadow      |
 
 ---
 

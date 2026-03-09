@@ -223,22 +223,31 @@ open http://192.168.1.56/screen
 
 #### UPDATE a scene (on hsb1)
 
-Scenes are **baked into the Docker image** — source of truth is the git repo.
+**Important:** scenes on hsb1 are **host-mounted** (`~/docker/mounts/pidicon-light/scenes/`), not baked into the image. The image contains the default scenes as fallback, but the mount overrides them.
+
+Two deploy paths:
+
+**Fast path — scene file only (no lib/ changes):**
 
 ```bash
-# 1. Edit scene locally in scenes/my-scene.js
-# 2. Commit and push → CI builds new image automatically
-git add scenes/my-scene.js
-git commit -m "fix(my-scene): ..."
-git push
+# Edit locally, then scp directly → SceneLoader hot-reloads within seconds
+scp scenes/my-scene.js mba@hsb1.lan:~/docker/mounts/pidicon-light/scenes/my-scene.js
 
-# 3. On hsb1: pull new image (or wait for Watchtower weekly)
+# Also commit + push to keep git in sync
+git add scenes/my-scene.js && git commit -m "..." && git push
+```
+
+**Full path — lib/ or other image changes:**
+
+```bash
+git add . && git commit -m "..." && git push
+# Wait for CI to finish (gh run watch), then:
 ssh mba@hsb1.lan "cd ~/docker && docker compose pull pidicon-light && docker compose up -d pidicon-light"
 ```
 
-> **Config** (`config.json`) is the only mounted file — edit on hsb1 directly or via nixcfg repo.
-> Config changes **hot-reload** without restart.
-> Scene changes require a new image build + pull.
+> Config changes **hot-reload** without restart (500ms debounce).
+> Scene file changes hot-reload via SceneLoader watcher — scp is instant.
+> lib/ changes require a new image build + pull.
 
 #### DELETE a scene
 
@@ -275,9 +284,13 @@ npm start
 ### 5. Deploy to hsb1
 
 ```bash
-# Scene or code change:
+# Scene file change (fast — hot-reloads in seconds):
+scp scenes/my-scene.js mba@hsb1.lan:~/docker/mounts/pidicon-light/scenes/my-scene.js
 git add scenes/my-scene.js && git commit -m "..." && git push
-# → CI builds image → pull on hsb1:
+
+# lib/ or Dockerfile change (needs CI build):
+git add . && git commit -m "..." && git push
+gh run watch --exit-status   # wait for CI
 ssh mba@hsb1.lan "cd ~/docker && docker compose pull pidicon-light && docker compose up -d pidicon-light"
 
 # Config-only change (hot-reloads, no restart needed):
