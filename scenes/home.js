@@ -586,6 +586,7 @@ export default {
 
   async init(context) {
     this._frame = 0;
+    this._logger = context.logger;
 
     // Brightness state
     this._bri = { day: 100, night: 7, override: null };
@@ -692,10 +693,12 @@ export default {
       const v = parseFloat(msg.trim());
       if (!isNaN(v)) {
         this._s.sunElevation = v;
+        this._logger.info(`[home] sun elevation = ${v}°`);
       }
     });
     sub("homeassistant/sun/sun/state", (msg) => {
       this._s.sunAbove = msg.trim() === "above_horizon";
+      this._logger.info(`[home] sun state = ${msg.trim()}`);
     });
 
     const NUKI = { 1: "locked", 2: "unlocking", 3: "unlocked", 4: "locking" };
@@ -853,6 +856,9 @@ export default {
         await device.setBrightness(targetBri);
         this._lastBriVal = targetBri;
         this._lastBriSet = Date.now();
+        this._logger.info(
+          `[home] setBrightness(${targetBri}) elev=${s.sunElevation} above=${s.sunAbove}`,
+        );
       }
     }
 
