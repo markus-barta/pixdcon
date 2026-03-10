@@ -8,6 +8,8 @@
 
 export default {
   name: "test-pattern",
+  pretty_name: "Test Pattern",
+  deviceType: "ulanzi",
   description: "Animated test pattern for display verification",
 
   // Instance state — reset when scene is reloaded via clearCache()

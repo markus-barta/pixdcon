@@ -521,6 +521,8 @@ function handleMqtt(topic, raw, state, logger) {
 
 export default {
   name: "health",
+  pretty_name: "Health Dashboard",
+  deviceType: "pixoo",
   description: "Smart home health dashboard — 4-tab Pixoo64 display.",
 
   async init(context) {

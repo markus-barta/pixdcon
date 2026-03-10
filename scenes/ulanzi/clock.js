@@ -5,6 +5,8 @@
 
 export default {
   name: "clock",
+  pretty_name: "Clock",
+  deviceType: "ulanzi",
   description: "Digital clock HH:MM:SS",
 
   async render(device) {

@@ -86,6 +86,8 @@ const BRI_HEARTBEAT_MS = 5 * 60 * 1000;
 
 export default {
   name: "clock_with_homestats",
+  pretty_name: "Clock + Home Stats",
+  deviceType: "ulanzi",
   description: "Time + Nuki / terrace / skylights / sonnenbatterie. Day/night.",
 
   // ---------------------------------------------------------------------------

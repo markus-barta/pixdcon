@@ -656,6 +656,8 @@ function pingHost(ip) {
 
 export default {
   name: "home",
+  pretty_name: "Home Dashboard",
+  deviceType: "pixoo",
 
   async init(context) {
     this._frame = 0;
