@@ -18,7 +18,10 @@ ENV PIDICON_CONFIG_PATH=/data/config.json \
     MQTT_PORT=1883 \
     MQTT_USER=smarthome \
     LOG_LEVEL=info \
-    TZ=Europe/Vienna
+    TZ=Europe/Vienna \
+    WEB_PORT=8080
+
+EXPOSE 8080
 
 # Health check: verify the node process is running and the config file is readable
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \

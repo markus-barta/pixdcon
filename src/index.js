@@ -12,6 +12,7 @@ import { MqttService } from "../lib/mqtt-service.js";
 import { ConfigWatcher } from "../lib/config-watcher.js";
 import { ConfigOverlay } from "../lib/config-overlay.js";
 import { ScenesWatcher } from "../lib/scenes-watcher.js";
+import { WebServer } from "../lib/web-server.js";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
@@ -54,6 +55,8 @@ let sceneLoader = null;
 let configPath = null;   // Set once in main(), used in reloadConfig()
 let configOverlay = null; // MQTT overlay layer (optional, null when MQTT unavailable)
 let baseConfig = null;   // Raw file config; overlay merges on top of this
+let effectiveConfig = null; // Last computed merged config (served by WebServer)
+let webServer = null;
 
 // ---------------------------------------------------------------------------
 
@@ -191,7 +194,7 @@ async function stopAllDevices() {
 async function applyOverlayReload() {
   logger.info("[pidicon-light] Overlay changed, applying effective config...");
   try {
-    const effectiveConfig = configOverlay.merge(baseConfig);
+    effectiveConfig = configOverlay.merge(baseConfig);
 
     if (scenesWatcher) { scenesWatcher.stop(); scenesWatcher = null; }
     await stopAllDevices();
@@ -230,7 +233,7 @@ async function reloadConfig(newConfigContent) {
     const loader = new ConfigLoader(configPath);
     baseConfig = loader.parse(newConfigContent); // update base for future merges
 
-    const effectiveConfig = configOverlay
+    effectiveConfig = configOverlay
       ? configOverlay.merge(baseConfig)
       : baseConfig;
 
@@ -269,6 +272,7 @@ async function shutdown(signal) {
   if (configWatcher) await configWatcher.stop();
   if (scenesWatcher) scenesWatcher.stop();
   if (configOverlay) configOverlay.unsubscribe();
+  if (webServer) webServer.stop();
 
   await stopAllDevices();
 
@@ -313,7 +317,7 @@ async function main() {
     await configOverlay.subscribe(); // 200ms settle, clears debounce
   }
 
-  const effectiveConfig = configOverlay
+  effectiveConfig = configOverlay
     ? configOverlay.merge(baseConfig)
     : baseConfig;
 
@@ -335,6 +339,15 @@ async function main() {
   // Watch config for hot reload
   configWatcher = new ConfigWatcher(configPath, reloadConfig, { logger });
   await configWatcher.start();
+
+  // Web UI
+  webServer = new WebServer({
+    configPath,
+    getEffectiveConfig: () => effectiveConfig,
+    mqttService,
+    logger,
+  });
+  webServer.start();
 
   // Handle both SIGINT (Ctrl+C) and SIGTERM (Docker stop)
   process.on("SIGINT", () => shutdown("SIGINT"));
