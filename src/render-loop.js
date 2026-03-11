@@ -4,14 +4,25 @@
  * Error handling strategy:
  *   - Each failed render attempt increments a consecutive-error counter.
  *   - Backoff doubles per failure: 1s → 2s → 4s → … → 10 min (cap).
- *   - After 10 consecutive errors the circuit opens: the loop sleeps for
- *     the full backoff before attempting the next scene frame.
+ *   - After 10 consecutive errors the circuit opens.
+ *   - If a powerCyclePlugin is configured: power-cycle the device via MQTT,
+ *     then reset the error counter and retry.  After maxPowerCycles failed
+ *     cycles the loop gives up permanently and logs a fatal error.
+ *   - Without powerCyclePlugin: sleep for the capped backoff duration then retry.
  *   - A single successful render resets the counter and backoff to defaults.
+ *
+ * Frame-rate throttling (minFrameMs):
+ *   - Measures wall-clock time each render() call takes.
+ *   - Sleeps for max(0, minFrameMs − renderTime) after a successful frame
+ *     when the scene returns a delay > 0.
+ *   - Scene-returned delay is used as-is when it already exceeds minFrameMs.
+ *   - Ensures actual frame cadence is at least minFrameMs regardless of how
+ *     fast render() completes, without adding flat overhead on slow renders.
  *
  * CPU protection:
  *   - All waits use async sleep (setTimeout) — never busy-loops.
- *   - Even with a completely dead device the loop sits idle at 10 min
- *     intervals, not hammering the network or CPU.
+ *   - Even with a completely dead device the loop sits idle during backoff /
+ *     power-cycle waits, not hammering the network or CPU.
  */
 
 export class RenderLoop {
@@ -20,9 +31,19 @@ export class RenderLoop {
    * @param {SceneLoader} sceneLoader - Scene loader instance
    * @param {string[]}    scenes      - Ordered array of scene names
    * @param {Object}      options
-   * @param {Object}      options.logger      - Logger instance
-   * @param {string}      options.deviceName  - Device name for log context
-   * @param {Object}      [options.mqttService] - Optional MQTT service for state updates
+   * @param {Object}      options.logger            - Logger instance
+   * @param {string}      options.deviceName        - Device name for log context
+   * @param {Object}      [options.mqttService]     - Optional MQTT service for state updates
+   * @param {number}      [options.minFrameMs=500]  - Minimum ms between frames (0 = no throttle)
+   * @param {Object}      [options.powerCyclePlugin]- MQTT power-cycle config (see below)
+   *   powerCyclePlugin: {
+   *     topic:      string   — e.g. "z2m/wz/plug/zisp32/set"
+   *     offPayload: string   — e.g. '{"state":"OFF"}'
+   *     onPayload:  string   — e.g. '{"state":"ON"}'
+   *     offWaitMs:  number   — ms to wait after OFF before ON  (default 10000)
+   *     onWaitMs:   number   — ms to wait after ON before retrying render (default 30000)
+   *   }
+   * @param {number}      [options.maxPowerCycles=10] - Give up after this many failed cycles
    */
   constructor(driver, sceneLoader, scenes, options = {}) {
     this.driver = driver;
@@ -31,6 +52,15 @@ export class RenderLoop {
     this.logger = options.logger || console;
     this.deviceName = options.deviceName || "unknown";
     this.mqtt = options.mqttService || null;
+
+    // Frame-rate floor: minimum ms between frame starts (0 = no throttle)
+    this.minFrameMs =
+      typeof options.minFrameMs === "number" ? options.minFrameMs : 500;
+
+    // Power-cycle plugin config (optional)
+    this.powerCyclePlugin = options.powerCyclePlugin || null;
+    this.maxPowerCycles = options.maxPowerCycles ?? 10;
+    this.powerCycleCount = 0;
 
     // State
     this.running = false;
@@ -49,7 +79,7 @@ export class RenderLoop {
     this.lastSuccessTime = null;
 
     // Mode control
-    this._mode = "play";      // "play" | "pause" | "stop"
+    this._mode = "play"; // "play" | "pause" | "stop"
     this._modeChanged = null; // Promise resolve fn for wake-up
   }
 
@@ -93,7 +123,9 @@ export class RenderLoop {
       `[RenderLoop:${this.deviceName}] Stop requested (frames rendered: ${this.frameCount})`,
     );
     // Wake any sleep or mode-wait so the loop can exit cleanly
-    if (this._sleepWake) { this._sleepWake(); }
+    if (this._sleepWake) {
+      this._sleepWake();
+    }
     if (this._modeChanged) {
       this._modeChanged();
       this._modeChanged = null;
@@ -107,11 +139,11 @@ export class RenderLoop {
   setMode(mode) {
     const prev = this._mode;
     this._mode = mode;
-    this.logger.info(
-      `[RenderLoop:${this.deviceName}] Mode: ${prev} → ${mode}`,
-    );
+    this.logger.info(`[RenderLoop:${this.deviceName}] Mode: ${prev} → ${mode}`);
     // Wake any current sleep so the mode takes effect immediately
-    if (this._sleepWake) { this._sleepWake(); }
+    if (this._sleepWake) {
+      this._sleepWake();
+    }
     if (this._modeChanged) {
       this._modeChanged();
       this._modeChanged = null;
@@ -152,17 +184,84 @@ export class RenderLoop {
 
   // ---------------------------------------------------------------------------
 
+  /**
+   * Execute one power-cycle sequence via MQTT plug.
+   * Returns true if the cycle completed (regardless of whether device recovered).
+   * Returns false if the loop was stopped mid-cycle.
+   */
+  async _doPowerCycle() {
+    const pc = this.powerCyclePlugin;
+    this.powerCycleCount++;
+    const attempt = `${this.powerCycleCount}/${this.maxPowerCycles}`;
+
+    this.logger.warn(
+      `[RenderLoop:${this.deviceName}] Power-cycling device via ${pc.topic} (attempt ${attempt})`,
+    );
+
+    if (!this.mqtt) {
+      this.logger.error(
+        `[RenderLoop:${this.deviceName}] powerCyclePlugin configured but no mqttService — cannot power cycle`,
+      );
+      return true; // fall through to normal retry
+    }
+
+    // OFF
+    this.mqtt.publishRaw(pc.topic, pc.offPayload ?? '{"state":"OFF"}');
+    this.logger.info(
+      `[RenderLoop:${this.deviceName}] Power-cycle: sent OFF → waiting ${pc.offWaitMs ?? 10000}ms`,
+    );
+    await this._sleep(pc.offWaitMs ?? 10_000);
+    if (!this.running) return false;
+
+    // ON
+    this.mqtt.publishRaw(pc.topic, pc.onPayload ?? '{"state":"ON"}');
+    this.logger.info(
+      `[RenderLoop:${this.deviceName}] Power-cycle: sent ON → waiting ${pc.onWaitMs ?? 30000}ms for reboot`,
+    );
+    await this._sleep(pc.onWaitMs ?? 30_000);
+    if (!this.running) return false;
+
+    // Force driver re-init on next push
+    if (typeof this.driver.initialized !== "undefined") {
+      this.driver.initialized = false;
+    }
+
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+
   async _runScene(sceneName) {
     // --- Circuit breaker check -------------------------------------------
     if (this.consecutiveErrors >= this.maxErrors) {
-      this.logger.warn(
-        `[RenderLoop:${this.deviceName}] Circuit open after ${this.consecutiveErrors} errors. ` +
-          `Sleeping ${this.currentBackoff}ms before retry...`,
-      );
-      await this._sleep(this.currentBackoff);
-      // Reset so we attempt again; if it fails the counter climbs again
-      this.consecutiveErrors = 0;
-      this.currentBackoff = this.initialBackoff;
+      if (this.powerCyclePlugin) {
+        // Check if we've exhausted power-cycle attempts
+        if (this.powerCycleCount >= this.maxPowerCycles) {
+          this.logger.error(
+            `[RenderLoop:${this.deviceName}] Device unresponsive after ${this.powerCycleCount} power-cycle(s). Giving up — device left OFF.`,
+          );
+          if (this.mqtt) this.mqtt.updateDeviceStatus(this.deviceName, "dead");
+          this.running = false;
+          return;
+        }
+
+        const cycleCompleted = await this._doPowerCycle();
+        if (!cycleCompleted || !this.running) return;
+
+        // Reset error state so we attempt the next render fresh
+        this.consecutiveErrors = 0;
+        this.currentBackoff = this.initialBackoff;
+      } else {
+        // No power-cycle plugin — original sleep-and-retry behaviour
+        this.logger.warn(
+          `[RenderLoop:${this.deviceName}] Circuit open after ${this.consecutiveErrors} errors. ` +
+            `Sleeping ${this.currentBackoff}ms before retry...`,
+        );
+        await this._sleep(this.currentBackoff);
+        // Reset so we attempt again; if it fails the counter climbs again
+        this.consecutiveErrors = 0;
+        this.currentBackoff = this.initialBackoff;
+      }
       return;
     }
 
@@ -191,6 +290,8 @@ export class RenderLoop {
         break; // restart outer scene loop
       }
 
+      const frameStart = Date.now();
+
       try {
         result = await scene.render(this.driver);
 
@@ -198,12 +299,18 @@ export class RenderLoop {
         this._handleSuccess();
 
         if (typeof result === "number" && result > 0) {
-          await this._sleep(result);
+          const renderTime = Date.now() - frameStart;
+          // Enforce: total frame time (render + sleep) >= minFrameMs
+          // sleep = max(scene-requested delay, minFrameMs − renderTime)
+          // This means a slow render that already consumed minFrameMs won't add more delay.
+          const sleepMs =
+            this.minFrameMs > 0
+              ? Math.max(result, Math.max(0, this.minFrameMs - renderTime))
+              : result;
+          if (sleepMs > 0) await this._sleep(sleepMs);
         }
 
         // --- Hot-reload: scene evicted from cache — break inner loop ------
-        // The outer loop will call sceneLoader.load() again, picking up the
-        // new module from disk.
         if (!this.sceneLoader.isLoaded(sceneName)) {
           this.logger.info(
             `[RenderLoop:${this.deviceName}] Scene "${sceneName}" hot-reloaded, restarting...`,
@@ -235,6 +342,14 @@ export class RenderLoop {
       this.logger.info(
         `[RenderLoop:${this.deviceName}] Recovered after ${this.consecutiveErrors} error(s)`,
       );
+    }
+
+    // Successful render after a power cycle — reset the cycle counter too
+    if (this.powerCycleCount > 0) {
+      this.logger.info(
+        `[RenderLoop:${this.deviceName}] Device recovered after ${this.powerCycleCount} power-cycle(s) — resetting cycle counter`,
+      );
+      this.powerCycleCount = 0;
     }
 
     this.consecutiveErrors = 0;
@@ -304,6 +419,7 @@ export class RenderLoop {
       consecutiveErrors: this.consecutiveErrors,
       currentBackoff: this.currentBackoff,
       lastSuccessTime: this.lastSuccessTime,
+      powerCycleCount: this.powerCycleCount,
     };
   }
 }

@@ -52,9 +52,9 @@ let configWatcher = null;
 let scenesWatcher = null;
 let renderLoops = []; // Array of { device, loop }
 let sceneLoader = null;
-let configPath = null;   // Set once in main(), used in reloadConfig()
+let configPath = null; // Set once in main(), used in reloadConfig()
 let configOverlay = null; // MQTT overlay layer (optional, null when MQTT unavailable)
-let baseConfig = null;   // Raw file config; overlay merges on top of this
+let baseConfig = null; // Raw file config; overlay merges on top of this
 let effectiveConfig = null; // Last computed merged config (served by WebServer)
 let webServer = null;
 
@@ -92,16 +92,22 @@ async function initializeMqtt() {
 
 function startScenesWatcher() {
   const dirs = sceneLoader.getSceneDirs();
-  scenesWatcher = new ScenesWatcher(dirs, async (filename) => {
-    const names = sceneLoader.findScenesByFilename(filename);
-    if (names.length === 0) {
-      logger.debug(`[pidicon-light] Scene file "${filename}" changed but no matching scene found`);
-      return;
-    }
-    for (const name of names) {
-      await sceneLoader.clearScene(name);
-    }
-  }, { logger });
+  scenesWatcher = new ScenesWatcher(
+    dirs,
+    async (filename) => {
+      const names = sceneLoader.findScenesByFilename(filename);
+      if (names.length === 0) {
+        logger.debug(
+          `[pidicon-light] Scene file "${filename}" changed but no matching scene found`,
+        );
+        return;
+      }
+      for (const name of names) {
+        await sceneLoader.clearScene(name);
+      }
+    },
+    { logger },
+  );
   scenesWatcher.start();
 }
 
@@ -144,6 +150,10 @@ async function startDevice(device) {
     logger,
     deviceName: device.name,
     mqttService,
+    minFrameMs: typeof device.minFrameMs === "number" ? device.minFrameMs : 500,
+    powerCyclePlugin: device.powerCyclePlugin || null,
+    maxPowerCycles:
+      typeof device.maxPowerCycles === "number" ? device.maxPowerCycles : 10,
   });
 
   renderLoops.push({ device, loop });
@@ -196,7 +206,10 @@ async function applyOverlayReload() {
   try {
     effectiveConfig = configOverlay.merge(baseConfig);
 
-    if (scenesWatcher) { scenesWatcher.stop(); scenesWatcher = null; }
+    if (scenesWatcher) {
+      scenesWatcher.stop();
+      scenesWatcher = null;
+    }
     await stopAllDevices();
     await sceneLoader.clearCache();
 
@@ -237,7 +250,10 @@ async function reloadConfig(newConfigContent) {
       ? configOverlay.merge(baseConfig)
       : baseConfig;
 
-    if (scenesWatcher) { scenesWatcher.stop(); scenesWatcher = null; }
+    if (scenesWatcher) {
+      scenesWatcher.stop();
+      scenesWatcher = null;
+    }
     await stopAllDevices();
     await sceneLoader.clearCache(); // destroy() hooks + re-import from disk
 

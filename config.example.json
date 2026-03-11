@@ -4,12 +4,31 @@
       "name": "ulanzi-01",
       "type": "ulanzi",
       "ip": "192.168.1.xxx",
-      "scenes": ["clock"]
+      "scenes": ["clock"],
+      "minFrameMs": 500
+    },
+    {
+      "name": "pixoo-01",
+      "type": "pixoo",
+      "ip": "192.168.1.xxx",
+      "scenes": ["home"],
+      "minFrameMs": 500,
+      "maxPowerCycles": 10,
+      "powerCyclePlugin": {
+        "topic": "z2m/your/plug/set",
+        "offPayload": "{\"state\":\"OFF\"}",
+        "onPayload": "{\"state\":\"ON\"}",
+        "offWaitMs": 10000,
+        "onWaitMs": 30000
+      }
     }
   ],
   "scenes": {
     "clock": {
-      "path": "./scenes/clock.js"
+      "path": "./scenes/ulanzi/clock.js"
+    },
+    "home": {
+      "path": "./scenes/pixoo/home.js"
     }
   }
 }
