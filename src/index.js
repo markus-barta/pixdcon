@@ -13,6 +13,7 @@ import { ConfigWatcher } from "../lib/config-watcher.js";
 import { ConfigOverlay } from "../lib/config-overlay.js";
 import { ScenesWatcher } from "../lib/scenes-watcher.js";
 import { WebServer } from "../lib/web-server.js";
+import { FramePreviewStore } from "../lib/frame-preview-store.js";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
@@ -57,6 +58,7 @@ let configOverlay = null; // MQTT overlay layer (optional, null when MQTT unavai
 let baseConfig = null; // Raw file config; overlay merges on top of this
 let effectiveConfig = null; // Last computed merged config (served by WebServer)
 let webServer = null;
+let framePreviewStore = null;
 
 // ---------------------------------------------------------------------------
 
@@ -127,7 +129,11 @@ async function startDevice(device) {
       logger,
     });
   } else if (device.type === "pixoo") {
-    driver = new PixooDriver(device.ip, { logger });
+    driver = new PixooDriver(device.ip, {
+      logger,
+      deviceName: device.name,
+      previewStore: framePreviewStore,
+    });
   } else {
     logger.warn(
       `[pidicon-light] Unknown device type "${device.type}" — skipping ${device.name}`,
@@ -157,6 +163,7 @@ async function startDevice(device) {
   });
 
   renderLoops.push({ device, loop });
+  if (framePreviewStore) framePreviewStore.registerDevice(device, driver);
 
   // Subscribe to per-device mode control topic (retained — survives restarts)
   if (mqttService) {
@@ -189,6 +196,7 @@ async function stopAllDevices() {
   logger.info(`[pidicon-light] Stopping ${renderLoops.length} device(s)...`);
   for (const { loop, device } of renderLoops) {
     loop.stop();
+    if (framePreviewStore) framePreviewStore.unregisterDevice(device.name);
     if (mqttService) {
       mqttService.unsubscribeDevice(device.name);
       mqttService.updateDeviceStatus(device.name, "offline");
@@ -337,6 +345,8 @@ async function main() {
     ? configOverlay.merge(baseConfig)
     : baseConfig;
 
+  framePreviewStore = new FramePreviewStore({ logger });
+
   if (mqttService) mqttService.publishConfig(effectiveConfig); // publish merged result
 
   // SceneLoader resolves paths relative to config file's directory
@@ -360,6 +370,7 @@ async function main() {
   webServer = new WebServer({
     configPath,
     getEffectiveConfig: () => effectiveConfig,
+    getFramePreviews: () => framePreviewStore?.list() || {},
     mqttService,
     logger,
   });

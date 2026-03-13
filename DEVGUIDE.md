@@ -35,6 +35,7 @@ config.json
 - Node `http.createServer`, port 8080
 - Inline SPA: DaisyUI + Alpine.js CDN (no build step)
 - Per-device scene list, mode control (play/pause/stop)
+- Per-device live preview: Pixoo mirrors runtime buffer, Ulanzi polls AWTRIX `/api/screen`
 - Config file write + MQTT overlay support
 
 **Simple Scene Contract:**
@@ -318,6 +319,12 @@ ssh mba@hsb1.lan "cd ~/docker && docker compose pull pidicon-light && docker com
 > Config changes **hot-reload** without restart (500ms debounce).
 > Scene file changes hot-reload via ScenesWatcher — scp is instant.
 > lib/ or src/ changes require a new image build + pull.
+
+Live preview notes:
+
+- Pixoo preview is exact: captured from the in-memory RGB buffer after successful `push()`
+- Ulanzi preview is device-reported: polled from AWTRIX `/api/screen` every ~2s
+- Web UI refreshes preview data every 1s and renders pixelated canvases per device
 
 #### DELETE a scene
 
