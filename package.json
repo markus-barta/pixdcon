@@ -1,6 +1,6 @@
 {
   "name": "pidicon-light",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Minimalist pixel display controller - config-file driven, web UI",
   "main": "src/index.js",
   "type": "module",

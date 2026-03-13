@@ -2,19 +2,19 @@
 
 ## Server
 
-| What        | Value                                      |
-| ----------- | ------------------------------------------ |
-| Host        | `hsb1` (SSH as `mba@hsb1`)                |
-| Mount root  | `~/docker/mounts/pidicon-light/`           |
-| Compose     | `~/docker/docker-compose.yml`              |
-| Image       | `ghcr.io/markus-barta/pidicon-light:latest`|
+| What       | Value                                       |
+| ---------- | ------------------------------------------- |
+| Host       | `hsb1` (SSH as `mba@hsb1`)                  |
+| Mount root | `~/docker/mounts/pidicon-light/`            |
+| Compose    | `~/docker/docker-compose.yml`               |
+| Image      | `ghcr.io/markus-barta/pidicon-light:latest` |
 
 ## Volume mounts (in container)
 
-| Host path                           | Container path    |
-| ----------------------------------- | ----------------- |
-| `mounts/pidicon-light/config.json`  | `/data/config.json` (ro) |
-| `mounts/pidicon-light/scenes/`      | `/app/scenes/` (ro) |
+| Host path                          | Container path           |
+| ---------------------------------- | ------------------------ |
+| `mounts/pidicon-light/config.json` | `/data/config.json` (rw) |
+| `mounts/pidicon-light/scenes/`     | `/app/scenes/` (ro)      |
 
 Scene paths in `config.json` use `/app/scenes/` — the mount overlay takes effect, so files in the host `scenes/` folder shadow the built-in image scenes.
 
@@ -39,6 +39,8 @@ scp config.json mba@hsb1:~/docker/mounts/pidicon-light/config.json
 ```
 
 ConfigWatcher picks it up automatically. No restart needed.
+
+Important: `config.json` must be mounted writable, because the web UI persists edits from inside the container.
 
 ### 3. Core code changed (`src/`, `lib/`, `package.json`, `Dockerfile`)
 
