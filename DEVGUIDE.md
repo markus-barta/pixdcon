@@ -36,6 +36,7 @@ config.json
 - Inline SPA: DaisyUI + Alpine.js CDN (no build step)
 - Per-device scene list, mode control (play/pause/stop)
 - Per-device live preview: Pixoo mirrors runtime buffer, Ulanzi polls AWTRIX `/api/screen`
+- Device config can also persist `displayName`, `comment`, and `preview` UI settings
 - Config file write + MQTT overlay support
 
 **Simple Scene Contract:**
@@ -325,6 +326,7 @@ Live preview notes:
 - Pixoo preview is exact: captured from the in-memory RGB buffer after successful `push()`
 - Ulanzi preview is device-reported: polled from AWTRIX `/api/screen` every ~2s
 - Web UI refreshes preview data every 1s and renders pixelated canvases per device
+- Per-device preview settings (`pollMs`, `showGrid`) plus `displayName` / `comment` persist in config
 
 #### DELETE a scene
 

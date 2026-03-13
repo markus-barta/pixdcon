@@ -2,17 +2,29 @@
   "devices": [
     {
       "name": "ulanzi-01",
+      "displayName": "Kitchen Clock",
+      "comment": "Kids room bedside display",
       "type": "ulanzi",
       "ip": "192.168.1.xxx",
       "scenes": ["clock"],
-      "minFrameMs": 500
+      "minFrameMs": 500,
+      "preview": {
+        "showGrid": false,
+        "pollMs": 2000
+      }
     },
     {
       "name": "pixoo-01",
+      "displayName": "Living Room Pixoo",
+      "comment": "Main home dashboard",
       "type": "pixoo",
       "ip": "192.168.1.xxx",
       "scenes": ["home"],
       "minFrameMs": 500,
+      "preview": {
+        "showGrid": true,
+        "pollMs": 2000
+      },
       "maxPowerCycles": 10,
       "powerCyclePlugin": {
         "topic": "z2m/your/plug/set",
