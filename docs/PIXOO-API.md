@@ -104,9 +104,19 @@ Two layers (back→front):
 1. **Gray disk r=4** — represents the physical lock body. Always drawn full circle regardless of open/closed state.
    - Cardinal edge pixels `(±4,0)(0,±4)` overdrawn at 50% brightness → soft antialiased edge.
 2. **5×5 colored ring** — represents the LED indicator on the lock face.
-   - Locked/transitioning/stale: full ring drawn.
+   - Locked/transitioning/unknown: full ring drawn.
    - Unlocked: bottom arc only (`dy >= 0`) — shackle open at top.
-   - Color: red=locked, green=unlocked, amber=transitioning, dark amber=stale/unknown.
+   - Color: red=locked, green=unlocked, amber=transitioning, dark amber=unknown.
+3. **Offline dot** — two amber pixels to the right of the lock body.
+   - Shown only when ICMP ping to the lock IP currently fails.
+   - Does not replace the last known MQTT lock state.
+
+This means the Pixoo now separates:
+
+- **state** = last known MQTT lock state
+- **reachability** = current ping result
+
+So a lock can show "locked" or "unlocked" and still carry an amber offline warning dot.
 
 ### Skylight tiles (W13, W14)
 

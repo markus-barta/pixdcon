@@ -167,13 +167,14 @@ function drawErrorMark(d, col, row, frame) {
 //   Filled gray disk r=4       — lock body, always full circle
 //     Cardinal edge pixels (±4,0)(0,±4) overdrawn at 50% → soft AA edge
 //   5×5 colored ring + center  — LED indicator on lock face
-//     Locked/trans/stale → full ring. Unlocked → bottom arc only (dy >= 0).
+//     Locked/trans/unknown → full ring. Unlocked → bottom arc only (dy >= 0).
+//   Offline dot             — separate 2px amber marker to the right when ping fails
 
 function drawNukiCircle(d, cx, cy, nukiState, alive) {
   const isOpen = nukiState === "unlocked";
   const isTrans = nukiState === "locking" || nukiState === "unlocking";
-  const stale = !alive || nukiState === null;
-  const [r, g, b] = stale
+  const unknown = nukiState === null;
+  const [r, g, b] = unknown
     ? C.unknown
     : isTrans
       ? C.trans
@@ -196,7 +197,7 @@ function drawNukiCircle(d, cx, cy, nukiState, alive) {
     d._setPixel(cx + dx, cy + dy, 20, 20, 20);
 
   // 5×5 colored ring; open = bottom arc only (dy >= 0), else full ring
-  const minDy = isOpen && !stale ? 0 : -2;
+  const minDy = isOpen && !unknown ? 0 : -2;
   for (const [dx, dy, op] of [
     // corners (±2,±2) at 40%
     [-2, -2, 0.4],
@@ -224,6 +225,12 @@ function drawNukiCircle(d, cx, cy, nukiState, alive) {
 
   // Center fill at 33%
   d._setPixel(cx, cy, (r * 0.33) | 0, (g * 0.33) | 0, (b * 0.33) | 0);
+
+  if (!alive) {
+    const [dr, dg, db] = [255, 190, 40];
+    d._setPixel(cx + 5, cy - 1, dr, dg, db);
+    d._setPixel(cx + 5, cy, dr, dg, db);
+  }
 }
 
 // ── Icon: Dual sliding glass terrace door ─────────────────────────────────────
