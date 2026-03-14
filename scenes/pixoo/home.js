@@ -1022,48 +1022,24 @@ export default {
     sub("z2m/wz/contact/te-door/#", (msg, topic) => {
       if (topic === "z2m/wz/contact/te-door") {
         this._s.terraceOpen = parseContact(msg);
-        if (this._traceWildcard)
-          this._logger.info(
-            `[home][trace] terrace contact payload=${msg.trim()} parsed=${this._s.terraceOpen}`,
-          );
       } else if (topic === "z2m/wz/contact/te-door/availability") {
         this._s.terraceOnline = parseAvailability(msg);
-        if (this._traceWildcard)
-          this._logger.info(
-            `[home][trace] terrace avail payload=${msg.trim()} parsed=${this._s.terraceOnline}`,
-          );
       }
     });
 
     sub("z2m/vk/contact/w13/#", (msg, topic) => {
       if (topic === "z2m/vk/contact/w13") {
         this._s.w13Open = parseContact(msg);
-        if (this._traceWildcard)
-          this._logger.info(
-            `[home][trace] w13 contact payload=${msg.trim()} parsed=${this._s.w13Open}`,
-          );
       } else if (topic === "z2m/vk/contact/w13/availability") {
         this._s.w13Online = parseAvailability(msg);
-        if (this._traceWildcard)
-          this._logger.info(
-            `[home][trace] w13 avail payload=${msg.trim()} parsed=${this._s.w13Online}`,
-          );
       }
     });
 
     sub("z2m/vr/contact/w14/#", (msg, topic) => {
       if (topic === "z2m/vr/contact/w14") {
         this._s.w14Open = parseContact(msg);
-        if (this._traceWildcard)
-          this._logger.info(
-            `[home][trace] w14 contact payload=${msg.trim()} parsed=${this._s.w14Open}`,
-          );
       } else if (topic === "z2m/vr/contact/w14/availability") {
         this._s.w14Online = parseAvailability(msg);
-        if (this._traceWildcard)
-          this._logger.info(
-            `[home][trace] w14 avail payload=${msg.trim()} parsed=${this._s.w14Online}`,
-          );
       }
     });
 
