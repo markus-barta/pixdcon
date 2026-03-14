@@ -1000,20 +1000,10 @@ export default {
     sub("nuki/463F8F47/#", (msg, topic) => {
       if (topic !== "nuki/463F8F47/state") return;
       this._s.nukiVrState = NUKI[parseInt(msg.trim())] ?? null;
-      if (this._traceWildcard) {
-        this._logger.info(
-          `[home][trace] vr topic=${topic} payload=${msg.trim()} mapped=${this._s.nukiVrState}`,
-        );
-      }
     });
     sub("nuki/4A5D18FF/#", (msg, topic) => {
       if (topic !== "nuki/4A5D18FF/state") return;
       this._s.nukiKeState = NUKI[parseInt(msg.trim())] ?? null;
-      if (this._traceWildcard) {
-        this._logger.info(
-          `[home][trace] ke topic=${topic} payload=${msg.trim()} mapped=${this._s.nukiKeState}`,
-        );
-      }
     });
 
     // Nuki stale detection via IP ping (devices only publish on state change)
