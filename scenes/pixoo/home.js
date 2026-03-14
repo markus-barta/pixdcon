@@ -194,7 +194,7 @@ function drawMediaIcon(d, image, cx, cy, dot) {
   drawPixooImage(d, image, x, y);
   if (dot) {
     const [dr, dg, db] = dot;
-    d._setPixel(cx, cy + 6, dr, dg, db);
+    d._setPixel(cx, cy + 7, dr, dg, db);
   }
 }
 
@@ -563,10 +563,10 @@ function _mediaColors(isOn, stale) {
   return { dot, icon };
 }
 
-// Syncbox line — 3px hLine below power dot. isActive=blue, inactive=gray.
+// Syncbox line — 3px hLine below power dot. Active+syncing=blue, otherwise white.
 // Only drawn when syncbox is known-online; TV col has no line.
-function drawSyncboxLine(d, cx, dotY, isActive) {
-  const [r, g, b] = isActive ? [60, 140, 255] : [50, 50, 50];
+function drawSyncboxLine(d, cx, dotY, isSyncing) {
+  const [r, g, b] = isSyncing ? [60, 140, 255] : [235, 235, 235];
   hLine(d, cx - 1, cx + 1, dotY + 2, r, g, b);
 }
 
@@ -1293,13 +1293,13 @@ export default {
       drawSyncboxLine(
         device,
         COLS[0].cx,
-        cy2 + 6,
+        cy2 + 7,
         s.syncInput === this._cfg.syncboxInputPs5,
       );
       drawSyncboxLine(
         device,
         COLS[2].cx,
-        cy2 + 6,
+        cy2 + 7,
         s.syncInput === this._cfg.syncboxInputPc,
       );
     }
