@@ -346,13 +346,25 @@ The Ulanzi `clock_with_homestats` scene is different:
 
 **Additional bug found on 2026-03-14:** the self-heal logic correctly re-subscribed the topic, but it relied on a plain re-subscribe to trigger retained delivery again. In practice, the broker still had retained state (`nuki/463F8F47/state = 3` for VR), but `home` kept missing it and stayed `null`.
 
-**Fix in place (`lib/mqtt-service.js`):** when a topic is re-subscribed for an existing logical scene subscription, pidicon-light now uses MQTT v5 retain handling `rh: 0` to explicitly request retained replay again. Logs now show:
+**Final root cause found on 2026-03-14:** pidicon-light's wildcard subscription matcher supported `+` but not `#`. After changing `home.js` to subscribe to topic families like `nuki/463F8F47/#`, the broker delivered the retained message, but pidicon-light dropped it client-side because `_topicMatches()` returned `false` for `#` patterns.
+
+This also explained why terrace / skylight contact sensors could remain stale in self-heal workflows when wildcard topic family subscriptions were used.
+
+**Fixes now in place:**
+
+1. `lib/mqtt-service.js` forces retained replay on logical re-subscribe using MQTT v5 `rh: 0`
+2. `lib/mqtt-service.js` keeps shared-topic subscriptions alive across logical owners
+3. `lib/mqtt-service.js` fans out shared topic messages correctly
+4. `lib/mqtt-service.js` now correctly matches both `+` and `#` wildcard patterns
+5. `scenes/pixoo/home.js` subscribes to Nuki topic families (`nuki/<id>/#`) and filters for `/state`
+
+Logs can now show:
 
 ```text
-[MQTT] Scene "home" subscribed to "nuki/463F8F47/state" (forced retained replay)
+[MQTT] "home" subscribed to "nuki/463F8F47/#"
 ```
 
-Self-heal behavior remains the same conceptually — re-subscribe any topic still `null` every 30s (also at 5s) — but retained replay is now explicitly requested instead of assumed.
+Self-heal behavior remains the same conceptually — re-subscribe any topic still `null` every 30s (also at 5s) — but retained replay and wildcard dispatch are now explicit and correct.
 
 ### Current live observation on `hsb1` (2026-03-14)
 
@@ -379,7 +391,11 @@ What was discovered live instead:
 
 - the broker **did** have retained state for `nuki/463F8F47/state`
 - external systems were therefore correct (`open`)
-- pidicon-light was wrong because its self-heal re-subscribe did not force retained replay strongly enough
+- pidicon-light was wrong because multiple MQTT-layer bugs stacked together:
+  - retained replay was assumed, not forced
+  - shared-topic ownership was fragile
+  - shared-topic fan-out was fragile
+  - `#` wildcard matching was broken
 
 So the stale/unknown display in that case was an app bug, not a missing broker state.
 
@@ -417,7 +433,7 @@ If Pixoo shows Nuki VR stale but the lock is online:
 2. Check container logs for endless `self-heal: re-subscribed nuki/463F8F47/state`
 3. Check whether broker retained state exists independently with `mosquitto_sub`
 4. If broker has state but Pixoo stays unknown, suspect retained replay / subscription handling
-5. After the 2026-03-14 fix, look for `forced retained replay` in logs
+5. After the 2026-03-14 fixes, also check wildcard topic matching / dispatch behavior
 
 If Pixoo shows the correct lock shape/color but an amber offline dot:
 
@@ -469,6 +485,10 @@ Good next steps, in order:
 6. **Broker / client behavior hardening**
    - keep MQTT retained replay explicit on self-heal paths
    - avoid relying on broker-specific defaults for repeated logical subscriptions on one shared client
+
+7. **Regression coverage**
+   - add focused tests for MQTT topic matching with `+` and `#`
+   - add tests for shared logical subscriptions on one client
 
 **Do not "fix" by removing shared subscriptions** — topics like `nuki/463F8F47/state` must be shared between scenes (clock_with_homestats also uses Nuki state). The periodic re-heal is the correct mitigation.
 
