@@ -188,14 +188,26 @@ function drawNukiIcon(d, image, cx, cy, alive) {
   }
 }
 
-function drawMediaIcon(d, image, cx, cy, dot) {
+function drawMediaIcon(d, image, cx, cy) {
   const x = cx - Math.floor(image.width / 2);
   const y = cy - Math.floor(image.height / 2);
   drawPixooImage(d, image, x, y);
-  if (dot) {
-    const [dr, dg, db] = dot;
-    d._setPixel(cx, cy + 7, dr, dg, db);
-  }
+}
+
+function drawPcIcon(d, image, cx, cy) {
+  const x = cx - Math.floor(image.width / 2);
+  const y = cy - Math.floor(image.height / 2) - 1;
+  drawPixooImage(d, image, x, y);
+}
+
+function drawMediaStatusDot(d, cx, cy, mode) {
+  const [r, g, b] =
+    mode === "active"
+      ? [60, 140, 255]
+      : mode === "standby"
+        ? [235, 235, 235]
+        : [50, 50, 50];
+  d._setPixel(cx, cy + 7, r, g, b);
 }
 
 // ── Icon: Dual sliding glass terrace door ─────────────────────────────────────
@@ -1265,21 +1277,18 @@ export default {
       ps5On ? this._mediaImages.ps5On : this._mediaImages.ps5Standby,
       COLS[0].cx,
       cy2,
-      _mediaColors(ps5On, ps5Stale).dot,
     );
     drawMediaIcon(
       device,
       tvOn ? this._mediaImages.tvOn : this._mediaImages.tvStandby,
       COLS[1].cx,
       cy2,
-      _mediaColors(tvOn, tvStale).dot,
     );
-    drawMediaIcon(
+    drawPcIcon(
       device,
       pcOn ? this._mediaImages.pcOn : this._mediaImages.pcOff,
       COLS[2].cx,
       cy2,
-      _mediaColors(pcOn, pcStale).dot,
     );
 
     // Syncbox: online=lines, offline=red X in TV cell, not configured=nothing
@@ -1300,14 +1309,8 @@ export default {
           ? "active"
           : "idle"
         : "standby";
-      if (!this._lastSyncTrace || Date.now() - this._lastSyncTrace > 5000) {
-        this._lastSyncTrace = Date.now();
-        this._logger.info(
-          `[home][syncbox] active=${s.syncActive} hdmiActive=${s.syncHdmiActive} input=${s.syncInput} ps5On=${ps5On} pcOn=${pcOn} ps5Mode=${ps5SyncMode} pcMode=${pcSyncMode}`,
-        );
-      }
-      drawSyncboxLine(device, COLS[0].cx, cy2 + 7, ps5SyncMode);
-      drawSyncboxLine(device, COLS[2].cx, cy2 + 7, pcSyncMode);
+      drawMediaStatusDot(device, COLS[0].cx, cy2, ps5SyncMode);
+      drawMediaStatusDot(device, COLS[2].cx, cy2, pcSyncMode);
     }
 
     if (ps5Stale) drawErrorMark(device, 0, 2, this._frame);
