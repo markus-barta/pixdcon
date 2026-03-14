@@ -42,6 +42,9 @@
 
 import https from "https";
 import { exec } from "child_process";
+import { dirname, resolve } from "path";
+import { fileURLToPath } from "url";
+import { drawPixooImage, loadPixooImage } from "../../lib/pixoo-image.js";
 
 // ── Brightness helpers ────────────────────────────────────────────────────────
 
@@ -161,71 +164,15 @@ function drawErrorMark(d, col, row, frame) {
   d._setPixel(x + 2, y + 2, r, g, b);
 }
 
-// ── Icon: Nuki circle ─────────────────────────────────────────────────────────
-//
-// Layers (back→front):
-//   Filled gray disk r=4       — lock body, always full circle
-//     Cardinal edge pixels (±4,0)(0,±4) overdrawn at 50% → soft AA edge
-//   5×5 colored ring + center  — LED indicator on lock face
-//     Locked/trans/unknown → full ring. Unlocked → bottom arc only (dy >= 0).
-//   Offline dot             — separate 2px amber marker to the right when ping fails
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const NUKI_IMAGE_PATHS = {
+  unknown: resolve(__dirname, "../../assets/pixoo/nuki-stale.png"),
+  open: resolve(__dirname, "../../assets/pixoo/nuki-open.png"),
+  closed: resolve(__dirname, "../../assets/pixoo/nuki-closed.png"),
+};
 
-function drawNukiCircle(d, cx, cy, nukiState, alive) {
-  const isOpen = nukiState === "unlocked";
-  const isTrans = nukiState === "locking" || nukiState === "unlocking";
-  const unknown = nukiState === null;
-  const [r, g, b] = unknown
-    ? C.unknown
-    : isTrans
-      ? C.trans
-      : isOpen
-        ? C.open
-        : C.closed;
-
-  // Gray disk r=4 — always full (lock body never clips)
-  for (let dx = -4; dx <= 4; dx++)
-    for (let dy = -4; dy <= 4; dy++)
-      if (dx * dx + dy * dy <= 16) d._setPixel(cx + dx, cy + dy, 40, 40, 40);
-
-  // Antialias: soften the 4 cardinal spike pixels at exact r=4
-  for (const [dx, dy] of [
-    [4, 0],
-    [-4, 0],
-    [0, 4],
-    [0, -4],
-  ])
-    d._setPixel(cx + dx, cy + dy, 20, 20, 20);
-
-  // 5×5 colored ring; open = bottom arc only (dy >= 0), else full ring
-  const minDy = isOpen && !unknown ? 0 : -2;
-  for (const [dx, dy, op] of [
-    // corners (±2,±2) at 40%
-    [-2, -2, 0.4],
-    [2, -2, 0.4],
-    [-2, 2, 0.4],
-    [2, 2, 0.4],
-    // edge mids (±2,0)(0,±2) at 100%
-    [-2, 0, 1.0],
-    [2, 0, 1.0],
-    [0, -2, 1.0],
-    [0, 2, 1.0],
-    // inner diagonals (±1,±2)(±2,±1) at 70%
-    [-1, -2, 0.7],
-    [1, -2, 0.7],
-    [-1, 2, 0.7],
-    [1, 2, 0.7],
-    [-2, -1, 0.7],
-    [2, -1, 0.7],
-    [-2, 1, 0.7],
-    [2, 1, 0.7],
-  ]) {
-    if (dy >= minDy)
-      d._setPixel(cx + dx, cy + dy, (r * op) | 0, (g * op) | 0, (b * op) | 0);
-  }
-
-  // Center fill at 33%
-  d._setPixel(cx, cy, (r * 0.33) | 0, (g * 0.33) | 0, (b * 0.33) | 0);
-
+function drawNukiIcon(d, image, cx, cy, alive) {
+  drawPixooImage(d, image, cx - 4, cy - 4);
   if (!alive) {
     const [dr, dg, db] = [255, 190, 40];
     d._setPixel(cx + 5, cy - 1, dr, dg, db);
@@ -859,6 +806,11 @@ export default {
   async init(context) {
     this._frame = 0;
     this._logger = context.logger;
+    this._nukiImages = {
+      unknown: await loadPixooImage(NUKI_IMAGE_PATHS.unknown),
+      open: await loadPixooImage(NUKI_IMAGE_PATHS.open),
+      closed: await loadPixooImage(NUKI_IMAGE_PATHS.closed),
+    };
 
     this._cfg = this._mapSettings(context.settings.all());
     this._unsubscribeSettings = context.settings.subscribe((values) => {
@@ -1206,8 +1158,28 @@ export default {
     // NUKI col 0 — two circles stacked: VR (front) top, Keller (basement) bottom.
     // Row 0 = y 8..25 (18px). r=1 colored + r=2+r=3 gray outline. Top cy=13, bottom cy=21.
     const cx0 = COLS[0].cx;
-    drawNukiCircle(device, cx0, ROWS[0].y0 + 4, s.nukiVrState, s.nukiVrAlive); // top cy=12
-    drawNukiCircle(device, cx0, ROWS[0].y1 - 4, s.nukiKeState, s.nukiKeAlive); // bottom cy=21
+    drawNukiIcon(
+      device,
+      s.nukiVrState === null
+        ? this._nukiImages.unknown
+        : s.nukiVrState === "unlocked"
+          ? this._nukiImages.open
+          : this._nukiImages.closed,
+      cx0,
+      ROWS[0].y0 + 4,
+      s.nukiVrAlive,
+    );
+    drawNukiIcon(
+      device,
+      s.nukiKeState === null
+        ? this._nukiImages.unknown
+        : s.nukiKeState === "unlocked"
+          ? this._nukiImages.open
+          : this._nukiImages.closed,
+      cx0,
+      ROWS[0].y1 - 4,
+      s.nukiKeAlive,
+    );
 
     // TERRACE dual sliding door (col 1) — error if z2m reports offline
     drawSlidingDoor(device, COLS[1].cx, ROWS[0].cy, s.terraceOpen);

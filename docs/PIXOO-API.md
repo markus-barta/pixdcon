@@ -99,17 +99,24 @@ Documented here since these patterns recur in scene development.
 
 ### Nuki lock icon
 
-Two layers (back→front):
+Now uses transparent PNG overlays plus a separate offline dot.
 
-1. **Gray disk r=4** — represents the physical lock body. Always drawn full circle regardless of open/closed state.
-   - Cardinal edge pixels `(±4,0)(0,±4)` overdrawn at 50% brightness → soft antialiased edge.
-2. **5×5 colored ring** — represents the LED indicator on the lock face.
-   - Locked/transitioning/unknown: full ring drawn.
-   - Unlocked: bottom arc only (`dy >= 0`) — shackle open at top.
-   - Color: red=locked, green=unlocked, amber=transitioning, dark amber=unknown.
-3. **Offline dot** — two amber pixels to the right of the lock body.
+1. **PNG overlay** — cached 8×8 transparent asset, alpha-blended onto the framebuffer.
+   - `assets/pixoo/nuki-open.png`
+   - `assets/pixoo/nuki-closed.png`
+   - `assets/pixoo/nuki-stale.png`
+2. **Offline dot** — two amber pixels to the right of the lock body.
    - Shown only when ICMP ping to the lock IP currently fails.
    - Does not replace the last known MQTT lock state.
+
+Implementation notes:
+
+- Images are decoded with `sharp` in `lib/pixoo-image.js`
+- PNGs are cached in memory after first load
+- alpha handling is explicit:
+  - `alpha = 0` -> skip pixel
+  - `alpha = 255` -> overwrite pixel
+  - partial alpha -> blend onto current framebuffer
 
 This means the Pixoo now separates:
 

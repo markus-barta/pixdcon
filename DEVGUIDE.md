@@ -42,6 +42,13 @@ config.json
 
 **Simple Scene Contract:**
 
+**Pixoo image overlays:**
+
+- Pixoo scenes can draw transparent PNG overlays by decoding them with `sharp`
+- helper: `lib/pixoo-image.js`
+- intended use: preload/cache small pixel-art assets in `init()`, then alpha-blit during `render()`
+- current production use: `scenes/pixoo/home.js` uses 8×8 PNG assets for Nuki icons while keeping the separate offline dot logic
+
 ```javascript
 export default {
   name: "my-scene",
