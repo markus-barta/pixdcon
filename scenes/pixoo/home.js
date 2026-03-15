@@ -166,7 +166,7 @@ function drawErrorMark(d, col, row, frame) {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const NUKI_IMAGE_PATHS = {
-  unknown: resolve(__dirname, "../../assets/pixoo/nuki-stale.png"),
+  unknown: resolve(__dirname, "../../assets/pixoo/nuki-unknown.png"),
   open: resolve(__dirname, "../../assets/pixoo/nuki-open.png"),
   closed: resolve(__dirname, "../../assets/pixoo/nuki-closed.png"),
   transition: resolve(__dirname, "../../assets/pixoo/nuki-transition.png"),
@@ -182,6 +182,12 @@ const MEDIA_IMAGE_PATHS = {
 const DOOR_IMAGE_PATHS = {
   closed: resolve(__dirname, "../../assets/pixoo/sliding-door-closed.png"),
   open: resolve(__dirname, "../../assets/pixoo/sliding-door-open.png"),
+  unknown: resolve(__dirname, "../../assets/pixoo/sliding-door-unknown.png"),
+};
+const SKYLIGHT_IMAGE_PATHS = {
+  closed: resolve(__dirname, "../../assets/pixoo/skylight-closed.png"),
+  open: resolve(__dirname, "../../assets/pixoo/skylight-open.png"),
+  unknown: resolve(__dirname, "../../assets/pixoo/skylight-unknown.png"),
 };
 
 function drawNukiIcon(d, image, cx, cy, alive) {
@@ -219,61 +225,6 @@ function drawSyncboxStatusLine(d, cx, cy, mode) {
   }
   const [r, g, b] = mode === "standby" ? [235, 235, 235] : [50, 50, 50];
   hLine(d, cx - 1, cx + 1, cy + 9, r, g, b);
-}
-
-// ── Icon: Side-by-side skylights (W13 left, W14 right) ───────────────────────
-//
-// Each tile: 4×6px outer (3×4 inner fill). 1px gap between tiles.
-// Frame: mid-gray outline. Fill: dark red (closed) / bright green (open).
-// Open state: panel height reduced by 1px (tilts up), gray shadow row at bottom.
-// Unknown: fill uses C.unknown color.
-//
-// Layout centered at (cx, cy):
-//   W13: x = cx-5..cx-1   W14: x = cx+1..cx+5
-//   y   = cy-3..cy+2  (6px tall closed, 5px panel + 1px shadow when open)
-
-function drawSideBySideSkylights(d, cx, cy, leftOpen, rightOpen) {
-  // Tile x offsets: left tile starts at cx-5, right tile at cx+1
-  const tiles = [
-    { x0: cx - 5, state: leftOpen },
-    { x0: cx + 1, state: rightOpen },
-  ];
-  const y0 = cy - 3; // top of tile
-  const TW = 4; // tile outer width  (0..3 → 4px)
-  const TH = 6; // tile outer height (0..5 → 6px)
-  const [fr, fg, fb] = C.frameGray;
-  const [sr, sg, sb] = C.skyShadow;
-
-  for (const { x0, state } of tiles) {
-    const isOpen = state === true;
-    const isUnknown = state === null;
-    const [ir, ig, ib] = isUnknown
-      ? C.unknown
-      : isOpen
-        ? C.skyFillOpen
-        : C.skyFill;
-
-    if (!isOpen) {
-      // Full 4×6 tile
-      hLine(d, x0, x0 + TW - 1, y0, fr, fg, fb); // top
-      hLine(d, x0, x0 + TW - 1, y0 + TH - 1, fr, fg, fb); // bottom
-      vLine(d, x0, y0, y0 + TH - 1, fr, fg, fb); // left
-      vLine(d, x0 + TW - 1, y0, y0 + TH - 1, fr, fg, fb); // right
-      // Fill inner 2×4
-      fillRect(d, x0 + 1, y0 + 1, TW - 2, TH - 2, ir, ig, ib);
-    } else {
-      // Panel is 1px shorter (tilted open) — 4×5, shadow row at bottom
-      const ph = TH - 1; // panel height = 5
-      hLine(d, x0, x0 + TW - 1, y0, fr, fg, fb); // top
-      hLine(d, x0, x0 + TW - 1, y0 + ph - 1, fr, fg, fb); // bottom of panel
-      vLine(d, x0, y0, y0 + ph - 1, fr, fg, fb); // left
-      vLine(d, x0 + TW - 1, y0, y0 + ph - 1, fr, fg, fb); // right
-      // Fill inner 2×3
-      fillRect(d, x0 + 1, y0 + 1, TW - 2, ph - 2, ir, ig, ib);
-      // Shadow row (3D tilt effect) — where bottom frame was
-      hLine(d, x0 + 1, x0 + TW - 2, y0 + TH - 1, sr, sg, sb);
-    }
-  }
 }
 
 // ── Cell: Battery — horizontal bar (SOC% above) ───────────────────────────────
@@ -816,6 +767,12 @@ export default {
     this._doorImages = {
       closed: await loadPixooImage(DOOR_IMAGE_PATHS.closed),
       open: await loadPixooImage(DOOR_IMAGE_PATHS.open),
+      unknown: await loadPixooImage(DOOR_IMAGE_PATHS.unknown),
+    };
+    this._skylightImages = {
+      closed: await loadPixooImage(SKYLIGHT_IMAGE_PATHS.closed),
+      open: await loadPixooImage(SKYLIGHT_IMAGE_PATHS.open),
+      unknown: await loadPixooImage(SKYLIGHT_IMAGE_PATHS.unknown),
     };
 
     this._cfg = this._mapSettings(context.settings.all());
@@ -1191,25 +1148,24 @@ export default {
       s.nukiKeAlive,
     );
 
-    // TERRACE dual sliding door (col 1) — error if z2m reports offline
-    drawPixooImage(
-      device,
-      s.terraceOpen ? this._doorImages.open : this._doorImages.closed,
-      22,
-      8,
-    );
-    if (s.terraceOnline === false) drawErrorMark(device, 1, 0, this._frame);
+    // TERRACE dual sliding door (col 1)
+    const doorImg =
+      s.terraceOpen === null
+        ? this._doorImages.unknown
+        : s.terraceOpen
+          ? this._doorImages.open
+          : this._doorImages.closed;
+    drawPixooImage(device, doorImg, 22, 8);
 
-    // W13 + W14 side-by-side skylights (col 2) — error if either is offline
-    drawSideBySideSkylights(
-      device,
-      COLS[2].cx,
-      ROWS[0].cy,
-      s.w13Open,
-      s.w14Open,
-    );
-    if (s.w13Online === false || s.w14Online === false)
-      drawErrorMark(device, 2, 0, this._frame);
+    // W13 + W14 side-by-side skylights (col 2) — 8px wide, 2px gap
+    const skyImg = (state) =>
+      state === null
+        ? this._skylightImages.unknown
+        : state
+          ? this._skylightImages.open
+          : this._skylightImages.closed;
+    drawPixooImage(device, skyImg(s.w13Open), 45, 17);
+    drawPixooImage(device, skyImg(s.w14Open), 55, 17);
 
     // ── Row 1: Energy ────────────────────────────────────────────────────────
 
