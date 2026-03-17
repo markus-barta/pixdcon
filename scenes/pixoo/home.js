@@ -263,7 +263,7 @@ async function drawBattery(d, cx, cy, pct, state, frame) {
   const x0 = cx - Math.floor(BAR_W / 2);
   const barY = cy + 2; // moved down 2px
 
-  const BORDER = [35, 35, 35];
+  const BORDER = [90, 90, 90];
   const fillX0 = x0 + 1;
   const filledPx =
     pct === null ? 0 : Math.max(0, Math.round((pct / 100) * INNER));
@@ -283,22 +283,24 @@ async function drawBattery(d, cx, cy, pct, state, frame) {
     vLine(d, fillX0 + i, barY + 1, barY + BAR_H - 2, r, g, b);
   }
 
-  // Discharge animation: bright pixel right→left through filled inner area
-  if (isDischarging && filledPx > 1) {
+  // Animation: 30% white overlay sweeping through filled area
+  // Discharge: right→left. Charge: left→right.
+  const isCharging = state === "charging";
+  if ((isDischarging || isCharging) && filledPx > 1) {
     const phase = Math.floor(frame / 2) % filledPx;
-    const drainX = fillX0 + filledPx - 1 - phase;
-    const base = _gradientColor(drainX - fillX0, INNER);
-    const [hr, hg, hb] = base.map((v) => Math.min(255, (v * 1.7) | 0));
-    vLine(d, drainX, barY + 1, barY + BAR_H - 2, hr, hg, hb);
+    const animX = isCharging ? fillX0 + phase : fillX0 + filledPx - 1 - phase;
+    const base = _gradientColor(animX - fillX0, INNER).map((v) =>
+      Math.round(v * dim),
+    );
+    const [hr, hg, hb] = base.map((v) =>
+      Math.min(255, Math.round(v + (255 - v) * 0.3)),
+    );
+    vLine(d, animX, barY + 1, barY + BAR_H - 2, hr, hg, hb);
   }
 
   // Nub on right: 2px tall, centered (rows 2+3 of 0-indexed 0..5)
-  const nubColor =
-    filledPx >= INNER
-      ? _gradientColor(INNER - 1, INNER).map((v) => Math.round(v * dim))
-      : BORDER;
-  d._setPixel(x0 + BAR_W, barY + 2, ...nubColor);
-  d._setPixel(x0 + BAR_W, barY + 3, ...nubColor);
+  d._setPixel(x0 + BAR_W, barY + 2, ...BORDER);
+  d._setPixel(x0 + BAR_W, barY + 3, ...BORDER);
 
   // % text: color matches current SOC gradient position; 1px higher than bar
   if (pct !== null) {
@@ -314,25 +316,25 @@ async function drawBattery(d, cx, cy, pct, state, frame) {
   }
 }
 
-// ── Arrow glyphs (4px each, 3px wide) ────────────────────────────────────────
+// ── PV/Cons glyphs (3px wide) ─────────────────────────────────────────────────
 //
-// Up  (top-aligned):   . X .    row y
-//                      X X X    row y+1
-// Down (bot-aligned):  X X X    row y+3
-//                      . X .    row y+4
+// Plus (production):   . X .    row y+1    (shifted +1px down vs old arrow)
+//                      X X X    row y+2
+//                      . X .    row y+3
+// Minus (consumption): X X X    row y+2    (shifted -1px up vs old arrow)
 
-function drawUpArrow(d, x0, y, r, g, b) {
-  d._setPixel(x0 + 1, y, r, g, b);
-  d._setPixel(x0, y + 1, r, g, b);
+function drawPlus(d, x0, y, r, g, b) {
   d._setPixel(x0 + 1, y + 1, r, g, b);
-  d._setPixel(x0 + 2, y + 1, r, g, b);
+  d._setPixel(x0, y + 2, r, g, b);
+  d._setPixel(x0 + 1, y + 2, r, g, b);
+  d._setPixel(x0 + 2, y + 2, r, g, b);
+  d._setPixel(x0 + 1, y + 3, r, g, b);
 }
 
-function drawDownArrow(d, x0, y, r, g, b) {
-  d._setPixel(x0, y + 3, r, g, b);
-  d._setPixel(x0 + 1, y + 3, r, g, b);
-  d._setPixel(x0 + 2, y + 3, r, g, b);
-  d._setPixel(x0 + 1, y + 4, r, g, b);
+function drawMinus(d, x0, y, r, g, b) {
+  d._setPixel(x0, y + 2, r, g, b);
+  d._setPixel(x0 + 1, y + 2, r, g, b);
+  d._setPixel(x0 + 2, y + 2, r, g, b);
 }
 
 // ── Tight fractional kW renderer ──────────────────────────────────────────────
@@ -382,14 +384,14 @@ async function drawPvCons(d, cx, cy, productionW, consumptionW) {
 
   // Production: grey if 0/null (no sun), bright yellow if generating
   const pvColor = !productionW ? C.dimWhite : [255, 220, 0];
-  drawUpArrow(d, ax, cy - 6, ...pvColor);
+  drawPlus(d, ax, cy - 6, ...pvColor);
   await drawKwTight(d, cx + 1, cy - 6, productionW, pvColor);
 
   // Consumption: dark-red → red → bright-red by kW tier
   const cons = consumptionW ?? 0;
   const consColor =
     cons < 500 ? [120, 20, 20] : cons <= 1000 ? [200, 40, 40] : [255, 60, 60];
-  drawDownArrow(d, ax, cy + 2, ...consColor);
+  drawMinus(d, ax, cy + 2, ...consColor);
   await drawKwTight(d, cx + 1, cy + 2, consumptionW, consColor);
 }
 
@@ -1164,8 +1166,8 @@ export default {
         : state
           ? this._skylightImages.open
           : this._skylightImages.closed;
-    drawPixooImage(device, skyImg(s.w13Open), 45, 17);
-    drawPixooImage(device, skyImg(s.w14Open), 55, 17);
+    drawPixooImage(device, skyImg(s.w13Open), 45, 13);
+    drawPixooImage(device, skyImg(s.w14Open), 55, 13);
 
     // ── Row 1: Energy ────────────────────────────────────────────────────────
 
