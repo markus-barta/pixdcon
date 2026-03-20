@@ -140,6 +140,10 @@ export class RenderLoop {
     const prev = this._mode;
     this._mode = mode;
     this.logger.info(`[RenderLoop:${this.deviceName}] Mode: ${prev} → ${mode}`);
+    // play→play: force device re-init on next frame (recovery from silent failures)
+    if (mode === "play" && prev === "play") {
+      this._reinitRequested = true;
+    }
     // Wake any current sleep so the mode takes effect immediately
     if (this._sleepWake) {
       this._sleepWake();
@@ -293,6 +297,16 @@ export class RenderLoop {
         await this._waitForModeChange();
         if (this._mode === "play") await this._applyPlay();
         break; // restart outer scene loop
+      }
+
+      // play→play recovery: re-init device, then restart scene loop
+      if (this._reinitRequested) {
+        this._reinitRequested = false;
+        this.logger.info(
+          `[RenderLoop:${this.deviceName}] Re-init requested (play→play recovery)`,
+        );
+        await this._applyPlay();
+        break; // restart outer scene loop with fresh state
       }
 
       const frameStart = Date.now();
