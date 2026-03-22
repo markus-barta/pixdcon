@@ -29,7 +29,7 @@ export class RenderLoop {
   /**
    * @param {Object}      driver      - Device driver (UlanziDriver or compatible)
    * @param {SceneLoader} sceneLoader - Scene loader instance
-   * @param {string[]}    scenes      - Ordered array of scene names
+   * @param {string}      scene       - Active scene name (or builtin:xxx key)
    * @param {Object}      options
    * @param {Object}      options.logger            - Logger instance
    * @param {string}      options.deviceName        - Device name for log context
@@ -45,10 +45,10 @@ export class RenderLoop {
    *   }
    * @param {number}      [options.maxPowerCycles=10] - Give up after this many failed cycles
    */
-  constructor(driver, sceneLoader, scenes, options = {}) {
+  constructor(driver, sceneLoader, scene, options = {}) {
     this.driver = driver;
     this.sceneLoader = sceneLoader;
-    this.scenes = (scenes || []).filter(Boolean);
+    this.scene = scene || null;
     this.logger = options.logger || console;
     this.deviceName = options.deviceName || "unknown";
     this.mqtt = options.mqttService || null;
@@ -64,7 +64,6 @@ export class RenderLoop {
 
     // State
     this.running = false;
-    this.currentIndex = 0;
 
     // Error / backoff tracking
     this.consecutiveErrors = 0;
@@ -90,27 +89,104 @@ export class RenderLoop {
    * Never throws — all errors are caught and handled internally.
    */
   async start() {
-    if (this.scenes.length === 0) {
+    if (!this.scene) {
       this.logger.warn(
-        `[RenderLoop:${this.deviceName}] No scenes configured — idle`,
+        `[RenderLoop:${this.deviceName}] No scene configured — idle`,
       );
       return;
     }
 
     this.running = true;
     this.logger.info(
-      `[RenderLoop:${this.deviceName}] Started with scenes: [${this.scenes.join(", ")}]`,
+      `[RenderLoop:${this.deviceName}] Started with scene: ${this.scene}`,
     );
 
     while (this.running) {
-      const sceneName = this.scenes[this.currentIndex];
-      await this._runScene(sceneName);
-
-      // Advance to next scene only when no active errors
-      // (retry same scene on failure so transient errors don't skip scenes)
-      if (this.running && this.consecutiveErrors === 0) {
-        this.currentIndex = (this.currentIndex + 1) % this.scenes.length;
+      if (this.scene && this.scene.startsWith("builtin:")) {
+        await this._runBuiltinMode(this.scene);
+      } else if (this.scene) {
+        await this._runScene(this.scene);
+      } else {
+        // No scene — wait for one to be set
+        await this._waitForWakeup();
       }
+    }
+  }
+
+  /**
+   * Run a built-in device mode (Pixoo channel or Ulanzi app).
+   * Sleeps until woken by mode/scene change or stop.
+   */
+  async _runBuiltinMode(modeKey) {
+    this.currentScene = modeKey;
+    const mode = modeKey.replace("builtin:", "");
+
+    try {
+      if (!this.driver.initialized) {
+        const ok = typeof this.driver.initialize === "function"
+          ? await this.driver.initialize()
+          : true;
+        if (!ok) throw new Error("Driver init failed");
+      }
+
+      // Pixoo built-in channels
+      if (typeof this.driver.setChannel === "function") {
+        if (mode === "black") {
+          await this.driver.setScreen(false);
+        } else {
+          await this.driver.setScreen(true);
+          const channels = { clock: 0, cloud: 1, visualizer: 2, animation: 4 };
+          if (channels[mode] !== undefined) {
+            await this.driver.setChannel(channels[mode]);
+          }
+        }
+      }
+
+      // Ulanzi built-in apps
+      if (typeof this.driver.switchToApp === "function") {
+        const apps = { time: "Time", date: "Date", temp: "Temperature", humidity: "Humidity", battery: "Battery" };
+        if (apps[mode]) {
+          await this.driver.switchToApp(apps[mode]);
+        }
+      }
+
+      this.consecutiveErrors = 0;
+      this.currentBackoff = this.initialBackoff;
+      this.logger.info(`[RenderLoop:${this.deviceName}] Built-in mode active: ${mode}`);
+
+      // Sleep until mode changes or scene changes — no active rendering needed
+      await this._waitForWakeup();
+
+    } catch (err) {
+      this.consecutiveErrors++;
+      const wait = Math.min(this.currentBackoff, this.maxBackoff);
+      this.logger.warn(
+        `[RenderLoop:${this.deviceName}] Built-in mode "${mode}" failed: ${err.message}. Retry in ${wait}ms`,
+      );
+      this.currentBackoff = Math.min(this.currentBackoff * 2, this.maxBackoff);
+      await this._sleep(wait);
+    }
+  }
+
+  /** Sleep indefinitely until woken by mode change, scene change, or stop. */
+  _waitForWakeup() {
+    return new Promise((resolve) => {
+      this._modeChanged = resolve;
+    });
+  }
+
+  /** Change the active scene at runtime. */
+  setScene(scene) {
+    this.scene = scene || null;
+    this.logger.info(`[RenderLoop:${this.deviceName}] Scene changed to: ${this.scene}`);
+    // Wake any current sleep so the new scene takes effect immediately
+    if (this._modeChanged) {
+      this._modeChanged();
+      this._modeChanged = null;
+    }
+    if (this._sleepWake) {
+      this._sleepWake();
+      this._sleepWake = null;
     }
   }
 
@@ -156,11 +232,9 @@ export class RenderLoop {
 
   // ---------------------------------------------------------------------------
 
-  /** Returns a promise that resolves on the next setMode() or stop() call. */
+  /** Returns a promise that resolves on the next setMode() or stop() call. Alias for _waitForWakeup. */
   _waitForModeChange() {
-    return new Promise((resolve) => {
-      this._modeChanged = resolve;
-    });
+    return this._waitForWakeup();
   }
 
   async _applyStop() {
@@ -433,6 +507,7 @@ export class RenderLoop {
     return {
       running: this.running,
       mode: this._mode,
+      scene: this.scene,
       currentScene: this.currentScene,
       frameCount: this.frameCount,
       consecutiveErrors: this.consecutiveErrors,

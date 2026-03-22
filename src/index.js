@@ -163,7 +163,7 @@ async function startDevice(device) {
     if (mqttService) mqttService.updateDeviceStatus(device.name, "ok");
   }
 
-  const loop = new RenderLoop(driver, sceneLoader, device.scenes, {
+  const loop = new RenderLoop(driver, sceneLoader, device.scene, {
     logger,
     deviceName: device.name,
     mqttService,
@@ -404,6 +404,7 @@ async function main() {
     getSceneMetadata: () => sceneMetadata,
     getSceneSettingsState: () => sceneSettingsService?.getUiState() || {},
     getFramePreviews: () => framePreviewStore?.list() || {},
+    getRenderLoops: () => renderLoops,
     getDeviceModes: () => {
       const modes = {};
       for (const { device, loop } of renderLoops) {
