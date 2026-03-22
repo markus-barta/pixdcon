@@ -407,9 +407,8 @@ export default {
       this._settings = values;
     });
 
-    // Set brightness
-    const bri = this._settings?.brightness ?? 50;
-    await context.device.setBrightness(bri);
+    // Brightness is set in render() via device (not available in init context)
+    this._needsBrightnessSet = true;
 
     // Subscribe to funkeykid display topic
     context.mqtt.subscribe(MQTT_TOPIC, (msg) => {
@@ -433,6 +432,13 @@ export default {
     const scale = settings.letter_scale || 3;
     const now = Date.now();
     const isIdle = !this._lastKeypressAt || (now - this._lastKeypressAt > idleTimeout);
+
+    // Set brightness once on first render (device not available in init)
+    if (this._needsBrightnessSet) {
+      const bri = settings.brightness ?? 50;
+      await device.setBrightness(bri);
+      this._needsBrightnessSet = false;
+    }
 
     await device.clear();
 
