@@ -1,4 +1,4 @@
-# pidicon-light — Settings & Debug Reference
+# pixdcon — Settings & Debug Reference
 
 All topics are **retained** — they survive container restarts and stay active until cleared.
 
@@ -9,7 +9,7 @@ All topics are **retained** — they survive container restarts and stay active 
 
 ## Settings Topics
 
-Device+scene scoped: `pidicon-light/<device>/<scene>/settings/<key>`
+Device+scene scoped: `pixdcon/<device>/<scene>/settings/<key>`
 
 ### Home scene (pixoo-159)
 
@@ -18,23 +18,23 @@ Curve: lerp −6°→10° = night→day. Floor=1 (never 0). 5-min heartbeat re-a
 
 | Topic                                             | Default | Range | Description                  |
 | ------------------------------------------------- | ------- | ----- | ---------------------------- |
-| `pidicon-light/pixoo-159/home/settings/bri_day`   | `100`   | 1–100 | Brightness at elevation ≥10° |
-| `pidicon-light/pixoo-159/home/settings/bri_night` | `7`     | 1–100 | Brightness at elevation ≤−6° |
+| `pixdcon/pixoo-159/home/settings/bri_day`   | `100`   | 1–100 | Brightness at elevation ≥10° |
+| `pixdcon/pixoo-159/home/settings/bri_night` | `7`     | 1–100 | Brightness at elevation ≤−6° |
 
 ```bash
 # Set day brightness to 80
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/pixoo-159/home/settings/bri_day' -m '80' -r
+  -t 'pixdcon/pixoo-159/home/settings/bri_day' -m '80' -r
 
 # Set night brightness to 5
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/pixoo-159/home/settings/bri_night' -m '5' -r
+  -t 'pixdcon/pixoo-159/home/settings/bri_night' -m '5' -r
 
 # Reset to defaults
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/pixoo-159/home/settings/bri_day' -m '' -r
+  -t 'pixdcon/pixoo-159/home/settings/bri_day' -m '' -r
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/pixoo-159/home/settings/bri_night' -m '' -r
+  -t 'pixdcon/pixoo-159/home/settings/bri_night' -m '' -r
 ```
 
 **Fallback chain (no MQTT data):**
@@ -47,48 +47,48 @@ mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
 
 | Topic                                                                    | Default | Range          | Description                                   |
 | ------------------------------------------------------------------------ | ------- | -------------- | --------------------------------------------- |
-| `pidicon-light/ulanzi-56/clock_with_homestats/settings/day_start_hour`   | `7`     | 0–23           | Hour day mode begins                          |
-| `pidicon-light/ulanzi-56/clock_with_homestats/settings/night_start_hour` | `19`    | 0–23           | Hour night mode begins                        |
-| `pidicon-light/ulanzi-56/clock_with_homestats/settings/bri_day`          | `20`    | 1–255          | Brightness in day mode                        |
-| `pidicon-light/ulanzi-56/clock_with_homestats/settings/bri_night`        | `8`     | 1–255          | Brightness in night mode                      |
-| `pidicon-light/ulanzi-56/clock_with_homestats/settings/show_seconds`     | `true`  | `true`/`false` | Show seconds in day mode (night always HH:MM) |
+| `pixdcon/ulanzi-56/clock_with_homestats/settings/day_start_hour`   | `7`     | 0–23           | Hour day mode begins                          |
+| `pixdcon/ulanzi-56/clock_with_homestats/settings/night_start_hour` | `19`    | 0–23           | Hour night mode begins                        |
+| `pixdcon/ulanzi-56/clock_with_homestats/settings/bri_day`          | `20`    | 1–255          | Brightness in day mode                        |
+| `pixdcon/ulanzi-56/clock_with_homestats/settings/bri_night`        | `8`     | 1–255          | Brightness in night mode                      |
+| `pixdcon/ulanzi-56/clock_with_homestats/settings/show_seconds`     | `true`  | `true`/`false` | Show seconds in day mode (night always HH:MM) |
 
 ### Settings curl commands
 
 ```bash
 # Set day start to 08:00
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/ulanzi-56/clock_with_homestats/settings/day_start_hour' -m '8' -r
+  -t 'pixdcon/ulanzi-56/clock_with_homestats/settings/day_start_hour' -m '8' -r
 
 # Set night start to 20:00
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/ulanzi-56/clock_with_homestats/settings/night_start_hour' -m '20' -r
+  -t 'pixdcon/ulanzi-56/clock_with_homestats/settings/night_start_hour' -m '20' -r
 
 # Set day brightness to 30
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/ulanzi-56/clock_with_homestats/settings/bri_day' -m '30' -r
+  -t 'pixdcon/ulanzi-56/clock_with_homestats/settings/bri_day' -m '30' -r
 
 # Set night brightness to 5
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/ulanzi-56/clock_with_homestats/settings/bri_night' -m '5' -r
+  -t 'pixdcon/ulanzi-56/clock_with_homestats/settings/bri_night' -m '5' -r
 
 # Reset to defaults (clear retained)
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/ulanzi-56/clock_with_homestats/settings/day_start_hour' -m '' -r
+  -t 'pixdcon/ulanzi-56/clock_with_homestats/settings/day_start_hour' -m '' -r
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/ulanzi-56/clock_with_homestats/settings/night_start_hour' -m '' -r
+  -t 'pixdcon/ulanzi-56/clock_with_homestats/settings/night_start_hour' -m '' -r
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/ulanzi-56/clock_with_homestats/settings/bri_day' -m '' -r
+  -t 'pixdcon/ulanzi-56/clock_with_homestats/settings/bri_day' -m '' -r
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/ulanzi-56/clock_with_homestats/settings/bri_night' -m '' -r
+  -t 'pixdcon/ulanzi-56/clock_with_homestats/settings/bri_night' -m '' -r
 
 # Hide seconds in day mode (HH:MM only, shifted right like night mode)
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/ulanzi-56/clock_with_homestats/settings/show_seconds' -m 'false' -r
+  -t 'pixdcon/ulanzi-56/clock_with_homestats/settings/show_seconds' -m 'false' -r
 
 # Re-enable seconds
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/ulanzi-56/clock_with_homestats/settings/show_seconds' -m 'true' -r
+  -t 'pixdcon/ulanzi-56/clock_with_homestats/settings/show_seconds' -m 'true' -r
 ```
 
 ---
@@ -97,7 +97,7 @@ mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
 
 Per-device render loop control. Topic is **retained** — state survives restarts.
 
-`home/hsb1/pidicon-light/<device>/mode`
+`home/hsb1/pixdcon/<device>/mode`
 
 | Payload | Behaviour                                                                               |
 | ------- | --------------------------------------------------------------------------------------- |
@@ -108,19 +108,19 @@ Per-device render loop control. Topic is **retained** — state survives restart
 ```bash
 # Pause pixoo (freeze last frame)
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'home/hsb1/pidicon-light/pixoo-159/mode' -m 'pause' -r
+  -t 'home/hsb1/pixdcon/pixoo-159/mode' -m 'pause' -r
 
 # Stop ulanzi (black screen + power off)
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'home/hsb1/pidicon-light/ulanzi-56/mode' -m 'stop' -r
+  -t 'home/hsb1/pixdcon/ulanzi-56/mode' -m 'stop' -r
 
 # Resume any device
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'home/hsb1/pidicon-light/ulanzi-56/mode' -m 'play' -r
+  -t 'home/hsb1/pixdcon/ulanzi-56/mode' -m 'play' -r
 
 # Clear retained (revert to play on next restart)
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'home/hsb1/pidicon-light/ulanzi-56/mode' -m '' -r
+  -t 'home/hsb1/pixdcon/ulanzi-56/mode' -m '' -r
 ```
 
 ---
@@ -132,56 +132,56 @@ Clear any override with empty payload `""` to revert to real/settings values.
 
 | Topic                               | Values                                        | Description                                                 |
 | ----------------------------------- | --------------------------------------------- | ----------------------------------------------------------- |
-| `pidicon-light/debug/mode_override` | `day` / `night` / `""`                        | Force day or night mode                                     |
-| `pidicon-light/debug/bri_override`  | `1–100` / `""`                                | Override brightness (beats settings). Pixoo range is 1–100. |
-| `pidicon-light/debug/battery_pct`   | `0–100` / `""`                                | Override battery SOC                                        |
-| `pidicon-light/debug/battery_state` | `charging` / `discharging` / `standby` / `""` | Override charge state                                       |
+| `pixdcon/debug/mode_override` | `day` / `night` / `""`                        | Force day or night mode                                     |
+| `pixdcon/debug/bri_override`  | `1–100` / `""`                                | Override brightness (beats settings). Pixoo range is 1–100. |
+| `pixdcon/debug/battery_pct`   | `0–100` / `""`                                | Override battery SOC                                        |
+| `pixdcon/debug/battery_state` | `charging` / `discharging` / `standby` / `""` | Override charge state                                       |
 
 ### Debug curl commands
 
 ```bash
 # Force night mode
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/debug/mode_override' -m 'night' -r
+  -t 'pixdcon/debug/mode_override' -m 'night' -r
 
 # Force day mode
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/debug/mode_override' -m 'day' -r
+  -t 'pixdcon/debug/mode_override' -m 'day' -r
 
 # Clear mode override (back to time-based)
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/debug/mode_override' -m '' -r
+  -t 'pixdcon/debug/mode_override' -m '' -r
 
 # Force brightness to 15
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/debug/bri_override' -m '15' -r
+  -t 'pixdcon/debug/bri_override' -m '15' -r
 
 # Clear brightness override
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/debug/bri_override' -m '' -r
+  -t 'pixdcon/debug/bri_override' -m '' -r
 
 # Set battery to 10% discharging (test red low battery)
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/debug/battery_pct' -m '10' -r
+  -t 'pixdcon/debug/battery_pct' -m '10' -r
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/debug/battery_state' -m 'discharging' -r
+  -t 'pixdcon/debug/battery_state' -m 'discharging' -r
 
 # Set battery to 80% charging (test green nub-top)
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/debug/battery_pct' -m '80' -r
+  -t 'pixdcon/debug/battery_pct' -m '80' -r
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/debug/battery_state' -m 'charging' -r
+  -t 'pixdcon/debug/battery_state' -m 'charging' -r
 
 # Clear all battery overrides
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/debug/battery_pct' -m '' -r
+  -t 'pixdcon/debug/battery_pct' -m '' -r
 mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-  -t 'pidicon-light/debug/battery_state' -m '' -r
+  -t 'pixdcon/debug/battery_state' -m '' -r
 
 # Clear ALL debug overrides at once
 for topic in mode_override bri_override battery_pct battery_state; do
   mosquitto_pub -h 192.168.1.101 -u smarthome -P PASS \
-    -t "pidicon-light/debug/$topic" -m '' -r
+    -t "pixdcon/debug/$topic" -m '' -r
 done
 ```
 
@@ -194,11 +194,11 @@ File is always the safe fallback. Overlay survives restarts. Cleared by empty pa
 
 **Merge priority:** `config.json` < blob overlay < granular overlay
 
-All topics are under `home/hsb1/pidicon-light/overlay/…`
+All topics are under `home/hsb1/pixdcon/overlay/…`
 
 ### Granular device topics
 
-`home/hsb1/pidicon-light/overlay/device/<name>/<field>`
+`home/hsb1/pixdcon/overlay/device/<name>/<field>`
 
 | Field     | Format            | Description                           |
 | --------- | ----------------- | ------------------------------------- |
@@ -208,23 +208,23 @@ All topics are under `home/hsb1/pidicon-light/overlay/…`
 
 ### Granular scene topics
 
-`home/hsb1/pidicon-light/overlay/scene/<key>/path`
+`home/hsb1/pixdcon/overlay/scene/<key>/path`
 
 ### Blob topic
 
-`home/hsb1/pidicon-light/overlay/blob` → full or partial config JSON
+`home/hsb1/pixdcon/overlay/blob` → full or partial config JSON
 
 Blob is applied before granular; granular wins. New devices via blob need `name`, `type`, `ip`.
 Granular topics cannot add new devices — only patch existing ones (from file or blob).
 
 ### Observable result
 
-`home/hsb1/pidicon-light/config/effective` — full merged config (retained, published on every reload)
+`home/hsb1/pixdcon/config/effective` — full merged config (retained, published on every reload)
 
 ```bash
 PASS=YOUR_PASS
 HOST=192.168.1.101
-BASE="home/hsb1/pidicon-light"
+BASE="home/hsb1/pixdcon"
 
 # --- Granular examples ---
 
@@ -342,11 +342,11 @@ The Ulanzi `clock_with_homestats` scene is different:
 
 **Symptom:** Row 0 icons (Nuki, terrace door, skylights) show amber/unknown color after container restart, even though the sensors are online and have retained messages on the broker.
 
-**Root cause:** pidicon-light uses a **single shared MQTT client** for all scenes. When `clock_with_homestats` and `home` both subscribe to e.g. `nuki/463F8F47/state`, the broker sees the topic already subscribed by this client and the second logical scene handler may miss retained replay.
+**Root cause:** pixdcon uses a **single shared MQTT client** for all scenes. When `clock_with_homestats` and `home` both subscribe to e.g. `nuki/463F8F47/state`, the broker sees the topic already subscribed by this client and the second logical scene handler may miss retained replay.
 
 **Additional bug found on 2026-03-14:** the self-heal logic correctly re-subscribed the topic, but it relied on a plain re-subscribe to trigger retained delivery again. In practice, the broker still had retained state (`nuki/463F8F47/state = 3` for VR), but `home` kept missing it and stayed `null`.
 
-**Final root cause found on 2026-03-14:** pidicon-light's wildcard subscription matcher supported `+` but not `#`. After changing `home.js` to subscribe to topic families like `nuki/463F8F47/#`, the broker delivered the retained message, but pidicon-light dropped it client-side because `_topicMatches()` returned `false` for `#` patterns.
+**Final root cause found on 2026-03-14:** pixdcon's wildcard subscription matcher supported `+` but not `#`. After changing `home.js` to subscribe to topic families like `nuki/463F8F47/#`, the broker delivered the retained message, but pixdcon dropped it client-side because `_topicMatches()` returned `false` for `#` patterns.
 
 This also explained why terrace / skylight contact sensors could remain stale in self-heal workflows when wildcard topic family subscriptions were used.
 
@@ -533,7 +533,7 @@ What was discovered live instead:
 
 - the broker **did** have retained state for `nuki/463F8F47/state`
 - external systems were therefore correct (`open`)
-- pidicon-light was wrong because multiple MQTT-layer bugs stacked together:
+- pixdcon was wrong because multiple MQTT-layer bugs stacked together:
   - retained replay was assumed, not forced
   - shared-topic ownership was fragile
   - shared-topic fan-out was fragile
@@ -557,10 +557,10 @@ mosquitto_sub -h 192.168.1.101 -u smarthome -P PASS \
   -t 'z2m/wz/contact/te-door' -C 1 -W 3
 
 # Check self-heal log lines
-ssh mba@hsb1.lan "docker logs pidicon-light 2>&1 | grep 'self-heal'"
+ssh mba@hsb1.lan "docker logs pixdcon 2>&1 | grep 'self-heal'"
 
 # Force scene hot-reload (copies current file, triggers reload)
-scp scenes/home.js mba@hsb1.lan:~/docker/mounts/pidicon-light/scenes/home.js
+scp scenes/home.js mba@hsb1.lan:~/docker/mounts/pixdcon/scenes/home.js
 ```
 
 **If broker has no retained message for a topic:** the sensor hasn't published since last broker restart. Open/close the sensor once to publish a new retained message.
@@ -620,7 +620,7 @@ Good next steps, in order:
    - expose `nukiVrState`, `nukiVrAlive`, `lastStateAt`, consecutive ping failures
    - easier debugging without reading container logs
 
-5. **Infrastructure fix outside pidicon-light**
+5. **Infrastructure fix outside pixdcon**
    - better AP placement / channel cleanup / RSSI investigation for `Vorraum`
    - because visualization improvements help diagnosis, but do not fix the RF problem itself
 

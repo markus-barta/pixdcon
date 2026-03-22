@@ -1,18 +1,18 @@
 services:
-  pidicon-light:
-    image: ghcr.io/markus-barta/pidicon-light:latest
-    container_name: pidicon-light
+  pixdcon:
+    image: ghcr.io/markus-barta/pixdcon:latest
+    container_name: pixdcon
     network_mode: host
     restart: unless-stopped
     environment:
       - TZ=Europe/Vienna
-      - PIDICON_CONFIG_PATH=/data/config.json
+      - PIXDCON_CONFIG_PATH=/data/config.json
     volumes:
-      - ./config.json:/data/config.json
-      - ./scenes:/data/scenes:ro
-      - ./generated-scenes:/data/generated-scenes
+      - ./config.json:/data/config.json                # rw — web UI saves settings
+      - ./scenes:/data/scenes                          # rw — editable scene files
+      - ./generated-scenes:/data/generated-scenes      # rw — cloned/detached scenes
     env_file:
-      - /home/mba/secrets/pidicon-light.env
+      - /home/mba/secrets/pixdcon.env
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
       - "com.centurylinklabs.watchtower.scope=weekly"

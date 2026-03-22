@@ -11,7 +11,7 @@
  *   2. After 10s idle → show bg image only (no text)
  *   3. No keypress ever → show last bg image or idle animation
  *
- * pidicon-light is SSOT — if user switches to another scene, this stops.
+ * pixdcon is SSOT — if user switches to another scene, this stops.
  */
 
 import { dirname, resolve } from "path";

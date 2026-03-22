@@ -182,7 +182,7 @@ export class RenderLoop {
         await this.driver.setPower(true);
       }
       if (this.currentScene && typeof this.driver.switchToApp === "function") {
-        await this.driver.switchToApp(this.driver.appName || "pidicon_light");
+        await this.driver.switchToApp(this.driver.appName || "pixdcon");
       }
     } catch (err) {
       this.logger.warn(

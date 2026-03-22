@@ -242,4 +242,4 @@ Example MQTT topics:
 ---
 
 **Last Updated:** 2026-03-01  
-**For pidicon-light development**
+**For pixdcon development**

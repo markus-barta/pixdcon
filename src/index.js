@@ -1,5 +1,5 @@
 /**
- * pidicon-light - Main entry point
+ * pixdcon - Main entry point
  * Config-file driven pixel display controller with MQTT monitoring
  */
 
@@ -71,7 +71,7 @@ async function initializeMqtt() {
     port: parseInt(process.env.MQTT_PORT || "1883", 10),
     user: process.env.MOSQUITTO_USER || "smarthome",
     pass: process.env.MOSQUITTO_PASS,
-    baseTopic: "home/hsb1/pidicon-light",
+    baseTopic: "home/hsb1/pixdcon",
     logger,
   };
 
@@ -104,7 +104,7 @@ function startScenesWatcher() {
       const names = sceneLoader.findScenesByFilename(filename);
       if (names.length === 0) {
         logger.debug(
-          `[pidicon-light] Scene file "${filename}" changed but no matching scene found`,
+          `[pixdcon] Scene file "${filename}" changed but no matching scene found`,
         );
         return;
       }
@@ -130,13 +130,13 @@ function startScenesWatcher() {
  */
 async function startDevice(device) {
   logger.info(
-    `[pidicon-light] Starting device: ${device.name} (${device.type} @ ${device.ip})`,
+    `[pixdcon] Starting device: ${device.name} (${device.type} @ ${device.ip})`,
   );
 
   let driver;
   if (device.type === "ulanzi") {
     driver = new UlanziDriver(device.ip, {
-      appName: `pidicon_${device.name}`,
+      appName: `pixdcon_${device.name}`,
       logger,
     });
   } else if (device.type === "pixoo") {
@@ -147,7 +147,7 @@ async function startDevice(device) {
     });
   } else {
     logger.warn(
-      `[pidicon-light] Unknown device type "${device.type}" — skipping ${device.name}`,
+      `[pixdcon] Unknown device type "${device.type}" — skipping ${device.name}`,
     );
     return null;
   }
@@ -155,7 +155,7 @@ async function startDevice(device) {
   const initialized = await driver.initialize();
   if (!initialized) {
     logger.warn(
-      `[pidicon-light] Device ${device.name} not reachable — will retry via render loop backoff`,
+      `[pixdcon] Device ${device.name} not reachable — will retry via render loop backoff`,
     );
     if (mqttService) mqttService.updateDeviceStatus(device.name, "unreachable");
     // Don't bail out — the render loop will keep retrying with backoff
@@ -191,7 +191,7 @@ async function startDevice(device) {
   // The only way it ever rejects is a truly unexpected throw — log and update MQTT.
   loop.start().catch((err) => {
     logger.error(
-      `[pidicon-light] Render loop for ${device.name} exited unexpectedly`,
+      `[pixdcon] Render loop for ${device.name} exited unexpectedly`,
       err,
     );
     if (mqttService) {
@@ -204,7 +204,7 @@ async function startDevice(device) {
 }
 
 async function stopAllDevices() {
-  logger.info(`[pidicon-light] Stopping ${renderLoops.length} device(s)...`);
+  logger.info(`[pixdcon] Stopping ${renderLoops.length} device(s)...`);
   for (const { loop, device } of renderLoops) {
     loop.stop();
     if (framePreviewStore) framePreviewStore.unregisterDevice(device.name);
@@ -221,7 +221,7 @@ async function stopAllDevices() {
  * Re-merges overlay with current baseConfig and restarts devices.
  */
 async function applyOverlayReload() {
-  logger.info("[pidicon-light] Overlay changed, applying effective config...");
+  logger.info("[pixdcon] Overlay changed, applying effective config...");
   try {
     effectiveConfig = configOverlay.merge(baseConfig);
 
@@ -249,10 +249,10 @@ async function applyOverlayReload() {
 
     if (mqttService) mqttService.publishConfig(effectiveConfig);
 
-    logger.info("[pidicon-light] Overlay reload complete");
+    logger.info("[pixdcon] Overlay reload complete");
   } catch (err) {
     logger.error(
-      "[pidicon-light] Overlay reload failed — keeping previous state",
+      "[pixdcon] Overlay reload failed — keeping previous state",
       err,
     );
   }
@@ -263,7 +263,7 @@ async function applyOverlayReload() {
  * Re-parses and validates before applying; errors leave the old config running.
  */
 async function reloadConfig(newConfigContent) {
-  logger.info("[pidicon-light] Config change detected, reloading...");
+  logger.info("[pixdcon] Config change detected, reloading...");
   try {
     // Validate before touching anything running
     const loader = new ConfigLoader(configPath);
@@ -298,10 +298,10 @@ async function reloadConfig(newConfigContent) {
 
     if (mqttService) mqttService.publishConfig(effectiveConfig);
 
-    logger.info("[pidicon-light] Config reloaded successfully");
+    logger.info("[pixdcon] Config reloaded successfully");
   } catch (error) {
     logger.error(
-      "[pidicon-light] Config reload failed — keeping previous state",
+      "[pixdcon] Config reload failed — keeping previous state",
       error,
     );
   }
@@ -309,7 +309,7 @@ async function reloadConfig(newConfigContent) {
 
 async function shutdown(signal) {
   logger.info(
-    `[pidicon-light] Received ${signal}, shutting down gracefully...`,
+    `[pixdcon] Received ${signal}, shutting down gracefully...`,
   );
 
   if (configWatcher) await configWatcher.stop();
@@ -329,16 +329,16 @@ async function shutdown(signal) {
 }
 
 async function main() {
-  logger.info("[pidicon-light] Starting...");
+  logger.info("[pixdcon] Starting...");
 
   // Resolve config path once; shared with reloadConfig() via module scope
   configPath =
-    process.env.PIDICON_CONFIG_PATH || join(__dirname, "../config.json");
+    process.env.PIXDCON_CONFIG_PATH || join(__dirname, "../config.json");
 
   const configLoader = new ConfigLoader(configPath);
   baseConfig = await configLoader.load();
   logger.info(
-    `[pidicon-light] Loaded config: ${baseConfig.devices.length} device(s), ${Object.keys(baseConfig.scenes).length} scene(s)`,
+    `[pixdcon] Loaded config: ${baseConfig.devices.length} device(s), ${Object.keys(baseConfig.scenes).length} scene(s)`,
   );
 
   // MQTT — optional; failures are non-fatal
@@ -414,10 +414,10 @@ async function main() {
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-  logger.info("[pidicon-light] Running. Send SIGINT or SIGTERM to stop.");
+  logger.info("[pixdcon] Running. Send SIGINT or SIGTERM to stop.");
 }
 
 main().catch((err) => {
-  logger.error("[pidicon-light] Fatal startup error", err);
+  logger.error("[pixdcon] Fatal startup error", err);
   process.exit(1);
 });

@@ -20,17 +20,17 @@
  * Brightness heartbeat: re-asserted every 5 min (guards missed transitions).
  *
  * ── Settings topics (device+scene scoped, retained) ─────────────────────────
- * pidicon-light/<device>/<scene>/settings/day_start_hour   default: 7
- * pidicon-light/<device>/<scene>/settings/night_start_hour default: 19
- * pidicon-light/<device>/<scene>/settings/bri_day          default: 20
- * pidicon-light/<device>/<scene>/settings/bri_night        default: 8
- * pidicon-light/<device>/<scene>/settings/show_seconds     default: true  ("false" → HH:MM + x5 offset)
+ * pixdcon/<device>/<scene>/settings/day_start_hour   default: 7
+ * pixdcon/<device>/<scene>/settings/night_start_hour default: 19
+ * pixdcon/<device>/<scene>/settings/bri_day          default: 20
+ * pixdcon/<device>/<scene>/settings/bri_night        default: 8
+ * pixdcon/<device>/<scene>/settings/show_seconds     default: true  ("false" → HH:MM + x5 offset)
  *
  * ── Debug override topics (global, retained, cleared with empty payload) ────
- * pidicon-light/debug/mode_override    "day" | "night" | ""
- * pidicon-light/debug/bri_override     1–255 | ""
- * pidicon-light/debug/battery_pct      0–100 | ""
- * pidicon-light/debug/battery_state    "charging" | "discharging" | "standby" | ""
+ * pixdcon/debug/mode_override    "day" | "night" | ""
+ * pixdcon/debug/bri_override     1–255 | ""
+ * pixdcon/debug/battery_pct      0–100 | ""
+ * pixdcon/debug/battery_state    "charging" | "discharging" | "standby" | ""
  *
  * ── Sensor source topics ────────────────────────────────────────────────────
  * homeassistant/lock/nuki_vr/state                                              → string
@@ -238,7 +238,7 @@ export default {
       return v === "" || v === "null" ? null : parser(v);
     };
 
-    context.mqtt.subscribe("pidicon-light/debug/mode_override", (msg) => {
+    context.mqtt.subscribe("pixdcon/debug/mode_override", (msg) => {
       const v = msg.trim().toLowerCase();
       this._debug.modeOverride = v === "day" || v === "night" ? v : null;
       this._lastBriSet = 0; // force brightness re-assert on mode change
@@ -247,7 +247,7 @@ export default {
       );
     });
 
-    context.mqtt.subscribe("pidicon-light/debug/bri_override", (msg) => {
+    context.mqtt.subscribe("pixdcon/debug/bri_override", (msg) => {
       this._debug.briOverride = clearable(msg, (v) => {
         const b = parseInt(v, 10);
         return !isNaN(b) && b >= 1 && b <= 255 ? b : null;
@@ -258,7 +258,7 @@ export default {
       );
     });
 
-    context.mqtt.subscribe("pidicon-light/debug/battery_pct", (msg) => {
+    context.mqtt.subscribe("pixdcon/debug/battery_pct", (msg) => {
       this._debug.batteryPct = clearable(msg, (v) => {
         const pct = parseFloat(v);
         return isNaN(pct) ? null : Math.max(0, Math.min(100, pct));
@@ -268,7 +268,7 @@ export default {
       );
     });
 
-    context.mqtt.subscribe("pidicon-light/debug/battery_state", (msg) => {
+    context.mqtt.subscribe("pixdcon/debug/battery_state", (msg) => {
       this._debug.batteryState = clearable(msg, (v) => v || null);
       context.logger.info(
         `[${this.name}] debug battery_state = ${this._debug.batteryState}`,

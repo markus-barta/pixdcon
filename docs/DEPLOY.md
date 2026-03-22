@@ -5,20 +5,31 @@
 | What       | Value                                       |
 | ---------- | ------------------------------------------- |
 | Host       | `hsb1` (SSH as `mba@hsb1`)                  |
-| Mount root | `~/docker/mounts/pidicon-light/`            |
+| Mount root | `~/docker/mounts/pixdcon/`            |
 | Compose    | `~/docker/docker-compose.yml`               |
-| Image      | `ghcr.io/markus-barta/pidicon-light:latest` |
+| Image      | `ghcr.io/markus-barta/pixdcon:latest` |
 
-## Volume mounts (in container)
+## Container vs. Host Mount
 
-| Host path                                | Container path                |
-| ---------------------------------------- | ----------------------------- |
-| `mounts/pidicon-light/config.json`       | `/data/config.json` (rw)      |
-| `mounts/pidicon-light/scenes/`           | `/app/scenes/` (ro)           |
-| `mounts/pidicon-light/generated-scenes/` | `/data/generated-scenes` (rw) |
+```
+Image (/app/)                     Host mount (/data/)
+├── src/                          ├── config.json          (rw)
+├── lib/                          ├── scenes/              (rw)
+├── node_modules/                 │   ├── ulanzi/
+└── (application code only)       │   └── pixoo/
+                                  └── generated-scenes/    (rw)
+```
 
-Scene paths in `config.json` use `/app/scenes/` — the mount overlay takes effect, so files in the host `scenes/` folder shadow the built-in image scenes.
-Generated or detached scene copies should use `./generated-scenes/<name>.js` so they persist across container recreates.
+- **Image** (`/app/`) = application code only. Changes require CI build + pull.
+- **Host mount** (`/data/`) = all user data. Changes hot-reload, no restart needed.
+
+| Host path                                       | Container path                  | Mode |
+| ------------------------------------------------ | ------------------------------- | ---- |
+| `mounts/pixdcon/config.json`               | `/data/config.json`             | rw   |
+| `mounts/pixdcon/scenes/`                   | `/data/scenes/`                 | rw   |
+| `mounts/pixdcon/generated-scenes/`         | `/data/generated-scenes/`       | rw   |
+
+Scene paths in `config.json` are **relative** to the config file (e.g. `./scenes/ulanzi/clock.js` resolves to `/data/scenes/ulanzi/clock.js` in the container).
 
 ---
 
@@ -27,33 +38,20 @@ Generated or detached scene copies should use `./generated-scenes/<name>.js` so 
 ### 1. Scene file changed (`scenes/*.js`)
 
 ```bash
-scp scenes/<name>.js mba@hsb1:~/docker/mounts/pidicon-light/scenes/
+scp scenes/pixoo/home.js mba@hsb1:~/docker/mounts/pixdcon/scenes/pixoo/home.js
 # ScenesWatcher detects the change and hot-reloads within seconds.
 # No container restart needed.
-```
-
-### 1b. PNG asset changed (`assets/pixoo/*.png`)
-
-Scenes reference PNG assets via paths that resolve relative to the **mounted scene file**, so
-assets must be synced to the host mount AND the image must be updated (since `assets/` is baked
-into the image as a fallback):
-
-```bash
-scp assets/pixoo/nuki-*.png mba@hsb1:~/docker/mounts/pidicon-light/assets/pixoo/
-# Also push + pull image so the new assets are baked in:
-git add assets/ && git commit -m "update assets" && git push
-ssh mba@hsb1 "cd ~/docker && docker compose pull pidicon-light && docker compose up -d pidicon-light"
 ```
 
 ### 2. Config changed (`config.json`)
 
 ```bash
-scp config.json mba@hsb1:~/docker/mounts/pidicon-light/config.json
+scp config.json mba@hsb1:~/docker/mounts/pixdcon/config.json
 ```
 
 ConfigWatcher picks it up automatically. No restart needed.
 
-Important: `config.json` must be mounted writable, because the web UI persists edits from inside the container.
+Config is mounted rw — the web UI can persist settings edits from inside the container.
 
 ### 3. Core code changed (`src/`, `lib/`, `package.json`, `Dockerfile`)
 
@@ -68,12 +66,27 @@ Watchtower (weekly scope) will pull and restart the container automatically.
 To deploy immediately without waiting for Watchtower:
 
 ```bash
-ssh mba@hsb1 "cd ~/docker && docker compose pull pidicon-light && docker compose up -d pidicon-light"
+ssh mba@hsb1 "cd ~/docker && docker compose pull pixdcon && docker compose up -d pixdcon"
 ```
 
 Workflow: `.github/workflows/build-and-push.yml`
-Image: `ghcr.io/markus-barta/pidicon-light:latest`
+Image: `ghcr.io/markus-barta/pixdcon:latest`
 Platforms: `linux/amd64`, `linux/arm64`
+
+---
+
+## Initial scene seeding
+
+On first deploy (or after adding a new scene), copy scene files from the repo to the host mount:
+
+```bash
+# Full sync (preserves directory structure):
+scp -r scenes/ulanzi/ mba@hsb1:~/docker/mounts/pixdcon/scenes/ulanzi/
+scp -r scenes/pixoo/ mba@hsb1:~/docker/mounts/pixdcon/scenes/pixoo/
+
+# Create generated-scenes dir if needed:
+ssh mba@hsb1 "mkdir -p ~/docker/mounts/pixdcon/generated-scenes"
+```
 
 ---
 
@@ -81,11 +94,11 @@ Platforms: `linux/amd64`, `linux/arm64`
 
 ```bash
 # Logs (live)
-ssh mba@hsb1 "docker logs -f pidicon-light"
+ssh mba@hsb1 "docker logs -f pixdcon"
 
 # Restart
-ssh mba@hsb1 "cd ~/docker && docker compose restart pidicon-light"
+ssh mba@hsb1 "cd ~/docker && docker compose restart pixdcon"
 
 # Container status
-ssh mba@hsb1 "docker ps | grep pidicon"
+ssh mba@hsb1 "docker ps | grep pixdcon"
 ```

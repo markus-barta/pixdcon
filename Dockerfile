@@ -13,7 +13,7 @@ COPY . .
 RUN mkdir -p /data
 
 # ---- Runtime defaults (all can be overridden in docker-compose) ----
-ENV PIDICON_CONFIG_PATH=/data/config.json \
+ENV PIXDCON_CONFIG_PATH=/data/config.json \
     MQTT_HOST=localhost \
     MQTT_PORT=1883 \
     MQTT_USER=smarthome \
@@ -25,6 +25,6 @@ EXPOSE 8080
 
 # Health check: verify the node process is running and the config file is readable
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD node -e "require('fs').accessSync(process.env.PIDICON_CONFIG_PATH || '/data/config.json', require('fs').constants.R_OK); process.exit(0);" || exit 1
+  CMD node -e "require('fs').accessSync(process.env.PIXDCON_CONFIG_PATH || '/data/config.json', require('fs').constants.R_OK); process.exit(0);" || exit 1
 
 CMD ["node", "src/index.js"]

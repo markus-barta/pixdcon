@@ -1,9 +1,11 @@
-# pidicon-light
+# pixdcon
 
-Minimalist pixel display controller for Ulanzi/AWTRIX 32×8 and Pixoo64 64×64 LED matrices.
+Pixel display controller for Ulanzi/AWTRIX 32×8 and Pixoo64 64×64 LED matrices.
 Config-file driven, web UI included, MQTT-connected, Docker-deployed.
 
-**Version:** 2.4.0 — running live on `hsb1`
+**Version:** 1.0.0 — running live on `hsb1`
+
+> Successor to pidicon (v3) and pidicon-light (v2). Fresh start, same hardware.
 
 ---
 
@@ -42,17 +44,16 @@ npm start
 ### Docker
 
 ```bash
-docker build -t pidicon-light:latest .
-docker run -d --name pidicon-light \
+docker build -t pixdcon:latest .
+docker run -d --name pixdcon \
   --network host \
   -e MOSQUITTO_HOST=192.168.1.101 \
   -e MOSQUITTO_USER=smarthome \
   -e MOSQUITTO_PASS=yourpassword \
   -v $(pwd)/config.json:/data/config.json \
-  -v $(pwd)/scenes:/app/scenes:ro \
+  -v $(pwd)/scenes:/data/scenes \
   -v $(pwd)/generated-scenes:/data/generated-scenes \
-  -v $(pwd)/assets:/app/assets:ro \
-  pidicon-light:latest
+  pixdcon:latest
 ```
 
 ---
@@ -96,12 +97,14 @@ docker run -d --name pidicon-light \
   ],
   "scenes": {
     "clock_with_homestats": {
-      "path": "/app/scenes/ulanzi/clock_with_homestats.js"
+      "path": "./scenes/ulanzi/clock_with_homestats.js"
     },
-    "home": { "path": "/app/scenes/pixoo/home.js" }
+    "home": { "path": "./scenes/pixoo/home.js" }
   }
 }
 ```
+
+Scene paths are relative to the config file. Locally: `./scenes/` → `./scenes/`. In Docker: `./scenes/` → `/data/scenes/`.
 
 ### Environment variables
 
@@ -160,7 +163,7 @@ export default {
 
 ## MQTT topics
 
-All pidicon-light topics are prefixed with `home/hsb1/pidicon-light/`:
+All pixdcon topics are prefixed with `home/hsb1/pixdcon/`:
 
 | Topic                         | Direction          | Description                             |
 | ----------------------------- | ------------------ | --------------------------------------- |
@@ -173,7 +176,7 @@ All pidicon-light topics are prefixed with `home/hsb1/pidicon-light/`:
 Scene settings overlay topics per device + scene:
 
 ```
-pidicon-light/<device>/<scene>/settings/<key>
+pixdcon/<device>/<scene>/settings/<key>
 ```
 
 ---
@@ -184,15 +187,15 @@ See `docs/DEPLOY.md` for the full deployment guide.
 
 ```bash
 # Logs
-ssh mba@hsb1 "docker logs -f pidicon-light"
+ssh mba@hsb1 "docker logs -f pixdcon"
 
 # Deploy after lib/src change (CI builds image):
 git push origin main
 gh run watch --exit-status
-ssh mba@hsb1 "cd ~/docker && docker compose pull pidicon-light && docker compose up -d pidicon-light"
+ssh mba@hsb1 "cd ~/docker && docker compose pull pixdcon && docker compose up -d pixdcon"
 
 # Deploy scene file change only (hot-reload, no restart):
-scp scenes/pixoo/home.js mba@hsb1:~/docker/mounts/pidicon-light/scenes/pixoo/home.js
+scp scenes/pixoo/home.js mba@hsb1:~/docker/mounts/pixdcon/scenes/pixoo/home.js
 ```
 
 ---

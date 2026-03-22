@@ -1,7 +1,7 @@
 {
-  "name": "pidicon-light",
-  "version": "2.4.0",
-  "description": "Minimalist pixel display controller - config-file driven, web UI",
+  "name": "pixdcon",
+  "version": "1.0.0",
+  "description": "Pixel display controller for AWTRIX/Ulanzi + Pixoo64 LED matrices",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

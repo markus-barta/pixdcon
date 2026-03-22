@@ -34,7 +34,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/markus-barta/pidicon-light
+          images: ghcr.io/markus-barta/pixdcon
           tags: |
             # latest on every push to main
             type=raw,value=latest,enable={{is_default_branch}}

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Build and push pidicon-light Docker image to GHCR
+# Build and push pixdcon Docker image to GHCR
 #
 # USAGE: ./scripts/build-and-push.sh [TAG]
 # EXAMPLES:
@@ -19,7 +19,7 @@ cd "$ROOT_DIR"
 
 # Get version from package.json or use latest
 VERSION="${1:-latest}"
-IMAGE="ghcr.io/markus-barta/pidicon-light"
+IMAGE="ghcr.io/markus-barta/pixdcon"
 
 echo "[build-and-push] Building ${IMAGE}:${VERSION} (linux/amd64 + linux/arm64)..."
 

@@ -32,9 +32,9 @@
  * Brightness (elevation-based, smooth curve):
  *   homeassistant/sun/sun/elevation  float degrees → lerp(−6°..10°) → bri_night..bri_day
  *   homeassistant/sun/sun/state      above_horizon | below_horizon  (fallback if no elevation yet)
- *   pidicon-light/<device>/home/settings/bri_day    (default 100)
- *   pidicon-light/<device>/home/settings/bri_night  (default 7)
- *   pidicon-light/debug/bri_override                number | "" (clears)
+ *   pixdcon/<device>/home/settings/bri_day    (default 100)
+ *   pixdcon/<device>/home/settings/bri_night  (default 7)
+ *   pixdcon/debug/bri_override                number | "" (clears)
  *
  *   Twilight zone: elevation −6° (astro dusk) → 10° (full day), ~30–45 min natural fade.
  *   setBrightness fires on integer-level change + 5 min heartbeat.
@@ -661,7 +661,7 @@ export default {
 
     // ── Brightness settings (MQTT-overridable) ────────────────────────────────
     const D = context.mqtt.deviceName ?? "pixoo-159";
-    const S = `pidicon-light/${D}/home/settings`;
+    const S = `pixdcon/${D}/home/settings`;
 
     sub(`${S}/bri_day`, (msg) => {
       const v = parseInt(msg.trim(), 10);
@@ -675,7 +675,7 @@ export default {
         this._bri.night = v;
       }
     });
-    sub("pidicon-light/debug/bri_override", (msg) => {
+    sub("pixdcon/debug/bri_override", (msg) => {
       const s = msg.trim();
       if (s === "") {
         this._bri.override = null;

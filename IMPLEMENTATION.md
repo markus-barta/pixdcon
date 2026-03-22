@@ -1,6 +1,6 @@
 # Architecture Reference
 
-**Version:** 2.4.0
+**Version:** 1.0.0
 
 ---
 
@@ -76,9 +76,9 @@ are host-mounted and shadow the image. This means:
 
 | What changed                   | How to deploy                                                                   |
 | ------------------------------ | ------------------------------------------------------------------------------- |
-| `scenes/*.js`                  | `scp` to `~/docker/mounts/pidicon-light/scenes/`; ScenesWatcher hot-reloads     |
-| `assets/pixoo/*.png`           | `scp` to `~/docker/mounts/pidicon-light/assets/pixoo/` + image pull             |
-| `config.json`                  | `scp` to `~/docker/mounts/pidicon-light/config.json`; ConfigWatcher hot-reloads |
+| `scenes/*.js`                  | `scp` to `~/docker/mounts/pixdcon/scenes/`; ScenesWatcher hot-reloads     |
+| `assets/pixoo/*.png`           | `scp` to `~/docker/mounts/pixdcon/assets/pixoo/` + image pull             |
+| `config.json`                  | `scp` to `~/docker/mounts/pixdcon/config.json`; ConfigWatcher hot-reloads |
 | `lib/`, `src/`, `package.json` | Push → CI → `docker compose pull` + `up -d` on hsb1                             |
 
 See `docs/DEPLOY.md` for the full ops reference.

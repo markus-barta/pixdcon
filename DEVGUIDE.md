@@ -1,15 +1,15 @@
-# pidicon-light Development Guide
+# pixdcon Development Guide
 
-## Why pidicon-light?
+## Why pixdcon?
 
-**pidicon** (v3.2.1) became too complex:
+**pidicon** (v3.2.1, the predecessor) became too complex:
 
 - 196 tests, Web UI (Vue 3 + Vuetify), MQTT integration
 - Scene manager with scheduling, usage tracking, favorites
 - Multi-device support, watchdog monitoring
 - **Maintenance overhead exceeded net-worth**
 
-**pidicon-light** is a back-to-basics approach:
+**pixdcon** is a back-to-basics approach:
 
 - Config-file driven (no heavy UI)
 - Simple render loop
@@ -115,7 +115,7 @@ export default {
 ## Project Structure
 
 ```
-pidicon-light/
+pixdcon/
 ├── src/
 │   ├── index.js          # Main entry: MQTT, hot reload, device startup
 │   └── render-loop.js    # Per-device scene loop, backoff, circuit breaker, power-cycle
@@ -207,7 +207,7 @@ render() returns null     # scene is done → advance to next scene
 - Scene modules can expose `settingsSchema` for typed UI/runtime settings
 - Persisted values live under `devices[].sceneSettings[sceneName]` in `config.json`
 - Effective value precedence: scene default -> persisted config -> retained MQTT overlay
-- Live overlay topics stay per-device and per-scene: `pidicon-light/<device>/<scene>/settings/<key>`
+- Live overlay topics stay per-device and per-scene: `pixdcon/<device>/<scene>/settings/<key>`
 - Web UI can edit persisted settings, set/clear overlay values, and clone/detach scenes into `generated-scenes/`
 
 **Example cadences:**
@@ -274,7 +274,7 @@ skipped and the loop falls back to the 10-minute sleep.
 ### 1. Setup
 
 ```bash
-cd ~/Code/pidicon-light
+cd ~/Code/pixdcon
 npm install
 npm run dev   # runs with --watch (auto-restarts on src changes)
 ```
@@ -336,7 +336,7 @@ export default {
 
 ```bash
 # Watch logs to see which scene is active and frame count
-docker logs -f pidicon-light
+docker logs -f pixdcon
 
 # Live view in browser (AWTRIX built-in)
 open http://192.168.1.56/screen
@@ -347,31 +347,46 @@ open http://hsb1.lan:8080
 
 #### UPDATE a scene (on hsb1)
 
-**Important:** scenes on hsb1 are **host-mounted** (`~/docker/mounts/pidicon-light/scenes/`), not baked into the image. The image contains the default scenes as fallback, but the mount overrides them.
+All user data lives on the host mount at `~/docker/mounts/pixdcon/` and is mounted into the container at `/data/`:
 
-Two deploy paths:
+```
+~/docker/mounts/pixdcon/     →  /data/  (in container)
+├── config.json                    →  /data/config.json      (rw)
+├── scenes/                        →  /data/scenes/          (rw)
+│   ├── ulanzi/
+│   └── pixoo/
+└── generated-scenes/              →  /data/generated-scenes/ (rw)
+```
 
-**Fast path — scene file only (no lib/ changes):**
+Scene paths in `config.json` are relative to the config file (e.g. `./scenes/ulanzi/clock.js` → `/data/scenes/ulanzi/clock.js`).
+
+The Docker image (`/app/`) contains only the application code (src/, lib/, node_modules/). Scenes, config, and settings all live in the mount.
+
+**Two deploy paths:**
+
+**Fast path — scene or config changes (no restart):**
 
 ```bash
-# Edit locally, then scp directly → ScenesWatcher hot-reloads within seconds
-scp scenes/pixoo/home.js mba@hsb1.lan:~/docker/mounts/pidicon-light/scenes/pixoo/home.js
+# Scene file → ScenesWatcher hot-reloads within seconds
+scp scenes/pixoo/home.js mba@hsb1.lan:~/docker/mounts/pixdcon/scenes/pixoo/home.js
+
+# Config → ConfigWatcher hot-reloads (500ms debounce)
+scp config.json mba@hsb1.lan:~/docker/mounts/pixdcon/config.json
 
 # Also commit + push to keep git in sync
 git add scenes/pixoo/home.js && git commit -m "..." && git push
 ```
 
-**Full path — lib/ or src/ changes:**
+**Full path — src/ or lib/ changes (needs image rebuild):**
 
 ```bash
 git add . && git commit -m "..." && git push
 # Wait for CI to finish (gh run watch), then:
-ssh mba@hsb1.lan "cd ~/docker && docker compose pull pidicon-light && docker compose up -d pidicon-light"
+ssh mba@hsb1.lan "cd ~/docker && docker compose pull pixdcon && docker compose up -d pixdcon"
 ```
 
-> Config changes **hot-reload** without restart (500ms debounce).
-> Scene file changes hot-reload via ScenesWatcher — scp is instant.
-> lib/ or src/ changes require a new image build + pull.
+> Scene + config changes hot-reload via file watchers — no restart needed.
+> src/ or lib/ changes require a new image build + pull.
 
 Live preview notes:
 
@@ -410,31 +425,25 @@ EOF
 npm start
 ```
 
-> On hsb1 the config uses absolute paths (`/app/scenes/`) since scenes live in the image.
-> Locally use relative paths (`./scenes/`) — both work via SceneLoader path resolution.
+> Scene paths are always relative (e.g. `./scenes/ulanzi/my-scene.js`).
+> They resolve relative to the config file: locally → `./scenes/`, in Docker → `/data/scenes/`.
 
 ### 5. Deploy to hsb1
 
 ```bash
 # Scene file change (fast — hot-reloads in seconds):
-scp scenes/pixoo/home.js mba@hsb1:~/docker/mounts/pidicon-light/scenes/pixoo/home.js
-git add scenes/pixoo/home.js && git commit -m "..." && git push
+scp scenes/pixoo/home.js mba@hsb1:~/docker/mounts/pixdcon/scenes/pixoo/home.js
 
-# PNG asset change (must sync to host mount AND update image):
-scp assets/pixoo/nuki-*.png mba@hsb1:~/docker/mounts/pidicon-light/assets/pixoo/
-git add assets/ && git commit -m "..." && git push
-ssh mba@hsb1 "cd ~/docker && docker compose pull pidicon-light && docker compose up -d pidicon-light"
+# Config-only change (hot-reloads, no restart needed):
+scp config.json mba@hsb1:~/docker/mounts/pixdcon/config.json
 
 # lib/ or src/ change (needs CI build):
 git add . && git commit -m "..." && git push
 gh run watch --exit-status   # wait for CI
-ssh mba@hsb1 "cd ~/docker && docker compose pull pidicon-light && docker compose up -d pidicon-light"
-
-# Config-only change (hot-reloads, no restart needed):
-scp config.json mba@hsb1:~/docker/mounts/pidicon-light/config.json
+ssh mba@hsb1 "cd ~/docker && docker compose pull pixdcon && docker compose up -d pixdcon"
 
 # Watch logs:
-ssh mba@hsb1 "docker logs -f pidicon-light"
+ssh mba@hsb1 "docker logs -f pixdcon"
 
 # Watchtower handles weekly auto-updates automatically.
 ```
@@ -443,20 +452,39 @@ ssh mba@hsb1 "docker logs -f pidicon-light"
 
 **Status: ✅ deployed and running**
 
-- Image: `ghcr.io/markus-barta/pidicon-light:latest` (built by GitHub Actions on push to main)
-- Config: `~/docker/mounts/pidicon-light/config.json`
-- Scenes: `~/docker/mounts/pidicon-light/scenes/`
-- Secrets: `/run/agenix/hsb1-pidicon-light-env` (MOSQUITTO_HOST/USER/PASS via agenix)
+### Container vs. Host Mount
+
+```
+Image (/app/)                     Host mount (/data/)
+├── src/                          ├── config.json          (rw)
+├── lib/                          ├── scenes/              (rw)
+├── node_modules/                 │   ├── ulanzi/
+└── (application code only)       │   └── pixoo/
+                                  └── generated-scenes/    (rw)
+```
+
+- **Image** = application code. Changes require CI build + pull.
+- **Host mount** = all user data (config, scenes, settings, generated scenes). Changes hot-reload.
+- Scene paths in config are relative: `./scenes/ulanzi/X.js` → resolves to `/data/scenes/ulanzi/X.js`
+
+### Locations
+
+- Image: `ghcr.io/markus-barta/pixdcon:latest` (built by GitHub Actions on push to main)
+- Mount root: `~/docker/mounts/pixdcon/`
+- Config: `~/docker/mounts/pixdcon/config.json`
+- Scenes: `~/docker/mounts/pixdcon/scenes/{ulanzi,pixoo}/`
+- Generated scenes: `~/docker/mounts/pixdcon/generated-scenes/`
+- Secrets: `/run/agenix/hsb1-pixdcon-env` (MOSQUITTO_HOST/USER/PASS, SONNEN_BATTERY_HOST/TOKEN)
 
 ```bash
 # Logs
-ssh mba@hsb1.lan "docker logs -f pidicon-light"
+ssh mba@hsb1.lan "docker logs -f pixdcon"
 
 # Restart
-ssh mba@hsb1.lan "cd ~/docker && docker compose restart pidicon-light"
+ssh mba@hsb1.lan "cd ~/docker && docker compose restart pixdcon"
 
 # Stop
-ssh mba@hsb1.lan "cd ~/docker && docker compose stop pidicon-light"
+ssh mba@hsb1.lan "cd ~/docker && docker compose stop pixdcon"
 ```
 
 ## Device Drivers
@@ -478,7 +506,7 @@ uptime while ICMP/ARP remain responsive. Fix: power cycle via `powerCyclePlugin`
 
 ## MQTT Topics
 
-All pidicon-light topics are under `home/hsb1/pidicon-light/`:
+All pixdcon topics are under `home/hsb1/pixdcon/`:
 
 | Topic                       | Direction            | Description                             |
 | --------------------------- | -------------------- | --------------------------------------- |

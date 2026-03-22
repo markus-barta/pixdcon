@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Create backlog items for pidicon-light
+# Create backlog items for pixdcon
 #
 # USAGE: ./scripts/create-backlog-item.sh [priority] [description]
 # RUN FROM: Repository root
