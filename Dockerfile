@@ -9,8 +9,9 @@ RUN npm ci --only=production && npm cache clean --force
 # Copy application source (.dockerignore excludes secrets, devenv, tests, etc.)
 COPY . .
 
-# Data directory is mounted at runtime; create as fallback for local runs
-RUN mkdir -p /data
+# Data directory is mounted at runtime; create as fallback for local runs.
+# Symlink /data/lib → /app/lib so mounted scenes can resolve ../../lib/ imports.
+RUN mkdir -p /data && ln -s /app/lib /data/lib && ln -s /app/assets /data/assets
 
 # ---- Runtime defaults (all can be overridden in docker-compose) ----
 ENV PIXDCON_CONFIG_PATH=/data/config.json \
