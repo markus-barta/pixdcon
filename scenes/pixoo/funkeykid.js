@@ -412,6 +412,12 @@ export default {
       max: 5,
       step: 1,
     },
+    color_enabled: {
+      type: "boolean",
+      label: "Farbige Buchstaben",
+      group: "Display",
+      default: true,
+    },
   },
 
   // State
@@ -496,48 +502,35 @@ export default {
 
     await device.clear();
 
-    // Helper: draw big letter with shadow effect (black at x,y then color at x-1,y-1)
-    const drawBigLetterWithShadow = (letter, color, yOffset = 0) => {
-      const glyph = BIG_FONT[letter];
-      if (!glyph) return 0;
-      const glyphW = 8, glyphH = 10;
-      const scaledW = glyphW * scale, scaledH = glyphH * scale;
-      const startX = Math.floor((64 - scaledW) / 2);
-      const startY = Math.floor((64 - scaledH - 10) / 2) + yOffset;
+    const colorEnabled = settings.color_enabled !== false; // default true
 
-      // Pass 1: black shadow at (x, y)
-      for (let row = 0; row < glyphH; row++) {
-        for (let col = 0; col < glyphW; col++) {
-          if (glyph[row * glyphW + col]) {
-            for (let sy = 0; sy < scale; sy++) {
-              for (let sx = 0; sx < scale; sx++) {
-                device._setPixel(startX + col * scale + sx + 1, startY + row * scale + sy + 1, 0, 0, 0);
-              }
-            }
-          }
-        }
-      }
-      // Pass 2: colored letter at (x-1, y-1)
-      for (let row = 0; row < glyphH; row++) {
-        for (let col = 0; col < glyphW; col++) {
-          if (glyph[row * glyphW + col]) {
-            for (let sy = 0; sy < scale; sy++) {
-              for (let sx = 0; sx < scale; sx++) {
-                device._setPixel(startX + col * scale + sx, startY + row * scale + sy, color[0], color[1], color[2]);
-              }
-            }
-          }
-        }
-      }
-      return startY + scaledH;
+    // Helper: draw big letter with shadow at specific position
+    const drawBigLetter = (letter, color, startX, startY) => {
+      const glyph = BIG_FONT[letter];
+      if (!glyph) return;
+      const glyphW = 8, glyphH = 10;
+      const c = colorEnabled ? color : [255, 255, 255];
+      // Shadow
+      for (let row = 0; row < glyphH; row++)
+        for (let col = 0; col < glyphW; col++)
+          if (glyph[row * glyphW + col])
+            for (let sy = 0; sy < scale; sy++)
+              for (let sx = 0; sx < scale; sx++)
+                device._setPixel(startX + col*scale + sx + 1, startY + row*scale + sy + 1, 0, 0, 0);
+      // Letter
+      for (let row = 0; row < glyphH; row++)
+        for (let col = 0; col < glyphW; col++)
+          if (glyph[row * glyphW + col])
+            for (let sy = 0; sy < scale; sy++)
+              for (let sx = 0; sx < scale; sx++)
+                device._setPixel(startX + col*scale + sx, startY + row*scale + sy, c[0], c[1], c[2]);
     };
 
-    // Helper: draw small text with shadow
-    const drawTextWithShadow = async (text, pos, color) => {
-      // Black shadow at (x+1, y+1)
-      await device.drawTextRgbaAligned(text, [pos[0] + 1, pos[1] + 1], [0, 0, 0], "center");
-      // Color text at (x, y)
-      await device.drawTextRgbaAligned(text, pos, [color[0], color[1], color[2]], "center");
+    // Helper: draw small text with shadow at position with alignment
+    const drawText = async (text, pos, color, align = "center") => {
+      const c = colorEnabled ? color : [255, 255, 255];
+      await device.drawTextRgbaAligned(text, [pos[0]+1, pos[1]+1], [0, 0, 0], align);
+      await device.drawTextRgbaAligned(text, pos, [c[0], c[1], c[2]], align);
     };
 
     if (isIdle) {
@@ -564,27 +557,29 @@ export default {
       return 1000; // 1 FPS when idle with bg image
     }
 
-    // Active: draw bg image + letter with shadow + word with shadow
+    // Active: bg image + letter top-left + word bottom-center
     const letter = this._currentLetter;
     const word = this._currentWord;
     const color = this._currentColor || randomColor();
 
-    // Draw background image (from MQTT payload, not letter-based)
+    // Draw background image
     const bgImg = this._currentImage;
     if (bgImg) {
       drawPixooImage(device, bgImg, 0, 0);
     }
 
     if (letter && BIG_FONT[letter]) {
-      const bottomY = drawBigLetterWithShadow(letter, color);
+      // Letter: top-left, 2px inset
+      drawBigLetter(letter, color, 2, 2);
+      // Word: bottom-center, 2px from bottom
       if (word) {
-        await drawTextWithShadow(word.toLowerCase(), [32, bottomY + 3], color);
+        await drawText(word.toLowerCase(), [32, 64 - 7], color, "center");
       }
     } else if (letter) {
-      // Fallback for non-A-Z keys (volume %, etc.)
-      await drawTextWithShadow(letter, [32, 25], color);
+      // Fallback (volume %, etc.)
+      await drawText(letter, [32, 2], color, "center");
       if (word) {
-        await drawTextWithShadow(word.toLowerCase(), [32, 40], color);
+        await drawText(word.toLowerCase(), [32, 64 - 7], color, "center");
       }
     }
 
