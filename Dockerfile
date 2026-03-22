@@ -2,12 +2,18 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies first (separate layer for caching)
+# Install ALL dependencies (including devDeps for Tailwind build)
 COPY package*.json ./
-RUN npm ci --only=production && npm cache clean --force
+RUN npm ci && npm cache clean --force
 
 # Copy application source (.dockerignore excludes secrets, devenv, tests, etc.)
 COPY . .
+
+# Build Tailwind CSS (scans lib/web-server.js for used classes)
+RUN npm run build:css
+
+# Prune devDependencies for smaller runtime image
+RUN npm prune --production
 
 # Data directory is mounted at runtime; create as fallback for local runs.
 # Symlink /data/lib → /app/lib so mounted scenes can resolve ../../lib/ imports.
