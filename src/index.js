@@ -404,6 +404,13 @@ async function main() {
     getSceneMetadata: () => sceneMetadata,
     getSceneSettingsState: () => sceneSettingsService?.getUiState() || {},
     getFramePreviews: () => framePreviewStore?.list() || {},
+    getDeviceModes: () => {
+      const modes = {};
+      for (const { device, loop } of renderLoops) {
+        modes[device.name] = loop.getStatus().mode;
+      }
+      return modes;
+    },
     mqttService,
     sceneSettingsService,
     logger,
