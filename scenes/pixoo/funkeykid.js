@@ -2,16 +2,38 @@
  * funkeykid — Pixoo64 scene for educational keyboard display
  *
  * Subscribes to MQTT topic `home/hsb1/funkeykid/display` and renders
- * the pressed letter large and colorful on the 64×64 display.
+ * the pressed letter large and colorful on a background image.
  *
  * Payload format: {"letter": "A", "word": "Apfel", "color": "#FF0000"}
  *
- * When idle (no keypress for timeout period), shows a gentle idle animation.
+ * Flow:
+ *   1. Keypress → draw bg image + letter (shadow: black at x,y then color at x-1,y-1) + word
+ *   2. After 10s idle → show bg image only (no text)
+ *   3. No keypress ever → show last bg image or idle animation
+ *
  * pidicon-light is SSOT — if user switches to another scene, this stops.
  */
 
-const IDLE_TIMEOUT_MS = 15000; // 15s without keypress → idle mode
+import { dirname, resolve } from "path";
+import { fileURLToPath } from "url";
+import { loadPixooImage, drawPixooImage } from "../../lib/pixoo-image.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ASSETS_DIR = resolve(__dirname, "../../assets/pixoo/funkeykid");
+
+const IDLE_TIMEOUT_MS = 10000; // 10s without keypress → show bg only
 const MQTT_TOPIC = "home/hsb1/funkeykid/display";
+
+// Letter → bg image filename mapping (QWERTZ: Y=Ziege, Z=Yak)
+const BG_IMAGES = {
+  A: "a_affe.png", B: "b_biene.png", C: "c_clown.png", D: "d_donner.png",
+  E: "e_elefant.png", F: "f_frosch.png", G: "g_glocke.png", H: "h_hammer.png",
+  I: "i_igel.png", J: "j_jaguar.png", K: "k_katze.png", L: "l_loewe.png",
+  M: "m_kuh.png", N: "n_nachtigall.png", O: "o_orgel.png", P: "p_pferd.png",
+  Q: "q_quaken.png", R: "r_regen.png", S: "s_schwein.png", T: "t_telefon.png",
+  U: "u_uhu.png", V: "v_vogel.png", W: "w_wasser.png", X: "x_xylophon.png",
+  Y: "y_yak.png", Z: "z_ziege.png",
+};
 
 // Large 8×10 pixel font for single uppercase letters (A-Z)
 // Each letter is a 8-wide, 10-tall bitmap (row-major, 1=pixel on)
@@ -397,8 +419,10 @@ export default {
   _currentWord: null,
   _currentColor: null,
   _lastKeypressAt: 0,
+  _lastLetter: null, // Remember last letter for idle bg
   _settings: null,
   _unsubscribeSettings: null,
+  _bgImages: {},     // Preloaded bg images keyed by letter
   _idlePhase: 0,
 
   async init(context) {
@@ -410,6 +434,18 @@ export default {
     // Brightness is set in render() via device (not available in init context)
     this._needsBrightnessSet = true;
 
+    // Preload all background images
+    for (const [letter, filename] of Object.entries(BG_IMAGES)) {
+      try {
+        const imgPath = resolve(ASSETS_DIR, filename);
+        this._bgImages[letter] = await loadPixooImage(imgPath);
+        context.logger.debug(`[funkeykid] Loaded bg: ${letter} → ${filename}`);
+      } catch (e) {
+        context.logger.warn(`[funkeykid] Missing bg image: ${filename}`);
+      }
+    }
+    context.logger.info(`[funkeykid] Loaded ${Object.keys(this._bgImages).length}/26 bg images`);
+
     // Subscribe to funkeykid display topic
     context.mqtt.subscribe(MQTT_TOPIC, (msg) => {
       try {
@@ -418,6 +454,9 @@ export default {
         this._currentWord = data.word || null;
         this._currentColor = data.color ? parseHexColor(data.color) : randomColor();
         this._lastKeypressAt = Date.now();
+        if (this._currentLetter && BG_IMAGES[this._currentLetter]) {
+          this._lastLetter = this._currentLetter;
+        }
       } catch (e) {
         context.logger.error(`[funkeykid] Bad MQTT payload: ${e.message}`);
       }
@@ -433,7 +472,7 @@ export default {
     const now = Date.now();
     const isIdle = !this._lastKeypressAt || (now - this._lastKeypressAt > idleTimeout);
 
-    // Always 100% brightness — no day/night dimming for this scene
+    // Always 100% brightness
     if (this._needsBrightnessSet) {
       await device.setBrightness(100);
       this._needsBrightnessSet = false;
@@ -441,77 +480,101 @@ export default {
 
     await device.clear();
 
-    if (isIdle) {
-      // Idle animation: gentle color-cycling "funkeykid" text
-      this._idlePhase = (this._idlePhase + 1) % 360;
-      const hue = this._idlePhase;
-      const r = Math.round(128 + 127 * Math.sin(hue * Math.PI / 180));
-      const g = Math.round(128 + 127 * Math.sin((hue + 120) * Math.PI / 180));
-      const b = Math.round(128 + 127 * Math.sin((hue + 240) * Math.PI / 180));
-
-      // Draw "fun" centered
-      await device.drawTextRgbaAligned("fun", [32, 20], [r, g, b], "center");
-      // Draw "key" centered
-      await device.drawTextRgbaAligned("key", [32, 30], [g, b, r], "center");
-      // Draw "kid" centered
-      await device.drawTextRgbaAligned("kid", [32, 40], [b, r, g], "center");
-
-      await device.push();
-      return 100; // ~10 FPS for smooth color cycling
-    }
-
-    // Active: draw the big letter centered
-    const letter = this._currentLetter;
-    const word = this._currentWord;
-    const color = this._currentColor || randomColor();
-
-    if (letter && BIG_FONT[letter]) {
+    // Helper: draw big letter with shadow effect (black at x,y then color at x-1,y-1)
+    const drawBigLetterWithShadow = (letter, color, yOffset = 0) => {
       const glyph = BIG_FONT[letter];
-      const glyphW = 8;
-      const glyphH = 10;
-      const scaledW = glyphW * scale;
-      const scaledH = glyphH * scale;
+      if (!glyph) return 0;
+      const glyphW = 8, glyphH = 10;
+      const scaledW = glyphW * scale, scaledH = glyphH * scale;
       const startX = Math.floor((64 - scaledW) / 2);
-      const startY = Math.floor((64 - scaledH - 10) / 2); // Leave room for word below
+      const startY = Math.floor((64 - scaledH - 10) / 2) + yOffset;
 
-      // Draw scaled letter
+      // Pass 1: black shadow at (x, y)
       for (let row = 0; row < glyphH; row++) {
         for (let col = 0; col < glyphW; col++) {
           if (glyph[row * glyphW + col]) {
-            // Draw scale×scale block
             for (let sy = 0; sy < scale; sy++) {
               for (let sx = 0; sx < scale; sx++) {
-                device._setPixel(
-                  startX + col * scale + sx,
-                  startY + row * scale + sy,
-                  color[0], color[1], color[2]
-                );
+                device._setPixel(startX + col * scale + sx + 1, startY + row * scale + sy + 1, 0, 0, 0);
               }
             }
           }
         }
       }
+      // Pass 2: colored letter at (x-1, y-1)
+      for (let row = 0; row < glyphH; row++) {
+        for (let col = 0; col < glyphW; col++) {
+          if (glyph[row * glyphW + col]) {
+            for (let sy = 0; sy < scale; sy++) {
+              for (let sx = 0; sx < scale; sx++) {
+                device._setPixel(startX + col * scale + sx, startY + row * scale + sy, color[0], color[1], color[2]);
+              }
+            }
+          }
+        }
+      }
+      return startY + scaledH;
+    };
 
-      // Draw word below the letter using built-in small font
+    // Helper: draw small text with shadow
+    const drawTextWithShadow = async (text, pos, color) => {
+      // Black shadow at (x+1, y+1)
+      await device.drawTextRgbaAligned(text, [pos[0] + 1, pos[1] + 1], [0, 0, 0], "center");
+      // Color text at (x, y)
+      await device.drawTextRgbaAligned(text, pos, [color[0], color[1], color[2]], "center");
+    };
+
+    if (isIdle) {
+      // Idle: show last letter's bg image only (no text), or color-cycle if no letter yet
+      const bgLetter = this._lastLetter;
+      const bgImg = bgLetter ? this._bgImages[bgLetter] : null;
+
+      if (bgImg) {
+        drawPixooImage(device, bgImg, 0, 0);
+      } else {
+        // No letter pressed yet: gentle color-cycling title
+        this._idlePhase = (this._idlePhase + 1) % 360;
+        const hue = this._idlePhase;
+        const r = Math.round(128 + 127 * Math.sin(hue * Math.PI / 180));
+        const g = Math.round(128 + 127 * Math.sin((hue + 120) * Math.PI / 180));
+        const b = Math.round(128 + 127 * Math.sin((hue + 240) * Math.PI / 180));
+        await device.drawTextRgbaAligned("fun", [32, 20], [r, g, b], "center");
+        await device.drawTextRgbaAligned("key", [32, 30], [g, b, r], "center");
+        await device.drawTextRgbaAligned("kid", [32, 40], [b, r, g], "center");
+        await device.push();
+        return 100;
+      }
+
+      await device.push();
+      return 1000; // 1 FPS when idle with bg image
+    }
+
+    // Active: draw bg image + letter with shadow + word with shadow
+    const letter = this._currentLetter;
+    const word = this._currentWord;
+    const color = this._currentColor || randomColor();
+
+    // Draw background image
+    const bgImg = letter ? this._bgImages[letter] : null;
+    if (bgImg) {
+      drawPixooImage(device, bgImg, 0, 0);
+    }
+
+    if (letter && BIG_FONT[letter]) {
+      const bottomY = drawBigLetterWithShadow(letter, color);
       if (word) {
-        const wordY = startY + scaledH + 3;
-        await device.drawTextRgbaAligned(
-          word.toLowerCase(),
-          [32, wordY],
-          [color[0], color[1], color[2]],
-          "center"
-        );
+        await drawTextWithShadow(word.toLowerCase(), [32, bottomY + 3], color);
       }
     } else if (letter) {
-      // Fallback: use built-in font for unknown letters
-      await device.drawTextRgbaAligned(letter, [32, 25], [color[0], color[1], color[2]], "center");
+      // Fallback for non-A-Z keys (volume %, etc.)
+      await drawTextWithShadow(letter, [32, 25], color);
       if (word) {
-        await device.drawTextRgbaAligned(word.toLowerCase(), [32, 40], [color[0], color[1], color[2]], "center");
+        await drawTextWithShadow(word.toLowerCase(), [32, 40], color);
       }
     }
 
     await device.push();
-    return 200; // 5 FPS when showing a letter
+    return 200;
   },
 
   async destroy(context) {
