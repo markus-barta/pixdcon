@@ -458,27 +458,27 @@ export default {
     context.mqtt.subscribe(MQTT_TOPIC, async (msg) => {
       try {
         const data = JSON.parse(msg);
-        this._currentLetter = data.letter || null;
-        this._currentWord = data.word || null;
-        this._currentColor = data.color ? parseHexColor(data.color) : randomColor();
-        this._lastKeypressAt = Date.now();
 
-        // Load the specific image from MQTT payload (supports word cycling)
+        // Load image FIRST (before updating state) to prevent glitch
         const imgName = data.image;
+        let newImage = null;
         if (imgName) {
-          this._lastImageName = imgName;
           if (!this._bgImages[imgName]) {
             try {
               this._bgImages[imgName] = await loadPixooImage(resolve(ASSETS_DIR, imgName));
-            } catch (e) {
-              // Image not found — fall back to letter-based default
-            }
+            } catch (e) { /* missing image */ }
           }
-          this._currentImage = this._bgImages[imgName] || null;
+          newImage = this._bgImages[imgName] || null;
         }
-        if (this._currentLetter) {
-          this._lastLetter = this._currentLetter;
-        }
+
+        // Now update state atomically — render loop sees consistent state
+        this._currentLetter = data.letter || null;
+        this._currentWord = data.word || null;
+        this._currentColor = data.color ? parseHexColor(data.color) : randomColor();
+        this._currentImage = newImage;
+        this._lastKeypressAt = Date.now();
+        if (imgName) this._lastImageName = imgName;
+        if (this._currentLetter) this._lastLetter = this._currentLetter;
       } catch (e) {
         context.logger.error(`[funkeykid] Bad MQTT payload: ${e.message}`);
       }
