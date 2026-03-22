@@ -419,7 +419,9 @@ export default {
   _currentWord: null,
   _currentColor: null,
   _lastKeypressAt: 0,
-  _lastLetter: null, // Remember last letter for idle bg
+  _lastLetter: null,
+  _currentImage: null, // Current bg image (from MQTT payload)
+  _lastImageName: null, // For idle display
   _settings: null,
   _unsubscribeSettings: null,
   _bgImages: {},     // Preloaded bg images keyed by letter
@@ -447,14 +449,28 @@ export default {
     context.logger.info(`[funkeykid] Loaded ${Object.keys(this._bgImages).length}/26 bg images`);
 
     // Subscribe to funkeykid display topic
-    context.mqtt.subscribe(MQTT_TOPIC, (msg) => {
+    context.mqtt.subscribe(MQTT_TOPIC, async (msg) => {
       try {
         const data = JSON.parse(msg);
         this._currentLetter = data.letter || null;
         this._currentWord = data.word || null;
         this._currentColor = data.color ? parseHexColor(data.color) : randomColor();
         this._lastKeypressAt = Date.now();
-        if (this._currentLetter && BG_IMAGES[this._currentLetter]) {
+
+        // Load the specific image from MQTT payload (supports word cycling)
+        const imgName = data.image;
+        if (imgName) {
+          this._lastImageName = imgName;
+          if (!this._bgImages[imgName]) {
+            try {
+              this._bgImages[imgName] = await loadPixooImage(resolve(ASSETS_DIR, imgName));
+            } catch (e) {
+              // Image not found — fall back to letter-based default
+            }
+          }
+          this._currentImage = this._bgImages[imgName] || null;
+        }
+        if (this._currentLetter) {
           this._lastLetter = this._currentLetter;
         }
       } catch (e) {
@@ -525,9 +541,8 @@ export default {
     };
 
     if (isIdle) {
-      // Idle: show last letter's bg image only (no text), or color-cycle if no letter yet
-      const bgLetter = this._lastLetter;
-      const bgImg = bgLetter ? this._bgImages[bgLetter] : null;
+      // Idle: show last image (no text), or color-cycle if no letter yet
+      const bgImg = this._currentImage || (this._lastImageName ? this._bgImages[this._lastImageName] : null);
 
       if (bgImg) {
         drawPixooImage(device, bgImg, 0, 0);
@@ -554,8 +569,8 @@ export default {
     const word = this._currentWord;
     const color = this._currentColor || randomColor();
 
-    // Draw background image
-    const bgImg = letter ? this._bgImages[letter] : null;
+    // Draw background image (from MQTT payload, not letter-based)
+    const bgImg = this._currentImage;
     if (bgImg) {
       drawPixooImage(device, bgImg, 0, 0);
     }
