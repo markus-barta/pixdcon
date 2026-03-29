@@ -453,6 +453,23 @@ ssh mba@hsb1 "docker logs -f pixdcon"
 
 **Status: ✅ deployed and running**
 
+**Server:** hsb1 (Mac mini, 192.168.1.101, NixOS 25.11)
+
+### Infrastructure Context
+
+hsb1 runs: mosquitto, homeassistant, zigbee2mqtt, nodered, scrypted, plex, pixdcon
+hsb0 (192.168.1.99): AdGuard Home DNS
+NixOS config: `../nixcfg/hosts/hsb1/`
+Docker compose: `../nixcfg/hosts/hsb1/docker/docker-compose.yml`
+
+### Currently Active Devices
+
+Production config: `../nixcfg/hosts/hsb1/docker/mounts/pixdcon/config.json`
+
+- `ulanzi-56` (192.168.1.56) → `clock_with_homestats`
+- `ulanzi-57` (192.168.1.57) → `clock_with_homestats`
+- Pixoo devices (159, 189) exist but are NOT in production config
+
 ### Container vs. Host Mount
 
 ```
