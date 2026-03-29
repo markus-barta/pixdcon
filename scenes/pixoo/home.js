@@ -824,6 +824,8 @@ export default {
     this._lastBriVal = null;
 
     this._s = {
+      // Header — funkeykid keyboard
+      kbConnected: false,
       // Sun
       sunElevation: null, // float degrees, from HA MQTT
       sunAbove: null, // bool fallback (above_horizon)
@@ -1041,6 +1043,14 @@ export default {
       this._s.pcSeen = Date.now();
     });
 
+    // funkeykid keyboard status (retained)
+    sub("home/hsb1/funkeykid/keyboard-info", (msg) => {
+      try {
+        const d = JSON.parse(msg);
+        this._s.kbConnected = !!d.connected;
+      } catch {}
+    });
+
     this._startSyncboxPoll(context.logger);
     context.logger.info("[home] Scene initialized");
   },
@@ -1121,6 +1131,22 @@ export default {
       C.timeColor,
       "right",
     );
+    // Keyboard status: 3 dots between HOME and clock
+    // Connected: "..." green, Disconnected: ". ." gray (dots at x=30,33,36 omit middle)
+    {
+      const kbY = 3;
+      if (s.kbConnected) {
+        const g = [0, 200, 80];
+        device._setPixel(30, kbY, g);
+        device._setPixel(33, kbY, g);
+        device._setPixel(36, kbY, g);
+      } else {
+        const gray = [60, 60, 60];
+        device._setPixel(30, kbY, gray);
+        device._setPixel(36, kbY, gray);
+      }
+    }
+
     drawSeparators(device);
 
     // ── Row 0: Doors / Windows ───────────────────────────────────────────────
