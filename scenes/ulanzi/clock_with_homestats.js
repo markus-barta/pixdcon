@@ -24,7 +24,8 @@
  * pixdcon/<device>/<scene>/settings/night_start_hour default: 19
  * pixdcon/<device>/<scene>/settings/bri_day          default: 20
  * pixdcon/<device>/<scene>/settings/bri_night        default: 8
- * pixdcon/<device>/<scene>/settings/show_seconds     default: true  ("false" → HH:MM + x5 offset)
+ * pixdcon/<device>/<scene>/settings/show_seconds_day   default: true
+ * pixdcon/<device>/<scene>/settings/show_seconds_night default: false
  *
  * ── Debug override topics (global, retained, cleared with empty payload) ────
  * pixdcon/debug/mode_override    "day" | "night" | ""
@@ -86,7 +87,8 @@ const DEFAULT_SETTINGS = {
   nightStartHour: 19,
   briDay: 20,
   briNight: 8,
-  showSeconds: true,
+  showSecondsDay: true,
+  showSecondsNight: false,
   sonnenPollMs: 3000,
   timezone: "Europe/Vienna",
   locale: "de-AT",
@@ -137,11 +139,17 @@ export default {
       max: 255,
       step: 1,
     },
-    show_seconds: {
+    show_seconds_day: {
       type: "boolean",
-      label: "Show Seconds",
+      label: "Show Seconds (Day)",
       group: "Display",
       default: true,
+    },
+    show_seconds_night: {
+      type: "boolean",
+      label: "Show Seconds (Night)",
+      group: "Display",
+      default: false,
     },
     sonnen_poll_ms: {
       type: "int",
@@ -318,8 +326,9 @@ export default {
 
     // Time
     const now = new Date();
-    // Night always hides seconds; day respects show_seconds setting
-    const withSeconds = isDay && this._settings.showSeconds;
+    const withSeconds = isDay
+      ? this._settings.showSecondsDay
+      : this._settings.showSecondsNight;
     const timeStr = now.toLocaleTimeString(this._settings.locale, {
       timeZone: this._settings.timezone,
       hour: "2-digit",
@@ -548,7 +557,8 @@ export default {
         values.night_start_hour ?? DEFAULT_SETTINGS.nightStartHour,
       briDay: values.bri_day ?? DEFAULT_SETTINGS.briDay,
       briNight: values.bri_night ?? DEFAULT_SETTINGS.briNight,
-      showSeconds: values.show_seconds ?? DEFAULT_SETTINGS.showSeconds,
+      showSecondsDay: values.show_seconds_day ?? DEFAULT_SETTINGS.showSecondsDay,
+      showSecondsNight: values.show_seconds_night ?? DEFAULT_SETTINGS.showSecondsNight,
       sonnenPollMs: values.sonnen_poll_ms ?? DEFAULT_SETTINGS.sonnenPollMs,
       timezone: values.timezone ?? DEFAULT_SETTINGS.timezone,
       locale: values.locale ?? DEFAULT_SETTINGS.locale,

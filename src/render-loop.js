@@ -277,9 +277,14 @@ export class RenderLoop {
 
   async _applyStop() {
     try {
+      // Push a black frame so the display goes dark
       await this.driver.clear();
+      if (typeof this.driver.push === "function") await this.driver.push();
+      // Power off / screen off
       if (typeof this.driver.setPower === "function")
         await this.driver.setPower(false);
+      if (typeof this.driver.setScreen === "function")
+        await this.driver.setScreen(false);
     } catch (err) {
       this.logger.warn(
         `[RenderLoop:${this.deviceName}] stop: clear failed: ${err.message}`,
@@ -289,10 +294,11 @@ export class RenderLoop {
 
   async _applyPlay() {
     try {
-      await this.driver.initialize();
-      if (typeof this.driver.setPower === "function") {
+      if (typeof this.driver.setPower === "function")
         await this.driver.setPower(true);
-      }
+      if (typeof this.driver.setScreen === "function")
+        await this.driver.setScreen(true);
+      await this.driver.initialize();
       if (this.currentScene && typeof this.driver.switchToApp === "function") {
         await this.driver.switchToApp(this.driver.appName || "pixdcon");
       }
