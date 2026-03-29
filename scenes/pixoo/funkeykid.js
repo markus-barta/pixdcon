@@ -568,10 +568,20 @@ export default {
       drawPixooImage(device, bgImg, 0, 0);
     }
 
+    // Darken bottom 8px strip (50% black overlay for text readability)
+    if (word) {
+      for (let y = 56; y < 64; y++) {
+        for (let x = 0; x < 64; x++) {
+          const i = (y * 64 + x) * 3;
+          device.buf[i] >>= 1;
+          device.buf[i + 1] >>= 1;
+          device.buf[i + 2] >>= 1;
+        }
+      }
+    }
+
     if (letter && BIG_FONT[letter]) {
-      // Letter: top-left, 2px inset
       drawBigLetter(letter, color, 2, 2);
-      // Word: bottom-center, 2px from bottom
       if (word) {
         await drawText(word.toLowerCase(), [32, 64 - 7], color, "center");
       }
