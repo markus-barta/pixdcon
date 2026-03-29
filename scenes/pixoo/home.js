@@ -1136,14 +1136,12 @@ export default {
     {
       const kbY = 3;
       if (s.kbConnected) {
-        const g = [0, 200, 80];
-        device._setPixel(30, kbY, g);
-        device._setPixel(33, kbY, g);
-        device._setPixel(36, kbY, g);
+        device._setPixel(30, kbY, 0, 200, 80);
+        device._setPixel(33, kbY, 0, 200, 80);
+        device._setPixel(36, kbY, 0, 200, 80);
       } else {
-        const gray = [60, 60, 60];
-        device._setPixel(30, kbY, gray);
-        device._setPixel(36, kbY, gray);
+        device._setPixel(30, kbY, 60, 60, 60);
+        device._setPixel(36, kbY, 60, 60, 60);
       }
     }
 
