@@ -137,7 +137,8 @@ pixdcon/
 │   └── web-server.js               # Lightweight HTTP admin UI on port 8080
 ├── scenes/
 │   ├── pixoo/
-│   │   ├── home.js        # 3-row smart home dashboard: Nuki/doors/skylights/energy/media
+│   │   ├── home.js        # 3-row smart home dashboard: Nuki/doors/skylights/energy/media + keyboard status
+│   │   ├── funkeykid.js   # Educational keyboard display (letter + word on bg image)
 │   │   └── health.js      # 4-tab network/device health dashboard (legacy/low priority)
 │   └── ulanzi/
 │       ├── clock_with_homestats.js  # Clock + Nuki/doors/battery/skylights (production)
@@ -517,6 +518,13 @@ All pixdcon topics are under `home/hsb1/pixdcon/`:
 | `…/overlay/device/+/scenes` | subscribe            | Override scenes list per device         |
 | `…/overlay/device/+/ip`     | subscribe            | Override device IP                      |
 | `…/overlay/blob`            | subscribe            | Full/partial config JSON overlay        |
+
+**External topics consumed by scenes:**
+
+| Topic | Scene | Description |
+|-------|-------|-------------|
+| `home/hsb1/funkeykid/display` | funkeykid | Letter + word + color from keyboard |
+| `home/hsb1/funkeykid/keyboard-info` | home | Keyboard connection status (retained) |
 
 ## Testing Strategy
 

@@ -26,6 +26,7 @@ Config-file driven, web UI included, MQTT-connected, Docker-deployed.
 | `ulanzi-56` | Ulanzi TC001 32×8 | Clock + Nuki/doors/skylights/battery |
 | `ulanzi-57` | Ulanzi TC001 32×8 | Clock + Nuki/doors/skylights/battery |
 | `pixoo-159` | Pixoo64 64×64     | 3-row smart home dashboard           |
+| `pixoo-189` | Pixoo64 64×64     | funkeykid educational keyboard display |
 
 ---
 
