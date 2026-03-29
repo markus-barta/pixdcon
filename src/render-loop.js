@@ -276,18 +276,24 @@ export class RenderLoop {
   }
 
   async _applyStop() {
+    // clear() on Ulanzi pushes a black frame; on Pixoo it only zeros the buffer.
+    // For Pixoo we need an explicit push() after clear() to send the black frame.
     try {
-      // Push a black frame so the display goes dark
       await this.driver.clear();
-      if (typeof this.driver.push === "function") await this.driver.push();
-      // Power off / screen off
+    } catch {}
+    // Pixoo push() takes no args; Ulanzi push(frame) needs a frame — clear() already pushed.
+    if (typeof this.driver.push === "function" && this.driver.push.length === 0) {
+      try { await this.driver.push(); } catch {}
+    }
+    // Power off (Ulanzi) / screen off (Pixoo)
+    try {
       if (typeof this.driver.setPower === "function")
         await this.driver.setPower(false);
       if (typeof this.driver.setScreen === "function")
         await this.driver.setScreen(false);
     } catch (err) {
       this.logger.warn(
-        `[RenderLoop:${this.deviceName}] stop: clear failed: ${err.message}`,
+        `[RenderLoop:${this.deviceName}] stop failed: ${err.message}`,
       );
     }
   }
