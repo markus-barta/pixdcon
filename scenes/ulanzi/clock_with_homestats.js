@@ -22,8 +22,8 @@
  * ── Settings topics (device+scene scoped, retained) ─────────────────────────
  * pixdcon/<device>/<scene>/settings/day_start_hour   default: 7
  * pixdcon/<device>/<scene>/settings/night_start_hour default: 19
- * pixdcon/<device>/<scene>/settings/bri_day          default: 20
- * pixdcon/<device>/<scene>/settings/bri_night        default: 8
+ * pixdcon/<device>/<scene>/settings/bri_day          default: 8  (percent, converted to 0-255)
+ * pixdcon/<device>/<scene>/settings/bri_night        default: 3  (percent, converted to 0-255)
  * pixdcon/<device>/<scene>/settings/show_seconds_day   default: true
  * pixdcon/<device>/<scene>/settings/show_seconds_night default: false
  *
@@ -85,8 +85,8 @@ const BRI_HEARTBEAT_MS = 5 * 60 * 1000;
 const DEFAULT_SETTINGS = {
   dayStartHour: 7,
   nightStartHour: 19,
-  briDay: 20,
-  briNight: 8,
+  briDay: 8,
+  briNight: 3,
   showSecondsDay: true,
   showSecondsNight: false,
   sonnenPollMs: 3000,
@@ -123,20 +123,20 @@ export default {
     },
     bri_day: {
       type: "int",
-      label: "Day Brightness",
+      label: "Day Brightness (%)",
       group: "Brightness",
-      default: 20,
+      default: 8,
       min: 1,
-      max: 255,
+      max: 100,
       step: 1,
     },
     bri_night: {
       type: "int",
-      label: "Night Brightness",
+      label: "Night Brightness (%)",
       group: "Brightness",
-      default: 8,
+      default: 3,
       min: 1,
-      max: 255,
+      max: 100,
       step: 1,
     },
     show_seconds_day: {
@@ -313,8 +313,9 @@ export default {
     const mode = isDay ? "day" : "night";
     const C = isDay ? DAY : NIGHT;
 
-    // Brightness: debug override > settings
-    const targetBri = this._debug.briOverride ?? (isDay ? briDay : briNight);
+    // Brightness: debug override > settings (% → native 0-255)
+    const targetPct = this._debug.briOverride ?? (isDay ? briDay : briNight);
+    const targetBri = Math.round((targetPct / 100) * 255);
 
     const modeChanged = mode !== this._lastMode;
     const briHeartbeat = Date.now() - this._lastBriSet >= BRI_HEARTBEAT_MS;
