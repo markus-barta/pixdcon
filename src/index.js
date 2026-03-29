@@ -171,6 +171,7 @@ async function startDevice(device) {
     powerCyclePlugin: device.powerCyclePlugin || null,
     maxPowerCycles:
       typeof device.maxPowerCycles === "number" ? device.maxPowerCycles : 10,
+    brightnessMax: device.type === "ulanzi" ? 255 : 100,
   });
 
   renderLoops.push({ device, loop });
@@ -183,6 +184,31 @@ async function startDevice(device) {
       const mode = msg.trim().toLowerCase();
       if (["play", "pause", "stop"].includes(mode)) {
         loop.setMode(mode);
+      }
+    });
+
+    // Per-device brightness override (retained)
+    // Payload: JSON {"enabled":true,"value":50} (0-100%) or empty string to clear
+    const briTopic = `${mqttService.baseTopic}/${device.name}/brightness_override`;
+    mqttService.subscribeDevice(device.name, briTopic, (msg) => {
+      const trimmed = msg.trim();
+      if (!trimmed) {
+        loop.setBrightnessOverride(null);
+        return;
+      }
+      try {
+        const data = JSON.parse(trimmed);
+        if (data.enabled && typeof data.value === "number") {
+          const native =
+            device.type === "ulanzi"
+              ? Math.round((data.value * 255) / 100)
+              : Math.round(data.value);
+          loop.setBrightnessOverride(native);
+        } else {
+          loop.setBrightnessOverride(null);
+        }
+      } catch {
+        loop.setBrightnessOverride(null);
       }
     });
   }

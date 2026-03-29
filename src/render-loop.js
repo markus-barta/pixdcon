@@ -80,6 +80,44 @@ export class RenderLoop {
     // Mode control
     this._mode = "play"; // "play" | "pause" | "stop"
     this._modeChanged = null; // Promise resolve fn for wake-up
+
+    // Brightness override (null = scene controls, number = override in native range)
+    this.brightnessOverride = null;
+    this.lastBrightness = null;
+    this.brightnessMax = options.brightnessMax ?? 100;
+    this._installBrightnessProxy();
+  }
+
+  /**
+   * Wrap driver.setBrightness so the render loop can intercept scene calls
+   * and apply an override value instead when active.
+   */
+  _installBrightnessProxy() {
+    const origFn = this.driver.setBrightness.bind(this.driver);
+    this._originalSetBrightness = origFn;
+    this.driver.setBrightness = async (level) => {
+      this.lastBrightness = level;
+      if (this.brightnessOverride != null) {
+        return origFn(this.brightnessOverride);
+      }
+      return origFn(level);
+    };
+  }
+
+  /**
+   * Set or clear brightness override.
+   * @param {number|null} value - native-range brightness, or null to clear
+   */
+  setBrightnessOverride(value) {
+    const prev = this.brightnessOverride;
+    this.brightnessOverride = value;
+    if (value != null && value !== prev) {
+      // Apply immediately
+      this._originalSetBrightness(value);
+    }
+    this.logger.info(
+      `[RenderLoop:${this.deviceName}] Brightness override: ${value ?? "off"}`,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -514,6 +552,9 @@ export class RenderLoop {
       currentBackoff: this.currentBackoff,
       lastSuccessTime: this.lastSuccessTime,
       powerCycleCount: this.powerCycleCount,
+      brightnessOverride: this.brightnessOverride,
+      lastBrightness: this.lastBrightness,
+      brightnessMax: this.brightnessMax,
     };
   }
 }
