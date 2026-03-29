@@ -1,6 +1,6 @@
 {
   "name": "pixdcon",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Pixel display controller for AWTRIX/Ulanzi + Pixoo64 LED matrices",
   "main": "src/index.js",
   "type": "module",
