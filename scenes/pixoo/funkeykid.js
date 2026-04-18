@@ -495,6 +495,7 @@ export default {
             color: data.color ? parseHexColor(data.color) : [255, 204, 0],
           };
           this._volumeBarAt = Date.now();
+          context.logger.info(`[funkeykid] volume bar: ${this._volumeBar.percent}% (${this._volumeBar.bars_filled}/${this._volumeBar.bars_total})`);
         } else {
           // A real letter/image update cancels any volume overlay immediately.
           this._volumeBar = null;
@@ -578,32 +579,76 @@ export default {
     }
 
     // FKID-2: Volume bar overlay. Takes over the whole canvas while active.
+    // Vertical VU-meter style: green narrow at bottom → red wide at top.
+    // "VOLUME" label on top, percent in neutral gray at the bottom.
     const VOLUME_BAR_TTL_MS = 1500;
     if (this._volumeBar && (now - this._volumeBarAt) < VOLUME_BAR_TTL_MS) {
       const vb = this._volumeBar;
-      const c = colorEnabled ? vb.color : [255, 255, 255];
-      // Muted version of c — filled segments in c, empty in dim-c.
-      const dim = [Math.round(c[0] * 0.22), Math.round(c[1] * 0.22), Math.round(c[2] * 0.22)];
-      // Bar geometry: 10 segments × 5px + 9 gaps × 1px = 59px wide, start x=2. Height 12 at y=30.
-      const segCount = vb.bars_total;
-      const segW = 5, segH = 14, segGap = 1, barY = 30;
-      const barTotalW = segCount * segW + (segCount - 1) * segGap;
-      const startX = Math.round((64 - barTotalW) / 2);
+      const segCount = vb.bars_total;            // 10
+      const filledCount = vb.bars_filled;
+      // Per-segment base color: green at bottom (i=0) → red at top (i=9).
+      const VU_PALETTE = [
+        [40, 220, 40],   // 0 green
+        [90, 220, 40],
+        [140, 220, 40],
+        [180, 220, 40],
+        [220, 200, 40], // 4 yellow-green
+        [230, 160, 40],
+        [240, 130, 40],
+        [240, 100, 40],
+        [240, 70, 40],
+        [240, 40, 40],  // 9 red
+      ];
+      const LABEL_GRAY = [170, 170, 170];
+      const VALUE_GRAY = [150, 150, 150];
+
+      // Geometry. Bar segments stack bottom→top: i=0 is drawn at the bottom.
+      const segHeight = 3;
+      const segGap = 1;
+      const minW = 10;   // narrowest bottom segment
+      const maxW = 54;   // widest top segment
+      const barTopY = 9;
+      const barBotY = barTopY + segCount * segHeight + (segCount - 1) * segGap - 1;
+
       for (let i = 0; i < segCount; i++) {
-        const x0 = startX + i * (segW + segGap);
-        const filled = i < vb.bars_filled;
-        const col = filled ? c : dim;
-        for (let dy = 0; dy < segH; dy++) {
-          for (let dx = 0; dx < segW; dx++) {
-            device._setPixel(x0 + dx, barY + dy, col[0], col[1], col[2]);
+        const filled = i < filledCount;
+        const baseIdx = VU_PALETTE[i] ? i : Math.min(i, VU_PALETTE.length - 1);
+        const base = colorEnabled ? VU_PALETTE[baseIdx] : [200, 200, 200];
+        // Unfilled: dim shade of the segment's own base color (still hints at the gradient).
+        const col = filled
+          ? base
+          : [Math.round(base[0] * 0.12), Math.round(base[1] * 0.12), Math.round(base[2] * 0.12)];
+        // Width grows linearly with i so bottom = narrow, top = wide.
+        const w = Math.round(minW + (maxW - minW) * (i / (segCount - 1)));
+        const startX = Math.round((64 - w) / 2);
+        // Segment y (bottom-up): i=0 lives at barBotY, i=9 at barTopY.
+        const y = barBotY - (i * (segHeight + segGap) + segHeight - 1);
+        // Simple 3D shading: top row lighter, bottom row darker, middle row base.
+        const lighter = [
+          Math.min(255, col[0] + 40),
+          Math.min(255, col[1] + 40),
+          Math.min(255, col[2] + 40),
+        ];
+        const darker = [
+          Math.max(0, col[0] - 50),
+          Math.max(0, col[1] - 50),
+          Math.max(0, col[2] - 50),
+        ];
+        for (let dy = 0; dy < segHeight; dy++) {
+          const shade = dy === 0 ? lighter : (dy === segHeight - 1 ? darker : col);
+          for (let dx = 0; dx < w; dx++) {
+            device._setPixel(startX + dx, y + dy, shade[0], shade[1], shade[2]);
           }
         }
       }
-      // Label above the bar: "Lautstärke"
-      await drawText("lautstaerke", [32, 6], c, "center");
-      // Percent value below the bar.
+
+      // Top label "VOLUME" + bottom percentage, both in neutral gray.
+      await device.drawTextRgbaAligned("volume", [33, 3], [0, 0, 0], "center");
+      await device.drawTextRgbaAligned("volume", [32, 2], LABEL_GRAY, "center");
       const pctText = `${vb.percent}%`;
-      await drawText(pctText, [32, 50], c, "center");
+      await device.drawTextRgbaAligned(pctText, [33, 56], [0, 0, 0], "center");
+      await device.drawTextRgbaAligned(pctText, [32, 55], VALUE_GRAY, "center");
+
       await device.push();
       return 60;
     }
