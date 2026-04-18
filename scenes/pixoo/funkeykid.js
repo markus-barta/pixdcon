@@ -432,6 +432,10 @@ export default {
   _unsubscribeSettings: null,
   _bgImages: {},     // Preloaded bg images keyed by letter
   _idlePhase: 0,
+  // FKID-2: volume bar-graph overlay — shown when funkeykid publishes
+  // {bar:true, percent, bars_total, bars_filled} instead of a letter.
+  _volumeBar: null,  // { percent, bars_filled, bars_total, color:[r,g,b] }
+  _volumeBarAt: 0,   // timestamp; bar shows for ~1.5s after last update
 
   async init(context) {
     this._settings = context.settings.all();
@@ -479,6 +483,22 @@ export default {
         this._lastKeypressAt = Date.now();
         if (imgName) this._lastImageName = imgName;
         if (this._currentLetter) this._lastLetter = this._currentLetter;
+
+        // FKID-2: volume bar overlay. Payload carries bar:true for volume updates.
+        if (data.bar === true) {
+          const total = Math.max(1, data.bars_total || 10);
+          const filled = Math.max(0, Math.min(total, data.bars_filled ?? 0));
+          this._volumeBar = {
+            percent: typeof data.percent === "number" ? data.percent : 0,
+            bars_total: total,
+            bars_filled: filled,
+            color: data.color ? parseHexColor(data.color) : [255, 204, 0],
+          };
+          this._volumeBarAt = Date.now();
+        } else {
+          // A real letter/image update cancels any volume overlay immediately.
+          this._volumeBar = null;
+        }
       } catch (e) {
         context.logger.error(`[funkeykid] Bad MQTT payload: ${e.message}`);
       }
@@ -555,6 +575,41 @@ export default {
 
       await device.push();
       return 1000; // 1 FPS when idle with bg image
+    }
+
+    // FKID-2: Volume bar overlay. Takes over the whole canvas while active.
+    const VOLUME_BAR_TTL_MS = 1500;
+    if (this._volumeBar && (now - this._volumeBarAt) < VOLUME_BAR_TTL_MS) {
+      const vb = this._volumeBar;
+      const c = colorEnabled ? vb.color : [255, 255, 255];
+      // Muted version of c — filled segments in c, empty in dim-c.
+      const dim = [Math.round(c[0] * 0.22), Math.round(c[1] * 0.22), Math.round(c[2] * 0.22)];
+      // Bar geometry: 10 segments × 5px + 9 gaps × 1px = 59px wide, start x=2. Height 12 at y=30.
+      const segCount = vb.bars_total;
+      const segW = 5, segH = 14, segGap = 1, barY = 30;
+      const barTotalW = segCount * segW + (segCount - 1) * segGap;
+      const startX = Math.round((64 - barTotalW) / 2);
+      for (let i = 0; i < segCount; i++) {
+        const x0 = startX + i * (segW + segGap);
+        const filled = i < vb.bars_filled;
+        const col = filled ? c : dim;
+        for (let dy = 0; dy < segH; dy++) {
+          for (let dx = 0; dx < segW; dx++) {
+            device._setPixel(x0 + dx, barY + dy, col[0], col[1], col[2]);
+          }
+        }
+      }
+      // Label above the bar: "Lautstärke"
+      await drawText("lautstaerke", [32, 6], c, "center");
+      // Percent value below the bar.
+      const pctText = `${vb.percent}%`;
+      await drawText(pctText, [32, 50], c, "center");
+      await device.push();
+      return 60;
+    }
+    if (this._volumeBar && (now - this._volumeBarAt) >= VOLUME_BAR_TTL_MS) {
+      // Expire once the TTL is up so subsequent frames skip the overlay cheaply.
+      this._volumeBar = null;
     }
 
     // Active: bg image + letter top-left + word bottom-center
