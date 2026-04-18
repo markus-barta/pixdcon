@@ -1,17 +1,31 @@
 /**
- * funkeykid — Pixoo64 scene for educational keyboard display
+ * funkeykid — Pixoo64 scene for the educational keyboard display.
  *
- * Subscribes to MQTT topic `home/hsb1/funkeykid/display` and renders
- * the pressed letter large and colorful on a background image.
+ * Subscribes to MQTT topic `home/hsb1/funkeykid/display` and renders:
+ *   (a) letter + word + background image for keypress payloads, or
+ *   (b) a vertical VU-meter overlay for volume-change payloads (FKID-2).
  *
- * Payload format: {"letter": "A", "word": "Apfel", "color": "#FF0000"}
+ * Payload contract (published by the funkeykid Python server — display.py):
  *
- * Flow:
- *   1. Keypress → draw bg image + letter (shadow: black at x,y then color at x-1,y-1) + word
- *   2. After 10s idle → show bg image only (no text)
- *   3. No keypress ever → show last bg image or idle animation
+ *   keypress:  {letter, word, image, color}
+ *   volume:    {letter:"NN%", word:"lautstaerke", color, bar:true,
+ *               percent, bars_total, bars_filled}
  *
- * pixdcon is SSOT — if user switches to another scene, this stops.
+ * The handler inspects `bar` to decide whether to touch letter state or
+ * only the volume overlay state — volume updates must NOT pollute
+ * _currentLetter / _currentWord / _currentColor, otherwise stale "NN%"
+ * text would leak into the fallback render path once the overlay expires.
+ *
+ * Render priorities (top → bottom in render()):
+ *   1. Volume overlay   — active while _volumeBar && age < 1500 ms
+ *   2. Idle             — no keypress within idle_timeout_ms (default 10s)
+ *   3. Active           — bg image + big letter + word
+ *
+ * Idle timeout, letter scale, color toggle are scene settings surfaced
+ * via pixdcon's config.json → sceneSettings.funkeykid block.
+ *
+ * pixdcon is SSOT — when the user switches to another scene on this
+ * device, this scene unsubscribes and stops rendering.
  */
 
 import { dirname, resolve } from "path";
