@@ -475,17 +475,11 @@ export default {
           newImage = this._bgImages[imgName] || null;
         }
 
-        // Now update state atomically — render loop sees consistent state
-        this._currentLetter = data.letter || null;
-        this._currentWord = data.word || null;
-        this._currentColor = data.color ? parseHexColor(data.color) : randomColor();
-        this._currentImage = newImage;
-        this._lastKeypressAt = Date.now();
-        if (imgName) this._lastImageName = imgName;
-        if (this._currentLetter) this._lastLetter = this._currentLetter;
-
-        // FKID-2: volume bar overlay. Payload carries bar:true for volume updates.
         if (data.bar === true) {
+          // Volume update: only touch the overlay state. Letter-rendering
+          // state must stay exactly as a previous real keypress left it,
+          // otherwise "60%"/"lautstaerke" leak into the fallback path
+          // once the bar's TTL expires.
           const total = Math.max(1, data.bars_total || 10);
           const filled = Math.max(0, Math.min(total, data.bars_filled ?? 0));
           this._volumeBar = {
@@ -497,7 +491,14 @@ export default {
           this._volumeBarAt = Date.now();
           context.logger.info(`[funkeykid] volume bar: ${this._volumeBar.percent}% (${this._volumeBar.bars_filled}/${this._volumeBar.bars_total})`);
         } else {
-          // A real letter/image update cancels any volume overlay immediately.
+          // Real letter/image update — snapshot full state, drop any overlay.
+          this._currentLetter = data.letter || null;
+          this._currentWord = data.word || null;
+          this._currentColor = data.color ? parseHexColor(data.color) : randomColor();
+          this._currentImage = newImage;
+          this._lastKeypressAt = Date.now();
+          if (imgName) this._lastImageName = imgName;
+          if (this._currentLetter) this._lastLetter = this._currentLetter;
           this._volumeBar = null;
         }
       } catch (e) {
@@ -554,7 +555,12 @@ export default {
       await device.drawTextRgbaAligned(text, pos, [c[0], c[1], c[2]], align);
     };
 
-    if (isIdle) {
+    // FKID-2: The volume overlay wins over both idle and letter rendering
+    // while its TTL is alive, so volume changes are visible even when the
+    // device is otherwise idle.
+    const volumeBarActive = this._volumeBar && (now - this._volumeBarAt) < 1500;
+
+    if (isIdle && !volumeBarActive) {
       // Idle: show last image (no text), or color-cycle if no letter yet
       const bgImg = this._currentImage || (this._lastImageName ? this._bgImages[this._lastImageName] : null);
 
@@ -581,8 +587,7 @@ export default {
     // FKID-2: Volume bar overlay. Takes over the whole canvas while active.
     // Vertical VU-meter style: green narrow at bottom → red wide at top.
     // "VOLUME" label on top, percent in neutral gray at the bottom.
-    const VOLUME_BAR_TTL_MS = 1500;
-    if (this._volumeBar && (now - this._volumeBarAt) < VOLUME_BAR_TTL_MS) {
+    if (volumeBarActive) {
       const vb = this._volumeBar;
       const segCount = vb.bars_total;            // 10
       const filledCount = vb.bars_filled;
@@ -652,8 +657,8 @@ export default {
       await device.push();
       return 60;
     }
-    if (this._volumeBar && (now - this._volumeBarAt) >= VOLUME_BAR_TTL_MS) {
-      // Expire once the TTL is up so subsequent frames skip the overlay cheaply.
+    if (this._volumeBar && !volumeBarActive) {
+      // Expire once the TTL is up so subsequent frames skip the check cheaply.
       this._volumeBar = null;
     }
 
