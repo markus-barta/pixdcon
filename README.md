@@ -184,7 +184,7 @@ pixdcon/<device>/<scene>/settings/<key>
 
 ## Deployment on hsb1
 
-See `docs/DEPLOY.md` for the full deployment guide.
+See `docs/DEPLOY.md` for the full deployment guide — including the **source-of-truth** rules (the live mount on `hsb1` is authoritative; the repo's `config.json` is a dev sample and is usually behind the live one).
 
 ```bash
 # Logs
@@ -197,6 +197,11 @@ ssh mba@hsb1 "cd ~/docker && docker compose pull pixdcon && docker compose up -d
 
 # Deploy scene file change only (hot-reload, no restart):
 scp scenes/pixoo/home.js mba@hsb1:~/docker/mounts/pixdcon/scenes/pixoo/home.js
+
+# Edit live config (ALWAYS pull first — web UI saves into the live copy):
+scp mba@hsb1:~/docker/mounts/pixdcon/config.json /tmp/config.live.json
+# edit, then push back:
+scp /tmp/config.live.json mba@hsb1:~/docker/mounts/pixdcon/config.json
 ```
 
 ---

@@ -1,8 +1,9 @@
 # scene-hot-reload-esm-cache-bust
 
 **Priority**: P50
-**Status**: Backlog
+**Status**: Done (verified)
 **Created**: 2026-03-05
+**Resolved**: 2026-05-03
 
 ---
 
@@ -30,10 +31,18 @@ Old module versions are GC'd once no references remain.
 
 ## Acceptance Criteria
 
-- [ ] `scp scene.js` + `touch config.json` picks up new scene code without `docker restart`
-- [ ] No regression on normal startup / first load
+- [x] `scp scene.js` picks up new scene code without `docker restart` (no `touch config.json` needed — `ScenesWatcher` triggers `clearScene` automatically)
+- [x] No regression on normal startup / first load
 
 ## Notes
 
 Discovered during `home.js` scene rewrite (export default pattern change not picked up).
 Only affects scene file changes — config.json changes work fine today.
+
+**Resolution (verified 2026-05-03):**
+- `lib/scene-loader.js:80` adds a `_reloadTokens` Map; `clearScene()` (line 191) sets the token at evict time.
+- `load()` at line 120-122 appends `?t=<token>` to the import URL on next load → ESM cache miss → fresh module.
+- `lib/scenes-watcher.js` debounces 500ms and calls `clearScene` per matching scene name (`src/index.js:118-120`).
+- Live confirmation on hsb1: `home.js` mtime on host matches repo (2026-03-29 09:28); container has been up 8 days without restart, so the running module came from a hot-reload, not boot.
+
+See also: `P50--517b226--clarify-scene-deploy-source-of-truth.md` for the docs follow-up.

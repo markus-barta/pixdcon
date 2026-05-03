@@ -33,6 +33,58 @@ Scene paths in `config.json` are **relative** to the config file (e.g. `./scenes
 
 ---
 
+## Source of truth — read this first
+
+> **The live mount on `hsb1` is authoritative for `config.json` and `scenes/*.js`.**
+> The repo's `config.json` is a dev sample. The repo's `scenes/*.js` are the canonical version of *committed* scenes, but the host copies can drift (web UI saves settings into `config.json`; "Clone & Detach" writes to `generated-scenes/`).
+
+| Asset                            | Authoritative location                                         | Edited by                            |
+| -------------------------------- | -------------------------------------------------------------- | ------------------------------------ |
+| `config.json` (effective)        | `mba@hsb1:~/docker/mounts/pixdcon/config.json`                 | Web UI saves + manual `scp`          |
+| `scenes/*.js` (committed)        | Repo `scenes/`, mirrored to host on deploy                     | Editor + `scp` to live mount         |
+| `generated-scenes/*.js`          | `mba@hsb1:~/docker/mounts/pixdcon/generated-scenes/`           | Web UI "Clone & Detach" only         |
+| App code (`src/`, `lib/`, deps)  | Image `ghcr.io/markus-barta/pixdcon:latest`                    | CI on push to `main`                 |
+
+**Before any change to a scene that's currently running:**
+
+```bash
+# Snapshot the live copy so you can roll back instantly
+ssh mba@hsb1 "cp ~/docker/mounts/pixdcon/scenes/pixoo/home.js ~/docker/mounts/pixdcon/scenes/pixoo/home.js.bak"
+```
+
+**Before changing `config.json`:**
+
+```bash
+# Pull the live config first — it has settings the repo doesn't
+scp mba@hsb1:~/docker/mounts/pixdcon/config.json /tmp/config.live.json
+# Edit /tmp/config.live.json, then push back
+scp /tmp/config.live.json mba@hsb1:~/docker/mounts/pixdcon/config.json
+```
+
+---
+
+## Scene hot-reload — how it actually works
+
+`ScenesWatcher` (`lib/scenes-watcher.js`) watches every directory returned by `SceneLoader.getSceneDirs()` (one per scene path in `config.json`). On `change`/`rename` for any `*.js`:
+
+1. Debounce 500 ms.
+2. `findScenesByFilename(filename)` → matching scene names.
+3. For each match: `SceneLoader.clearScene(name)`:
+   - Calls `scene.destroy(ctx)` so MQTT subs and intervals are released.
+   - Removes the cache entry.
+   - Sets `_reloadTokens.set(name, Date.now())`.
+4. Render loop's next tick re-imports with `?t=<token>` appended to the path → ESM cache miss → fresh module → `init()` runs again.
+
+**Implication:** `scp newfile.js` to the live mount is the entire deploy. No restart, no `touch config.json`. Container stays up.
+
+**Failure modes:**
+
+- New module throws on import → render loop catches, logs `[SceneLoader] Failed to load scene "<name>"`, retries with backoff (1s → 10min cap). Display shows last frame until recovery; re-`scp` a working version to fix.
+- New `init()` throws → same as above; `destroy()` of the *previous* version already ran, so the previous subscriptions are gone.
+- New `settingsSchema` adds keys → defaults apply automatically; existing values in `config.json` survive untouched.
+
+---
+
 ## Deploy paths
 
 ### 1. Scene file changed (`scenes/*.js`)
@@ -41,12 +93,43 @@ Scene paths in `config.json` are **relative** to the config file (e.g. `./scenes
 scp scenes/pixoo/home.js mba@hsb1:~/docker/mounts/pixdcon/scenes/pixoo/home.js
 # ScenesWatcher detects the change and hot-reloads within seconds.
 # No container restart needed.
+
+# Optional: confirm reload landed
+ssh mba@hsb1 "docker logs pixdcon --tail 20 | grep -E 'evicted|Loaded scene|Failed'"
 ```
+
+### 1a. Iterative scene rewrite (e.g. v2 of `home.js`)
+
+When you're going to push many tweaks in a row, work safely:
+
+```bash
+# 1. Snapshot the live version (one time, at the start of the session)
+ssh mba@hsb1 "cp ~/docker/mounts/pixdcon/scenes/pixoo/home.js ~/docker/mounts/pixdcon/scenes/pixoo/home.js.bak"
+
+# 2. Iterate: edit local → scp → watch logs → repeat
+scp scenes/pixoo/home.js mba@hsb1:~/docker/mounts/pixdcon/scenes/pixoo/home.js
+ssh mba@hsb1 "docker logs pixdcon --tail 5"
+
+# 3. Roll back fast if something goes sideways
+ssh mba@hsb1 "cp ~/docker/mounts/pixdcon/scenes/pixoo/home.js.bak ~/docker/mounts/pixdcon/scenes/pixoo/home.js"
+
+# 4. When happy, commit + push the local file (image is unchanged — repo is just history)
+git add scenes/pixoo/home.js && git commit && git push
+```
+
+Notes:
+- ScenesWatcher fires on every save → leave windows open and watch logs.
+- Brittle changes (new MQTT topics, new image assets) need the assets in place *before* the scp lands or `init()` will throw on first load.
 
 ### 2. Config changed (`config.json`)
 
+> ⚠ **Pull-before-push.** The live config is edited by the web UI and is almost always ahead of the repo's `config.json`. Overwriting it blindly will revert UI-saved settings.
+
 ```bash
-scp config.json mba@hsb1:~/docker/mounts/pixdcon/config.json
+# Pull → edit → push
+scp mba@hsb1:~/docker/mounts/pixdcon/config.json /tmp/config.live.json
+$EDITOR /tmp/config.live.json
+scp /tmp/config.live.json mba@hsb1:~/docker/mounts/pixdcon/config.json
 ```
 
 ConfigWatcher picks it up automatically. No restart needed.
