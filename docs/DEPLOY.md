@@ -121,6 +121,49 @@ Notes:
 - ScenesWatcher fires on every save → leave windows open and watch logs.
 - Brittle changes (new MQTT topics, new image assets) need the assets in place *before* the scp lands or `init()` will throw on first load.
 
+### 1b. Visual verification — capture the live frame
+
+`pixdcon` already serves the live render on `GET /api/previews` (the same data the web UI shows). Use `scripts/preview-to-png.js` to fetch + decode + upscale to a PNG you can eyeball:
+
+```bash
+# Defaults: --host hsb1:8080 --device pixoo-159 --out /tmp/frame.png --scale 8
+node scripts/preview-to-png.js
+open /tmp/frame.png
+
+# Other devices / scales:
+node scripts/preview-to-png.js --device pixoo-189 --scale 16
+node scripts/preview-to-png.js --host localhost:8080
+```
+
+The buffer captured is the exact RGB sent to the device on the last `push()`. If the device is unreachable, no frame is captured (push throws before the preview hook fires).
+
+### 1c. Inject test state via retained MQTT
+
+For value-specific testing without waiting for the real world (e.g. seeing what the UV tile looks like at UVI 11 in the middle of winter), scenes should expose debug-override topics under `pixdcon/debug/<key>`. Pattern: handler accepts a numeric/JSON payload to override, treats null/empty as clear.
+
+Example — inject extreme UV state on `home`:
+
+```bash
+PASS='<MOSQUITTO_PASS>'   # from /run/agenix/hsb1-pixdcon-env on hsb1
+H='192.168.1.101'
+
+# Set: current UVI=11 + a 14-element forecast for hours 06..19
+ssh mba@hsb1 "echo 11 | mosquitto_pub -h $H -u smarthome -P '$PASS' -t pixdcon/debug/uv_now_override -r -s"
+ssh mba@hsb1 "echo '[0,0.5,1.5,3,5,7,9,11,11,10,8,5,2,0]' | mosquitto_pub -h $H -u smarthome -P '$PASS' -t pixdcon/debug/uv_hourly_override -r -s"
+
+# Capture
+node scripts/preview-to-png.js --out /tmp/uv-extreme.png
+
+# Clear (use -n for a null payload — NOT -s with empty stdin, which sends "\n")
+ssh mba@hsb1 "mosquitto_pub -h $H -u smarthome -P '$PASS' -t pixdcon/debug/uv_now_override -r -n"
+ssh mba@hsb1 "mosquitto_pub -h $H -u smarthome -P '$PASS' -t pixdcon/debug/uv_hourly_override -r -n"
+```
+
+Existing debug-override topics on `home`:
+- `pixdcon/debug/bri_override` — display brightness 1-100 (or empty to clear)
+- `pixdcon/debug/uv_now_override` — current UVI float
+- `pixdcon/debug/uv_hourly_override` — JSON array of 14 hourly UVI floats (06..19)
+
 ### 2. Config changed (`config.json`)
 
 > ⚠ **Pull-before-push.** The live config is edited by the web UI and is almost always ahead of the repo's `config.json`. Overwriting it blindly will revert UI-saved settings.
