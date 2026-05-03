@@ -429,7 +429,7 @@ function uvBandColor(uvi) {
 // ── Cell: UV index + 14-hour forecast curve ───────────────────────────────────
 //
 // Layout (cell anchored at cellX0, cellY0; 20w × 18h):
-//   y 27-31 (5 rows): current UV value, right-aligned, color = current uvBand
+//   y 28-32 (5 rows): current UV value, right-aligned, color = current uvBand
 //   y 32-41 (10 rows): curve area, 1px per UVI unit (cap 11)
 //   y 42:    x-axis baseline (dim gray)
 //   y 43:    x-tick row (dots at 06:00, 12:00, 18:00)
@@ -437,7 +437,8 @@ function uvBandColor(uvi) {
 //   x 47-60: 14 hourly bars (06..19), each height = round(uvi[h]) capped at 11
 //
 // Per-hour bar at 50% RGB (cell bg is black). The "now" column draws at 100%
-// using the live MQTT current value (not interpolated forecast).
+// using the live MQTT current value (not interpolated forecast). Upcoming-hour
+// bars draw their top (peak) pixel at 100% to highlight the forecast curve.
 
 async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
   const baselineY = cellY0 + 15; // y=42 — x-axis
@@ -446,7 +447,7 @@ async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
   const curveX0 = cellX0 + 3; // x=47 — first hour col (06:00)
   const HOURS = 14; // 06..19 inclusive (half-open up to 20)
   const TEXT_RIGHT_X = cellX0 + 19; // x=63 — cell right edge
-  const TEXT_TOP_Y = cellY0; // y=27 — cell top
+  const TEXT_TOP_Y = cellY0 + 1; // y=28 — 1px below cell top for visual breathing room
   const dimGray = [60, 60, 60];
 
   // Number (right-aligned at top-right)
@@ -480,7 +481,9 @@ async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
   const nowColOffset = Math.round(nowH - 6);
   const nowInWindow = nowColOffset >= 0 && nowColOffset < HOURS;
 
-  // Hourly bars at 50% RGB; skip the now-col (drawn fully below)
+  // Hourly bars at 50% RGB; skip the now-col (drawn fully below).
+  // Upcoming hours (i > nowColOffset) get their top pixel at 100% to make the
+  // forecast peak read as a curve.
   if (Array.isArray(hourlyUvi) && hourlyUvi.length === HOURS) {
     for (let i = 0; i < HOURS; i++) {
       if (nowInWindow && i === nowColOffset) continue;
@@ -488,7 +491,14 @@ async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
       if (!Number.isFinite(v) || v <= 0) continue;
       const h = Math.min(11, Math.round(v));
       const [r, g, b] = uvBandColor(v);
-      vLine(d, curveX0 + i, baselineY - h, baselineY - 1, r >> 1, g >> 1, b >> 1);
+      const x = curveX0 + i;
+      const topY = baselineY - h;
+      const isUpcoming = i > nowColOffset;
+      const bodyTop = isUpcoming ? topY + 1 : topY;
+      if (bodyTop <= baselineY - 1) {
+        vLine(d, x, bodyTop, baselineY - 1, r >> 1, g >> 1, b >> 1);
+      }
+      if (isUpcoming) d._setPixel(x, topY, r, g, b);
     }
   }
 
