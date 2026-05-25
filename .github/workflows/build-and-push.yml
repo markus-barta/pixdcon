@@ -16,9 +16,17 @@ jobs:
       contents: read
       packages: write # Required to push to GHCR
 
+    env:
+      # Node.js 20 is being removed from the runner on 2026-09-16 and forced
+      # to Node 24 on 2026-06-02. Opt in early so we don't get surprise
+      # behavior changes — and so the deprecation warnings stop spamming
+      # every build log. Docker actions (@v3/@v5/@v6) and checkout@v5 all
+      # natively support Node 24, so this env var is belt-and-braces.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
