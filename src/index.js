@@ -15,6 +15,7 @@ import { ScenesWatcher } from "../lib/scenes-watcher.js";
 import { WebServer } from "../lib/web-server.js";
 import { FramePreviewStore } from "../lib/frame-preview-store.js";
 import { SceneSettingsService } from "../lib/scene-settings-service.js";
+import { TelemetryCollector } from "../lib/telemetry-collector.js";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
@@ -62,6 +63,7 @@ let webServer = null;
 let framePreviewStore = null;
 let sceneMetadata = {};
 let sceneSettingsService = null;
+let telemetryCollector = null;
 
 // ---------------------------------------------------------------------------
 
@@ -227,6 +229,8 @@ async function startDevice(device) {
     }
   });
 
+  if (telemetryCollector) telemetryCollector.start(device);
+
   return loop;
 }
 
@@ -234,6 +238,7 @@ async function stopAllDevices() {
   logger.info(`[pixdcon] Stopping ${renderLoops.length} device(s)...`);
   for (const { loop, device } of renderLoops) {
     loop.stop();
+    if (telemetryCollector) telemetryCollector.stop(device.name);
     if (framePreviewStore) framePreviewStore.unregisterDevice(device.name);
     if (mqttService) {
       mqttService.unsubscribeDevice(device.name);
@@ -341,6 +346,7 @@ async function shutdown(signal) {
   if (scenesWatcher) scenesWatcher.stop();
   if (configOverlay) configOverlay.unsubscribe();
   if (sceneSettingsService) sceneSettingsService.stop();
+  if (telemetryCollector) telemetryCollector.stopAll();
   if (webServer) webServer.stop();
 
   await stopAllDevices();
@@ -398,6 +404,16 @@ async function main() {
     logger,
   });
   await sceneSettingsService.start();
+
+  // Telemetry — per-Ulanzi periodic /api/stats poll → retained MQTT.
+  // No-op when mqttService is null (MQTT disabled / unreachable).
+  if (mqttService) {
+    telemetryCollector = new TelemetryCollector({
+      mqttService,
+      logger,
+      intervalMs: baseConfig.telemetryIntervalMs ?? 60_000,
+    });
+  }
 
   if (mqttService) mqttService.publishConfig(effectiveConfig); // publish merged result
 

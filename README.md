@@ -171,13 +171,14 @@ export default {
 
 All pixdcon topics are prefixed with `home/hsb1/pixdcon/`:
 
-| Topic                         | Direction          | Description                             |
-| ----------------------------- | ------------------ | --------------------------------------- |
-| `.../health`                  | publish retained   | Health status + error count             |
-| `.../state`                   | publish retained   | Running state + per-device frame counts |
-| `.../config/effective`        | publish retained   | Merged effective config                 |
-| `.../<device>/mode`           | subscribe retained | `play` / `pause` / `stop` per device    |
-| `.../overlay/device/+/scenes` | subscribe          | Override scenes list per device         |
+| Topic                         | Direction          | Description                                                                       |
+| ----------------------------- | ------------------ | --------------------------------------------------------------------------------- |
+| `.../health`                  | publish retained   | Health status + error count                                                       |
+| `.../state`                   | publish retained   | Running state + per-device frame counts                                           |
+| `.../config/effective`        | publish retained   | Merged effective config                                                           |
+| `.../<device>/telemetry`      | publish retained   | Ulanzi `/api/stats` snapshot every 60s (uptime, bat_raw, wifi_signal, ram, temp…) |
+| `.../<device>/mode`           | subscribe retained | `play` / `pause` / `stop` per device                                              |
+| `.../overlay/device/+/scenes` | subscribe          | Override scenes list per device                                                   |
 
 Scene settings overlay topics per device + scene:
 
