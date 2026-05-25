@@ -226,6 +226,53 @@ curl -X POST http://192.168.1.56/api/switch \
   -d '{"name":"Time"}'
 ```
 
+### 5. Delete a Custom App (Persist)
+
+`POST /api/custom?name=<X>` with an EMPTY body deletes the app from
+both the in-memory app list AND the on-flash file at `/CUSTOMAPPS/<X>.json`.
+HTTP 200 is returned in both the "deleted" and "didn't exist" cases.
+
+```bash
+curl -X POST "http://192.168.1.57/api/custom?name=pvstats" \
+  -H "Content-Type: application/json" \
+  -d ''
+```
+
+Source: `DisplayManager.cpp`:
+
+```cpp
+// parseCustomPage(name, "", false)
+//   → removeCustomAppFromApps(name, true)
+//     → deleteCustomAppFile(name)
+//       → LittleFS.remove("/CUSTOMAPPS/" + name + ".json")
+```
+
+**Verify with `/list?dir=/CUSTOMAPPS`** — returns a JSON array of files
+currently in flash. After a successful delete the entry is gone.
+
+**Subtle bug** (upstream): `removeCustomAppFromApps` uses `startsWith`
+for in-memory cleanup but `deleteCustomAppFile` deletes only the exact
+filename. ARRAY-type custom apps stored as `<name>0.json`, `<name>1.json`,
+… leave the sibling files on flash → resurrect on next boot. Single-page
+custom apps (`<name>.json`) delete cleanly.
+
+### 6. List Files on Flash
+
+`GET /list?dir=<path>` returns a JSON array of `{type, size, name}`.
+Useful for verifying that delete operations actually persisted.
+
+```bash
+curl --compressed "http://192.168.1.57/list?dir=/CUSTOMAPPS"
+# → []        (empty after our delete)
+
+curl --compressed "http://192.168.1.57/list?dir=/"
+# → [{"type":"dir","size":"0","name":"CUSTOMAPPS"},
+#    {"type":"file","size":"3266","name":"DoNotTouch.json"},
+#    {"type":"dir","size":"0","name":"ICONS"},
+#    {"type":"dir","size":"0","name":"MELODIES"},
+#    {"type":"dir","size":"0","name":"PALETTES"}]
+```
+
 ---
 
 ## MQTT Prefix
