@@ -455,6 +455,7 @@ async function main() {
     },
     mqttService,
     sceneSettingsService,
+    telemetryCollector,
     logger,
   });
   webServer.start();
