@@ -161,9 +161,10 @@ export class RenderLoop {
 
     try {
       if (!this.driver.initialized) {
-        const ok = typeof this.driver.initialize === "function"
-          ? await this.driver.initialize()
-          : true;
+        const ok =
+          typeof this.driver.initialize === "function"
+            ? await this.driver.initialize()
+            : true;
         if (!ok) throw new Error("Driver init failed");
       }
 
@@ -182,7 +183,13 @@ export class RenderLoop {
 
       // Ulanzi built-in apps
       if (typeof this.driver.switchToApp === "function") {
-        const apps = { time: "Time", date: "Date", temp: "Temperature", humidity: "Humidity", battery: "Battery" };
+        const apps = {
+          time: "Time",
+          date: "Date",
+          temp: "Temperature",
+          humidity: "Humidity",
+          battery: "Battery",
+        };
         if (apps[mode]) {
           await this.driver.switchToApp(apps[mode]);
         }
@@ -190,11 +197,12 @@ export class RenderLoop {
 
       this.consecutiveErrors = 0;
       this.currentBackoff = this.initialBackoff;
-      this.logger.info(`[RenderLoop:${this.deviceName}] Built-in mode active: ${mode}`);
+      this.logger.info(
+        `[RenderLoop:${this.deviceName}] Built-in mode active: ${mode}`,
+      );
 
       // Sleep until mode changes or scene changes — no active rendering needed
       await this._waitForWakeup();
-
     } catch (err) {
       this.consecutiveErrors++;
       const wait = Math.min(this.currentBackoff, this.maxBackoff);
@@ -216,7 +224,9 @@ export class RenderLoop {
   /** Change the active scene at runtime. */
   setScene(scene) {
     this.scene = scene || null;
-    this.logger.info(`[RenderLoop:${this.deviceName}] Scene changed to: ${this.scene}`);
+    this.logger.info(
+      `[RenderLoop:${this.deviceName}] Scene changed to: ${this.scene}`,
+    );
     // Wake any current sleep so the new scene takes effect immediately
     if (this._modeChanged) {
       this._modeChanged();
@@ -282,8 +292,13 @@ export class RenderLoop {
       await this.driver.clear();
     } catch {}
     // Pixoo push() takes no args; Ulanzi push(frame) needs a frame — clear() already pushed.
-    if (typeof this.driver.push === "function" && this.driver.push.length === 0) {
-      try { await this.driver.push(); } catch {}
+    if (
+      typeof this.driver.push === "function" &&
+      this.driver.push.length === 0
+    ) {
+      try {
+        await this.driver.push();
+      } catch {}
     }
     // Power off (Ulanzi) / screen off (Pixoo)
     try {
@@ -385,12 +400,15 @@ export class RenderLoop {
         this.consecutiveErrors = 0;
         this.currentBackoff = this.initialBackoff;
       } else {
-        // No power-cycle plugin — original sleep-and-retry behaviour
+        // No power-cycle plugin — sleep-and-retry, but poll device liveness
+        // periodically so we exit early when the device comes back. Avoids
+        // the 10-minute "device is back but pixdcon is still asleep, AWTRIX
+        // is cycling through legacy apps" gap observed 2026-05-25.
         this.logger.warn(
           `[RenderLoop:${this.deviceName}] Circuit open after ${this.consecutiveErrors} errors. ` +
-            `Sleeping ${this.currentBackoff}ms before retry...`,
+            `Sleeping up to ${this.currentBackoff}ms with liveness polling…`,
         );
-        await this._sleep(this.currentBackoff);
+        await this._sleepWithLivenessProbe(this.currentBackoff);
         // Reset so we attempt again; if it fails the counter climbs again
         this.consecutiveErrors = 0;
         this.currentBackoff = this.initialBackoff;
@@ -550,6 +568,38 @@ export class RenderLoop {
         resolve();
       };
     });
+  }
+
+  /**
+   * Sleep for `totalMs` but probe driver liveness every `probeIntervalMs`.
+   * On first successful probe, exit early. Lets the loop reclaim a device
+   * within seconds of it coming back, instead of waiting out the full
+   * circuit-breaker backoff (default 10 min).
+   *
+   * Probe is best-effort — `initialize()` returning truthy is the signal.
+   * Failed probes are silent (we're already in error state); successful
+   * ones log a single info line.
+   */
+  async _sleepWithLivenessProbe(totalMs, probeIntervalMs = 30_000) {
+    const deadline = Date.now() + totalMs;
+    while (Date.now() < deadline && this.running) {
+      const sliceMs = Math.min(probeIntervalMs, deadline - Date.now());
+      await this._sleep(sliceMs);
+      if (!this.running) return;
+      // Time to probe — but only if a wake didn't already exit us early
+      // (setScene/setMode/stop wakes us → bypass probe, fall out naturally).
+      if (Date.now() >= deadline) return;
+      try {
+        if (await this.driver.initialize()) {
+          this.logger.info(
+            `[RenderLoop:${this.deviceName}] Device reachable again — exiting backoff early.`,
+          );
+          return;
+        }
+      } catch {
+        // Probe failed; keep sleeping.
+      }
+    }
   }
 
   /** For external status inspection (e.g. debugging). */

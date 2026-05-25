@@ -138,6 +138,7 @@ async function startDevice(device) {
     driver = new UlanziDriver(device.ip, {
       appName: `pixdcon_${device.name}`,
       logger,
+      cleanupLegacyApps: device.cleanupLegacyApps === true,
     });
   } else if (device.type === "pixoo") {
     driver = new PixooDriver(device.ip, {
@@ -334,9 +335,7 @@ async function reloadConfig(newConfigContent) {
 }
 
 async function shutdown(signal) {
-  logger.info(
-    `[pixdcon] Received ${signal}, shutting down gracefully...`,
-  );
+  logger.info(`[pixdcon] Received ${signal}, shutting down gracefully...`);
 
   if (configWatcher) await configWatcher.stop();
   if (scenesWatcher) scenesWatcher.stop();

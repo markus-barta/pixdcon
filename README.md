@@ -73,6 +73,7 @@ docker run -d --name pixdcon \
       "scenes": ["clock_with_homestats"],
       "minFrameMs": 500,
       "displayName": "Ulanzi Badezimmer",
+      "cleanupLegacyApps": true,
       "sceneSettings": {
         "clock_with_homestats": {
           "bri_day": 30,
@@ -106,6 +107,10 @@ docker run -d --name pixdcon \
 ```
 
 Scene paths are relative to the config file. Locally: `./scenes/` → `./scenes/`. In Docker: `./scenes/` → `/data/scenes/`.
+
+### Optional per-device flags
+
+- `cleanupLegacyApps: true` (Ulanzi/AWTRIX only) — on the first successful driver-init per process start, list `/CUSTOMAPPS/` on the device and POST-empty-body-delete every custom app whose name isn't `pixdcon_<device>`. Use this to wipe pidicon-era leftovers or other stale custom apps that AWTRIX would otherwise cycle through during pixdcon downtime. Best-effort and idempotent. Default `false` to avoid surprising users who installed AWTRIX-store apps on the device manually.
 
 ### Environment variables
 
