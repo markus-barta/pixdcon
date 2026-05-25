@@ -206,6 +206,20 @@ scp /tmp/config.live.json mba@hsb1:~/docker/mounts/pixdcon/config.json
 
 ---
 
+## Recovery — AWTRIX device dropped to AP mode
+
+After a brownout / NVS hiccup an AWTRIX device sometimes loses WiFi credentials and broadcasts an open `AWTRIX_<id>` access point with a captive portal at `http://192.168.4.1`.
+
+To re-provision without typing anything:
+
+1. Join the device's `AWTRIX_<id>` SSID in your WiFi menu (open network, no password).
+2. `./scripts/awtrix-rescue.sh <expected-lan-ip>` — sources home-WiFi credentials from the agenix-managed env file (`~/.inspr/secrets/agents/HOMEWIFI.env`, vars `HOMEWIFI_SSID` + `HOMEWIFI_PASS`), POSTs them to `/connect`, then pings the LAN IP until the device rejoins.
+3. (`<expected-lan-ip>` is optional — leave off to push and skip the verify wait.)
+
+Script never prints the password and uses `curl -F 'password=<file'` to keep the secret out of argv.
+
+---
+
 ## License
 
 AGPL-3.0 | Markus Barta
