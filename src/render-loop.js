@@ -69,7 +69,16 @@ export class RenderLoop {
     this.consecutiveErrors = 0;
     this.maxErrors = 10;
     this.initialBackoff = 1000;
-    this.maxBackoff = 600_000; // 10 minutes
+    // Cap exponential per-error backoff aggressively so device-recovery
+    // latency stays low. Pre-2026-05-25 this was 600_000 (10 min) which
+    // meant at error count ~8 we'd sleep 256 s between attempts — device
+    // could be back online for 4+ minutes before the next retry noticed.
+    // With cap = 30 s the sequence (1,2,4,8,16,30,30,30,30,30) breaks the
+    // circuit after ~3 min total of failures and never makes the user
+    // wait more than 30 s for a single retry. Once the circuit breaks,
+    // `_sleepWithLivenessProbe` continues to probe every 30 s, so
+    // worst-case recovery latency is ~30 s regardless of state.
+    this.maxBackoff = 30_000;
     this.currentBackoff = this.initialBackoff;
 
     // Stats (exposed for MQTT state publishing)
@@ -422,7 +431,7 @@ export class RenderLoop {
       scene = await this.sceneLoader.load(sceneName, this.deviceName);
     } catch (loadError) {
       this._handleError(loadError, `loading scene "${sceneName}"`);
-      await this._sleep(this.currentBackoff);
+      await this._sleepWithLivenessProbe(this.currentBackoff);
       return;
     }
 
@@ -490,7 +499,8 @@ export class RenderLoop {
 
         // Apply backoff and break the inner frame loop on any render error;
         // the outer while-loop will retry from the circuit-breaker check.
-        await this._sleep(this.currentBackoff);
+        // Liveness probe lets us exit early when the device returns.
+        await this._sleepWithLivenessProbe(this.currentBackoff);
         break;
       }
     } while (this.running && result !== null);
@@ -580,7 +590,7 @@ export class RenderLoop {
    * Failed probes are silent (we're already in error state); successful
    * ones log a single info line.
    */
-  async _sleepWithLivenessProbe(totalMs, probeIntervalMs = 30_000) {
+  async _sleepWithLivenessProbe(totalMs, probeIntervalMs = 10_000) {
     const deadline = Date.now() + totalMs;
     while (Date.now() < deadline && this.running) {
       const sliceMs = Math.min(probeIntervalMs, deadline - Date.now());
