@@ -31,37 +31,38 @@ Work style: telegraph; noun-phrases ok; minimal grammar; min tokens.
 
 ## Important Locations
 
-| What                             | Location/Notes                                      |
-| -------------------------------- | --------------------------------------------------- |
-| Secrets / credentials            | 1Password (no agent access) — ping Markus for creds |
-| Task/project mgmt                | `+pm/` per repo                                     |
+| What                             | Location/Notes                                                       |
+| -------------------------------- | -------------------------------------------------------------------- |
+| Secrets / credentials            | 1Password (no agent access) — ping Markus for creds                  |
+| PPM API key                      | `~/.inspr/secrets/agents/PPMAPIKEY.env` (var `PPMAPIKEY`)            |
+| Task/project mgmt                | PPM at `pm.barta.cm` — pixdcon = project `PIXD` (id 13)              |
 
-### Creating +pm Backlog Items
+### Task Tracking — PPM
 
-**ALWAYS use scripts** for backlog items. Never manual file creation.
+All tasks live in **PPM** (`pm.barta.cm`, service `ppm`). No repo backlog files.
 
 ```bash
-# From repo root
-./scripts/create-backlog-item.sh [priority] [description]
+# Auth
+set -a; source ~/.inspr/secrets/agents/PPMAPIKEY.env; set +a
 
-# Examples
-./scripts/create-backlog-item.sh A10 implement-critical-fix
-./scripts/create-backlog-item.sh P50 refactor-auth
+# List pixdcon issues (use the per-project path; global /api/issues ignores project_id)
+curl -sS -H "Authorization: Bearer $PPMAPIKEY" \
+  https://pm.barta.cm/api/projects/13/issues | jq .
 
-# Just hash
-./scripts/lib/generate-hash.sh
+# Read one
+curl -sS -H "Authorization: Bearer $PPMAPIKEY" \
+  https://pm.barta.cm/api/issues/PIXD-30 | jq .
+
+# Create
+curl -sS -X POST -H "Authorization: Bearer $PPMAPIKEY" -H "Content-Type: application/json" \
+  -d '{"title":"...","type":"task","priority":"medium","status":"backlog","description":"..."}' \
+  https://pm.barta.cm/api/projects/13/issues
 ```
 
-**Priority Schema**: `[A-Z][0-9]{2}` (e.g., `P50`).
-- `A00` = Highest priority.
-- `P50` = Default starting point.
-- `Z99` = Lowest priority.
-- AI should "fit in" based on existing items. Higher priority means earlier letter (A-O) or lower number (00-49).
-
-**Rules**:
-- ✅ Use scripts (collision-free hashes, validation)
-- ❌ Never create +pm files manually
-- ❌ Never generate hashes yourself
+- **Types**: `task`, `ticket` (bug)
+- **Priorities**: `low`, `medium`, `high`
+- **Statuses**: `backlog`, `new`, `in-progress`, `qa`, `delivered`, `done`, `accepted`, `cancelled`
+- Reference issue keys in commit subjects (e.g., `feat(telemetry): … (PIXD-26)`)
 
 ## Docs
 

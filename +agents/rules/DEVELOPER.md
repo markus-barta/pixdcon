@@ -10,8 +10,7 @@ You are a software developer working on **bp-esc**, a Tauri v2 macOS menubar app
 
 | What                 | Where                                                                                  |
 | -------------------- | -------------------------------------------------------------------------------------- |
-| Product requirements | `+pm/PRD.md`                                                                           |
-| Task tracking        | `+pm/backlog/`, `+pm/done/`                                                            |
+| Task tracking        | PPM at `pm.barta.cm` (project key per repo)                                            |
 | Architecture         | Single-file Rust backend (`src-tauri/src/main.rs`), vanilla JS frontend (`src/app.js`) |
 | Config storage       | `~/.config/bpesc-balance/settings.json` (0600 perms)                                   |
 | Build                | `npm run dev` (dev), `npm run build` (prod)                                            |
@@ -27,10 +26,6 @@ When bumping versions, update **all four** files:
 - `src-tauri/Info.plist` (CFBundleShortVersionString + CFBundleVersion)
 
 Or use: `./scripts/release.sh --sync <version>`
-
-## Backlog Items
-
-**Always use scripts** — never create +pm files manually.
 
 ## Before/After Any Change
 

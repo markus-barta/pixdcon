@@ -39,7 +39,3 @@ test/
 # Keep docs/AWTRIX-API.md out of image
 docs/
 
-# Project management
-+pm/
-scripts/create-backlog-item.sh
-scripts/lib/

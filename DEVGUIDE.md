@@ -164,12 +164,11 @@ pixdcon/
 │   ├── DEBUG.md           # Debugging guide incl. MQTT stale-state investigation history
 │   └── DEPLOY.md          # Deployment paths and ops reference
 ├── scripts/
-│   ├── create-backlog-item.sh  # Backlog management
-│   ├── lib/generate-hash.sh    # Hash generator
-│   └── build-and-push.sh       # Local Docker build + push (fallback)
+│   ├── awtrix-rescue.sh        # AP-mode device re-provision
+│   ├── build-and-push.sh       # Local Docker build + push (fallback)
+│   └── preview-to-png.js       # Render scene preview to PNG
 ├── .github/workflows/
 │   └── build-and-push.yml      # CI: multi-platform build → GHCR on push to main
-├── +pm/backlog/          # Backlog items (auto-generated)
 ├── +agents/              # Agent rules and slash commands
 ├── .env.example          # Env var reference (MOSQUITTO_*)
 ├── .dockerignore         # Excludes devenv, secrets, docs from image
@@ -280,12 +279,9 @@ npm install
 npm run dev   # runs with --watch (auto-restarts on src changes)
 ```
 
-### 2. Create Backlog Item
+### 2. Track Work in PPM
 
-```bash
-./scripts/create-backlog-item.sh A10 implement-pixoo-driver  # high priority
-./scripts/create-backlog-item.sh P50 add-weather-scene       # normal priority
-```
+All tasks live in PPM (`pm.barta.cm`, project key `PIXD`, id 13). Create issues via the API or web UI — no repo backlog files. See `AGENTS.md` for the curl recipes. Reference issue keys in commit subjects.
 
 ### 3. Scene CRUD
 
@@ -550,14 +546,6 @@ All pixdcon topics are under `home/hsb1/pixdcon/`:
 - Manual testing with real device
 - Console logging for debugging
 - Config validation on startup
-
-## Backlog Management
-
-**Priority Schema:** `[A-Z][0-9]{2}`
-
-- `A00` = Critical (drop everything)
-- `P50` = Normal (default)
-- `Z99` = Nice-to-have
 
 ## Secrets Management
 
