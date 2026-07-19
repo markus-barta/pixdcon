@@ -437,6 +437,8 @@ function uvBandColor(uvi) {
 //   y 43:    x-tick row (dots at 06:00, 12:00, 18:00)
 //   x 46:    y-tick column (dots at UVI 0, 5, 10)
 //   x 47-60: 14 hourly bars (06..19), each height = round(uvi[h]) capped at 11
+//   Now markers: axis-gray bg column behind the now col (drawn first, full cell
+//   height), bright-gray up-arrow at the cell bottom (y43 tip, y44 3px base)
 //
 // Per-hour bar at 50% RGB (cell bg is black). The "now" column draws at 100%
 // using the current UVI (interpolated between CAMS hourly points, see
@@ -499,6 +501,18 @@ async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
   const TEXT_TOP_Y = cellY0 + 1; // y=28 — 1px below cell top for visual breathing room
   const dimGray = [60, 60, 60];
 
+  // Now-col offset (round-to-nearest hour, in window iff 06:00..19:30)
+  const nowH = nowDate.getHours() + nowDate.getMinutes() / 60;
+  const nowColOffset = Math.round(nowH - 6);
+  const nowInWindow = nowColOffset >= 0 && nowColOffset < HOURS;
+  const nowX = curveX0 + nowColOffset;
+
+  // Now-col background line — full cell height in axis gray, drawn FIRST so
+  // the value text, bars, curve and now-line all paint on top of it.
+  if (nowInWindow) {
+    vLine(d, nowX, cellY0, cellY0 + 17, ...dimGray);
+  }
+
   // Number (right-aligned at top-right) — tight-kerned 1 decimal below 10
   // ("4.3"), integer above ("11"), bare "0" at night to keep the cell quiet.
   const nowColor = uvBandColor(currentUvi);
@@ -516,11 +530,6 @@ async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
   d._setPixel(curveX0 + 0, tickRowY, ...dimGray);
   d._setPixel(curveX0 + 6, tickRowY, ...dimGray);
   d._setPixel(curveX0 + 12, tickRowY, ...dimGray);
-
-  // Now-col offset (round-to-nearest hour, in window iff 06:00..19:30)
-  const nowH = nowDate.getHours() + nowDate.getMinutes() / 60;
-  const nowColOffset = Math.round(nowH - 6);
-  const nowInWindow = nowColOffset >= 0 && nowColOffset < HOURS;
 
   // Hourly bars at 50% RGB; skip the now-col (drawn fully below).
   // Upcoming hours (i > nowColOffset) get their top pixel at 100%; the curve
@@ -587,6 +596,14 @@ async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
         else d._setPixel(curveX0 + i + 1, y, rb, gb, bb);
       });
     }
+  }
+
+  // Now marker — small up-arrow at the very bottom of the cell (rows y43-44),
+  // pointing at the now column: 3px base + 1 centered tip, bright mid-gray.
+  if (nowInWindow) {
+    const arrowGray = [200, 200, 205];
+    d._setPixel(nowX, cellY0 + 16, ...arrowGray); // tip (overwrites tick row)
+    hLine(d, nowX - 1, nowX + 1, cellY0 + 17, ...arrowGray); // base
   }
 }
 
