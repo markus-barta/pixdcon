@@ -22,11 +22,9 @@
  *   z2m/vr/contact/w14                            {contact: bool}
  *   z2m/vr/contact/w14/availability               {state: "online"|"offline"}
  *   home/ke/sonnenbattery/status                  {USOC, BatteryCharging, BatteryDischarging, Production_W, Consumption_W}
- *   HTTPS https://air-quality-api.open-meteo.com/v1/air-quality  UV current + hourly (no API key)
+ *   homeassistant/weather/forecast_home/uv_index  numeric (current UVI from met.no via HA)
+ *   HTTPS https://api.open-meteo.com/v1/forecast  hourly UV forecast (no API key)
  *     params: latitude, longitude, current=uv_index, hourly=uv_index, timezone=auto, forecast_days=1
- *     CAMS-based: cloud-aware biologically-effective UVI (vs. GFS approximation on /v1/forecast)
- *   homeassistant/weather/forecast_home/uv_index  numeric — met.no via HA. CLEAR-SKY UVI (cloud-blind,
- *     hour-granular, retained) — last-resort fallback only
  *   pixdcon/debug/uv_now_override                 number | "" (clears) — for testing
  *   pixdcon/debug/uv_hourly_override              JSON [h6..h19] | "" (clears) — for testing
  *   z2m/wz/plug/zisp08                            {power} — sony-tv
@@ -79,7 +77,7 @@ const DEFAULT_SETTINGS = {
   syncboxInputPc: "input2",
   uvLat: 47.1,
   uvLon: 15.47,
-  uvPollMs: 900000,
+  uvPollMs: 1800000,
   uvTimeoutMs: 5000,
   uvStaleMs: 3600000,
 };
@@ -439,20 +437,8 @@ function uvBandColor(uvi) {
 //   x 47-60: 14 hourly bars (06..19), each height = round(uvi[h]) capped at 11
 //
 // Per-hour bar at 50% RGB (cell bg is black). The "now" column draws at 100%
-// using the current UVI (interpolated between CAMS hourly points, see
-// uvInterpNow). Upcoming-hour bars draw their top (peak) pixel at 100% to
-// highlight the forecast curve.
-
-// Linear interpolation between the two CAMS hourly points around `now`.
-// hourly24 = 24 values starting 00:00 local. Returns null if unusable.
-function uvInterpNow(hourly24, now) {
-  if (!Array.isArray(hourly24) || hourly24.length !== 24) return null;
-  const h = now.getHours();
-  const v0 = Number(hourly24[h]);
-  const v1 = Number(hourly24[h + 1] ?? hourly24[h]); // 23:xx → hold last hour
-  if (!Number.isFinite(v0) || !Number.isFinite(v1)) return null;
-  return v0 + (v1 - v0) * (now.getMinutes() / 60);
-}
+// using the live MQTT current value (not interpolated forecast). Upcoming-hour
+// bars draw their top (peak) pixel at 100% to highlight the forecast curve.
 
 async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
   const baselineY = cellY0 + 15; // y=42 — x-axis
@@ -464,17 +450,12 @@ async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
   const TEXT_TOP_Y = cellY0 + 1; // y=28 — 1px below cell top for visual breathing room
   const dimGray = [60, 60, 60];
 
-  // Number (right-aligned at top-right) — 1 decimal below 10 ("4.3"), integer
-  // above ("11"), bare "0" at night to keep the cell quiet.
+  // Number (right-aligned at top-right)
   const nowColor = uvBandColor(currentUvi);
   const display =
     currentUvi == null || !Number.isFinite(currentUvi)
       ? "--"
-      : currentUvi < 0.05
-        ? "0"
-        : currentUvi < 9.95
-          ? currentUvi.toFixed(1)
-          : String(Math.round(currentUvi));
+      : String(Math.round(currentUvi));
   await d.drawTextRgbaAligned(
     display,
     [TEXT_RIGHT_X, TEXT_TOP_Y],
@@ -831,7 +812,7 @@ export default {
       type: "int",
       label: "UV Poll (ms)",
       group: "Polling",
-      default: 900000,
+      default: 1800000,
       min: 60000,
       max: 21600000,
       step: 60000,
@@ -963,12 +944,10 @@ export default {
       productionW: null,
       consumptionW: null,
       energySeen: null,
-      // UV — CAMS via Open-Meteo air-quality API (current + hourly);
-      // met.no MQTT kept as last-resort fallback (clear-sky, cloud-blind)
+      // UV — current from MQTT (HA), hourly forecast from Open-Meteo
       uvCurrentMqtt: null,
       uvCurrentApi: null,
-      uvHourly: null, // length-14 array for hours 06..19 (display bars)
-      uvHourly24: null, // full 24h array for now-interpolation
+      uvHourly: null, // length-14 array for hours 06..19
       uvSeen: null,
       uvCurrentOverride: null,
       uvHourlyOverride: null,
@@ -1144,18 +1123,14 @@ export default {
       } catch {}
     });
 
-    // UV current — met.no via HA. CLEAR-SKY value (over-reads under clouds) at
-    // hour granularity; kept only as last-resort fallback when CAMS is down.
-    context.mqtt.subscribe(
-      "homeassistant/weather/forecast_home/uv_index",
-      (msg) => {
-        const v = parseFloat(msg.trim());
-        if (!isNaN(v)) {
-          this._s.uvCurrentMqtt = v;
-          this._s.uvSeen = Date.now();
-        }
-      },
-    );
+    // UV current — preferred live source (HA / met.no, retained, ~10min)
+    context.mqtt.subscribe("homeassistant/weather/forecast_home/uv_index", (msg) => {
+      const v = parseFloat(msg.trim());
+      if (!isNaN(v)) {
+        this._s.uvCurrentMqtt = v;
+        this._s.uvSeen = Date.now();
+      }
+    });
 
     // UV debug overrides — for testing without waiting for nature
     sub("pixdcon/debug/uv_now_override", (msg) => {
@@ -1370,17 +1345,17 @@ export default {
       drawErrorMark(device, 1, 1, this._frame);
 
     // UV cell — anchored at cell top-left (COLS[2].x0=44, ROWS[1].y0=27)
-    // Current-value priority: debug override → interpolated CAMS hourly
-    // (smooth, updates every render) → CAMS current (hour-step) → met.no
-    // MQTT (clear-sky, last resort).
-    const uvNow = new Date();
     const uvCurrent =
-      s.uvCurrentOverride ??
-      uvInterpNow(s.uvHourly24, uvNow) ??
-      s.uvCurrentApi ??
-      s.uvCurrentMqtt;
+      s.uvCurrentOverride ?? s.uvCurrentMqtt ?? s.uvCurrentApi;
     const uvHourly = s.uvHourlyOverride ?? s.uvHourly;
-    await drawUv(device, COLS[2].x0, ROWS[1].y0, uvCurrent, uvHourly, uvNow);
+    await drawUv(
+      device,
+      COLS[2].x0,
+      ROWS[1].y0,
+      uvCurrent,
+      uvHourly,
+      new Date(),
+    );
     if (isStale(s.uvSeen, this._cfg.uvStaleMs))
       drawErrorMark(device, 2, 1, this._frame);
 
@@ -1529,11 +1504,9 @@ export default {
     }
   },
 
-  // ── Open-Meteo air-quality UV poll (CAMS, no API key, free) ───────────────
-  // CAMS computes biologically-effective UVI including cloud cover — unlike
-  // met.no (clear-sky only) and the /v1/forecast endpoint (GFS approximation).
-  // Sets uvCurrentApi (current.uv_index), uvHourly24 (full day, for the
-  // interpolated "now" value) and uvHourly (slice 06..19 for the bars).
+  // ── Open-Meteo UV poll (no API key, free) ─────────────────────────────────
+  // Sets uvCurrentApi (current.uv_index) and uvHourly (slice 06..19 of 24-hour
+  // hourly.uv_index). MQTT current value is preferred for the live "now" line.
 
   _startUvPoll(logger) {
     const poll = () =>
@@ -1541,11 +1514,11 @@ export default {
         const lat = this._cfg.uvLat;
         const lon = this._cfg.uvLon;
         const path =
-          `/v1/air-quality?latitude=${lat}&longitude=${lon}` +
+          `/v1/forecast?latitude=${lat}&longitude=${lon}` +
           `&current=uv_index&hourly=uv_index&timezone=auto&forecast_days=1`;
         const req = https.request(
           {
-            hostname: "air-quality-api.open-meteo.com",
+            hostname: "api.open-meteo.com",
             path,
             method: "GET",
             timeout: this._cfg.uvTimeoutMs,
@@ -1562,12 +1535,11 @@ export default {
                 const hourly = d?.hourly?.uv_index;
                 if (typeof cur === "number") this._s.uvCurrentApi = cur;
                 if (Array.isArray(hourly) && hourly.length >= 20) {
-                  // 24 hourly entries starting at 00:00 local (timezone=auto).
-                  this._s.uvHourly24 = hourly
-                    .slice(0, 24)
+                  // Open-Meteo returns 24 hourly entries starting at 00:00 local;
+                  // we want hours 06..19 inclusive (14 entries).
+                  this._s.uvHourly = hourly
+                    .slice(6, 20)
                     .map((v) => (typeof v === "number" ? v : 0));
-                  // Display bars: hours 06..19 inclusive (14 entries).
-                  this._s.uvHourly = this._s.uvHourly24.slice(6, 20);
                 }
                 this._s.uvSeen = Date.now();
               } catch {}
