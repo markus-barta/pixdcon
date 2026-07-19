@@ -443,6 +443,41 @@ function uvBandColor(uvi) {
 // uvInterpNow). Upcoming-hour bars draw their top (peak) pixel at 100% to
 // highlight the forecast curve.
 
+// ── Tight fractional UVI renderer ─────────────────────────────────────────────
+//
+// Same kerning idea as drawKwTight: hand-placed 1px decimal dot instead of the
+// 3px-wide "." font glyph (which wastes 2 blank columns). Right-aligned so the
+// value hugs the cell's right edge like the previous integer display.
+// <10  → N(3) gap(1) dot(1) gap(1) F(3) = 9px   e.g. "4.3"
+// ≥10  → integer via normal text ("11" — no dot needed)
+// 0    → bare "0"; null → "--"
+
+async function drawUvValueTight(d, rightX, y, uvi, color) {
+  if (uvi == null || !Number.isFinite(uvi)) {
+    await d.drawTextRgbaAligned("--", [rightX, y], color, "right");
+    return;
+  }
+  if (uvi < 0.05) {
+    await d.drawTextRgbaAligned("0", [rightX, y], color, "right");
+    return;
+  }
+  if (uvi >= 9.95) {
+    await d.drawTextRgbaAligned(
+      String(Math.round(uvi)),
+      [rightX, y],
+      color,
+      "right",
+    );
+    return;
+  }
+  const [intStr, fracStr] = uvi.toFixed(1).split("."); // "4.3" → "4", "3"
+  const intX = rightX - 9; // int(3) gap(1) dot(1) gap(1) frac(3) ends at rightX-1
+  const [r, g, b] = color;
+  await d.drawTextRgbaAligned(intStr, [intX, y], color, "left");
+  d._setPixel(intX + 4, y + 4, r, g, b); // dot at font baseline
+  await d.drawTextRgbaAligned(fracStr, [intX + 6, y], color, "left");
+}
+
 // Linear interpolation between the two CAMS hourly points around `now`.
 // hourly24 = 24 values starting 00:00 local. Returns null if unusable.
 function uvInterpNow(hourly24, now) {
@@ -464,23 +499,10 @@ async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
   const TEXT_TOP_Y = cellY0 + 1; // y=28 — 1px below cell top for visual breathing room
   const dimGray = [60, 60, 60];
 
-  // Number (right-aligned at top-right) — 1 decimal below 10 ("4.3"), integer
-  // above ("11"), bare "0" at night to keep the cell quiet.
+  // Number (right-aligned at top-right) — tight-kerned 1 decimal below 10
+  // ("4.3"), integer above ("11"), bare "0" at night to keep the cell quiet.
   const nowColor = uvBandColor(currentUvi);
-  const display =
-    currentUvi == null || !Number.isFinite(currentUvi)
-      ? "--"
-      : currentUvi < 0.05
-        ? "0"
-        : currentUvi < 9.95
-          ? currentUvi.toFixed(1)
-          : String(Math.round(currentUvi));
-  await d.drawTextRgbaAligned(
-    display,
-    [TEXT_RIGHT_X, TEXT_TOP_Y],
-    nowColor,
-    "right",
-  );
+  await drawUvValueTight(d, TEXT_RIGHT_X, TEXT_TOP_Y, currentUvi, nowColor);
 
   // X-axis baseline (full width of plot area incl. y-tick col)
   hLine(d, yTickX, curveX0 + HOURS - 1, baselineY, ...dimGray);
