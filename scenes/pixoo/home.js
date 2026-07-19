@@ -523,8 +523,10 @@ async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
   const nowInWindow = nowColOffset >= 0 && nowColOffset < HOURS;
 
   // Hourly bars at 50% RGB; skip the now-col (drawn fully below).
-  // Upcoming hours (i > nowColOffset) get their top pixel at 100% to make the
-  // forecast peak read as a curve.
+  // Upcoming hours (i > nowColOffset) get their top pixel at 100%; the curve
+  // pass at the end bridges vertical gaps between adjacent tops so the peak
+  // line reads as connected instead of dotted.
+  const tops = new Array(HOURS).fill(null); // per-column peak y (upcoming + now)
   if (Array.isArray(hourlyUvi) && hourlyUvi.length === HOURS) {
     for (let i = 0; i < HOURS; i++) {
       if (nowInWindow && i === nowColOffset) continue;
@@ -539,7 +541,10 @@ async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
       if (bodyTop <= baselineY - 1) {
         vLine(d, x, bodyTop, baselineY - 1, r >> 1, g >> 1, b >> 1);
       }
-      if (isUpcoming) d._setPixel(x, topY, r, g, b);
+      if (isUpcoming) {
+        d._setPixel(x, topY, r, g, b);
+        tops[i] = topY;
+      }
     }
   }
 
@@ -554,6 +559,33 @@ async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
         baselineY - 1,
         ...nowColor,
       );
+      tops[nowColOffset] = baselineY - h;
+    }
+  }
+
+  // Curve smoothing — a ≥2px jump between adjacent peaks leaves a vertical gap
+  // that reads as a dotted line. Fill the in-between rows at 65% brightness,
+  // split between the two columns (each side carries the half nearest its own
+  // peak — poor-man's anti-aliasing). Connectors sit strictly between the two
+  // peak pixels, so they never overwrite a 100% pixel.
+  if (Array.isArray(hourlyUvi) && hourlyUvi.length === HOURS) {
+    const dim65 = (c) => c.map((v) => Math.round(v * 0.65));
+    const start = Math.max(0, nowInWindow ? nowColOffset : 0);
+    for (let i = start; i < HOURS - 1; i++) {
+      const ta = tops[i];
+      const tb = tops[i + 1];
+      if (ta == null || tb == null) continue;
+      if (Math.abs(tb - ta) < 2) continue;
+      const step = ta < tb ? 1 : -1; // walk rows from ta toward tb
+      const between = [];
+      for (let y = ta + step; y !== tb; y += step) between.push(y);
+      const nearA = Math.floor(between.length / 2);
+      const [ra, ga, ba] = dim65(uvBandColor(Number(hourlyUvi[i])));
+      const [rb, gb, bb] = dim65(uvBandColor(Number(hourlyUvi[i + 1])));
+      between.forEach((y, k) => {
+        if (k < nearA) d._setPixel(curveX0 + i, y, ra, ga, ba);
+        else d._setPixel(curveX0 + i + 1, y, rb, gb, bb);
+      });
     }
   }
 }
