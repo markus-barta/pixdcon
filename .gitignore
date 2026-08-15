@@ -27,9 +27,13 @@ tmp/
 # IDE
 .vscode/
 .idea/
-.claude/
 *.swp
 *.swo
+
+# Claude Code: local state is per-machine, but the doctrine command
+# symlinks are shared wiring and must be tracked (PIXD-44).
+.claude/*
+!.claude/commands/
 
 # OS
 .DS_Store

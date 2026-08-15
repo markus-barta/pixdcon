@@ -3,6 +3,15 @@
 Markus owns this. Start: say hi + 1 motivating line.
 Work style: telegraph; noun-phrases ok; minimal grammar; min tokens.
 
+> **This is the pixdcon delta only.** Universal INSPR rules (secret handling,
+> git safety, cross-repo authoring, trust contexts) live in the kernel, vendored
+> as the `./doctrine` submodule and auto-loaded by `CLAUDE.md`. Domain depth
+> loads on demand: `/ppm` `/dev` `/secrets` `/ops` `/nix` `/iac` `/style`
+> `/incident`; `/inspr` prints the map. Repo-local commands: `/deploy`,
+> `/pixdcon-dev`, `/pixdcon-push`.
+>
+> Bump the doctrine with `git submodule update --remote doctrine`.
+
 ## Response Style
 
 **TL;DR placement rules:**
@@ -31,38 +40,44 @@ Work style: telegraph; noun-phrases ok; minimal grammar; min tokens.
 
 ## Important Locations
 
-| What                             | Location/Notes                                                       |
-| -------------------------------- | -------------------------------------------------------------------- |
-| Secrets / credentials            | 1Password (no agent access) — ping Markus for creds                  |
-| PPM API key                      | `~/.inspr/secrets/agents/PPMAPIKEY.env` (var `PPMAPIKEY`)            |
-| Task/project mgmt                | PPM at `pm.barta.cm` — pixdcon = project `PIXD` (id 13)              |
+| What                  | Location/Notes                                                    |
+| --------------------- | ----------------------------------------------------------------- |
+| Secrets / credentials | 1Password (no agent access) — ping Markus for creds               |
+| Task/project mgmt     | Paimos at `pm.barta.cm` — pixdcon = project `PIXD` (id 13)        |
+| Knowledge base        | Paimos Knowledge on `PIXD` — durable docs live there, not in repo |
 
-### Task Tracking — PPM
+### Task Tracking — Paimos
 
-All tasks live in **PPM** (`pm.barta.cm`, service `ppm`). No repo backlog files.
+All tasks and durable knowledge live in **Paimos** (`pm.barta.cm`, instance `ppm`).
+No repo backlog files.
+
+**Use the `paimos` CLI. Run `/ppm` first** — it loads the domain pack with auth,
+conventions, statuses and the project landscape.
 
 ```bash
-# Auth
-set -a; source ~/.inspr/secrets/agents/PPMAPIKEY.env; set +a
-
-# List pixdcon issues (use the per-project path; global /api/issues ignores project_id)
-curl -sS -H "Authorization: Bearer $PPMAPIKEY" \
-  https://pm.barta.cm/api/projects/13/issues | jq .
-
-# Read one
-curl -sS -H "Authorization: Bearer $PPMAPIKEY" \
-  https://pm.barta.cm/api/issues/PIXD-30 | jq .
-
-# Create
-curl -sS -X POST -H "Authorization: Bearer $PPMAPIKEY" -H "Content-Type: application/json" \
-  -d '{"title":"...","type":"task","priority":"medium","status":"backlog","description":"..."}' \
-  https://pm.barta.cm/api/projects/13/issues
+paimos auth whoami                                   # canonical auth smoke
+paimos issue list --project PIXD
+paimos issue update PIXD-30 --status in-progress
+paimos knowledge list --project PIXD
+paimos knowledge update runbook deploy-to-hsb1 --project PIXD --body-file <file>
 ```
+
+🔴 **Two auth surfaces — do not conflate them.** The `paimos` CLI reads the OS
+keyring and is the privileged path. `~/.inspr/secrets/agents/PPMAPIKEY.env` is a
+_separate, weaker_ credential for raw `curl`, and **sourcing it does not
+authenticate the CLI**. Learned the hard way (PIXD-44): the raw-curl key returns
+`403` on Knowledge writes, which reads like "not permitted" rather than "wrong
+credential". If a write 403s, try the CLI before concluding you lack access.
+
+Prefer `--body-file` / `--description-file` / `--ac-file` for multiline fields —
+they avoid the shell-quoted-JSON foot-gun.
 
 - **Types**: `task`, `ticket` (bug)
 - **Priorities**: `low`, `medium`, `high`
 - **Statuses**: `backlog`, `new`, `in-progress`, `qa`, `delivered`, `done`, `accepted`, `cancelled`
 - Reference issue keys in commit subjects (e.g., `feat(telemetry): … (PIXD-26)`)
+- Knowledge entries are typed: `runbook`, `guideline`, `memory`, `external-system`,
+  `related-project`. Addressed as `<type> <slug>`, not by numeric id.
 
 ## Docs
 
