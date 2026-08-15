@@ -2,12 +2,12 @@
 
 ## Server
 
-| What       | Value                                                        |
-| ---------- | ------------------------------------------------------------ |
-| Host       | `hsb1` (SSH as `mba@hsb1`)                                   |
-| Mount root | `~/docker/mounts/pixdcon/`                                   |
-| Stack      | nixcfg-managed — `compose-hsb1.service` (OPS-116)            |
-| Image      | `ghcr.io/markus-barta/pixdcon:latest`                        |
+| What       | Value                                             |
+| ---------- | ------------------------------------------------- |
+| Host       | `hsb1` (SSH as `mba@hsb1`)                        |
+| Mount root | `~/docker/mounts/pixdcon/`                        |
+| Stack      | nixcfg-managed — `compose-hsb1.service` (OPS-116) |
+| Image      | `ghcr.io/markus-barta/pixdcon:latest`             |
 
 > ⚠ **There is no `~/docker/docker-compose.yml` any more.** The hsb1 container
 > stack moved into nixcfg and is reconciled by a systemd oneshot,
@@ -39,11 +39,11 @@ Image (/app/)                     Host mount (/data/)
 - **Image** (`/app/`) = application code only. Changes require CI build + pull.
 - **Host mount** (`/data/`) = all user data. Changes hot-reload, no restart needed.
 
-| Host path                                       | Container path                  | Mode |
-| ------------------------------------------------ | ------------------------------- | ---- |
-| `mounts/pixdcon/config.json`               | `/data/config.json`             | rw   |
-| `mounts/pixdcon/scenes/`                   | `/data/scenes/`                 | rw   |
-| `mounts/pixdcon/generated-scenes/`         | `/data/generated-scenes/`       | rw   |
+| Host path                          | Container path            | Mode |
+| ---------------------------------- | ------------------------- | ---- |
+| `mounts/pixdcon/config.json`       | `/data/config.json`       | rw   |
+| `mounts/pixdcon/scenes/`           | `/data/scenes/`           | rw   |
+| `mounts/pixdcon/generated-scenes/` | `/data/generated-scenes/` | rw   |
 
 Scene paths in `config.json` are **relative** to the config file (e.g. `./scenes/ulanzi/clock.js` resolves to `/data/scenes/ulanzi/clock.js` in the container).
 
@@ -52,14 +52,14 @@ Scene paths in `config.json` are **relative** to the config file (e.g. `./scenes
 ## Source of truth — read this first
 
 > **The live mount on `hsb1` is authoritative for `config.json` and `scenes/*.js`.**
-> The repo's `config.json` is a dev sample. The repo's `scenes/*.js` are the canonical version of *committed* scenes, but the host copies can drift (web UI saves settings into `config.json`; "Clone & Detach" writes to `generated-scenes/`).
+> The repo's `config.json` is a dev sample. The repo's `scenes/*.js` are the canonical version of _committed_ scenes, but the host copies can drift (web UI saves settings into `config.json`; "Clone & Detach" writes to `generated-scenes/`).
 
-| Asset                            | Authoritative location                                         | Edited by                            |
-| -------------------------------- | -------------------------------------------------------------- | ------------------------------------ |
-| `config.json` (effective)        | `mba@hsb1:~/docker/mounts/pixdcon/config.json`                 | Web UI saves + manual `scp`          |
-| `scenes/*.js` (committed)        | Repo `scenes/`, mirrored to host on deploy                     | Editor + `scp` to live mount         |
-| `generated-scenes/*.js`          | `mba@hsb1:~/docker/mounts/pixdcon/generated-scenes/`           | Web UI "Clone & Detach" only         |
-| App code (`src/`, `lib/`, deps)  | Image `ghcr.io/markus-barta/pixdcon:latest`                    | CI on push to `main`                 |
+| Asset                           | Authoritative location                               | Edited by                    |
+| ------------------------------- | ---------------------------------------------------- | ---------------------------- |
+| `config.json` (effective)       | `mba@hsb1:~/docker/mounts/pixdcon/config.json`       | Web UI saves + manual `scp`  |
+| `scenes/*.js` (committed)       | Repo `scenes/`, mirrored to host on deploy           | Editor + `scp` to live mount |
+| `generated-scenes/*.js`         | `mba@hsb1:~/docker/mounts/pixdcon/generated-scenes/` | Web UI "Clone & Detach" only |
+| App code (`src/`, `lib/`, deps) | Image `ghcr.io/markus-barta/pixdcon:latest`          | CI on push to `main`         |
 
 **Before any change to a scene that's currently running:**
 
@@ -96,7 +96,7 @@ scp /tmp/config.live.json mba@hsb1:~/docker/mounts/pixdcon/config.json
 **Failure modes:**
 
 - New module throws on import → render loop catches, logs `[SceneLoader] Failed to load scene "<name>"`, retries with backoff (1s → 10min cap). Display shows last frame until recovery; re-`scp` a working version to fix.
-- New `init()` throws → same as above; `destroy()` of the *previous* version already ran, so the previous subscriptions are gone.
+- New `init()` throws → same as above; `destroy()` of the _previous_ version already ran, so the previous subscriptions are gone.
 - New `settingsSchema` adds keys → defaults apply automatically; existing values in `config.json` survive untouched.
 
 ---
@@ -134,8 +134,9 @@ git add scenes/pixoo/home.js && git commit && git push
 ```
 
 Notes:
+
 - ScenesWatcher fires on every save → leave windows open and watch logs.
-- Brittle changes (new MQTT topics, new image assets) need the assets in place *before* the scp lands or `init()` will throw on first load.
+- Brittle changes (new MQTT topics, new image assets) need the assets in place _before_ the scp lands or `init()` will throw on first load.
 
 ### 1b. Visual verification — capture the live frame
 
@@ -176,6 +177,7 @@ ssh mba@hsb1 "mosquitto_pub -h $H -u smarthome -P '$PASS' -t pixdcon/debug/uv_ho
 ```
 
 Existing debug-override topics on `home`:
+
 - `pixdcon/debug/bri_override` — display brightness 1-100 (or empty to clear)
 - `pixdcon/debug/uv_now_override` — current UVI float
 - `pixdcon/debug/uv_hourly_override` — JSON array of 14 hourly UVI floats (06..19)
@@ -272,7 +274,7 @@ Run a new scene version alongside the live one instead of overwriting it:
    Note the field is `deviceName`, not `device`.
 4. Roll back by POSTing the original scene key. The original file is never touched.
 
-> Before PIXD-39, editing a scene file *after* registering it but *before*
+> Before PIXD-39, editing a scene file _after_ registering it but _before_
 > assigning it to a device left a stale ESM module cached — the panel rendered
 > old code while `/api/scenes` reported the new metadata. Fixed; a restart is no
 > longer needed to pick up such an edit.
