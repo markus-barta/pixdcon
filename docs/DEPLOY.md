@@ -2,12 +2,28 @@
 
 ## Server
 
-| What       | Value                                       |
-| ---------- | ------------------------------------------- |
-| Host       | `hsb1` (SSH as `mba@hsb1`)                  |
-| Mount root | `~/docker/mounts/pixdcon/`            |
-| Compose    | `~/docker/docker-compose.yml`               |
-| Image      | `ghcr.io/markus-barta/pixdcon:latest` |
+| What       | Value                                                        |
+| ---------- | ------------------------------------------------------------ |
+| Host       | `hsb1` (SSH as `mba@hsb1`)                                   |
+| Mount root | `~/docker/mounts/pixdcon/`                                   |
+| Stack      | nixcfg-managed — `compose-hsb1.service` (OPS-116)            |
+| Image      | `ghcr.io/markus-barta/pixdcon:latest`                        |
+
+> ⚠ **There is no `~/docker/docker-compose.yml` any more.** The hsb1 container
+> stack moved into nixcfg and is reconciled by a systemd oneshot,
+> `compose-hsb1.service`. `cd ~/docker && docker compose …` fails with
+> `no configuration file provided: not found`.
+>
+> Restart or recreate the container with:
+>
+> ```bash
+> ssh mba@hsb1 "docker restart pixdcon"                        # plain restart
+> ssh mba@hsb1 "sudo systemctl restart compose-hsb1.service"   # recreate from the closure
+> ```
+>
+> Use the systemd path after `docker pull` — a pulled image only takes effect
+> once the container is recreated, and the service is what knows how to do that.
+> The compose spec itself lives in nixcfg (`hosts/hsb1/docker/`), not here.
 
 ## Container vs. Host Mount
 
@@ -192,7 +208,10 @@ Watchtower (weekly scope) will pull and restart the container automatically.
 To deploy immediately without waiting for Watchtower:
 
 ```bash
-ssh mba@hsb1 "cd ~/docker && docker compose pull pixdcon && docker compose up -d pixdcon"
+ssh mba@hsb1 "docker pull ghcr.io/markus-barta/pixdcon:latest"
+ssh mba@hsb1 "sudo systemctl restart compose-hsb1.service"
+# Verify the running container is on the new image:
+ssh mba@hsb1 "docker inspect pixdcon --format '{{.Image}}' | xargs -I{} docker image inspect {} --format 'built={{.Created}}'"
 ```
 
 Workflow: `.github/workflows/build-and-push.yml`
@@ -223,8 +242,37 @@ ssh mba@hsb1 "mkdir -p ~/docker/mounts/pixdcon/generated-scenes"
 ssh mba@hsb1 "docker logs -f pixdcon"
 
 # Restart
-ssh mba@hsb1 "cd ~/docker && docker compose restart pixdcon"
+ssh mba@hsb1 "docker restart pixdcon"
+
+# Recreate from the nixcfg closure (needed after a docker pull)
+ssh mba@hsb1 "sudo systemctl restart compose-hsb1.service"
 
 # Container status
 ssh mba@hsb1 "docker ps | grep pixdcon"
 ```
+
+---
+
+## A/B testing a scene safely
+
+Run a new scene version alongside the live one instead of overwriting it:
+
+1. Copy the scene to a new file (`home.js` → `home260815a.js`) and `scp` it to the mount.
+2. Add a **new** key to `config.json` pointing at it — additive, changes nothing:
+   ```json
+   "home_v2": { "path": "./scenes/pixoo/home260815a.js" }
+   ```
+   Give the module a distinct `name` / `pretty_name` too, or the web UI lists
+   both versions under the old scene's label.
+3. Switch the device with the API (persists to `config.json` since PIXD-40):
+   ```bash
+   ssh mba@hsb1 "curl -sS -X POST localhost:8080/api/scene -H 'Content-Type: application/json' \
+     -d '{\"deviceName\":\"pixoo-159\",\"scene\":\"home_v2\"}'"
+   ```
+   Note the field is `deviceName`, not `device`.
+4. Roll back by POSTing the original scene key. The original file is never touched.
+
+> Before PIXD-39, editing a scene file *after* registering it but *before*
+> assigning it to a device left a stale ESM module cached — the panel rendered
+> old code while `/api/scenes` reported the new metadata. Fixed; a restart is no
+> longer needed to pick up such an edit.
