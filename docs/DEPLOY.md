@@ -259,7 +259,8 @@ ssh mba@hsb1 "docker ps | grep pixdcon"
 
 Run a new scene version alongside the live one instead of overwriting it:
 
-1. Copy the scene to a new file (`home.js` → `home260815a.js`) and `scp` it to the mount.
+1. Copy the scene to a dated working file (`home.js` → `home260815a.js`) and `scp`
+   it to the mount.
 2. Add a **new** key to `config.json` pointing at it — additive, changes nothing:
    ```json
    "home_v2": { "path": "./scenes/pixoo/home260815a.js" }
@@ -278,3 +279,10 @@ Run a new scene version alongside the live one instead of overwriting it:
 > assigning it to a device left a stale ESM module cached — the panel rendered
 > old code while `/api/scenes` reported the new metadata. Fixed; a restart is no
 > longer needed to pick up such an edit.
+
+**Land it when you're happy.** The dated file is scaffolding, not a destination —
+copy its contents over the real scene, restore the module's original
+`name`/`pretty_name`, drop the temporary key, point the device back at the
+original key, and delete the working file. Leaving a device pointed at a dated
+scratch filename is how `scenes/` accumulated 19 dead `home2603xx` variants
+before PIXD-43 cleared them out.

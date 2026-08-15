@@ -1,16 +1,27 @@
 /**
  * home — Pixoo64 smart home dashboard
  *
- * 3×3 grid layout (64×64):
+ * 3×3 grid layout (64×64), except row 0 which is 2 cells:
  *   y 0-6:   header — HOME label + HH:MM clock
  *   y 7:     horizontal separator
- *   y 8-25:  row 0 — [Nuki lock] [Terrace sliding door] [W13+W14 skylights]
+ *   y 8-25:  row 0 — [Nuki VR/KE + TE terrace + OL skylights] [roof/pool temps]
  *   y 26:    horizontal separator
  *   y 27-44: row 1 — [Battery SOC] [PV↑ Cons↓] [UV index + curve]
  *   y 45:    horizontal separator
  *   y 46-63: row 2 — [PS5] [TV] [PC]  ← device icons, syncbox ring on active PS5/PC
  *
- *   x 21, x 43: vertical separators
+ *   x 43: vertical separator, full height
+ *   x 21: vertical separator, rows 1-2 only — row 0 is one merged 43×18 cell
+ *
+ * Row 0 status cell (x 0-42) encoding:
+ *   Nuki VR (y 9-15) and Nuki KE (y 18-24) keep their 7×7 sprites — the artwork
+ *   carries lock state, plus an amber offline dot when the ping stops answering.
+ *   TE (terrace) and OL (Oberlichten = skylights) are text labels at x 20, with
+ *   3×3 badges left-aligned at x 29. Hue identifies the opening — green terrace,
+ *   blue skylights — and fill carries state: hollow = closed, filled = open,
+ *   olive + amber checker = stale/offline. Label brightness is deliberately high:
+ *   the panel sits behind palladium-coated glass and C.dimWhite (80,80,80), used
+ *   by the HOME label, is not readable in daylight through it.
  *
  * Data sources:
  *   nuki/463F8F47/state                           numeric 1=locked 2=unlocking 3=unlocked 4=locking  (Nuki VR)
@@ -21,6 +32,10 @@
  *   z2m/vk/contact/w13/availability               {state: "online"|"offline"}
  *   z2m/vr/contact/w14                            {contact: bool}
  *   z2m/vr/contact/w14/availability               {state: "online"|"offline"}
+ *   z2m/dt/motion/hueoutdoor                      {temperature} — Dachterrasse air temp.
+ *     Hue outdoor sensor. The co-located Aqara (z2m/dt/temp/aqara) is NOT used: it sits in
+ *     direct sun and read 40.5 °C against a 30.2 °C Graz reference over 24 h (~+10 K).
+ *   z2m/te/temp/pool                              {temperature} — pool water (Sonoff probe)
  *   home/ke/sonnenbattery/status                  {USOC, BatteryCharging, BatteryDischarging, Production_W, Consumption_W}
  *   HTTPS https://air-quality-api.open-meteo.com/v1/air-quality  UV current + hourly (no API key)
  *     params: latitude, longitude, current=uv_index, hourly=uv_index, timezone=auto, forecast_days=1
@@ -82,6 +97,9 @@ const DEFAULT_SETTINGS = {
   uvPollMs: 900000,
   uvTimeoutMs: 5000,
   uvStaleMs: 3600000,
+  // Battery-powered Zigbee temp sensors report on change, not on a schedule —
+  // the pool probe can go 30 min between publishes. 5 min would read as stale.
+  tempStaleMs: 5400000,
 };
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
@@ -104,9 +122,14 @@ const C = {
   doorFill: [50, 10, 10], // very dark red fill (closed door)
   doorFillOpen: [8, 35, 12], // very dark green fill (open door)
   doorHandle: [200, 100, 80], // warm highlight for handle
-  skyFill: [120, 15, 15], // medium-dark red glass (closed skylight)
-  skyFillOpen: [30, 160, 50], // bright green glass (open skylight)
-  skyShadow: [40, 40, 38], // gray shadow row (tilt 3D effect)
+  // Row 0 merged status cell — hue is identity, fill is state.
+  // Labels run bright: they must clear C.dimWhite (unreadable behind the glass).
+  teLabel: [90, 240, 125], // terrace — bright green
+  teOutline: [26, 120, 50], // terrace closed (hollow badge)
+  olLabel: [110, 185, 255], // Oberlichten — bright blue
+  olOutline: [34, 88, 150], // skylight closed (hollow badge)
+  tempRoof: [200, 200, 160], // Dachterrasse value + identity dot
+  tempPool: [0, 190, 220], // pool value + identity dot
   ok: [0, 200, 80],
   warn: [220, 160, 0],
   bad: [200, 30, 30],
@@ -140,7 +163,11 @@ const ROWS = [
   { y0: 27, y1: 44, cy: 35 },
   { y0: 46, y1: 63, cy: 54 },
 ];
-const V_SEP = [21, 43];
+// Row 0 is one merged 43×18 status cell, so the x=21 divider starts below it.
+const V_SEP = [
+  { x: 21, y0: 27 },
+  { x: 43, y0: 8 },
+];
 const H_SEP = [7, 26, 45];
 
 // ── Draw primitives ───────────────────────────────────────────────────────────
@@ -159,7 +186,7 @@ function fillRect(d, x, y, w, h, r, g, b) {
 function drawSeparators(d) {
   const [sr, sg, sb] = C.sep;
   for (const y of H_SEP) hLine(d, 0, 63, y, sr, sg, sb);
-  for (const x of V_SEP) vLine(d, x, 8, 63, sr, sg, sb);
+  for (const { x, y0 } of V_SEP) vLine(d, x, y0, 63, sr, sg, sb);
 }
 
 // Blinking 3×3 ✗ in top-right corner of a cell.
@@ -190,16 +217,6 @@ const MEDIA_IMAGE_PATHS = {
   pcOn: resolve(__dirname, "../../assets/pixoo/icons/pc-on.png"),
   pcOff: resolve(__dirname, "../../assets/pixoo/icons/pc-off.png"),
 };
-const DOOR_IMAGE_PATHS = {
-  closed: resolve(__dirname, "../../assets/pixoo/sliding-door-closed.png"),
-  open: resolve(__dirname, "../../assets/pixoo/sliding-door-open.png"),
-  unknown: resolve(__dirname, "../../assets/pixoo/sliding-door-unknown.png"),
-};
-const SKYLIGHT_IMAGE_PATHS = {
-  closed: resolve(__dirname, "../../assets/pixoo/skylight-closed.png"),
-  open: resolve(__dirname, "../../assets/pixoo/skylight-open.png"),
-  unknown: resolve(__dirname, "../../assets/pixoo/skylight-unknown.png"),
-};
 
 function drawNukiIcon(d, image, cx, cy, alive) {
   // 7×7 icons: anchor at floor(7/2)=3 left and 3 up from center
@@ -210,6 +227,61 @@ function drawNukiIcon(d, image, cx, cy, alive) {
     d._setPixel(cx + 4, cy - 1, dr, dg, db);
     d._setPixel(cx + 4, cy, dr, dg, db);
   }
+}
+
+// ── Cell: merged door/lock status (row 0, x 0..42) ────────────────────────────
+
+// 3×3 badge. Hue is passed in by the caller and means "which opening"; this
+// function only encodes state: hollow = closed, filled = open, olive + amber
+// checker = stale/offline. Stale must never look like closed — a sensor that
+// dropped off while a window was open is the failure that matters.
+function drawOpeningBadge(d, x, y, open, online, bright, outline) {
+  if (open === null || online === false) {
+    const [ur, ug, ub] = C.unknown;
+    fillRect(d, x, y, 3, 3, ur, ug, ub);
+    const [tr, tg, tb] = C.trans;
+    for (const [dx, dy] of [
+      [0, 0],
+      [2, 0],
+      [1, 1],
+      [0, 2],
+      [2, 2],
+    ])
+      d._setPixel(x + dx, y + dy, tr, tg, tb);
+    return;
+  }
+  if (open) {
+    const [r, g, b] = bright;
+    fillRect(d, x, y, 3, 3, r, g, b);
+    return;
+  }
+  const [r, g, b] = outline;
+  hLine(d, x, x + 2, y, r, g, b);
+  hLine(d, x, x + 2, y + 2, r, g, b);
+  d._setPixel(x, y + 1, r, g, b);
+  d._setPixel(x + 2, y + 1, r, g, b);
+}
+
+// ── Cell: stacked temperatures (row 0, x 44..63) ──────────────────────────────
+
+// Identity dot + value. Same kerning trick as drawKwTight: the decimal point is
+// a hand-placed pixel on the baseline rather than a font glyph, so "32.3" fits
+// in 13px instead of the 15px the 3×5 face would need.
+async function drawTempValue(d, cellX0, y, value, color) {
+  const [r, g, b] = color;
+  d._setPixel(cellX0 + 1, y + 2, r, g, b); // identity dot
+
+  const x0 = cellX0 + 3;
+  if (value === null) {
+    await d.drawTextRgbaAligned("--", [x0, y], C.dimWhite, "left");
+    return;
+  }
+
+  const [intStr, fracStr] = value.toFixed(1).split(".");
+  await d.drawTextRgbaAligned(intStr, [x0, y], color, "left");
+  const dotX = x0 + intStr.length * 4 - 1 + 1; // 4n-1 glyph run, then a 1px gap
+  d._setPixel(dotX, y + 4, r, g, b);
+  await d.drawTextRgbaAligned(fracStr, [dotX + 2, y], color, "left");
 }
 
 function drawMediaIcon(d, image, cx, cy) {
@@ -925,6 +997,15 @@ export default {
       max: 21600000,
       step: 60000,
     },
+    temp_stale_ms: {
+      type: "int",
+      label: "Temperature Stale Timeout (ms)",
+      group: "Timing",
+      default: 5400000,
+      min: 300000,
+      max: 21600000,
+      step: 300000,
+    },
   },
 
   async init(context) {
@@ -944,16 +1025,8 @@ export default {
       pcOn: await loadPixooImage(MEDIA_IMAGE_PATHS.pcOn),
       pcOff: await loadPixooImage(MEDIA_IMAGE_PATHS.pcOff),
     };
-    this._doorImages = {
-      closed: await loadPixooImage(DOOR_IMAGE_PATHS.closed),
-      open: await loadPixooImage(DOOR_IMAGE_PATHS.open),
-      unknown: await loadPixooImage(DOOR_IMAGE_PATHS.unknown),
-    };
-    this._skylightImages = {
-      closed: await loadPixooImage(SKYLIGHT_IMAGE_PATHS.closed),
-      open: await loadPixooImage(SKYLIGHT_IMAGE_PATHS.open),
-      unknown: await loadPixooImage(SKYLIGHT_IMAGE_PATHS.unknown),
-    };
+    // The sliding-door and skylight PNGs are no longer loaded: TE/OL badges
+    // replaced them. The asset files are kept on disk for the previous layout.
 
     this._cfg = this._mapSettings(context.settings.all());
     this._traceWildcard = true;
@@ -1027,6 +1100,11 @@ export default {
       w13Online: null,
       w14Open: null,
       w14Online: null,
+      // Row 0 — temperatures
+      roofTempC: null,
+      roofTempSeen: null,
+      poolTempC: null,
+      poolTempSeen: null,
       // Row 1 — energy
       battPct: null,
       battState: null,
@@ -1065,6 +1143,14 @@ export default {
     const parseAvailability = (msg) => {
       try {
         return JSON.parse(msg).state === "online";
+      } catch {
+        return null;
+      }
+    };
+    const parseTemperature = (msg) => {
+      try {
+        const t = JSON.parse(msg).temperature;
+        return typeof t === "number" && Number.isFinite(t) ? t : null;
       } catch {
         return null;
       }
@@ -1196,6 +1282,24 @@ export default {
     this._healTimer = setInterval(heal, this._cfg.healRetryMs);
     // Also run once at 5s — catches the common fast-broker case
     setTimeout(heal, this._cfg.healInitialDelayMs);
+
+    // Dachterrasse air temp — Hue outdoor motion sensor's temperature channel.
+    // Deliberately NOT z2m/dt/temp/aqara: that one bakes in direct sun (+10 K).
+    context.mqtt.subscribe("z2m/dt/motion/hueoutdoor", (msg) => {
+      const v = parseTemperature(msg);
+      if (v !== null) {
+        this._s.roofTempC = v;
+        this._s.roofTempSeen = Date.now();
+      }
+    });
+
+    context.mqtt.subscribe("z2m/te/temp/pool", (msg) => {
+      const v = parseTemperature(msg);
+      if (v !== null) {
+        this._s.poolTempC = v;
+        this._s.poolTempSeen = Date.now();
+      }
+    });
 
     context.mqtt.subscribe("home/ke/sonnenbattery/status", (msg) => {
       try {
@@ -1371,10 +1475,10 @@ export default {
 
     drawSeparators(device);
 
-    // ── Row 0: Doors / Windows ───────────────────────────────────────────────
+    // ── Row 0: merged status cell (x 0..42) ──────────────────────────────────
 
-    // NUKI col 0 — two circles stacked: VR (front) top, Keller (basement) bottom.
-    // Row 0 = y 8..25 (18px). r=1 colored + r=2+r=3 gray outline. Top cy=13, bottom cy=21.
+    // NUKI — two 7×7 sprites stacked at the cell's left edge: VR (front) top,
+    // Keller (basement) bottom. Positions unchanged from the 3-cell layout.
     const cx0 = COLS[0].cx;
     const nukiImage = (state) => {
       if (state === null) return this._nukiImages.unknown;
@@ -1398,24 +1502,54 @@ export default {
       s.nukiKeAlive,
     );
 
-    // TERRACE dual sliding door (col 1)
-    const doorImg =
-      s.terraceOpen === null
-        ? this._doorImages.unknown
-        : s.terraceOpen
-          ? this._doorImages.open
-          : this._doorImages.closed;
-    drawPixooImage(device, doorImg, 22, 8);
+    // TE (terrace door) and OL (Oberlichten) share a label x; the leftmost badge
+    // of each row shares a second x, so the two rows read as aligned statements.
+    await device.drawTextRgbaAligned("TE", [20, 9], C.teLabel, "left");
+    drawOpeningBadge(
+      device,
+      29,
+      10,
+      s.terraceOpen,
+      s.terraceOnline,
+      C.teLabel,
+      C.teOutline,
+    );
 
-    // W13 + W14 side-by-side skylights (col 2) — 8px wide, 2px gap
-    const skyImg = (state) =>
-      state === null
-        ? this._skylightImages.unknown
-        : state
-          ? this._skylightImages.open
-          : this._skylightImages.closed;
-    drawPixooImage(device, skyImg(s.w13Open), 45, 13);
-    drawPixooImage(device, skyImg(s.w14Open), 55, 13);
+    await device.drawTextRgbaAligned("OL", [20, 19], C.olLabel, "left");
+    drawOpeningBadge(
+      device,
+      29,
+      20,
+      s.w13Open,
+      s.w13Online,
+      C.olLabel,
+      C.olOutline,
+    );
+    drawOpeningBadge(
+      device,
+      34,
+      20,
+      s.w14Open,
+      s.w14Online,
+      C.olLabel,
+      C.olOutline,
+    );
+
+    // Temperatures (x 44..63): Dachterrasse above, pool water below.
+    await drawTempValue(
+      device,
+      COLS[2].x0,
+      9,
+      isStale(s.roofTempSeen, this._cfg.tempStaleMs) ? null : s.roofTempC,
+      C.tempRoof,
+    );
+    await drawTempValue(
+      device,
+      COLS[2].x0,
+      18,
+      isStale(s.poolTempSeen, this._cfg.tempStaleMs) ? null : s.poolTempC,
+      C.tempPool,
+    );
 
     // ── Row 1: Energy ────────────────────────────────────────────────────────
 
@@ -1730,6 +1864,7 @@ export default {
       uvPollMs: values.uv_poll_ms ?? DEFAULT_SETTINGS.uvPollMs,
       uvTimeoutMs: values.uv_timeout_ms ?? DEFAULT_SETTINGS.uvTimeoutMs,
       uvStaleMs: values.uv_stale_ms ?? DEFAULT_SETTINGS.uvStaleMs,
+      tempStaleMs: values.temp_stale_ms ?? DEFAULT_SETTINGS.tempStaleMs,
     };
   },
 };
