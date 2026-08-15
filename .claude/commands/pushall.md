@@ -1,1 +1,0 @@
-../../doctrine/commands/pushall.md
