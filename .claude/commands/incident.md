@@ -1,1 +1,1 @@
-../../doctrine/commands/incident.md
+../../doctrine-private/commands/incident.md

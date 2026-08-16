@@ -1,1 +1,1 @@
-../../doctrine/commands/iac.md
+../../doctrine-private/commands/iac.md

@@ -1,1 +1,1 @@
-../../doctrine/commands/ops.md
+../../doctrine-private/commands/ops.md

@@ -1,1 +1,1 @@
-../../doctrine/commands/style.md
+../../doctrine-private/commands/style.md
