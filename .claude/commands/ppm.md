@@ -1,1 +1,1 @@
-../../doctrine/commands/ppm.md
+../../doctrine-private/commands/ppm.md

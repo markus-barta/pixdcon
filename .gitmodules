@@ -1,3 +1,6 @@
 [submodule "doctrine"]
 	path = doctrine
 	url = https://github.com/inspr-at/inspr-modules.git
+[submodule "doctrine-private"]
+	path = doctrine-private
+	url = git@github.com:inspr-at/inspr-doctrine-private.git
