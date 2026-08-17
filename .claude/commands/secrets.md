@@ -1,1 +1,1 @@
-../../doctrine/commands/secrets.md
+../../doctrine-private/commands/secrets.md
