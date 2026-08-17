@@ -13,4 +13,5 @@
 -->
 
 @./doctrine/docs/AGENTS-KERNEL.md
+@./doctrine-private/docs/AGENTS-KERNEL-PRIVATE.md
 @./AGENTS.md
