@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import childProcess from "node:child_process";
 import https from "node:https";
 import { syncBuiltinESMExports } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import home from "../scenes/pixoo/home.js";
 import health from "../scenes/pixoo/health.js";
@@ -124,11 +124,20 @@ function requests(t) {
   return pending;
 }
 
+// The loader imports scenes with its own cache-bust token, so it gets a
+// different module instance than the static import above. Stub the polls on
+// the instance the loader will actually use (no network from tests).
+async function stubLoaderHomePolls(t, loader) {
+  const url = pathToFileURL(fileURLToPath(new URL("../scenes/pixoo/home.js", import.meta.url)));
+  url.searchParams.set("t", loader._importToken);
+  const { default: loaderHome } = await import(url.href);
+  for (const method of ["_restartNukiPolls", "_startSyncboxPoll", "_startUvPoll"]) {
+    t.mock.method(loaderHome, method, () => {});
+  }
+}
+
 test("loader eviction clears home self-heal timers and subscriptions after settings changes", async (t) => {
   const scheduled = timers(t);
-  for (const method of ["_restartNukiPolls", "_startSyncboxPoll", "_startUvPoll"]) {
-    t.mock.method(home, method, () => {});
-  }
   const ctx = context();
   const loader = new SceneLoader(fileURLToPath(new URL("../", import.meta.url)), {
     home: { path: "./scenes/pixoo/home.js" },
@@ -137,6 +146,7 @@ test("loader eviction clears home self-heal timers and subscriptions after setti
     mqttService: { getSceneContext: () => ctx.mqtt },
     sceneSettingsService: { createRuntimeContext: () => ctx.settings },
   });
+  await stubLoaderHomePolls(t, loader);
   await loader.load("home", "scene-test");
   assert.equal(scheduled.timeouts.size, 1);
   assert.equal(scheduled.intervals.size, 1);
@@ -152,12 +162,10 @@ test("loader eviction clears home self-heal timers and subscriptions after setti
 
 test("home initializes against the loader's MQTT-disabled context", async (t) => {
   timers(t);
-  for (const method of ["_restartNukiPolls", "_startSyncboxPoll", "_startUvPoll"]) {
-    t.mock.method(home, method, () => {});
-  }
   const loader = new SceneLoader(fileURLToPath(new URL("../", import.meta.url)), {
     home: { path: "./scenes/pixoo/home.js" },
   }, { logger });
+  await stubLoaderHomePolls(t, loader);
   const scene = await loader.load("home", "offline-scene-test");
   assert.equal(await scene.render(driver(t)), 500);
   await loader.clearCache();
