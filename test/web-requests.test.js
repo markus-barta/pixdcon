@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
 import { WebServer } from "../lib/web-server.js";
+import { ConfigLoader } from "../lib/config-loader.js";
 
 const logger = { error() {} };
 
@@ -183,6 +184,31 @@ test("successful scene selection persists and updates the live loop and config",
   assert.equal(selected, null);
   assert.equal(config.devices[0].scene, null);
   assert.equal(JSON.parse(await readFile(configPath, "utf-8")).devices[0].scene, null);
+});
+
+test("clearing the scene of a legacy scenes-array device does not resurrect the old scene", async () => {
+  const { configPath, server } = await fixture({
+    getRenderLoops: () => [{ device: { name: "pixoo-01" }, loop: { setScene() {} } }],
+  });
+  await writeFile(configPath, JSON.stringify({
+    devices: [{ name: "pixoo-01", type: "pixoo", ip: "127.0.0.1", scenes: ["home"] }],
+    scenes: { home: { path: "./scenes/pixoo/home.js" } },
+  }));
+  const res = await request(server, "/api/scene", JSON.stringify({ deviceName: "pixoo-01", scene: null }));
+  assert.equal(res.status, 200);
+  const raw = await readFile(configPath, "utf-8");
+  assert.equal(JSON.parse(raw).devices[0].scenes, undefined);
+  assert.equal(new ConfigLoader(configPath).parse(raw).devices[0].scene, null);
+});
+
+test("an API write the loader would reject is refused and leaves the file untouched", async () => {
+  const { configPath, server } = await fixture({
+    getRenderLoops: () => [{ device: { name: "pixoo-01" }, loop: { setScene() {} } }],
+  });
+  const before = await readFile(configPath, "utf-8");
+  const res = await request(server, "/api/scene", JSON.stringify({ deviceName: "pixoo-01", scene: 123 }));
+  assert.equal(res.status, 400);
+  assert.equal(await readFile(configPath, "utf-8"), before);
 });
 
 test("explicit saves still persist devices introduced by the effective overlay", async () => {

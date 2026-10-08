@@ -373,6 +373,12 @@ async function shutdown(signal, exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info(`[pixdcon] Received ${signal}, shutting down gracefully...`);
+  // Stay inside Docker's 10 s stop grace period even if a device or the
+  // broker is slow to answer: a SIGKILL would skip the cleanup entirely.
+  setTimeout(() => {
+    logger.warn("[pixdcon] Graceful shutdown took over 8 s, exiting now");
+    process.exit(exitCode);
+  }, 8000).unref();
 
   if (configWatcher) await configWatcher.stop();
   if (scenesWatcher) scenesWatcher.stop();
