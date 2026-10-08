@@ -219,7 +219,8 @@ export default {
 
     const parseOpen = (msg) => {
       try {
-        return JSON.parse(msg).contact === false;
+        const contact = JSON.parse(msg)?.contact;
+        return typeof contact === "boolean" ? contact === false : null;
       } catch {
         return null;
       }
@@ -299,7 +300,12 @@ export default {
   async render(device) {
     if (!this._state) return 500;
 
-    const hour = new Date().getHours();
+    const now = new Date();
+    const hour = Number(new Intl.DateTimeFormat("en-GB", {
+      timeZone: this._settings.timezone,
+      hour: "2-digit",
+      hourCycle: "h23",
+    }).format(now));
     const { dayStartHour, nightStartHour, briDay, briNight } = this._settings;
 
     // Mode: debug override > time-based
@@ -308,14 +314,16 @@ export default {
         ? true
         : this._debug.modeOverride === "night"
           ? false
-          : hour >= dayStartHour && hour < nightStartHour;
+          : dayStartHour <= nightStartHour
+            ? hour >= dayStartHour && hour < nightStartHour
+            : hour >= dayStartHour || hour < nightStartHour;
 
     const mode = isDay ? "day" : "night";
     const C = isDay ? DAY : NIGHT;
 
     // Brightness: debug override > settings (% → native 0-255)
-    const targetPct = this._debug.briOverride ?? (isDay ? briDay : briNight);
-    const targetBri = Math.round((targetPct / 100) * 255);
+    const targetBri = this._debug.briOverride ??
+      Math.round(((isDay ? briDay : briNight) / 100) * 255);
 
     const modeChanged = mode !== this._lastMode;
     const briHeartbeat = Date.now() - this._lastBriSet >= BRI_HEARTBEAT_MS;
@@ -326,7 +334,6 @@ export default {
     }
 
     // Time
-    const now = new Date();
     const withSeconds = isDay
       ? this._settings.showSecondsDay
       : this._settings.showSecondsNight;
@@ -402,12 +409,14 @@ export default {
     }
 
     const url = `http://${host}/api/v2/status`;
+    const controller = new AbortController();
+    this._sonnenPollController = controller;
 
     const poll = async () => {
       try {
         const res = await fetch(url, {
           headers: { "Auth-Token": token },
-          signal: AbortSignal.timeout(2500), // 2.5s timeout — must finish before next poll
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(2500)]),
         });
 
         if (!res.ok) {
@@ -416,10 +425,11 @@ export default {
         }
 
         const data = await res.json();
+        if (controller.signal.aborted) return;
 
         // USOC = user state of charge (0–100)
         const pct = parseFloat(data.USOC);
-        this._state.batteryPct = isNaN(pct)
+        this._state.batteryPct = !Number.isFinite(pct)
           ? null
           : Math.max(0, Math.min(100, pct));
 
@@ -430,6 +440,7 @@ export default {
           this._state.batteryState = "discharging";
         else this._state.batteryState = "standby";
       } catch (err) {
+        if (controller.signal.aborted) return;
         // Network error / timeout — keep last known values, don't crash
         logger.warn(
           `[clock_with_homestats] Sonnen API poll failed: ${err.message}`,
@@ -446,6 +457,8 @@ export default {
   },
 
   _stopSonnenPoll() {
+    this._sonnenPollController?.abort();
+    this._sonnenPollController = null;
     if (this._sonnenPollInterval) {
       clearInterval(this._sonnenPollInterval);
       this._sonnenPollInterval = null;

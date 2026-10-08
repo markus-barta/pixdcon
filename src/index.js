@@ -64,6 +64,17 @@ let framePreviewStore = null;
 let sceneMetadata = {};
 let sceneSettingsService = null;
 let telemetryCollector = null;
+let lifecycleQueue = Promise.resolve();
+let shuttingDown = false;
+
+// Startup, config/overlay reloads and scene teardown must never overlap.
+function queueLifecycle(action) {
+  const next = lifecycleQueue.then(() => {
+    if (!shuttingDown) return action();
+  });
+  lifecycleQueue = next.catch(() => {}); // callers log their own errors
+  return next;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -93,23 +104,28 @@ async function initializeMqtt() {
   } catch (error) {
     // MQTT failure is non-fatal — display still works without it
     logger.error(`[MQTT] Connection failed, continuing without MQTT`, error);
+    await svc.disconnect();
     return null;
   }
 }
 
 function startScenesWatcher() {
+  if (shuttingDown) return;
   const configDir = dirname(configPath);
   const dirs = sceneLoader.getSceneDirs();
   scenesWatcher = new ScenesWatcher(
     dirs,
-    async (filename) => {
-      const names = sceneLoader.findScenesByFilename(filename);
+    (filename, directory) => queueLifecycle(async () => {
+      const names = sceneLoader.findScenesByFilename(filename, directory);
       if (names.length === 0) {
         logger.debug(
           `[pixdcon] Scene file "${filename}" changed but no matching scene found`,
         );
         return;
       }
+      // Let active renders/init finish before destroying their scene resources.
+      const affected = renderLoops.filter(({ loop }) => names.includes(loop.scene));
+      await Promise.all(affected.map(({ loop }) => loop.stop()));
       sceneMetadata = await loadSceneMetadata(
         configDir,
         effectiveConfig.scenes,
@@ -120,7 +136,14 @@ function startScenesWatcher() {
       for (const name of names) {
         await sceneLoader.clearScene(name);
       }
-    },
+      if (!shuttingDown) {
+        for (const { loop, device } of affected) {
+          loop.start().catch((err) => {
+            logger.error(`[pixdcon] Render loop for ${device.name} exited after scene reload`, err);
+          });
+        }
+      }
+    }),
     { logger },
   );
   scenesWatcher.start();
@@ -131,6 +154,7 @@ function startScenesWatcher() {
  * Returns the loop instance, or null if the device cannot be started.
  */
 async function startDevice(device) {
+  if (shuttingDown) return null;
   logger.info(
     `[pixdcon] Starting device: ${device.name} (${device.type} @ ${device.ip})`,
   );
@@ -156,6 +180,7 @@ async function startDevice(device) {
   }
 
   const initialized = await driver.initialize();
+  if (shuttingDown) return null;
   if (!initialized) {
     logger.warn(
       `[pixdcon] Device ${device.name} not reachable — will retry via render loop backoff`,
@@ -236,8 +261,9 @@ async function startDevice(device) {
 
 async function stopAllDevices() {
   logger.info(`[pixdcon] Stopping ${renderLoops.length} device(s)...`);
-  for (const { loop, device } of renderLoops) {
-    loop.stop();
+  const stopped = renderLoops.map(({ loop }) => loop.stop());
+  await Promise.all(stopped);
+  for (const { device } of renderLoops) {
     if (telemetryCollector) telemetryCollector.stop(device.name);
     if (framePreviewStore) framePreviewStore.unregisterDevice(device.name);
     if (mqttService) {
@@ -255,7 +281,9 @@ async function stopAllDevices() {
 async function applyOverlayReload() {
   logger.info("[pixdcon] Overlay changed, applying effective config...");
   try {
-    effectiveConfig = configOverlay.merge(baseConfig);
+    const nextConfig = new ConfigLoader(configPath).parse(
+      JSON.stringify(configOverlay.merge(baseConfig)),
+    );
 
     if (scenesWatcher) {
       scenesWatcher.stop();
@@ -263,6 +291,7 @@ async function applyOverlayReload() {
     }
     await stopAllDevices();
     await sceneLoader.clearCache();
+    effectiveConfig = nextConfig;
 
     const configDir = dirname(configPath);
     sceneMetadata = await loadSceneMetadata(configDir, effectiveConfig.scenes, {
@@ -299,11 +328,10 @@ async function reloadConfig(newConfigContent) {
   try {
     // Validate before touching anything running
     const loader = new ConfigLoader(configPath);
-    baseConfig = loader.parse(newConfigContent); // update base for future merges
-
-    effectiveConfig = configOverlay
-      ? configOverlay.merge(baseConfig)
-      : baseConfig;
+    const nextBase = loader.parse(newConfigContent);
+    const nextConfig = configOverlay
+      ? loader.parse(JSON.stringify(configOverlay.merge(nextBase)))
+      : nextBase;
 
     if (scenesWatcher) {
       scenesWatcher.stop();
@@ -311,6 +339,8 @@ async function reloadConfig(newConfigContent) {
     }
     await stopAllDevices();
     await sceneLoader.clearCache(); // destroy() hooks + re-import from disk
+    baseConfig = nextBase;
+    effectiveConfig = nextConfig;
 
     // Re-create SceneLoader with effective config's scenes map
     const configDir = dirname(configPath);
@@ -339,24 +369,38 @@ async function reloadConfig(newConfigContent) {
   }
 }
 
-async function shutdown(signal) {
+async function shutdown(signal, exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logger.info(`[pixdcon] Received ${signal}, shutting down gracefully...`);
+  // Stay inside Docker's 10 s stop grace period even if a device or the
+  // broker is slow to answer: a SIGKILL would skip the cleanup entirely.
+  setTimeout(() => {
+    logger.warn("[pixdcon] Graceful shutdown took over 8 s, exiting now");
+    process.exit(exitCode);
+  }, 8000).unref();
 
   if (configWatcher) await configWatcher.stop();
   if (scenesWatcher) scenesWatcher.stop();
   if (configOverlay) configOverlay.unsubscribe();
-  if (sceneSettingsService) sceneSettingsService.stop();
   if (telemetryCollector) telemetryCollector.stopAll();
   if (webServer) webServer.stop();
 
+  await lifecycleQueue;
+  // Startup/reloads may have been awaiting I/O when the signal arrived.
+  if (configWatcher) await configWatcher.stop();
+  if (scenesWatcher) scenesWatcher.stop();
+  if (configOverlay) configOverlay.unsubscribe();
   await stopAllDevices();
+  if (sceneLoader) await sceneLoader.clearCache();
+  if (sceneSettingsService) sceneSettingsService.stop();
 
   if (mqttService) {
     mqttService.setRunning(false);
     await mqttService.disconnect();
   }
 
-  process.exit(0);
+  process.exit(exitCode);
 }
 
 async function main() {
@@ -372,6 +416,14 @@ async function main() {
     `[pixdcon] Loaded config: ${baseConfig.devices.length} device(s), ${Object.keys(baseConfig.scenes).length} scene(s)`,
   );
 
+  // Observe edits during slow MQTT/device startup; their reloads wait on startup.
+  if (shuttingDown) return;
+  configWatcher = new ConfigWatcher(
+    configPath, (content) => queueLifecycle(() => reloadConfig(content)), { logger },
+  );
+  await configWatcher.start();
+  if (shuttingDown) return;
+
   // MQTT — optional; failures are non-fatal
   mqttService = await initializeMqtt();
   if (mqttService) {
@@ -386,7 +438,7 @@ async function main() {
     configOverlay = new ConfigOverlay(
       mqttService,
       mqttService.baseTopic,
-      applyOverlayReload,
+      () => queueLifecycle(applyOverlayReload),
       { logger },
     );
     await configOverlay.subscribe(); // 200ms settle, clears debounce
@@ -403,7 +455,6 @@ async function main() {
     mqttService,
     logger,
   });
-  await sceneSettingsService.start();
 
   // Telemetry — per-Ulanzi periodic /api/stats poll → retained MQTT.
   // No-op when mqttService is null (MQTT disabled / unreachable).
@@ -423,6 +474,8 @@ async function main() {
   sceneMetadata = await loadSceneMetadata(configDir, effectiveConfig.scenes, {
     logger,
   });
+  // Retained settings need the schema before the subscription's first messages.
+  await sceneSettingsService.start();
   sceneLoader = new SceneLoader(configDir, effectiveConfig.scenes, {
     logger,
     mqttService,
@@ -434,9 +487,7 @@ async function main() {
     await startDevice(device);
   }
 
-  // Watch config for hot reload
-  configWatcher = new ConfigWatcher(configPath, reloadConfig, { logger });
-  await configWatcher.start();
+  if (shuttingDown) return;
 
   // Web UI
   webServer = new WebServer({
@@ -460,14 +511,25 @@ async function main() {
   });
   webServer.start();
 
-  // Handle both SIGINT (Ctrl+C) and SIGTERM (Docker stop)
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-
   logger.info("[pixdcon] Running. Send SIGINT or SIGTERM to stop.");
 }
 
-main().catch((err) => {
+// Register before startup I/O so Docker stop also works during initialization.
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    shutdown(signal).catch((err) => {
+      logger.error("[pixdcon] Shutdown failed", err);
+      process.exit(1);
+    });
+  });
+}
+
+const startup = main();
+lifecycleQueue = startup.catch(() => {});
+startup.catch((err) => {
   logger.error("[pixdcon] Fatal startup error", err);
-  process.exit(1);
+  shutdown("startup failure", 1).catch((error) => {
+    logger.error("[pixdcon] Startup cleanup failed", error);
+    process.exit(1);
+  });
 });

@@ -21,9 +21,9 @@ RUN mkdir -p /data && ln -s /app/lib /data/lib && ln -s /app/assets /data/assets
 
 # ---- Runtime defaults (all can be overridden in docker-compose) ----
 ENV PIXDCON_CONFIG_PATH=/data/config.json \
-    MQTT_HOST=localhost \
+    MOSQUITTO_HOST=localhost \
     MQTT_PORT=1883 \
-    MQTT_USER=smarthome \
+    MOSQUITTO_USER=smarthome \
     LOG_LEVEL=info \
     TZ=Europe/Vienna \
     WEB_PORT=8080

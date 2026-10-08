@@ -62,7 +62,7 @@
  */
 
 import https from "https";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { drawPixooImage, loadPixooImage } from "../../lib/pixoo-image.js";
@@ -552,15 +552,18 @@ async function drawUvValueTight(d, rightX, y, uvi, color) {
   await d.drawTextRgbaAligned(fracStr, [intX + 6, y], color, "left");
 }
 
-// Linear interpolation between the two CAMS hourly points around `now`.
-// hourly24 = 24 values starting 00:00 local. Returns null if unusable.
-function uvInterpNow(hourly24, now) {
-  if (!Array.isArray(hourly24) || hourly24.length !== 24) return null;
-  const h = now.getHours();
-  const v0 = Number(hourly24[h]);
-  const v1 = Number(hourly24[h + 1] ?? hourly24[h]); // 23:xx → hold last hour
-  if (!Number.isFinite(v0) || !Number.isFinite(v1)) return null;
-  return v0 + (v1 - v0) * (now.getMinutes() / 60);
+// Epoch timestamps keep missing hours, DST and yesterday's forecast unambiguous.
+function uvInterpNow(hourly, times, now) {
+  if (!Array.isArray(hourly) || !Array.isArray(times)) return null;
+  const ms = now.getTime();
+  const h = times.findIndex((t) => ms >= t && ms < t + 3600000);
+  if (h < 0 || !Number.isFinite(hourly[h])) return null;
+  const fraction = Math.floor((ms - times[h]) / 60000) / 60;
+  const v0 = hourly[h];
+  if (fraction === 0 || h === times.length - 1) return v0;
+  const v1 = hourly[h + 1];
+  if (times[h + 1] - times[h] !== 3600000 || !Number.isFinite(v1)) return null;
+  return v0 + (v1 - v0) * fraction;
 }
 
 async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
@@ -696,13 +699,6 @@ function _mediaColors(isOn, stale) {
   return { dot, icon };
 }
 
-// Syncbox line — 3px hLine below power dot. Active+syncing=blue, otherwise white.
-// Only drawn when syncbox is known-online; TV col has no line.
-function drawSyncboxLine(d, cx, dotY, isSyncing) {
-  const [r, g, b] = isSyncing ? [60, 140, 255] : [235, 235, 235];
-  hLine(d, cx - 1, cx + 1, dotY + 2, r, g, b);
-}
-
 // Syncbox offline — red X at bottom-right of TV cell (permanent, no blink)
 function drawSyncboxOffline(d) {
   const ex = COLS[1].x1 - 4; // x 38
@@ -715,51 +711,6 @@ function drawSyncboxOffline(d) {
   d._setPixel(ex + 2, ey + 2, r, g, b);
 }
 
-// TV monitor: 15×9 wall-mounted (cx±7, cy-4..cy+4) — no stand
-function drawTV(d, cx, cy, isOn, stale) {
-  const {
-    icon: [r, g, b],
-    dot: [dr, dg, db],
-  } = _mediaColors(isOn, stale);
-  hLine(d, cx - 7, cx + 7, cy - 4, r, g, b);
-  hLine(d, cx - 7, cx + 7, cy + 4, r, g, b);
-  vLine(d, cx - 7, cy - 4, cy + 4, r, g, b);
-  vLine(d, cx + 7, cy - 4, cy + 4, r, g, b);
-  d._setPixel(cx, cy + 6, dr, dg, db); // power dot (full brightness)
-}
-
-// PS5 controller: 7×5 body (cx±3, cy±2) + grips (cx±4, cy+1..2) + touchpad dot
-function drawPS5(d, cx, cy, isOn, stale) {
-  const {
-    icon: [r, g, b],
-    dot: [dr, dg, db],
-  } = _mediaColors(isOn, stale);
-  hLine(d, cx - 3, cx + 3, cy - 2, r, g, b);
-  hLine(d, cx - 3, cx + 3, cy + 2, r, g, b);
-  vLine(d, cx - 3, cy - 2, cy + 2, r, g, b);
-  vLine(d, cx + 3, cy - 2, cy + 2, r, g, b);
-  d._setPixel(cx - 4, cy + 1, r, g, b);
-  d._setPixel(cx - 4, cy + 2, r, g, b);
-  d._setPixel(cx + 4, cy + 1, r, g, b);
-  d._setPixel(cx + 4, cy + 2, r, g, b);
-  d._setPixel(cx, cy, r, g, b); // touchpad dot
-  d._setPixel(cx, cy + 6, dr, dg, db); // power dot (full brightness)
-}
-
-// PC tower: 5×8 outline (cx±2, cy-4..cy+3) + disk slot line
-function drawPC(d, cx, cy, isOn, stale) {
-  const {
-    icon: [r, g, b],
-    dot: [dr, dg, db],
-  } = _mediaColors(isOn, stale);
-  hLine(d, cx - 2, cx + 2, cy - 4, r, g, b);
-  hLine(d, cx - 2, cx + 2, cy + 3, r, g, b);
-  vLine(d, cx - 2, cy - 4, cy + 3, r, g, b);
-  vLine(d, cx + 2, cy - 4, cy + 3, r, g, b);
-  hLine(d, cx - 1, cx + 1, cy - 1, r, g, b); // disk slot detail
-  d._setPixel(cx, cy + 6, dr, dg, db); // power dot (full brightness)
-}
-
 // ── Staleness / Nuki ping ──────────────────────────────────────────────────────
 
 const STALE_MS = 5 * 60 * 1000;
@@ -768,11 +719,11 @@ const isStale = (ts, staleMs = STALE_MS) =>
 
 function pingHost(ip) {
   return new Promise((resolve) => {
-    const cmd =
-      process.platform === "darwin"
-        ? `ping -c 1 -W 2000 ${ip}`
-        : `ping -c 1 -W 2 ${ip}`;
-    exec(cmd, { timeout: 4000 }, (err) => resolve(!err));
+    // execFile: the host comes from scene settings, never a shell string.
+    const wait = process.platform === "darwin" ? "2000" : "2";
+    execFile("ping", ["-c", "1", "-W", wait, String(ip)], { timeout: 4000 }, (err) =>
+      resolve(!err),
+    );
   });
 }
 
@@ -1069,8 +1020,9 @@ export default {
           prev.healInitialDelayMs !== this._cfg.healInitialDelayMs)
       ) {
         if (this._healTimer) clearInterval(this._healTimer);
+        if (this._healTimeout) clearTimeout(this._healTimeout);
         this._healTimer = setInterval(this._healRunner, this._cfg.healRetryMs);
-        setTimeout(this._healRunner, this._cfg.healInitialDelayMs);
+        this._healTimeout = setTimeout(this._healRunner, this._cfg.healInitialDelayMs);
       }
     });
 
@@ -1116,9 +1068,10 @@ export default {
       // met.no MQTT kept as last-resort fallback (clear-sky, cloud-blind)
       uvCurrentMqtt: null,
       uvCurrentApi: null,
-      uvHourly: null, // length-14 array for hours 06..19 (display bars)
-      uvHourly24: null, // full 24h array for now-interpolation
-      uvSeen: null,
+      uvHourly24: null, // hourly samples, including 23/25-hour DST days
+      uvHourlyTimes: null, // UNIX epoch milliseconds for the hourly samples
+      uvApiSeen: null,
+      uvMqttSeen: null,
       uvCurrentOverride: null,
       uvHourlyOverride: null,
       // Row 2 — media (power in watts)
@@ -1135,14 +1088,16 @@ export default {
 
     const parseContact = (msg) => {
       try {
-        return JSON.parse(msg).contact === false;
+        const contact = JSON.parse(msg)?.contact;
+        return typeof contact === "boolean" ? contact === false : null;
       } catch {
         return null;
       }
     };
     const parseAvailability = (msg) => {
       try {
-        return JSON.parse(msg).state === "online";
+        const state = JSON.parse(msg)?.state;
+        return state === "online" ? true : state === "offline" ? false : null;
       } catch {
         return null;
       }
@@ -1158,7 +1113,7 @@ export default {
     const parsePower = (msg) => {
       try {
         const d = JSON.parse(msg);
-        return typeof d.power === "number" ? d.power : null;
+        return typeof d.power === "number" && Number.isFinite(d.power) ? d.power : null;
       } catch {
         return null;
       }
@@ -1168,7 +1123,7 @@ export default {
     const _h = {};
     const sub = (topic, fn) => {
       _h[topic] = fn;
-      if (topic.includes("#") || topic.includes("+")) {
+      if ((topic.includes("#") || topic.includes("+")) && context.mqtt.subscribeWildcard) {
         context.mqtt.subscribeWildcard(topic, fn);
       } else {
         context.mqtt.subscribe(topic, fn);
@@ -1264,12 +1219,14 @@ export default {
       if (pending.length === 0) {
         clearInterval(this._healTimer);
         this._healTimer = null;
+        clearTimeout(this._healTimeout);
+        this._healTimeout = null;
         context.logger.info("[home] self-heal: all topics resolved, stopping");
         return;
       }
       for (const [topic] of pending) {
         if (_h[topic]) {
-          if (topic.includes("#") || topic.includes("+")) {
+          if ((topic.includes("#") || topic.includes("+")) && context.mqtt.subscribeWildcard) {
             context.mqtt.subscribeWildcard(topic, _h[topic]);
           } else {
             context.mqtt.subscribe(topic, _h[topic]);
@@ -1281,7 +1238,7 @@ export default {
     this._healRunner = heal;
     this._healTimer = setInterval(heal, this._cfg.healRetryMs);
     // Also run once at 5s — catches the common fast-broker case
-    setTimeout(heal, this._cfg.healInitialDelayMs);
+    this._healTimeout = setTimeout(heal, this._cfg.healInitialDelayMs);
 
     // Dachterrasse air temp — Hue outdoor motion sensor's temperature channel.
     // Deliberately NOT z2m/dt/temp/aqara: that one bakes in direct sun (+10 K).
@@ -1304,16 +1261,16 @@ export default {
     context.mqtt.subscribe("home/ke/sonnenbattery/status", (msg) => {
       try {
         const d = JSON.parse(msg);
-        this._s.battPct = typeof d.USOC === "number" ? d.USOC : null;
+        this._s.battPct = typeof d.USOC === "number" && Number.isFinite(d.USOC) ? d.USOC : null;
         this._s.battState = d.BatteryCharging
           ? "charging"
           : d.BatteryDischarging
             ? "discharging"
             : "standby";
         this._s.productionW =
-          typeof d.Production_W === "number" ? d.Production_W : null;
+          typeof d.Production_W === "number" && Number.isFinite(d.Production_W) ? d.Production_W : null;
         this._s.consumptionW =
-          typeof d.Consumption_W === "number" ? d.Consumption_W : null;
+          typeof d.Consumption_W === "number" && Number.isFinite(d.Consumption_W) ? d.Consumption_W : null;
         this._s.battSeen = Date.now();
         this._s.energySeen = Date.now();
       } catch {}
@@ -1325,9 +1282,9 @@ export default {
       "homeassistant/weather/forecast_home/uv_index",
       (msg) => {
         const v = parseFloat(msg.trim());
-        if (!isNaN(v)) {
+        if (Number.isFinite(v)) {
           this._s.uvCurrentMqtt = v;
-          this._s.uvSeen = Date.now();
+          this._s.uvMqttSeen = Date.now();
         }
       },
     );
@@ -1339,7 +1296,7 @@ export default {
         this._s.uvCurrentOverride = null;
       } else {
         const v = parseFloat(t);
-        if (!isNaN(v)) this._s.uvCurrentOverride = v;
+        if (Number.isFinite(v)) this._s.uvCurrentOverride = v;
       }
     });
     sub("pixdcon/debug/uv_hourly_override", (msg) => {
@@ -1350,7 +1307,9 @@ export default {
         try {
           const arr = JSON.parse(t);
           if (Array.isArray(arr) && arr.length === 14) {
-            this._s.uvHourlyOverride = arr.map(Number);
+            this._s.uvHourlyOverride = arr.map((v) =>
+              typeof v === "number" && Number.isFinite(v) ? v : null,
+            );
           }
         } catch {}
       }
@@ -1383,6 +1342,7 @@ export default {
   },
 
   async destroy(context) {
+    this._nukiPollGeneration = null;
     this._unsubscribeSettings?.();
     this._stopSyncboxPoll();
     this._stopUvPoll();
@@ -1397,6 +1357,10 @@ export default {
     if (this._healTimer) {
       clearInterval(this._healTimer);
       this._healTimer = null;
+    }
+    if (this._healTimeout) {
+      clearTimeout(this._healTimeout);
+      this._healTimeout = null;
     }
     context.mqtt.unsubscribeAll();
     context.logger.info("[home] Scene destroyed");
@@ -1428,9 +1392,11 @@ export default {
         // no MQTT from HA at all — time-based fallback
         const now = new Date();
         const mins = now.getHours() * 60 + now.getMinutes();
+        const { fallbackDayStartMins: dayStart, fallbackNightStartMins: nightStart } = this._cfg;
         targetBri =
-          mins >= this._cfg.fallbackDayStartMins &&
-          mins < this._cfg.fallbackNightStartMins
+          (dayStart <= nightStart
+            ? mins >= dayStart && mins < nightStart
+            : mins >= dayStart || mins < nightStart)
             ? day
             : night;
       }
@@ -1579,14 +1545,22 @@ export default {
     // (smooth, updates every render) → CAMS current (hour-step) → met.no
     // MQTT (clear-sky, last resort).
     const uvNow = new Date();
+    const apiFresh = !isStale(s.uvApiSeen, this._cfg.uvStaleMs);
+    const mqttFresh = !isStale(s.uvMqttSeen, this._cfg.uvStaleMs);
     const uvCurrent =
       s.uvCurrentOverride ??
-      uvInterpNow(s.uvHourly24, uvNow) ??
-      s.uvCurrentApi ??
-      s.uvCurrentMqtt;
-    const uvHourly = s.uvHourlyOverride ?? s.uvHourly;
+      (apiFresh ? uvInterpNow(s.uvHourly24, s.uvHourlyTimes, uvNow) ?? s.uvCurrentApi : null) ??
+      (mqttFresh ? s.uvCurrentMqtt : null);
+    const hourlyToday = s.uvHourlyTimes?.length
+      ? Array.from({ length: 14 }, (_, i) => {
+          const t = new Date(uvNow.getFullYear(), uvNow.getMonth(), uvNow.getDate(), i + 6).getTime();
+          const index = s.uvHourlyTimes.indexOf(t);
+          return index < 0 ? null : s.uvHourly24[index];
+        })
+      : null;
+    const uvHourly = s.uvHourlyOverride ?? (apiFresh ? hourlyToday : null);
     await drawUv(device, COLS[2].x0, ROWS[1].y0, uvCurrent, uvHourly, uvNow);
-    if (isStale(s.uvSeen, this._cfg.uvStaleMs))
+    if (!apiFresh && !mqttFresh)
       drawErrorMark(device, 2, 1, this._frame);
 
     // ── Row 2: Media ─────────────────────────────────────────────────────────
@@ -1680,6 +1654,8 @@ export default {
       return;
     }
     this._s.syncEnabled = true;
+    const requests = new Set();
+    this._syncRequests = requests;
 
     const poll = () =>
       new Promise((resolve) => {
@@ -1698,6 +1674,10 @@ export default {
               body += c;
             });
             res.on("end", () => {
+              if (this._syncRequests !== requests || res.statusCode !== 200) {
+                resolve();
+                return;
+              }
               try {
                 const d = JSON.parse(body);
                 this._s.syncInput = d.hdmiSource ?? null;
@@ -1707,8 +1687,14 @@ export default {
               } catch {}
               resolve();
             });
+            res.on("error", resolve);
           },
         );
+        requests.add(req);
+        req.on("close", () => {
+          requests.delete(req);
+          resolve();
+        });
         req.on("error", resolve);
         req.on("timeout", () => {
           req.destroy();
@@ -1718,7 +1704,11 @@ export default {
       });
 
     const run = async () => {
-      await poll();
+      try {
+        await poll();
+      } catch (err) {
+        logger.warn(`[home] Syncbox poll failed: ${err.message}`);
+      }
     };
     run();
     this._syncPoll = setInterval(run, this._cfg.syncboxPollMs);
@@ -1732,22 +1722,26 @@ export default {
       clearInterval(this._syncPoll);
       this._syncPoll = null;
     }
+    const requests = this._syncRequests;
+    this._syncRequests = null;
+    for (const req of requests || []) req.destroy();
   },
 
   // ── Open-Meteo air-quality UV poll (CAMS, no API key, free) ───────────────
   // CAMS computes biologically-effective UVI including cloud cover — unlike
   // met.no (clear-sky only) and the /v1/forecast endpoint (GFS approximation).
-  // Sets uvCurrentApi (current.uv_index), uvHourly24 (full day, for the
-  // interpolated "now" value) and uvHourly (slice 06..19 for the bars).
+  // Retains timestamped samples for interpolation and the 06..19 display bars.
 
   _startUvPoll(logger) {
+    const requests = new Set();
+    this._uvRequests = requests;
     const poll = () =>
       new Promise((resolve) => {
         const lat = this._cfg.uvLat;
         const lon = this._cfg.uvLon;
         const path =
           `/v1/air-quality?latitude=${lat}&longitude=${lon}` +
-          `&current=uv_index&hourly=uv_index&timezone=auto&forecast_days=1`;
+          `&current=uv_index&hourly=uv_index&timezone=auto&forecast_days=1&timeformat=unixtime`;
         const req = https.request(
           {
             hostname: "air-quality-api.open-meteo.com",
@@ -1761,25 +1755,40 @@ export default {
               body += c;
             });
             res.on("end", () => {
+              if (this._uvRequests !== requests || res.statusCode !== 200) {
+                resolve();
+                return;
+              }
               try {
                 const d = JSON.parse(body);
                 const cur = d?.current?.uv_index;
                 const hourly = d?.hourly?.uv_index;
-                if (typeof cur === "number") this._s.uvCurrentApi = cur;
-                if (Array.isArray(hourly) && hourly.length >= 20) {
-                  // 24 hourly entries starting at 00:00 local (timezone=auto).
-                  this._s.uvHourly24 = hourly
-                    .slice(0, 24)
-                    .map((v) => (typeof v === "number" ? v : 0));
-                  // Display bars: hours 06..19 inclusive (14 entries).
-                  this._s.uvHourly = this._s.uvHourly24.slice(6, 20);
+                const times = d?.hourly?.time;
+                const hasCurrent = typeof cur === "number" && Number.isFinite(cur);
+                const hasHourly = Array.isArray(hourly) && Array.isArray(times) &&
+                  hourly.length > 0 && hourly.length === times.length &&
+                  hourly.some((v) => typeof v === "number" && Number.isFinite(v)) &&
+                  times.every((t, i) => typeof t === "number" && Number.isFinite(t) &&
+                    (i === 0 || t > times[i - 1]));
+                if (hasCurrent || hasHourly) {
+                  this._s.uvCurrentApi = hasCurrent ? cur : null;
+                  this._s.uvHourly24 = hasHourly ? hourly.map((v) =>
+                    typeof v === "number" && Number.isFinite(v) ? v : null,
+                  ) : null;
+                  this._s.uvHourlyTimes = hasHourly ? times.map((t) => t * 1000) : null;
+                  this._s.uvApiSeen = Date.now();
                 }
-                this._s.uvSeen = Date.now();
               } catch {}
               resolve();
             });
+            res.on("error", resolve);
           },
         );
+        requests.add(req);
+        req.on("close", () => {
+          requests.delete(req);
+          resolve();
+        });
         req.on("error", resolve);
         req.on("timeout", () => {
           req.destroy();
@@ -1789,7 +1798,11 @@ export default {
       });
 
     const run = async () => {
-      await poll();
+      try {
+        await poll();
+      } catch (err) {
+        logger.warn(`[home] UV poll failed: ${err.message}`);
+      }
     };
     run();
     this._uvPoll = setInterval(run, this._cfg.uvPollMs);
@@ -1803,18 +1816,27 @@ export default {
       clearInterval(this._uvPoll);
       this._uvPoll = null;
     }
+    const requests = this._uvRequests;
+    this._uvRequests = null;
+    for (const req of requests || []) req.destroy();
   },
 
   _restartNukiPolls() {
     if (this._nukiVrPoll) clearInterval(this._nukiVrPoll);
     if (this._nukiKePoll) clearInterval(this._nukiKePoll);
 
-    const vrPoll = async () => {
-      this._s.nukiVrAlive = await pingHost(this._cfg.nukiVrIp);
+    const generation = {};
+    this._nukiPollGeneration = generation;
+    const poll = async (ip, key) => {
+      try {
+        const alive = await pingHost(ip);
+        if (this._nukiPollGeneration === generation) this._s[key] = alive;
+      } catch (err) {
+        this._logger.warn(`[home] Nuki ping failed: ${err.message}`);
+      }
     };
-    const kePoll = async () => {
-      this._s.nukiKeAlive = await pingHost(this._cfg.nukiKeIp);
-    };
+    const vrPoll = () => poll(this._cfg.nukiVrIp, "nukiVrAlive");
+    const kePoll = () => poll(this._cfg.nukiKeIp, "nukiKeAlive");
     vrPoll();
     kePoll();
     this._nukiVrPoll = setInterval(vrPoll, this._cfg.nukiPingMs);

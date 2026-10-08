@@ -34,13 +34,21 @@ AP_HOST="${AP_HOST:-192.168.4.1}"
 VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-30}"
 TARGET_IP="${1:-}"
 
+# BSD ping uses milliseconds for -W; Linux ping uses seconds.
+AP_PING_WAIT=2
+LAN_PING_WAIT=1
+if [ "$(uname -s)" = Darwin ]; then
+  AP_PING_WAIT=1500
+  LAN_PING_WAIT=1000
+fi
+
 log()  { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 fail() { log "ERR: $*" >&2; exit 1; }
 
 # ── Pre-flight ────────────────────────────────────────────────────────────
 [ -r "$HOMEWIFI_ENV" ] || fail "$HOMEWIFI_ENV not readable. \`just switch\` on nixcfg to materialize."
 
-ping -c 1 -W 1500 "$AP_HOST" >/dev/null 2>&1 \
+ping -c 1 -W "$AP_PING_WAIT" "$AP_HOST" >/dev/null 2>&1 \
   || fail "$AP_HOST unreachable. Join the device's AP (SSID 'AWTRIX_<id>') in WiFi menu first."
 
 ver=$(curl -sf --max-time 3 "http://$AP_HOST/version" || true)
@@ -67,14 +75,14 @@ printf '%s' "$HOMEWIFI_PASS" > "$tmp"
 log "POST $AP_HOST/connect  (ssid=$HOMEWIFI_SSID, password=*** redacted ***)"
 code=$(curl -s -o "/tmp/awtrix-rescue-resp.$$" -w "%{http_code}" --max-time 15 \
   -X POST \
-  -F "ssid=$HOMEWIFI_SSID" \
+  --form-string "ssid=$HOMEWIFI_SSID" \
   -F "password=<$tmp" \
   -F "persistent=true" \
   "http://$AP_HOST/connect")
 
 case "$code" in
-  200) log "POST /connect → HTTP 200 (response: $(head -c 160 "/tmp/awtrix-rescue-resp.$$"))" ;;
-  *)   fail "POST /connect → HTTP $code. Body: $(cat "/tmp/awtrix-rescue-resp.$$")" ;;
+  200) log "POST /connect → HTTP 200" ;;
+  *)   fail "POST /connect → HTTP $code" ;;
 esac
 
 # ── Optional LAN-side verification ────────────────────────────────────────
@@ -85,7 +93,7 @@ fi
 
 log "waiting up to ${VERIFY_TIMEOUT}s for $TARGET_IP to come online…"
 for i in $(seq 1 "$VERIFY_TIMEOUT"); do
-  if ping -c 1 -W 1000 "$TARGET_IP" >/dev/null 2>&1; then
+  if ping -c 1 -W "$LAN_PING_WAIT" "$TARGET_IP" >/dev/null 2>&1; then
     log "✓ $TARGET_IP responds after ${i}s. Device on LAN."
     exit 0
   fi

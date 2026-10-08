@@ -37,7 +37,7 @@ async function main() {
   const { host, device, out, scale } = parseArgs(process.argv.slice(2));
   const url = `http://${host}/api/previews`;
 
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
   if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
   const previews = await res.json();
   const frame = previews[device];
