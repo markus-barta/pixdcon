@@ -17,13 +17,18 @@
 > Restart or recreate the container with:
 >
 > ```bash
-> ssh mba@hsb1 "docker restart pixdcon"                        # plain restart
-> ssh mba@hsb1 "sudo systemctl restart compose-hsb1.service"   # recreate from the closure
+> ssh mba@hsb1 "docker restart pixdcon"   # plain restart (same image, same env)
+> # recreate only pixdcon (new image or env) — see "Recreate pixdcon only" below
 > ```
 >
-> Use the systemd path after `docker pull` — a pulled image only takes effect
-> once the container is recreated, and the service is what knows how to do that.
-> The compose spec itself lives in nixcfg (`hosts/hsb1/docker/`), not here.
+> ⚠ **Do not use `sudo systemctl restart compose-hsb1.service` for a pixdcon
+> deploy.** Its start script runs `up -d --remove-orphans` for the whole stack
+> and then **always force-recreates `hsb1-home`**, so every pixdcon deploy would
+> also restart that container. The compose spec lives in nixcfg
+> (`hosts/hsb1/docker/compose-spec.nix`), not here.
+>
+> hsb1 is on the home LAN: `mba@192.168.1.101` works when `hsb1` does not
+> resolve on the Mac.
 
 ## Container vs. Host Mount
 
@@ -199,21 +204,67 @@ Config is mounted rw — the web UI can persist settings edits from inside the c
 
 ### 3. Core code changed (`src/`, `lib/`, `package.json`, `Dockerfile`)
 
-Push to `main` — GitHub Actions builds and pushes to GHCR automatically:
+Merge to `main` through a PR — GitHub Actions builds and pushes to GHCR:
 
 ```bash
-git push origin main
-# Watch: gh run watch
+gh run watch          # build-and-push.yml: test → amd64 + arm64 → manifest
 ```
 
-Watchtower (weekly scope) will pull and restart the container automatically.
-To deploy immediately without waiting for Watchtower:
+Watchtower (weekly scope) would pull `latest` eventually; deploy explicitly instead:
 
 ```bash
+# 1. Backup + rollback point (outside the mount)
+ssh mba@hsb1 'bash -s' <<'EOS'
+set -e
+B=~/backups/pixdcon/$(date +%Y%m%d-%H%M%S); mkdir -p "$B"
+cp -a ~/docker/mounts/pixdcon/scenes "$B/scenes"; cp -a ~/docker/mounts/pixdcon/config.json "$B/"
+docker tag ghcr.io/markus-barta/pixdcon:latest ghcr.io/markus-barta/pixdcon:pre-deploy
+echo "backup: $B"
+EOS
+
+# 2. Pull the new image (no effect until the container is recreated)
 ssh mba@hsb1 "docker pull ghcr.io/markus-barta/pixdcon:latest"
-ssh mba@hsb1 "sudo systemctl restart compose-hsb1.service"
-# Verify the running container is on the new image:
-ssh mba@hsb1 "docker inspect pixdcon --format '{{.Image}}' | xargs -I{} docker image inspect {} --format 'built={{.Created}}'"
+
+# 3. Copy changed scene files first if the release changes scenes/ (section 1)
+
+# 4. Recreate pixdcon only (below)
+```
+
+#### Recreate pixdcon only
+
+Uses the compose file and project directory the running container was created
+from (compose labels — the nix store path changes with every nixcfg switch) and
+the same lock as `compose-hsb1.service`:
+
+```bash
+ssh mba@hsb1 'bash -s' <<'EOS'
+set -e
+f=$(docker ps -a --filter name=^pixdcon$ --format '{{.Label "com.docker.compose.project.config_files"}}')
+d=$(docker ps -a --filter name=^pixdcon$ --format '{{.Label "com.docker.compose.project.working_dir"}}')
+flock -w 570 /run/lock/compose-hsb1.lock docker compose -p docker -f "$f" --project-directory "$d" up -d --no-deps pixdcon
+EOS
+```
+
+`up -d` recreates pixdcon only if its image or definition changed; add
+`--force-recreate` to pick up a changed env file (agenix secret) with the same image.
+
+#### Verify
+
+Never use `docker inspect` (it prints the resolved environment, secrets included).
+
+```bash
+ssh mba@hsb1 "docker image ls ghcr.io/markus-barta/pixdcon --format '{{.Tag}} {{.ID}} {{.CreatedAt}}'"
+ssh mba@hsb1 "docker ps --filter name=^pixdcon$ --format '{{.Status}}'"
+curl -s http://192.168.1.101:8080/api/status | jq '{mqttConnected, version, deviceHealth}'
+ssh mba@hsb1 "docker logs pixdcon --since 2m 2>&1 | grep -E ' WARN | ERROR |Running'"
+node scripts/preview-to-png.js --host 192.168.1.101:8080 --device pixoo-159 --out /tmp/frame.png --scale 8
+```
+
+#### Roll back
+
+```bash
+ssh mba@hsb1 "docker tag ghcr.io/markus-barta/pixdcon:pre-deploy ghcr.io/markus-barta/pixdcon:latest"
+# copy the backed-up scenes/ and config.json back if they changed, then "Recreate pixdcon only"
 ```
 
 Workflow: `.github/workflows/build-and-push.yml`
@@ -246,8 +297,7 @@ ssh mba@hsb1 "docker logs -f pixdcon"
 # Restart
 ssh mba@hsb1 "docker restart pixdcon"
 
-# Recreate from the nixcfg closure (needed after a docker pull)
-ssh mba@hsb1 "sudo systemctl restart compose-hsb1.service"
+# Recreate pixdcon only (needed after a docker pull): see section 3
 
 # Container status
 ssh mba@hsb1 "docker ps | grep pixdcon"
