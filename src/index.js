@@ -56,7 +56,7 @@ let scenesWatcher = null;
 let renderLoops = []; // Array of { device, loop }
 let sceneLoader = null;
 let configPath = null; // Set once in main(), used in reloadConfig()
-let configOverlay = null; // MQTT overlay layer (optional, null when MQTT unavailable)
+let configOverlay = null; // MQTT overlay layer (optional, null when MQTT disabled)
 let baseConfig = null; // Raw file config; overlay merges on top of this
 let effectiveConfig = null; // Last computed merged config (served by WebServer)
 let webServer = null;
@@ -98,12 +98,12 @@ async function initializeMqtt() {
   const svc = new MqttService(mqttConfig);
 
   try {
-    await svc.connect();
+    await svc.connect({ keepReconnecting: true, timeoutMs: 5000 });
     svc.startPeriodicPublish(30000);
     return svc;
   } catch (error) {
-    // MQTT failure is non-fatal — display still works without it
-    logger.error(`[MQTT] Connection failed, continuing without MQTT`, error);
+    // Only setup failures reach here; broker errors keep reconnecting in svc.
+    logger.error(`[MQTT] Setup failed, continuing without MQTT`, error);
     await svc.disconnect();
     return null;
   }
@@ -444,9 +444,16 @@ async function main() {
     await configOverlay.subscribe(); // 200ms settle, clears debounce
   }
 
-  effectiveConfig = configOverlay
-    ? configOverlay.merge(baseConfig)
-    : baseConfig;
+  effectiveConfig = baseConfig;
+  if (configOverlay) {
+    try {
+      effectiveConfig = configLoader.parse(
+        JSON.stringify(configOverlay.merge(baseConfig)),
+      );
+    } catch (error) {
+      logger.error("[pixdcon] Invalid startup overlay — using base config", error);
+    }
+  }
 
   framePreviewStore = new FramePreviewStore({ logger });
   sceneSettingsService = new SceneSettingsService({
@@ -457,7 +464,7 @@ async function main() {
   });
 
   // Telemetry — per-Ulanzi periodic /api/stats poll → retained MQTT.
-  // No-op when mqttService is null (MQTT disabled / unreachable).
+  // Polling survives an offline broker and publishes once it reconnects.
   if (mqttService) {
     telemetryCollector = new TelemetryCollector({
       mqttService,
