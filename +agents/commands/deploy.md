@@ -27,7 +27,7 @@ Deploy changed files to hsb1. Full procedure and rationale: `docs/DEPLOY.md`. Fo
    scp /tmp/config.live.json mba@hsb1:~/docker/mounts/pixdcon/config.json    # push
    ```
 6. **Image deploy** (after the PR is merged and `gh run watch` is green):
-   - tag a rollback point: `ssh mba@hsb1 "docker tag ghcr.io/markus-barta/pixdcon:latest ghcr.io/markus-barta/pixdcon:pre-deploy"`
+   - tag a rollback point on the image the container is **running** (unique per deploy): `docs/DEPLOY.md` § 3 step 1 (uses `docker compose … images pixdcon --quiet`; local `latest` may already be the new image)
    - `ssh mba@hsb1 "docker pull ghcr.io/markus-barta/pixdcon:latest"`
    - copy changed scenes (step 4), then recreate **pixdcon only** — `docs/DEPLOY.md` § "Recreate pixdcon only".
    - **Never** `sudo systemctl restart compose-hsb1.service` for this: it also force-recreates `hsb1-home`.

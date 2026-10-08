@@ -213,13 +213,19 @@ gh run watch          # build-and-push.yml: test → amd64 + arm64 → manifest
 Watchtower (weekly scope) would pull `latest` eventually; deploy explicitly instead:
 
 ```bash
-# 1. Backup + rollback point (outside the mount)
+# 1. Backup + rollback point (outside the mount). The rollback tag points at the
+#    image the container is RUNNING (not local `latest`, which a previous pull may
+#    already have moved) and is unique per deploy.
 ssh mba@hsb1 'bash -s' <<'EOS'
 set -e
-B=~/backups/pixdcon/$(date +%Y%m%d-%H%M%S); mkdir -p "$B"
+ts=$(date +%Y%m%d-%H%M%S)
+B=~/backups/pixdcon/$ts; mkdir -p "$B"
 cp -a ~/docker/mounts/pixdcon/scenes "$B/scenes"; cp -a ~/docker/mounts/pixdcon/config.json "$B/"
-docker tag ghcr.io/markus-barta/pixdcon:latest ghcr.io/markus-barta/pixdcon:pre-deploy
-echo "backup: $B"
+f=$(docker ps -a --filter 'name=^pixdcon$' --format '{{.Label "com.docker.compose.project.config_files"}}')
+d=$(docker ps -a --filter 'name=^pixdcon$' --format '{{.Label "com.docker.compose.project.working_dir"}}')
+id=$(docker compose -p docker -f "$f" --project-directory "$d" images pixdcon --quiet)
+docker tag "$id" "ghcr.io/markus-barta/pixdcon:rollback-$ts"
+echo "backup: $B  rollback tag: rollback-$ts ($id)"
 EOS
 
 # 2. Pull the new image (no effect until the container is recreated)
@@ -239,8 +245,8 @@ the same lock as `compose-hsb1.service`:
 ```bash
 ssh mba@hsb1 'bash -s' <<'EOS'
 set -e
-f=$(docker ps -a --filter name=^pixdcon$ --format '{{.Label "com.docker.compose.project.config_files"}}')
-d=$(docker ps -a --filter name=^pixdcon$ --format '{{.Label "com.docker.compose.project.working_dir"}}')
+f=$(docker ps -a --filter 'name=^pixdcon$' --format '{{.Label "com.docker.compose.project.config_files"}}')
+d=$(docker ps -a --filter 'name=^pixdcon$' --format '{{.Label "com.docker.compose.project.working_dir"}}')
 flock -w 570 /run/lock/compose-hsb1.lock docker compose -p docker -f "$f" --project-directory "$d" up -d --no-deps pixdcon
 EOS
 ```
@@ -254,7 +260,7 @@ Never use `docker inspect` (it prints the resolved environment, secrets included
 
 ```bash
 ssh mba@hsb1 "docker image ls ghcr.io/markus-barta/pixdcon --format '{{.Tag}} {{.ID}} {{.CreatedAt}}'"
-ssh mba@hsb1 "docker ps --filter name=^pixdcon$ --format '{{.Status}}'"
+ssh mba@hsb1 "docker ps --filter name=pixdcon --format '{{.Names}} {{.Status}}'"
 curl -s http://192.168.1.101:8080/api/status | jq '{mqttConnected, version, deviceHealth}'
 ssh mba@hsb1 "docker logs pixdcon --since 2m 2>&1 | grep -E ' WARN | ERROR |Running'"
 node scripts/preview-to-png.js --host 192.168.1.101:8080 --device pixoo-159 --out /tmp/frame.png --scale 8
@@ -263,7 +269,7 @@ node scripts/preview-to-png.js --host 192.168.1.101:8080 --device pixoo-159 --ou
 #### Roll back
 
 ```bash
-ssh mba@hsb1 "docker tag ghcr.io/markus-barta/pixdcon:pre-deploy ghcr.io/markus-barta/pixdcon:latest"
+ssh mba@hsb1 "docker tag ghcr.io/markus-barta/pixdcon:rollback-<ts> ghcr.io/markus-barta/pixdcon:latest"
 # copy the backed-up scenes/ and config.json back if they changed, then "Recreate pixdcon only"
 ```
 

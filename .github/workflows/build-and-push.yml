@@ -58,7 +58,7 @@ jobs:
   build:
     name: Build ${{ matrix.platform }}
     needs: test
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -174,7 +174,7 @@ jobs:
             # Calendar releases publish only the complete reserved coordinate
             type=raw,value=${{ needs.test.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             # short sha for traceability
-            type=sha,prefix=sha-
+            type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
