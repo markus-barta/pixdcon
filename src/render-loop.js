@@ -64,6 +64,7 @@ export class RenderLoop {
 
     // State
     this.running = false;
+    this._stopped = Promise.resolve();
 
     // Error / backoff tracking
     this.consecutiveErrors = 0;
@@ -89,6 +90,7 @@ export class RenderLoop {
     // Mode control
     this._mode = "play"; // "play" | "pause" | "stop"
     this._modeChanged = null; // Promise resolve fn for wake-up
+    this._builtinActive = false;
 
     // Brightness override (null = scene controls, number = override in native range)
     this.brightnessOverride = null;
@@ -122,7 +124,9 @@ export class RenderLoop {
     this.brightnessOverride = value;
     if (value != null && value !== prev) {
       // Apply immediately
-      this._originalSetBrightness(value);
+      Promise.resolve().then(() => this._originalSetBrightness(value)).catch((err) => {
+        this.logger.warn(`[RenderLoop:${this.deviceName}] Brightness override failed: ${err.message}`);
+      });
     }
     this.logger.info(
       `[RenderLoop:${this.deviceName}] Brightness override: ${value ?? "off"}`,
@@ -136,26 +140,44 @@ export class RenderLoop {
    * Never throws — all errors are caught and handled internally.
    */
   async start() {
+    if (this.running) return this._stopped;
     if (!this.scene) {
       this.logger.warn(
         `[RenderLoop:${this.deviceName}] No scene configured — idle`,
       );
-      return;
     }
 
     this.running = true;
+    let resolveStopped;
+    this._stopped = new Promise((resolve) => { resolveStopped = resolve; });
     this.logger.info(
       `[RenderLoop:${this.deviceName}] Started with scene: ${this.scene}`,
     );
 
-    while (this.running) {
-      if (this.scene && this.scene.startsWith("builtin:")) {
-        await this._runBuiltinMode(this.scene);
-      } else if (this.scene) {
-        await this._runScene(this.scene);
-      } else {
-        // No scene — wait for one to be set
-        await this._waitForWakeup();
+    try {
+      while (this.running) {
+        if (this.scene && this.scene.startsWith("builtin:")) {
+          await this._runBuiltinMode(this.scene);
+        } else if (this.scene) {
+          const sceneName = this.scene;
+          await this._runScene(sceneName);
+          if (this.scene !== sceneName) {
+            await this.sceneLoader.unloadScene?.(sceneName, this.deviceName);
+            this.currentScene = null;
+          }
+        } else {
+          // No scene — wait for one to be set
+          await this._waitForWakeup();
+        }
+      }
+    } finally {
+      try {
+        if (this.currentScene && !this.currentScene.startsWith("builtin:")) {
+          await this.sceneLoader.unloadScene?.(this.currentScene, this.deviceName);
+        }
+      } finally {
+        this.running = false;
+        resolveStopped();
       }
     }
   }
@@ -167,8 +189,17 @@ export class RenderLoop {
   async _runBuiltinMode(modeKey) {
     this.currentScene = modeKey;
     const mode = modeKey.replace("builtin:", "");
+    const renderMode = this._mode;
+
+    if (renderMode === "stop") {
+      await this._applyStop();
+      await this._waitForWakeup(modeKey, "stop");
+      if (this.running && this._mode === "play") await this._applyPlay();
+      return;
+    }
 
     try {
+      this._builtinActive = true;
       if (!this.driver.initialized) {
         const ok =
           typeof this.driver.initialize === "function"
@@ -211,7 +242,7 @@ export class RenderLoop {
       );
 
       // Sleep until mode changes or scene changes — no active rendering needed
-      await this._waitForWakeup();
+      await this._waitForWakeup(modeKey, renderMode);
     } catch (err) {
       this.consecutiveErrors++;
       const wait = Math.min(this.currentBackoff, this.maxBackoff);
@@ -224,7 +255,8 @@ export class RenderLoop {
   }
 
   /** Sleep indefinitely until woken by mode change, scene change, or stop. */
-  _waitForWakeup() {
+  _waitForWakeup(scene = this.scene, mode = this._mode) {
+    if (!this.running || this.scene !== scene || this._mode !== mode) return Promise.resolve();
     return new Promise((resolve) => {
       this._modeChanged = resolve;
     });
@@ -263,6 +295,7 @@ export class RenderLoop {
       this._modeChanged();
       this._modeChanged = null;
     }
+    return this._stopped;
   }
 
   /**
@@ -368,10 +401,11 @@ export class RenderLoop {
       `[RenderLoop:${this.deviceName}] Power-cycle: sent OFF → waiting ${pc.offWaitMs ?? 10000}ms`,
     );
     await this._sleep(pc.offWaitMs ?? 10_000);
-    if (!this.running) return false;
 
-    // ON
+    // ON — always, even when a stop, reload or scene change cut the OFF wait
+    // short: the device must never be left unpowered.
     this.mqtt.publishRaw(pc.topic, pc.onPayload ?? '{"state":"ON"}');
+    if (!this.running) return false;
     this.logger.info(
       `[RenderLoop:${this.deviceName}] Power-cycle: sent ON → waiting ${pc.onWaitMs ?? 30000}ms for reboot`,
     );
@@ -389,9 +423,21 @@ export class RenderLoop {
   // ---------------------------------------------------------------------------
 
   async _runScene(sceneName) {
+    // Stop also applies when the scene cannot be loaded or its circuit is open.
+    if (this._mode === "stop") {
+      await this._applyStop();
+      await this._waitForWakeup(sceneName, "stop");
+      if (this.running && this._mode === "play") await this._applyPlay();
+      return;
+    }
+    if (this._builtinActive) {
+      this._builtinActive = false;
+      await this._applyPlay(); // restore custom channel/app and screen after a built-in mode
+      if (!this.running || this.scene !== sceneName) return;
+    }
     // --- Circuit breaker check -------------------------------------------
     if (this.consecutiveErrors >= this.maxErrors) {
-      if (this.powerCyclePlugin) {
+      if (this.powerCyclePlugin && this.mqtt?.connected) {
         // Check if we've exhausted power-cycle attempts
         if (this.powerCycleCount >= this.maxPowerCycles) {
           this.logger.error(
@@ -431,22 +477,28 @@ export class RenderLoop {
       scene = await this.sceneLoader.load(sceneName, this.deviceName);
     } catch (loadError) {
       this._handleError(loadError, `loading scene "${sceneName}"`);
-      await this._sleepWithLivenessProbe(this.currentBackoff);
+      if (this.running && this.scene === sceneName && this._mode !== "stop") {
+        await this._sleepWithLivenessProbe(this.currentBackoff);
+      }
       return;
     }
 
+    if (!this.running || this.scene !== sceneName) {
+      await this.sceneLoader.unloadScene?.(sceneName, this.deviceName);
+      return;
+    }
     this.currentScene = sceneName;
 
     // --- Frame loop --------------------------------------------------------
     let result;
     do {
-      if (!this.running) break;
+      if (!this.running || this.scene !== sceneName) break;
 
       // --- Mode: stop -------------------------------------------------------
       if (this._mode === "stop") {
         await this._applyStop();
-        await this._waitForModeChange();
-        if (this._mode === "play") await this._applyPlay();
+        await this._waitForWakeup(sceneName, "stop");
+        if (this.running && this._mode === "play") await this._applyPlay();
         break; // restart outer scene loop
       }
 
@@ -467,8 +519,9 @@ export class RenderLoop {
 
         // Success path
         this._handleSuccess();
+        if (!this.running || this.scene !== sceneName) break;
 
-        if (typeof result === "number" && result > 0) {
+        if (this._mode === "play" && typeof result === "number" && result > 0) {
           const renderTime = Date.now() - frameStart;
           // Enforce: total frame time (render + sleep) >= minFrameMs
           // sleep = max(scene-requested delay, minFrameMs − renderTime)
@@ -481,7 +534,8 @@ export class RenderLoop {
         }
 
         // --- Hot-reload: scene evicted from cache — break inner loop ------
-        if (!this.sceneLoader.isLoaded(sceneName)) {
+        if (!this.running || this.scene !== sceneName) break;
+        if (!this.sceneLoader.isLoaded(sceneName, this.deviceName, scene)) {
           this.logger.info(
             `[RenderLoop:${this.deviceName}] Scene "${sceneName}" hot-reloaded, restarting...`,
           );
@@ -490,8 +544,8 @@ export class RenderLoop {
 
         // --- Mode: pause — rendered once, now freeze ----------------------
         if (this._mode === "pause") {
-          await this._waitForModeChange();
-          if (this._mode === "play") await this._applyPlay();
+          await this._waitForWakeup(sceneName, "pause");
+          if (this.running && this._mode === "play") await this._applyPlay();
           break; // restart outer scene loop → re-render on play
         }
       } catch (renderError) {
@@ -500,7 +554,9 @@ export class RenderLoop {
         // Apply backoff and break the inner frame loop on any render error;
         // the outer while-loop will retry from the circuit-breaker check.
         // Liveness probe lets us exit early when the device returns.
-        await this._sleepWithLivenessProbe(this.currentBackoff);
+        if (this.running && this.scene === sceneName && this._mode !== "stop") {
+          await this._sleepWithLivenessProbe(this.currentBackoff);
+        }
         break;
       }
     } while (this.running && result !== null);
@@ -540,8 +596,10 @@ export class RenderLoop {
 
   _handleError(error, context) {
     this.consecutiveErrors++;
-    // Double backoff each time, capped at maxBackoff
-    this.currentBackoff = Math.min(this.currentBackoff * 2, this.maxBackoff);
+    // First error waits initialBackoff; subsequent failures double up to the cap.
+    this.currentBackoff = Math.min(
+      this.initialBackoff * 2 ** (this.consecutiveErrors - 1), this.maxBackoff,
+    );
 
     const level = this.consecutiveErrors >= this.maxErrors ? "error" : "warn";
     this.logger[level](
@@ -567,15 +625,16 @@ export class RenderLoop {
    * during long backoff sleeps.
    */
   _sleep(ms) {
+    if (!this.running) return Promise.resolve(false);
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this._sleepWake = null;
-        resolve();
+        resolve(true);
       }, ms);
       this._sleepWake = () => {
         clearTimeout(timer);
         this._sleepWake = null;
-        resolve();
+        resolve(false);
       };
     });
   }
@@ -594,7 +653,7 @@ export class RenderLoop {
     const deadline = Date.now() + totalMs;
     while (Date.now() < deadline && this.running) {
       const sliceMs = Math.min(probeIntervalMs, deadline - Date.now());
-      await this._sleep(sliceMs);
+      if (!await this._sleep(sliceMs)) return;
       if (!this.running) return;
       // Time to probe — but only if a wake didn't already exit us early
       // (setScene/setMode/stop wakes us → bypass probe, fall out naturally).
