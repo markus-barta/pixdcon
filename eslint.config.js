@@ -10,6 +10,8 @@ export default [
       "doctrine-private/",
       "generated-scenes/",
       ".devenv/",
+      // Pinned upstream bundle, verified by digest (scripts/verify-versioning-bundle.mjs).
+      "vendor/",
     ],
   },
   js.configs.recommended,
