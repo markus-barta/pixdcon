@@ -25,7 +25,7 @@
 #
 # SECURITY
 #   Password never enters argv (curl reads via `-F 'password=<file'`),
-#   never printed to stdout/stderr, tempfile is mode 0600 and shredded on exit.
+#   never printed to stdout/stderr, tempfiles are mode 0600 and removed on exit.
 #
 set -euo pipefail
 
@@ -66,14 +66,17 @@ set +a
 : "${HOMEWIFI_PASS:?HOMEWIFI_PASS empty in $HOMEWIFI_ENV}"
 
 # ── Stage password via tempfile (avoids argv exposure) ────────────────────
-tmp="$(mktemp -t awtrix-rescue.XXXX)"
-chmod 600 "$tmp"
-trap 'rm -f "$tmp" /tmp/awtrix-rescue-resp.$$' EXIT
+tmp=""
+response_tmp=""
+trap '[ -z "$tmp" ] || rm -f -- "$tmp"; [ -z "$response_tmp" ] || rm -f -- "$response_tmp"' EXIT
+tmp="$(mktemp "${TMPDIR:-/tmp}/awtrix-rescue-password.XXXXXX")"
+response_tmp="$(mktemp "${TMPDIR:-/tmp}/awtrix-rescue-response.XXXXXX")"
+chmod 600 "$tmp" "$response_tmp"
 printf '%s' "$HOMEWIFI_PASS" > "$tmp"
 
 # ── Push creds ────────────────────────────────────────────────────────────
 log "POST $AP_HOST/connect  (ssid=$HOMEWIFI_SSID, password=*** redacted ***)"
-code=$(curl -s -o "/tmp/awtrix-rescue-resp.$$" -w "%{http_code}" --max-time 15 \
+code=$(curl -s -o "$response_tmp" -w "%{http_code}" --max-time 15 \
   -X POST \
   --form-string "ssid=$HOMEWIFI_SSID" \
   -F "password=<$tmp" \

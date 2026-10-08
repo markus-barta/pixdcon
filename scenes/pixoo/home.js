@@ -105,6 +105,7 @@ function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
 function elevToBri(elev, night, day, low = -6, high = 10) {
+  if (high <= low) return elev >= high ? day : night;
   return Math.round(
     night + (day - night) * clamp((elev - low) / (high - low), 0, 1),
   );

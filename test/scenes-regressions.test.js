@@ -388,7 +388,7 @@ test("clock debug brightness remains in native 0..255 units", async (t) => {
   assert.equal(brightness, 200);
 });
 
-test("funkeykid rejects odd word and volume payloads while preserving the last keypress", async (t) => {
+test("funkeykid rejects odd payloads, falls back to 10 bars, and preserves the last keypress", async (t) => {
   const scene = Object.create(kid);
   const ctx = context();
   await scene.init(ctx);
@@ -396,15 +396,19 @@ test("funkeykid rejects odd word and volume payloads while preserving the last k
   await handle('{"letter":"A","word":"Affe","color":"#FFCC00"}');
   for (const payload of [
     '{"letter":"B","word":123}', "null", "[]",
-    '{"bar":true,"bars_total":1e999}',
-    '{"bar":true,"bars_total":-1}',
-    '{"bar":true,"bars_total":1.5}',
     '{"bar":true,"bars_filled":"2"}',
   ]) await handle(payload);
   assert.equal(scene._currentLetter, "A");
   assert.equal(scene._currentWord, "Affe");
   assert.equal(scene._volumeBar, null);
   assert.equal(await scene.render(driver(t)), 200);
+  // PIXD-49: an invalid bars_total falls back to 10 instead of dropping the update.
+  for (const total of ["1e999", "-1", "1.5", "0", "65"]) {
+    await handle(`{"bar":true,"bars_total":${total},"bars_filled":3}`);
+    assert.equal(scene._volumeBar.bars_total, 10);
+    assert.equal(scene._volumeBar.bars_filled, 3);
+    assert.equal(scene._currentLetter, "A");
+  }
   await handle('{"bar":true,"bars_total":1,"bars_filled":1,"percent":100}');
   const device = driver(t);
   assert.equal(await scene.render(device), 60);

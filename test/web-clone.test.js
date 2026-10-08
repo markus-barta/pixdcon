@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { copyFile, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import test, { after } from "node:test";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebServer } from "../lib/web-server.js";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const tempDirs = [];
+after(async () => {
+  for (const dir of tempDirs) await rm(dir, { recursive: true, force: true });
+});
 
 async function fixture(scene = "home") {
   const root = await mkdtemp(join(tmpdir(), "pixd47-web-clone-"));
+  tempDirs.push(root);
   await mkdir(join(root, "scenes/pixoo"), { recursive: true });
   await writeFile(join(root, "package.json"), '{"type":"module"}\n');
   for (const name of ["lib", "assets", "node_modules"]) {

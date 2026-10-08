@@ -11,8 +11,8 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier -w .",
     "format:check": "prettier -c .",
-    "test": "node --test test/*.test.js",
-    "build:css": "npx tailwindcss -i tailwind-input.css -o public/tailwind.css --minify"
+    "test": "node scripts/verify-versioning.mjs && node scripts/verify-versioning-bundle.mjs && node --test test/*.test.js",
+    "build:css": "node scripts/verify-versioning.mjs && node scripts/verify-versioning-bundle.mjs && npx tailwindcss -i tailwind-input.css -o public/tailwind.css --minify"
   },
   "keywords": [
     "pixel-display",

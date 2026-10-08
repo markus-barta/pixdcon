@@ -1,6 +1,6 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SceneLoader } from "../lib/scene-loader.js";
@@ -9,9 +9,14 @@ import { EventEmitter } from "node:events";
 import { SceneSettingsService } from "../lib/scene-settings-service.js";
 
 const logger = { debug() {}, info() {}, warn() {}, error() {} };
+const tempDirs = [];
+after(async () => {
+  for (const dir of tempDirs) await rm(dir, { recursive: true, force: true });
+});
 
 async function fixture(source = "export default { version: 1, render() {} };") {
   const dir = await mkdtemp(join(tmpdir(), "pixd47-core-loader-"));
+  tempDirs.push(dir);
   await writeFile(join(dir, "package.json"), '{"type":"module"}');
   const path = join(dir, "scene.js");
   await writeFile(path, source);
