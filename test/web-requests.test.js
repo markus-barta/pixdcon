@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
@@ -9,9 +9,14 @@ import { WebServer } from "../lib/web-server.js";
 import { ConfigLoader } from "../lib/config-loader.js";
 
 const logger = { error() {} };
+const tempDirs = [];
+after(async () => {
+  for (const dir of tempDirs) await rm(dir, { recursive: true, force: true });
+});
 
 async function fixture(options = {}) {
   const root = await mkdtemp(join(tmpdir(), "pixd47-web-requests-"));
+  tempDirs.push(root);
   const config = {
     devices: [{ name: "pixoo-01", type: "pixoo", ip: "127.0.0.1", scene: "home" }],
     scenes: { home: { path: "./scenes/pixoo/home.js" } },
