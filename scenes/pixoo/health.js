@@ -461,7 +461,7 @@ function handleMqtt(topic, raw, state, logger) {
       const rssi = wifiInfo.rssiField
         .split(".")
         .reduce((cur, k) => (cur != null && cur[k] !== undefined ? cur[k] : null), data);
-      if (rssi !== null) {
+      if (typeof rssi === "number" && Number.isFinite(rssi)) {
         state.wifi[wifiInfo.label].rssi    = rssi;
         state.wifi[wifiInfo.label].online  = true;
         state.wifi[wifiInfo.label].lastSeen = new Date();
@@ -488,7 +488,7 @@ function handleMqtt(topic, raw, state, logger) {
     const zbState = CONFIG.zigbee.find((d) => topic === d.z2mTopic);
     if (zbState) {
       const data = JSON.parse(raw);
-      if (data.linkquality !== undefined) {
+      if (typeof data.linkquality === "number" && Number.isFinite(data.linkquality)) {
         state.zigbee[zbState.label].lqi     = data.linkquality;
         state.zigbee[zbState.label].lastSeen = new Date();
       }
@@ -498,9 +498,9 @@ function handleMqtt(topic, raw, state, logger) {
     // Node-RED health: boiler
     if (topic === CONFIG.healthTopics.boiler) {
       const data = JSON.parse(raw);
-      state.boiler.state       = data.state || "unknown";
-      state.boiler.tempC       = data.temp_c ?? null;
-      state.boiler.nrRunning   = data.nr_running ?? null;
+      state.boiler.state       = typeof data.state === "string" && data.state ? data.state : "unknown";
+      state.boiler.tempC       = typeof data.temp_c === "number" && Number.isFinite(data.temp_c) ? data.temp_c : null;
+      state.boiler.nrRunning   = typeof data.nr_running === "boolean" ? data.nr_running : null;
       state.boiler.lastChecked = new Date();
       return;
     }
@@ -508,8 +508,9 @@ function handleMqtt(topic, raw, state, logger) {
     // Node-RED health: heat-chain
     if (topic === CONFIG.healthTopics.heatChain) {
       const data = JSON.parse(raw);
-      state.heatChain.state     = data.state || "unknown";
-      state.heatChain.checkedAt = data.checked_at ? new Date(data.checked_at) : new Date();
+      state.heatChain.state     = typeof data.state === "string" && data.state ? data.state : "unknown";
+      const checkedAt = data.checked_at ? new Date(data.checked_at) : new Date();
+      state.heatChain.checkedAt = Number.isFinite(checkedAt.getTime()) ? checkedAt : null;
       return;
     }
   } catch (err) {
@@ -611,6 +612,7 @@ export default {
       await device.push();
     } catch (err) {
       this._logger?.warn(`[health] Render error (tab ${this._currentTab}): ${err.message}`);
+      throw err;
     }
 
     return 500;

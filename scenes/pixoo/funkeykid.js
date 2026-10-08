@@ -381,7 +381,7 @@ const COLORS = [
 ];
 
 function parseHexColor(hex) {
-  if (!hex || !hex.startsWith("#")) return null;
+  if (typeof hex !== "string" || !/^#[0-9a-f]{6}$/i.test(hex)) return null;
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
@@ -452,6 +452,9 @@ export default {
   _volumeBarAt: 0,   // timestamp; bar shows for ~1.5s after last update
 
   async init(context) {
+    this._bgImages = Object.create(null);
+    this._messageVersion = 0;
+    this._destroyed = false;
     this._settings = context.settings.all();
     this._unsubscribeSettings = context.settings.subscribe((values) => {
       this._settings = values;
@@ -476,9 +479,20 @@ export default {
     context.mqtt.subscribe(MQTT_TOPIC, async (msg) => {
       try {
         const data = JSON.parse(msg);
+        if (!data || typeof data !== "object" || Array.isArray(data)) return;
+        if (this._destroyed) return;
+        if (data.bar !== true &&
+          ((data.letter != null && typeof data.letter !== "string") ||
+            (data.word != null && typeof data.word !== "string"))) return;
+        const total = data.bars_total ?? 10;
+        const filled = data.bars_filled ?? 0;
+        if (data.bar === true &&
+          (!Number.isInteger(total) || total < 1 || total > 64 ||
+            typeof filled !== "number" || !Number.isFinite(filled))) return;
+        const version = ++this._messageVersion;
 
         // Load image FIRST (before updating state) to prevent glitch
-        const imgName = data.image;
+        const imgName = typeof data.image === "string" ? data.image : null;
         let newImage = null;
         if (imgName) {
           if (!this._bgImages[imgName]) {
@@ -488,19 +502,18 @@ export default {
           }
           newImage = this._bgImages[imgName] || null;
         }
+        if (this._destroyed || version !== this._messageVersion) return;
 
         if (data.bar === true) {
           // Volume update: only touch the overlay state. Letter-rendering
           // state must stay exactly as a previous real keypress left it,
           // otherwise "60%"/"lautstaerke" leak into the fallback path
           // once the bar's TTL expires.
-          const total = Math.max(1, data.bars_total || 10);
-          const filled = Math.max(0, Math.min(total, data.bars_filled ?? 0));
           this._volumeBar = {
-            percent: typeof data.percent === "number" ? data.percent : 0,
+            percent: typeof data.percent === "number" && Number.isFinite(data.percent) ? data.percent : 0,
             bars_total: total,
-            bars_filled: filled,
-            color: data.color ? parseHexColor(data.color) : [255, 204, 0],
+            bars_filled: Math.max(0, Math.min(total, filled)),
+            color: parseHexColor(data.color) || [255, 204, 0],
           };
           this._volumeBarAt = Date.now();
           context.logger.info(`[funkeykid] volume bar: ${this._volumeBar.percent}% (${this._volumeBar.bars_filled}/${this._volumeBar.bars_total})`);
@@ -508,7 +521,7 @@ export default {
           // Real letter/image update — snapshot full state, drop any overlay.
           this._currentLetter = data.letter || null;
           this._currentWord = data.word || null;
-          this._currentColor = data.color ? parseHexColor(data.color) : randomColor();
+          this._currentColor = parseHexColor(data.color) || randomColor();
           this._currentImage = newImage;
           this._lastKeypressAt = Date.now();
           if (imgName) this._lastImageName = imgName;
@@ -638,7 +651,7 @@ export default {
           ? base
           : [Math.round(base[0] * 0.12), Math.round(base[1] * 0.12), Math.round(base[2] * 0.12)];
         // Width grows linearly with i so bottom = narrow, top = wide.
-        const w = Math.round(minW + (maxW - minW) * (i / (segCount - 1)));
+        const w = Math.round(minW + (maxW - minW) * (segCount > 1 ? i / (segCount - 1) : 0));
         const startX = Math.round((64 - w) / 2);
         // Segment y (bottom-up): i=0 lives at barBotY, i=9 at barTopY.
         const y = barBotY - (i * (segHeight + segGap) + segHeight - 1);
@@ -717,6 +730,8 @@ export default {
   },
 
   async destroy(context) {
+    this._destroyed = true;
+    this._messageVersion++;
     this._unsubscribeSettings?.();
     context?.mqtt?.unsubscribeAll?.();
     this._currentLetter = null;
