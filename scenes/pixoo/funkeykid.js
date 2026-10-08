@@ -484,11 +484,11 @@ export default {
         if (data.bar !== true &&
           ((data.letter != null && typeof data.letter !== "string") ||
             (data.word != null && typeof data.word !== "string"))) return;
-        const total = data.bars_total ?? 10;
+        const total = Number.isInteger(data.bars_total) &&
+          data.bars_total >= 1 && data.bars_total <= 64 ? data.bars_total : 10;
         const filled = data.bars_filled ?? 0;
         if (data.bar === true &&
-          (!Number.isInteger(total) || total < 1 || total > 64 ||
-            typeof filled !== "number" || !Number.isFinite(filled))) return;
+          (typeof filled !== "number" || !Number.isFinite(filled))) return;
         const version = ++this._messageVersion;
 
         // Load image FIRST (before updating state) to prevent glitch

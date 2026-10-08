@@ -187,10 +187,10 @@ export default {
       batteryState: null,
     };
 
-    this._settings = this._mapSettings(context.settings.all());
+    this._settings = this._mapSettings(context.settings.all(), context.logger);
     this._unsubscribeSettings = context.settings.subscribe((values) => {
       const prevPoll = this._settings?.sonnenPollMs;
-      this._settings = this._mapSettings(values);
+      this._settings = this._mapSettings(values, context.logger);
       this._lastBriSet = 0;
       if (prevPoll && prevPoll !== this._settings.sonnenPollMs) {
         this._stopSonnenPoll();
@@ -564,7 +564,29 @@ export default {
     }
   },
 
-  _mapSettings(values) {
+  _mapSettings(values, logger = console) {
+    const localeSetting = (key) => {
+      const fallback = this.settingsSchema[key].default;
+      const value = values[key] ?? fallback;
+      try {
+        if (typeof value !== "string" || !value.trim()) {
+          throw new RangeError("Expected a non-empty string");
+        }
+        if (key === "timezone") {
+          new Intl.DateTimeFormat("en-GB", { timeZone: value });
+        } else if (!Intl.DateTimeFormat.supportedLocalesOf(value).length) {
+          throw new RangeError("Unsupported locale");
+        }
+        return value;
+      } catch {
+        this._invalidLocaleValues ??= { timezone: new Set(), locale: new Set() };
+        if (!this._invalidLocaleValues[key].has(value)) {
+          this._invalidLocaleValues[key].add(value);
+          logger.warn(`[${this.name}] Invalid ${key} ${JSON.stringify(value)}; using ${fallback}`);
+        }
+        return fallback;
+      }
+    };
     return {
       dayStartHour: values.day_start_hour ?? DEFAULT_SETTINGS.dayStartHour,
       nightStartHour:
@@ -574,8 +596,8 @@ export default {
       showSecondsDay: values.show_seconds_day ?? DEFAULT_SETTINGS.showSecondsDay,
       showSecondsNight: values.show_seconds_night ?? DEFAULT_SETTINGS.showSecondsNight,
       sonnenPollMs: values.sonnen_poll_ms ?? DEFAULT_SETTINGS.sonnenPollMs,
-      timezone: values.timezone ?? DEFAULT_SETTINGS.timezone,
-      locale: values.locale ?? DEFAULT_SETTINGS.locale,
+      timezone: localeSetting("timezone"),
+      locale: localeSetting("locale"),
     };
   },
 };
