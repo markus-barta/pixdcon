@@ -273,6 +273,8 @@ skipped and the loop falls back to the 10-minute sleep.
 
 ### 1. Setup
 
+Use Node 22 (matching `devenv.nix` and `node:22-alpine`).
+
 ```bash
 cd ~/Code/pixdcon
 npm install
@@ -426,6 +428,34 @@ npm start
 > They resolve relative to the config file: locally → `./scenes/`, in Docker → `/data/scenes/`.
 
 ### 5. Deploy to hsb1
+
+Release coordinates come only from committed `version.json`, with explicit
+`version_scheme: inspr-calver-3` (INSPR-CalVer3; `inspr-calendar-v2` is the deprecated alias and invalid for new reservations). Reserve a new UTC `YYMMDDhhmmss.0.0`
+coordinate at release preparation; it must be strictly later than the previous
+calendar release. Never reuse a published coordinate for changed artifacts.
+`package.json` and its lock retain the last legacy version `1.1.1`; existing
+legacy tags/images remain unchanged. The coordinator records the legacy-to-calendar
+anchor, stable channel sequence and immutable image digests in the release evidence.
+
+CI runs `npm ci`, lint and tests on Node 22 for PRs and main/tag pushes. Only
+main/tag pushes build images. A `v*` release tag must equal `v` + the version in
+`version.json`; it publishes the exact coordinate with an OCI version label.
+Main pushes retain `latest`. `scripts/build-and-push.sh` uses the same version
+source. Deployment pin migration and exact-digest rollback verification belong
+to the separate infrastructure review; repository changes alone do not complete adoption.
+
+`GET /api/status` returns the canonical `version` and explicit `version_scheme`.
+The header's single adapter uses the offline bundle in `vendor/inspr-versioning/`
+(source commit and configuration/manifest SHA256 pins in
+`scripts/verify-versioning-bundle.mjs`). Tests and normal CSS/Docker builds reject
+missing, extra, altered or symlinked bundle payloads. Refresh the global-default
+bundle with upstream `scripts/versioning-bundle.mjs` at an exact reviewed source
+commit and update all three pins together. The read-only asset route serves only
+the renderer, interaction helper, presentation module, config, scheme table and license;
+it never fetches configuration from the editor at runtime.
+The upstream bundler omits its source license: include `LICENSE` from the same
+source commit in the file manifest before pinning its final digest, retaining the
+upstream manifest digest as `upstreamManifestSha256`. No renderer bytes are changed.
 
 ```bash
 # Scene file change (fast — hot-reloads in seconds):

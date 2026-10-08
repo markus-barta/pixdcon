@@ -4,8 +4,8 @@
 #
 # USAGE: ./scripts/build-and-push.sh [TAG]
 # EXAMPLES:
-#   ./scripts/build-and-push.sh           # latest
-#   ./scripts/build-and-push.sh v0.1.0   # versioned
+#   ./scripts/build-and-push.sh             # version.json + latest
+#   ./scripts/build-and-push.sh v<version>   # must match version.json
 #
 # REQUIRES:
 #   - Docker logged into GHCR: gh auth login
@@ -17,8 +17,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
-# Get version from package.json or use latest
-VERSION="${1:-latest}"
+# Use the reserved canonical coordinate; an optional tag must match it.
+if (( $# > 1 )); then
+  echo "Usage: ./scripts/build-and-push.sh [v<version>]" >&2
+  exit 1
+fi
+VERSION="$(node scripts/verify-versioning.mjs)"
+if (( $# == 1 )); then
+  node scripts/verify-versioning.mjs --tag "v${1#v}" > /dev/null
+fi
+node scripts/verify-versioning-bundle.mjs
 IMAGE="ghcr.io/markus-barta/pixdcon"
 
 echo "[build-and-push] Building ${IMAGE}:${VERSION} (linux/amd64 + linux/arm64)..."
@@ -29,6 +37,8 @@ docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --tag "${IMAGE}:${VERSION}" \
   --tag "${IMAGE}:latest" \
+  --label "org.opencontainers.image.version=${VERSION}" \
+  --label "org.opencontainers.image.version_scheme=inspr-calver-3" \
   --push \
   .
 

@@ -3,7 +3,9 @@
 Pixel display controller for Ulanzi/AWTRIX 32×8 and Pixoo64 64×64 LED matrices.
 Config-file driven, web UI included, MQTT-connected, Docker-deployed.
 
-**Version:** 1.0.0 — running live on `hsb1`
+**Version:** `version.json` reserves the canonical `YYMMDDhhmmss.0.0` UTC coordinate
+and declares `inspr-calver-3` (INSPR-CalVer3, PIXD-50). `package.json` retains `1.1.1` as the
+legacy anchor; it is not the app's release version. Development, CI and Docker use Node 22.
 
 > Successor to pidicon (v3) and pidicon-light (v2). Fresh start, same hardware.
 
@@ -33,6 +35,10 @@ Config-file driven, web UI included, MQTT-connected, Docker-deployed.
 ## Quick Start
 
 ### Local dev
+
+Use Node 22. `npm test` and the Docker CSS build verify the version and complete
+pinned INSPR presentation bundle offline. The admin header defaults to Pretty,
+offers SemVer display, and copies the canonical version on click or keyboard activation.
 
 ```bash
 npm install

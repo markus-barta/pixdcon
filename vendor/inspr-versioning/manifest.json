@@ -1,0 +1,54 @@
+{
+  "repository": "inspr-at/inspr",
+  "revision": "72d656469b7180f971a866532ad9317580296665",
+  "expectedConfigSha256": "bf6aa144cd73dc97dc941f0f0914138b04ae0a28fbead5123465b15b1f2a2fd9",
+  "schema": "inspr.calver-display.v3",
+  "mode": "build-time-only",
+  "consumers": [],
+  "runtimeConsumers": false,
+  "files": [
+    {
+      "sourcePath": "packages/versioning/config/display.json",
+      "outputPath": "display.json",
+      "sha256": "bf6aa144cd73dc97dc941f0f0914138b04ae0a28fbead5123465b15b1f2a2fd9",
+      "size": 1423
+    },
+    {
+      "sourcePath": "packages/versioning/public/version.js",
+      "outputPath": "version.js",
+      "sha256": "5711296a2f551745073dc416c1cf676c0fa584976ea7680dedff923cf7ac5faf",
+      "size": 6334
+    },
+    {
+      "sourcePath": "packages/versioning/public/presentation.js",
+      "outputPath": "presentation.js",
+      "sha256": "37ae4b7757c76bb46960219724f448e4027396a017748d96edb89d25a7c54fe2",
+      "size": 5275
+    },
+    {
+      "sourcePath": "packages/versioning/public/version-interaction.js",
+      "outputPath": "version-interaction.js",
+      "sha256": "37d420e346defff5c01fe849c39c1f7ed93017e62f7e2a8d0b6299e00ede99ff",
+      "size": 8317
+    },
+    {
+      "sourcePath": "packages/versioning/config/schemes.json",
+      "outputPath": "schemes.json",
+      "sha256": "d88195791de1fe2c8a1fcaa1098c85f1af9c58fc049ef4186c28d6962da0474d",
+      "size": 284
+    },
+    {
+      "sourcePath": null,
+      "outputPath": "package.json",
+      "sha256": "1239d4d885dcad42201a27ed9324f8f0f760b78700d8db9ced39a511cffe7eae",
+      "size": 18
+    },
+    {
+      "sourcePath": "LICENSE",
+      "outputPath": "LICENSE",
+      "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+      "size": 34523
+    }
+  ],
+  "upstreamManifestSha256": "7b70d32335b8836732042b2efe9a8deb5d9b38f1ed38b69f5226d82bbc3551d1"
+}
