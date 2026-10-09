@@ -10,6 +10,7 @@ Deploy changed files to hsb1. Full procedure and rationale: `docs/DEPLOY.md`. Fo
 3. **Backup first** (outside the mount), for any deploy. hsb1's login shell is fish, so run bash explicitly:
    ```bash
    ssh mba@hsb1 'bash -s' <<'EOS'
+   set -e
    B=~/backups/pixdcon/$(date +%Y%m%d-%H%M%S); mkdir -p "$B"
    cp -a ~/docker/mounts/pixdcon/scenes "$B/scenes"; cp -a ~/docker/mounts/pixdcon/config.json "$B/"; echo "$B"
    EOS

@@ -369,8 +369,11 @@ The Docker image (`/app/`) contains only the application code (src/, lib/, node_
 # Scene file → ScenesWatcher hot-reloads within seconds
 scp scenes/pixoo/home.js mba@hsb1.lan:~/docker/mounts/pixdcon/scenes/pixoo/home.js
 
-# Config → ConfigWatcher hot-reloads (500ms debounce)
-scp config.json mba@hsb1.lan:~/docker/mounts/pixdcon/config.json
+# Config → ConfigWatcher hot-reloads (500ms debounce). The LIVE file is authoritative
+# (web UI saves into it); never copy the repo's dev sample over it — pull, edit, push:
+scp mba@hsb1.lan:~/docker/mounts/pixdcon/config.json /tmp/config.live.json
+$EDITOR /tmp/config.live.json
+scp /tmp/config.live.json mba@hsb1.lan:~/docker/mounts/pixdcon/config.json
 
 # Also commit + push to keep git in sync
 git add scenes/pixoo/home.js && git commit -m "..." && git push
@@ -509,7 +512,7 @@ Image (/app/)                     Host mount (/data/)
 
 ### Locations
 
-- Image: `ghcr.io/markus-barta/pixdcon:latest` (built by GitHub Actions on push to main)
+- Image: `ghcr.io/markus-barta/pixdcon:<version>@sha256:…`, pinned in nixcfg `hosts/hsb1/docker/compose-spec.nix` (release images come from `v<version>` tags; `:latest` from main is not deployed)
 - Mount root: `~/docker/mounts/pixdcon/`
 - Config: `~/docker/mounts/pixdcon/config.json`
 - Scenes: `~/docker/mounts/pixdcon/scenes/{ulanzi,pixoo}/`

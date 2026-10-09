@@ -232,6 +232,7 @@ built on every main push, for local use only.
 ```bash
 # Backup (outside the mount); hsb1's login shell is fish, so run bash explicitly
 ssh mba@hsb1 'bash -s' <<'EOS'
+set -e   # a failed copy must fail the backup, not end in a cheerful echo
 B=~/backups/pixdcon/$(date +%Y%m%d-%H%M%S); mkdir -p "$B"
 cp -a ~/docker/mounts/pixdcon/scenes "$B/scenes"; cp -a ~/docker/mounts/pixdcon/config.json "$B/"; echo "$B"
 EOS
@@ -299,7 +300,8 @@ ssh mba@hsb1 "docker logs -f pixdcon"
 # Restart
 ssh mba@hsb1 "docker restart pixdcon"
 
-# Recreate pixdcon only (needed after a docker pull): see section 3
+# Recreate pixdcon on the same pinned image (e.g. after a manual config fix): see section 3.
+# A new image only arrives through a new pin in nixcfg (a release), never through docker pull.
 
 # Container status
 ssh mba@hsb1 "docker ps | grep pixdcon"
