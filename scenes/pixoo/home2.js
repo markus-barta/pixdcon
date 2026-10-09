@@ -15,7 +15,8 @@
  *
  * Row 0 status cell (x 0-42) encoding:
  *   Nuki VR (y 9-15) and Nuki KE (y 18-24) keep their 7×7 sprites — the artwork
- *   carries lock state, plus an amber offline dot when the ping stops answering.
+ *   carries lock state, plus an amber dot when the lock's own MQTT reports it disconnected
+ *   or its battery critical (PIXD-63).
  *   TE (terrace) and OL (Oberlichten = skylights) are text labels at x 20, with
  *   3×3 badges left-aligned at x 29. Labels share the temperatures' warm white; the badge
  *   carries state twice, in colour and shape: filled green = open, hollow red = closed,
@@ -67,7 +68,6 @@
 import https from "https";
 import { promises as fs } from "fs";
 import { randomUUID } from "crypto";
-import { execFile } from "child_process";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { drawPixooImage, loadPixooImage } from "../../lib/pixoo-image.js";
@@ -83,9 +83,6 @@ const DEFAULT_SETTINGS = {
   fallbackDayStart: "07:30",
   fallbackNightStart: "20:30",
   staleMs: 300000,
-  nukiVrIp: "192.168.1.186",
-  nukiKeIp: "192.168.1.244",
-  nukiPingMs: 60000,
   healRetryMs: 30000,
   healInitialDelayMs: 5000,
   ps5OnW: 25,
@@ -224,7 +221,7 @@ function drawNukiIcon(d, image, cx, cy, alive) {
   // 7×7 icons: anchor at floor(7/2)=3 left and 3 up from center
   drawPixooImage(d, image, cx - 3, cy - 3);
   if (!alive) {
-    // Offline dot: 1px right of icon edge (cx+4)
+    // Attention dot (disconnected or battery critical): 1px right of icon edge (cx+4)
     const [dr, dg, db] = [255, 190, 40];
     d._setPixel(cx + 4, cy - 1, dr, dg, db);
     d._setPixel(cx + 4, cy, dr, dg, db);
@@ -743,14 +740,10 @@ const STALE_MS = 5 * 60 * 1000;
 const isStale = (ts, staleMs = STALE_MS) =>
   ts === null || Date.now() - ts > staleMs;
 
-function pingHost(ip) {
-  return new Promise((resolve) => {
-    // execFile: the host comes from scene settings, never a shell string.
-    const wait = process.platform === "darwin" ? "2000" : "2";
-    execFile("ping", ["-c", "1", "-W", wait, String(ip)], { timeout: 4000 }, (err) =>
-      resolve(!err),
-    );
-  });
+// Nuki MQTT booleans arrive as "true" / "false"; anything else leaves the last value.
+function parseNukiBool(msg) {
+  const text = String(msg).trim().toLowerCase();
+  return text === "true" ? true : text === "false" ? false : null;
 }
 
 // ── Scene export ──────────────────────────────────────────────────────────────
@@ -818,27 +811,6 @@ export default {
       default: 300000,
       min: 1000,
       max: 3600000,
-      step: 1000,
-    },
-    nuki_vr_ip: {
-      type: "string",
-      label: "Nuki VR IP",
-      group: "Sources",
-      default: "192.168.1.186",
-    },
-    nuki_ke_ip: {
-      type: "string",
-      label: "Nuki Keller IP",
-      group: "Sources",
-      default: "192.168.1.244",
-    },
-    nuki_ping_ms: {
-      type: "int",
-      label: "Nuki Ping Poll (ms)",
-      group: "Polling",
-      default: 60000,
-      min: 1000,
-      max: 600000,
       step: 1000,
     },
     heal_retry_ms: {
@@ -1001,13 +973,6 @@ export default {
       this._lastBriSet = 0;
 
       if (
-        prev.nukiPingMs !== this._cfg.nukiPingMs ||
-        prev.nukiVrIp !== this._cfg.nukiVrIp ||
-        prev.nukiKeIp !== this._cfg.nukiKeIp
-      ) {
-        this._restartNukiPolls();
-      }
-      if (
         prev.syncboxHost !== this._cfg.syncboxHost ||
         prev.syncboxTimeoutMs !== this._cfg.syncboxTimeoutMs ||
         prev.syncboxPollMs !== this._cfg.syncboxPollMs
@@ -1044,9 +1009,11 @@ export default {
       sunAbove: null, // bool fallback (above_horizon)
       // Row 0 — contact sensors (availability-tracked)
       nukiVrState: null,
-      nukiVrAlive: true, // Nuki VR (front door)
+      nukiVrAlive: true, // Nuki VR (front door): MQTT connected
+      nukiVrBattCritical: false,
       nukiKeState: null,
-      nukiKeAlive: true, // Nuki Keller (basement)
+      nukiKeAlive: true, // Nuki Keller (basement): MQTT connected
+      nukiKeBattCritical: false,
       terraceOpen: null,
       terraceOnline: null,
       w13Open: null,
@@ -1156,17 +1123,22 @@ export default {
     });
 
     const NUKI = { 1: "locked", 2: "unlocking", 3: "unlocked", 4: "locking" };
-    sub("nuki/463F8F47/#", (msg, topic) => {
-      if (topic !== "nuki/463F8F47/state") return;
-      this._s.nukiVrState = NUKI[parseInt(msg.trim())] ?? null;
-    });
-    sub("nuki/4A5D18FF/#", (msg, topic) => {
-      if (topic !== "nuki/4A5D18FF/state") return;
-      this._s.nukiKeState = NUKI[parseInt(msg.trim())] ?? null;
-    });
-
-    // Nuki stale detection via IP ping (devices only publish on state change)
-    this._restartNukiPolls();
+    // Each lock's own MQTT also says whether it is connected (retained; the lock's last will
+    // turns it false) and whether its battery is critical. That drives the amber dot. ICMP ping
+    // did before PIXD-63, but the Keller lock's Wi-Fi power-save ignores pings while connected.
+    const nukiHandler = (id, key) => (msg, topic) => {
+      const field = topic.slice(`nuki/${id}/`.length);
+      if (field === "state") {
+        this._s[`${key}State`] = NUKI[parseInt(msg.trim())] ?? null;
+        return;
+      }
+      const flag = field === "connected" ? "Alive" : field === "batteryCritical" ? "BattCritical" : null;
+      if (!flag) return;
+      const value = parseNukiBool(msg);
+      if (value !== null) this._s[`${key}${flag}`] = value;
+    };
+    sub("nuki/463F8F47/#", nukiHandler("463F8F47", "nukiVr"));
+    sub("nuki/4A5D18FF/#", nukiHandler("4A5D18FF", "nukiKe"));
 
     sub("z2m/wz/contact/te-door/#", (msg, topic) => {
       if (topic === "z2m/wz/contact/te-door") {
@@ -1340,17 +1312,8 @@ export default {
   },
 
   async destroy(context) {
-    this._nukiPollGeneration = null;
     this._unsubscribeSettings?.();
     this._stopSyncboxPoll();
-    if (this._nukiVrPoll) {
-      clearInterval(this._nukiVrPoll);
-      this._nukiVrPoll = null;
-    }
-    if (this._nukiKePoll) {
-      clearInterval(this._nukiKePoll);
-      this._nukiKePoll = null;
-    }
     if (this._healTimer) {
       clearInterval(this._healTimer);
       this._healTimer = null;
@@ -1473,14 +1436,14 @@ export default {
       nukiImage(s.nukiVrState),
       cx0,
       ROWS[0].y0 + 4,
-      s.nukiVrAlive,
+      s.nukiVrAlive && !s.nukiVrBattCritical,
     );
     drawNukiIcon(
       device,
       nukiImage(s.nukiKeState),
       cx0,
       ROWS[0].y1 - 4,
-      s.nukiKeAlive,
+      s.nukiKeAlive && !s.nukiKeBattCritical,
     );
 
     // TE (terrace door) and OL (Oberlichten) share a label x; the leftmost badge
@@ -1852,28 +1815,6 @@ export default {
     await this._saveBoilerHistory(true);
   },
 
-  _restartNukiPolls() {
-    if (this._nukiVrPoll) clearInterval(this._nukiVrPoll);
-    if (this._nukiKePoll) clearInterval(this._nukiKePoll);
-
-    const generation = {};
-    this._nukiPollGeneration = generation;
-    const poll = async (ip, key) => {
-      try {
-        const alive = await pingHost(ip);
-        if (this._nukiPollGeneration === generation) this._s[key] = alive;
-      } catch (err) {
-        this._logger.warn(`[home2] Nuki ping failed: ${err.message}`);
-      }
-    };
-    const vrPoll = () => poll(this._cfg.nukiVrIp, "nukiVrAlive");
-    const kePoll = () => poll(this._cfg.nukiKeIp, "nukiKeAlive");
-    vrPoll();
-    kePoll();
-    this._nukiVrPoll = setInterval(vrPoll, this._cfg.nukiPingMs);
-    this._nukiKePoll = setInterval(kePoll, this._cfg.nukiPingMs);
-  },
-
   _mapSettings(values) {
     const fallbackDayStart =
       values.fallback_day_start ?? DEFAULT_SETTINGS.fallbackDayStart;
@@ -1893,9 +1834,6 @@ export default {
       fallbackDayStartMins: dayH * 60 + dayM,
       fallbackNightStartMins: nightH * 60 + nightM,
       staleMs: values.stale_ms ?? DEFAULT_SETTINGS.staleMs,
-      nukiVrIp: values.nuki_vr_ip ?? DEFAULT_SETTINGS.nukiVrIp,
-      nukiKeIp: values.nuki_ke_ip ?? DEFAULT_SETTINGS.nukiKeIp,
-      nukiPingMs: values.nuki_ping_ms ?? DEFAULT_SETTINGS.nukiPingMs,
       healRetryMs: values.heal_retry_ms ?? DEFAULT_SETTINGS.healRetryMs,
       healInitialDelayMs:
         values.heal_initial_delay_ms ?? DEFAULT_SETTINGS.healInitialDelayMs,

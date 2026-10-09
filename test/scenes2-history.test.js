@@ -61,7 +61,7 @@ async function setup(t, { content, settings = {} } = {}) {
   };
   const scene = Object.create(home2);
   scene._boilerStatePath = path;
-  for (const method of ["_restartNukiPolls", "_startSyncboxPoll"]) {
+  for (const method of ["_startSyncboxPoll"]) {
     t.mock.method(scene, method, () => {});
   }
   t.after(async () => {
