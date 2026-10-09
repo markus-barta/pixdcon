@@ -475,3 +475,33 @@ test("clear, close and reopen before the clear returns shows the cleared values"
   assert.equal(ui.isSceneSettingOverridden("level"), false);
   assert.equal(ui.sceneSettingsForm.level, 5); // saved value of panel-a, not the stale 30
 });
+
+test("a full reload landing inside the save lag leaves the open form and its baseline alone", async (t) => {
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "pixd-p55-lag-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { config, server } = fixture();
+  for (const d of config.devices) Object.assign(d, { type: "pixoo", ip: "127.0.0.1" });
+  server.configPath = join(root, "config.json");
+  await writeFile(server.configPath, JSON.stringify(config)); // running config never reloads in this test: the lag
+  const { ui } = await loadUi(server);
+  await ui.openSceneSettings("panel-a", "clock");
+  ui.sceneSettingsForm.level = 7;
+  ui.editSceneSetting("level");
+  ui.resetSceneSetting("enabled");
+  await ui.saveSceneSettings();
+  await ui.reloadUiState(); // e.g. a live-preview POST completing now: the server still serves the old saved values
+  assert.equal(ui.sceneSettingsForm.level, 7);
+  assert.equal(ui.sceneSettingsForm.enabled, true); // the reset (schema default) stays
+  assert.equal(ui.isSceneSettingsDirty(), false);
+});
+
+test("opening the modal shows the server's normalized values", async () => {
+  const { config, server } = fixture();
+  config.devices[0].sceneSettings.clock.level = "50"; // persisted as a string
+  const { ui } = await loadUi(server);
+  await ui.openSceneSettings("panel-a", "clock");
+  assert.equal(ui.sceneSettingsForm.level, 50);
+});
