@@ -1112,14 +1112,26 @@ export default {
       } catch {}
     });
 
+    // Node-RED ("Boiler 24 [bz]") republishes this retained every 60 s. temp_c carries the
+    // Shelly reading, which arrives as a numeric STRING ("52.37"); state is Node-RED's own
+    // verdict on the underlying reading (ok | stale after 15 min | error), checked_at its time.
     sub("jhw2211/health/boiler", (msg) => {
       if (!this._boilerSampling) return;
       try {
-        const temp = JSON.parse(msg)?.temp_c;
-        if (typeof temp === "number" && Number.isFinite(temp)) {
-          this._s.boilerTempC = temp;
-          this._s.boilerTempSeen = Date.now();
+        const d = JSON.parse(msg);
+        if (d?.state === "stale" || d?.state === "error") {
+          this._s.boilerTempSeen = null; // no current value until Node-RED reports ok again
+          return;
         }
+        const raw = d?.temp_c;
+        const temp = typeof raw === "number" ? raw
+          : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN;
+        if (!Number.isFinite(temp)) return;
+        // Freshness from when Node-RED checked (same host clock), so an old retained message
+        // from a publisher that has since died does not count as fresh after a restart.
+        const checkedAt = Date.parse(d?.checked_at);
+        this._s.boilerTempC = temp;
+        this._s.boilerTempSeen = Number.isFinite(checkedAt) ? Math.min(checkedAt, Date.now()) : Date.now();
       } catch {}
     });
 

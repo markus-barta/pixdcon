@@ -156,7 +156,7 @@ test("minute sampling averages finite values and invalid MQTT cannot refresh the
   assert.equal(scene._boilerHistory.buckets[0].sum / scene._boilerHistory.buckets[0].count, 40);
   const seen = scene._s.boilerTempSeen;
   setTime("2026-10-08T00:02:00+02:00");
-  for (const msg of ["null", "[]", "{", '{"temp_c":null}', '{"temp_c":"60"}', '{"temp_c":1e999}']) {
+  for (const msg of ["null", "[]", "{", '{"temp_c":null}', '{"temp_c":"sixty"}', '{"temp_c":1e999}']) {
     handlers.get(topic)(msg);
   }
   assert.equal(scene._s.boilerTempC, 50);
@@ -386,4 +386,28 @@ test("the default state path is next to the scene rather than the working direct
   await scene._startBoilerHistory();
   t.after(() => scene._stopBoilerHistory());
   assert.equal(read.mock.calls[0].arguments[0], resolve("scenes/pixoo/.state/home2-boiler.json"));
+});
+
+test("Node-RED's real payload: temp_c as a numeric string, with state and checked_at", async (t) => {
+  clock(t, "2026-10-09T13:10:00+02:00");
+  timers(t);
+  const { scene, handlers } = await setup(t);
+  const send = (payload) => handlers.get("jhw2211/health/boiler")(JSON.stringify(payload));
+  const now = new Date().toISOString();
+  send({ state: "ok", temp_c: "52.37", age_min: 0.4, nr_running: true, statemachine: "idle", checked_at: now });
+  assert.equal(scene._boilerCurrent(), 52.37);
+  send({ state: "stale", temp_c: "52.37", age_min: 21, checked_at: now }); // Node-RED: reading older than 15 min
+  assert.equal(scene._boilerCurrent(), null);
+  send({ state: "ok", temp_c: "53", checked_at: now });
+  assert.equal(scene._boilerCurrent(), 53);
+  send({ state: "error", temp_c: null, checked_at: now });
+  assert.equal(scene._boilerCurrent(), null);
+  // A retained message from a publisher that died long ago is not fresh after a restart.
+  send({ state: "ok", temp_c: "50", checked_at: new Date(Date.now() - scene._cfg.boilerStaleMs - 60000).toISOString() });
+  assert.equal(scene._boilerCurrent(), null);
+  // Garbage keeps the last good value.
+  send({ state: "ok", temp_c: "55", checked_at: now });
+  send({ state: "ok", temp_c: "warm", checked_at: now });
+  send({ state: "ok", temp_c: "", checked_at: now });
+  assert.equal(scene._boilerCurrent(), 55);
 });
