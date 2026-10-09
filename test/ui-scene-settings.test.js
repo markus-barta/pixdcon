@@ -211,10 +211,10 @@ test("saving a field reset through the API preserves sibling settings, other sce
   const { ui } = await loadUi(server, {
     fetch: async (url, options) => {
       const res = await request(server, url, options ? JSON.parse(options.body) : undefined);
-      return { json: async () => JSON.parse(res.body) };
+      return { ok: res.status === 200, json: async () => JSON.parse(res.body) };
     },
   });
-  ui.openSceneSettings("panel-a", "clock");
+  await ui.openSceneSettings("panel-a", "clock");
   ui.resetSceneSetting("level");
   await ui.saveSceneSettings();
   const persisted = JSON.parse(await readFile(server.configPath, "utf-8"));
@@ -227,7 +227,7 @@ test("saving a field reset through the API preserves sibling settings, other sce
   assert.equal(ui.isSceneSettingOverridden("level"), true);
   assert.equal(ui.sceneSettingsForm.level, 25);
   assert.equal(ui.isSceneSettingsDirty(), false);
-  ui.openSceneSettings("panel-a", "clock");
+  await ui.openSceneSettings("panel-a", "clock");
   assert.equal(ui.isSceneSettingDefault("level"), true);
   ui.resetSceneSetting("enabled");
   await ui.saveSceneSettings();
@@ -256,7 +256,7 @@ test("a save finishing after switching devices does not replace the new device's
   const { ui } = await loadUi(server, {
     fetch: (url) => url === "/api/scene-settings/save"
       ? new Promise((resolve) => { finishSave = resolve; })
-      : request(server, url).then((res) => ({ json: async () => JSON.parse(res.body) })),
+      : request(server, url).then((res) => ({ ok: res.status === 200, json: async () => JSON.parse(res.body) })),
   });
   ui.openSceneSettings("panel-a", "clock");
   ui.resetSceneSetting("level");

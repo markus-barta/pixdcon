@@ -202,10 +202,8 @@ See `docs/DEPLOY.md` for the full deployment guide — including the **source-of
 # Logs
 ssh mba@hsb1 "docker logs -f pixdcon"
 
-# Deploy after lib/src change (CI builds image):
-git push origin main
-gh run watch --exit-status
-ssh mba@hsb1 "cd ~/docker && docker compose pull pixdcon && docker compose up -d pixdcon"
+# Deploy after lib/src change: a release (version.json → PR → tag v<version>),
+# then the hsb1 image pin moves in nixcfg (OPS) — see docs/DEPLOY.md § 3
 
 # Deploy scene file change only (hot-reload, no restart):
 scp scenes/pixoo/home.js mba@hsb1:~/docker/mounts/pixdcon/scenes/pixoo/home.js
