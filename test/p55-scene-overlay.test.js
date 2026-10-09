@@ -540,3 +540,55 @@ test("save, clear inside the lag, reopen while the clear reload is pending: the 
   assert.equal(ui.isSceneSettingOverridden("level"), false);
   assert.equal(ui.sceneSettingsForm.level, 5);
 });
+
+test("after a save the page keeps the server-normalised values, also through clear and a lagging reopen", async (t) => {
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "pixd-p55-r12-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { config, server, service } = fixture();
+  for (const d of config.devices) Object.assign(d, { type: "pixoo", ip: "127.0.0.1" });
+  config.devices[0].sceneSettings.clock.level = 150; // persisted out of range (max 100)
+  server.configPath = join(root, "config.json");
+  await writeFile(server.configPath, JSON.stringify(config));
+  await service.applyOverlay("panel-a", "clock", { level: 30 });
+  let release;
+  let holdNextGet = false;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { ui } = await loadUi(server, {
+    fetch: async (url, options) => {
+      const response = await request(server, url, options ? JSON.parse(options.body) : undefined);
+      if (url === "/api/scene-settings" && holdNextGet) { holdNextGet = false; await gate; }
+      return { ok: response.status === 200, json: async () => JSON.parse(response.body) };
+    },
+  });
+  await ui.openSceneSettings("panel-a", "clock");
+  ui.resetSceneSetting("enabled");
+  await ui.saveSceneSettings();
+  assert.deepEqual(plain(ui._sceneSettingsSaved), { level: 100 }); // the server clamped it
+  holdNextGet = true;
+  const clearing = ui.clearSceneOverlay();
+  await new Promise((resolve) => setImmediate(resolve));
+  ui.closeSceneSettings();
+  await ui.openSceneSettings("panel-a", "clock");
+  release();
+  await clearing;
+  assert.equal(ui.isSceneSettingOverridden("level"), false);
+  assert.equal(ui.sceneSettingsForm.level, 100);
+});
+
+test("the save response carries the normalised persisted values", async (t) => {
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "pixd-p55-ack-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { config, server } = fixture();
+  for (const d of config.devices) Object.assign(d, { type: "pixoo", ip: "127.0.0.1" });
+  server.configPath = join(root, "config.json");
+  await writeFile(server.configPath, JSON.stringify(config));
+  const res = await request(server, "/api/scene-settings/save", { deviceName: "panel-a", sceneName: "clock", values: { level: "150", enabled: "false" } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(JSON.parse(res.body), { ok: true, saved: { enabled: false, level: 100 } });
+});
