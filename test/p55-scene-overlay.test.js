@@ -384,3 +384,25 @@ test("the open-time refresh does not clobber edits made meanwhile", async () => 
   assert.equal(ui.sceneSettingsForm.level, 77);
   assert.equal(ui.isSceneSettingOverridden("level"), true); // badge state is refreshed regardless
 });
+
+test("a slow open-time refresh cannot overwrite the state of a clear that finished first", async () => {
+  const { server, service } = fixture();
+  await service.applyOverlay("panel-a", "clock", { level: 42 });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let deferFirst = true;
+  const { ui } = await loadUi(server, {
+    fetch: async (url, options) => {
+      const response = await request(server, url, options ? JSON.parse(options.body) : undefined);
+      if (url === "/api/scene-settings" && deferFirst) { deferFirst = false; await gate; }
+      return { ok: response.status === 200, json: async () => JSON.parse(response.body) };
+    },
+  });
+  const opening = ui.openSceneSettings("panel-a", "clock"); // its GET captures the overlay, then waits
+  await new Promise((resolve) => setImmediate(resolve));
+  await ui.clearSceneOverlay(); // clears and reloads with fresh (empty) state
+  release();
+  await opening;
+  assert.deepEqual(plain(ui.sceneSettingsState["panel-a"].clock.overlay), {});
+  assert.equal(ui.isSceneSettingOverridden("level"), false);
+});
