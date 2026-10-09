@@ -253,6 +253,9 @@ test("heating: red triangle and a red dot mixed into the bar, rising 1 row/s wit
   relay(2150);
   const bar = heat(40);
   assert.deepEqual(heatDotRed(bar), RED, "deep red over warm yellow");
+  // Pinned RGB, independent of the helpers: 70 % heating red over the 40 °C yellow, and over black.
+  assert.deepEqual(dot(bar), [254, 93, 52]);
+  assert.deepEqual(dot(black), [179, 28, 18]);
   const start = Date.parse("2026-10-08T12:30:00+02:00");
   const frame = async (seconds) => {
     setTime(start + seconds * 1000);
@@ -267,9 +270,10 @@ test("heating: red triangle and a red dot mixed into the bar, rising 1 row/s wit
   assert.deepEqual(c[41], dot(bar));
   for (const y of [38, 39, 40]) assert.deepEqual(c[y], bar);
   assert.deepEqual(c[37], black);
-  // t=0.5: halfway between y41 and y40, half strength on each (the glide).
+  // t=0.5: halfway between y41 and y40, half strength on each (the glide); the tail slides in
+  // from under the baseline and adds 30 % × 50 % to y41.
   c = await frame(0.5);
-  assert.deepEqual(c[41], dot(bar, 0.5));
+  assert.deepEqual(c[41], dot(bar, 0.5 + 0.15));
   assert.deepEqual(c[40], dot(bar, 0.5));
   // t=2.25: rows 2.25 → y39 at 75 %, y38 at 25 %; tail (pos 1.25) adds 30 % × 75 % to y40, 30 % × 25 % to y39.
   c = await frame(2.25);
@@ -300,28 +304,65 @@ test("the red mix stands out on every bar colour (ΔE ≥ 25): deep red on cool 
   assert.ok(deltaE(dot(black), black) >= 25, "visible on black above the bar");
 });
 
-test("heating_fps: faster frames only while heating; the battery sweep and error blink keep their 2 fps pace", async (t) => {
+test("heating_fps: faster frames only while heating, never a 0 ms delay; battery and blink keep elapsed-time pace", async (t) => {
   const setTime = clock(t, "2026-10-08T12:30:00+02:00");
   const { scene, device, publish, relay } = await setup(t);
+  const start = Date.parse("2026-10-08T12:30:00+02:00");
   publish(40);
   assert.equal(scene._cfg.heatingFps, 2);
+  assert.equal(scene.settingsSchema.heating_fps.min, 2, "no 1 fps: a 2 Hz blink cannot alias");
   assert.equal(await scene.render(device), 500, "not heating");
   relay(2150);
   assert.equal(await scene.render(device), 500, "heating at the default 2 fps");
   scene._cfg = scene._mapSettings({ heating_fps: 4 });
+  // 4 fps: renders every 250 ms; the 2 fps frame clock advances on every second one.
+  const frames = [];
+  for (let i = 1; i <= 8; i++) {
+    setTime(start + i * 250);
+    assert.equal(await scene.render(device), 250, "4 fps target with an instant render");
+    frames.push(scene._frame);
+  }
+  const steps = frames.slice(1).map((f, i) => f - frames[i]);
+  assert.deepEqual(steps, [1, 0, 1, 0, 1, 0, 1], "one frame step per 500 ms elapsed");
+  // Capped by a slow device: 700 ms between renders still advances one step per 500 ms elapsed.
   const before = scene._frame;
-  for (let i = 0; i < 4; i++) assert.equal(await scene.render(device), 250, "heating at 4 fps");
-  assert.equal(scene._frame - before, 2, "four 4-fps renders advance the 2-fps frame clock by two");
+  for (let i = 1; i <= 5; i++) {
+    setTime(start + 2000 + i * 700);
+    await scene.render(device);
+  }
+  assert.equal(scene._frame - before, 7, "3500 ms elapsed → 7 steps");
+  // A render slower than the target still returns a positive delay, so minFrameMs applies.
+  const realPush = device.push;
+  device.push = async () => { setTime(Date.now() + 300); };
+  assert.equal(await scene.render(device), 1);
+  device.push = realPush;
   relay(0);
   assert.equal(await scene.render(device), 500, "back to 500 ms once heating stops");
-  // Render time counts against the target: a 100 ms render asks for 150 ms more at 4 fps.
-  relay(2150);
-  const realPush = device.push;
-  device.push = async () => { setTime(Date.now() + 100); };
-  assert.equal(await scene.render(device), 150);
-  device.push = realPush;
 });
 
+test("a bar that grows mid-rise never makes the dot jump back; the new top applies from the next cycle", async (t) => {
+  const setTime = clock(t, "2026-10-08T12:30:00+02:00");
+  const { scene, device, publish, relay } = await setup(t);
+  const start = Date.parse("2026-10-08T12:30:00+02:00");
+  publish(40); // 4 rows → 5 s cycles, the dot ends at y37
+  relay(2150);
+  setTime(start);
+  await scene.render(device);
+  setTime(start + 7000); // second cycle, 2 s in: dot on row 2 (y39)
+  await scene.render(device);
+  assert.deepEqual(at(device, 55, 39), dot(heat(40)));
+  publish(45); // 5 rows now, mid-rise
+  setTime(start + 7250); // keeps rising: row 2.25 → y38 at 25 % (a re-based phase would drop back to 1.25)
+  await scene.render(device);
+  assert.deepEqual(at(device, 55, 38), dot(heat(45), 0.25));
+  assert.deepEqual(at(device, 55, 39), dot(heat(45), 0.75 + 0.3 * 0.25));
+  setTime(start + 9000); // this cycle keeps its 4-row top: y37, now inside the taller bar
+  await scene.render(device);
+  assert.deepEqual(at(device, 55, 37), dot(heat(45)));
+  setTime(start + 10000 + 5000); // next cycle (5 rows → 6 s) at 5 s: its top, y36, one above the bar
+  await scene.render(device);
+  assert.deepEqual(at(device, 55, 36), dot(black));
+});
 test("boiler not heating: below threshold, stale relay, missing power or a raised threshold keep the grey triangle", async (t) => {
   clock(t, "2026-10-08T12:30:00+02:00");
   const { scene, device, publish, relay } = await setup(t);
@@ -374,14 +415,13 @@ test("on a full-height bar the dot stops at y33 and never touches the digits' ro
   const start = Date.parse("2026-10-08T16:00:00+02:00");
   const bar = heat(70);
   assert.deepEqual(heatDotRed(bar), PALE_RED, "pale hot red over red");
+  assert.deepEqual(dot(bar), [248, 111, 91]);
   for (let step = 0; step <= 40; step++) {
     setTime(start + step * 250);
     await scene.render(device);
     for (let y = 27; y <= 32; y++) assert.deepEqual(at(device, 58, y), reference[y - 27], `y${y} at ${step * 0.25}s`);
+    if (step === 32) assert.deepEqual(at(device, 58, 33), dot(bar), "8 rows up at 8 s: the top, y33");
   }
-  setTime(start + 8000); // rise of 8 rows: at the top (y33), full strength
-  await scene.render(device);
-  assert.deepEqual(at(device, 58, 33), dot(bar));
 });
 
 test("short bars still show the dot: one row above a 1-row bar, a pulse just above the baseline with no bar", async (t) => {

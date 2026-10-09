@@ -576,21 +576,37 @@ function _heatDotRed(barColor) {
   return full(HEAT_RED_PALE) > full(HEAT_RED) ? HEAT_RED_PALE : HEAT_RED;
 }
 
+const heatCycleMs = (top) => (top / HEAT_DOT_ROWS_PER_S + HEAT_DOT_FADE_S) * 1000;
+
+// Seconds into the current cycle. A cycle keeps the top it started with, so a bar that grows or
+// shrinks mid-rise never makes the dot jump backwards; the new top applies from the next cycle.
+function _heatDotPhase(cycle, nowMs, top) {
+  if (cycle.start === null) Object.assign(cycle, { start: nowMs, top });
+  else if (nowMs - cycle.start >= heatCycleMs(cycle.top)) {
+    const next = cycle.start + heatCycleMs(cycle.top);
+    Object.assign(cycle, { start: nowMs - next < heatCycleMs(top) ? next : nowMs, top });
+  }
+  return Math.max(0, (nowMs - cycle.start) / 1000);
+}
+
 // rows: 0 = y41 (just above the baseline). The bar fills rows 0..height-1.
-function drawHeatDot(d, x, baselineY, height, barColor, t) {
-  const top = Math.min(height, HEAT_DOT_TOP_ROW);
+function drawHeatDot(d, x, baselineY, height, barColor, cycle, nowMs) {
+  const tau = _heatDotPhase(cycle, nowMs, Math.min(height, HEAT_DOT_TOP_ROW));
+  const top = Math.min(cycle.top, HEAT_DOT_TOP_ROW);
   const rise = top / HEAT_DOT_ROWS_PER_S;
-  const tau = t % (rise + HEAT_DOT_FADE_S);
   const pos = tau < rise ? tau * HEAT_DOT_ROWS_PER_S : top;
-  const strength = tau < rise ? 1 : 1 - (tau - rise) / HEAT_DOT_FADE_S;
+  const strength = tau < rise ? 1 : Math.max(0, 1 - (tau - rise) / HEAT_DOT_FADE_S);
   const red = _heatDotRed(barColor);
   const alpha = new Map();
+  const add = (row, a) => {
+    if (row >= 0 && a > 0) alpha.set(row, (alpha.get(row) ?? 0) + a);
+  };
+  // Rows below 0 are clipped one by one, so the tail slides in smoothly from under the baseline.
   const splat = (p, a) => {
-    if (p < 0) return;
     const row = Math.floor(p);
     const frac = p - row;
-    alpha.set(row, (alpha.get(row) ?? 0) + a * (1 - frac));
-    if (frac > 0) alpha.set(row + 1, (alpha.get(row + 1) ?? 0) + a * frac);
+    add(row, a * (1 - frac));
+    add(row + 1, a * frac);
   };
   splat(pos, strength);
   splat(pos - 1, strength * HEAT_DOT_TAIL);
@@ -616,7 +632,7 @@ function _boilerTempColor(tempC) {
   return stops[stops.length - 1][1];
 }
 
-async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heating = false, heatT = null) {
+async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heating = false, heatCycle = null, nowMs = Date.now()) {
   const baselineY = cellY0 + 15; // y=42; chart rows y=32..41 (5°C/px)
   const tickRowY = cellY0 + 16; // y=43
   const yTickX = cellX0 + 1; // x=45
@@ -645,7 +661,7 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
     const color = _boilerTempColor(value);
     const barColor = i === nowBucket ? color : color.map((v) => Math.round(v * 0.65));
     vLine(d, curveX0 + i, baselineY - height, baselineY - 1, ...barColor);
-    if (heating && heatT !== null && i === nowBucket) drawHeatDot(d, nowX, baselineY, height, color, heatT);
+    if (heating && heatCycle && i === nowBucket) drawHeatDot(d, nowX, baselineY, height, color, heatCycle, nowMs);
   }
 
   // Current-time triangle: red while the boiler is heating.
@@ -904,7 +920,7 @@ export default {
       label: "Heating Animation FPS (device minFrameMs must be ≤ 1000/fps)",
       group: "Timing",
       default: 2,
-      min: 1,
+      min: 2,
       max: 4,
       step: 1,
     },
@@ -1326,17 +1342,23 @@ export default {
   async render(device) {
     if (!this._s) return 500;
     const frameStart = Date.now();
-    // While heating, frames may run faster (heating_fps). _frame stays a 2 fps clock for the
-    // battery sweep and error blink: it advances 2/fps per render.
     const heating = this._boilerHeating();
     const fps = heating ? this._cfg.heatingFps : 2;
-    this._frameAcc = (this._frameAcc ?? 0) + 2 / fps;
-    while (this._frameAcc >= 1) {
+    // _frame drives the battery sweep and the error blink. At the normal pace it advances once per
+    // render, as always. While heating_fps runs faster, it advances by elapsed 500 ms steps
+    // instead, so those keep their pace whatever cadence the device's minFrameMs allows.
+    if (fps <= 2 || this._tickAt === undefined) {
       this._frame++;
-      this._frameAcc -= 1;
+      this._tickAt = frameStart;
+    } else {
+      const steps = Math.floor((frameStart - this._tickAt) / 500);
+      if (steps > 0) {
+        this._frame += steps;
+        this._tickAt += steps * 500;
+      }
     }
-    if (!heating) this._heatSince = null;
-    else this._heatSince ??= frameStart;
+    if (!heating) this._heatCycle = null;
+    else this._heatCycle ??= { start: null, top: 0 };
     const s = this._s;
 
     // ── Brightness (elevation-based smooth curve) ─────────────────────────────
@@ -1515,7 +1537,7 @@ export default {
     await drawBoiler(
       device, COLS[2].x0, ROWS[1].y0, boilerCurrent,
       this._boilerHistory.buckets, boilerBucket(now),
-      heating, heating ? (frameStart - this._heatSince) / 1000 : null,
+      heating, this._heatCycle, frameStart,
     );
     if (boilerCurrent === null) drawErrorMark(device, 2, 1, this._frame);
 
@@ -1598,8 +1620,9 @@ export default {
     await device.push();
     // Not heating: unchanged 500 ms frames. Heating: aim for 1000/heating_fps from frame start;
     // the device's minFrameMs still floors the cadence.
+    // Never 0: the render loop applies minFrameMs only to a positive delay.
     if (!heating) return 500;
-    return Math.max(0, Math.round(1000 / fps) - (Date.now() - frameStart));
+    return Math.max(1, Math.round(1000 / fps) - (Date.now() - frameStart));
   },
 
   // ── Syncbox HTTP poll (self-signed cert) ──────────────────────────────────
