@@ -406,3 +406,26 @@ test("a slow open-time refresh cannot overwrite the state of a clear that finish
   assert.deepEqual(plain(ui.sceneSettingsState["panel-a"].clock.overlay), {});
   assert.equal(ui.isSceneSettingOverridden("level"), false);
 });
+
+test("a stalled first open cannot overwrite the newer state of a second open", async () => {
+  const { server, service } = fixture();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const { ui } = await loadUi(server, {
+    fetch: async (url, options) => {
+      const response = await request(server, url, options ? JSON.parse(options.body) : undefined);
+      if (url === "/api/scene-settings" && ++calls === 1) await gate; // first open's GET stalls (no overlay yet)
+      return { ok: response.status === 200, json: async () => JSON.parse(response.body) };
+    },
+  });
+  const first = ui.openSceneSettings("panel-a", "clock");
+  await new Promise((resolve) => setImmediate(resolve));
+  await service.applyOverlay("panel-a", "clock", { level: 55 }); // arrives over MQTT meanwhile
+  await ui.openSceneSettings("panel-a", "clock"); // reopen sees it
+  assert.equal(ui.isSceneSettingOverridden("level"), true);
+  release();
+  await first;
+  assert.equal(ui.isSceneSettingOverridden("level"), true);
+  assert.equal(ui.sceneSettingsState["panel-a"].clock.overlay.level, 55);
+});
