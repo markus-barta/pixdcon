@@ -518,8 +518,9 @@ function emptyBoilerDay(now) {
 }
 
 // Colour = how the water feels (Markus, PIXD-60): cold blue, white at skin-neutral ~36 °C, warm
-// yellow around 40 °C, then amber, orange and red. Never green-dominant: the battery uses green
-// for "good". The number and the current bar share it; past bars are dimmed.
+// yellow around 40 °C, then amber, orange and red. Never green-dominant (only a near-neutral tint
+// around 35 °C): the battery uses green for "good". The number and the current bar share it; past
+// bars are dimmed.
 const BOILER_COLOR_STOPS = [
   [20, [60, 120, 255]], // cold — blue
   [30, [40, 185, 255]], // cool — light blue
@@ -529,6 +530,23 @@ const BOILER_COLOR_STOPS = [
   [60, [255, 80, 0]], // hot — orange
   [70, [230, 20, 0]], // very hot — red
 ];
+
+// WCAG relative luminance (0..1) of an sRGB colour.
+function _luminance(rgb) {
+  const [r, g, b] = rgb.map((v) => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+// The heating pixel must stand out on every bar colour: light bars (the white ~36 °C and the
+// yellows) get a darker pixel, darker bars (blues, orange, red) a brighter one.
+function _climbColor(color) {
+  return _luminance(color) > 0.4
+    ? color.map((v) => Math.round(v * 0.5))
+    : color.map((v) => Math.round(v + (255 - v) * 0.5));
+}
 
 function _boilerTempColor(tempC) {
   if (tempC === null) return C.dimWhite;
@@ -580,7 +598,7 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
     const climbRows = Math.min(height, 9);
     if (heating && i === nowBucket && climbRows > 1) {
       const climbY = baselineY - 1 - (Math.floor(frame / 2) % climbRows);
-      d._setPixel(nowX, climbY, ...color.map((v) => Math.round(v + (255 - v) * 0.5)));
+      d._setPixel(nowX, climbY, ..._climbColor(color));
     }
   }
 
@@ -650,7 +668,7 @@ function pingHost(ip) {
 
 // ── Scene export ──────────────────────────────────────────────────────────────
 
-export { BOILER_COLOR_STOPS, _boilerTempColor as boilerTempColor };
+export { BOILER_COLOR_STOPS, _boilerTempColor as boilerTempColor, _climbColor as climbColor, _luminance as luminance };
 
 export default {
   name: "home2",

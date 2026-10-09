@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import sharp from "sharp";
 import home from "../scenes/pixoo/home.js";
-import home2, { BOILER_COLOR_STOPS, boilerTempColor as heat } from "../scenes/pixoo/home2.js";
+import home2, { BOILER_COLOR_STOPS, boilerTempColor as heat, climbColor, luminance } from "../scenes/pixoo/home2.js";
 import { PixooDriver } from "../lib/pixoo-driver.js";
 
 const logger = { info() {}, warn() {}, error() {}, debug() {} };
@@ -14,6 +14,11 @@ const gray = [60, 60, 60];
 // Boiler colours come from the scene's scale (pinned by its own test below).
 const dim = (c) => c.map((v) => Math.round(v * 0.65));
 const brighten = (c) => c.map((v) => Math.round(v + (255 - v) * 0.5));
+const darken = (c) => c.map((v) => Math.round(v * 0.5));
+const contrast = (a, b) => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+};
 const roof = [200, 200, 160];
 const pool = [0, 190, 220];
 
@@ -270,6 +275,42 @@ test("boiler heating turns the triangle red and climbs a bright pixel up the cur
   assert.deepEqual(climbs, [41, 40, 40, 39, 39, 38, 38, 37, 37, 36, 36, 35, 35, 41, 41, 40]);
 });
 
+test("the heating pixel keeps at least 1.5:1 contrast on every bar colour: dark on light bars, bright on dark ones", () => {
+  for (let t = 20; t <= 70; t += 0.25) {
+    const bar = heat(t);
+    const ratio = contrast(bar, climbColor(bar));
+    assert.ok(ratio >= 1.5, `${t} °C: ${bar} vs ${climbColor(bar)} is only ${ratio.toFixed(2)}:1`);
+  }
+  assert.deepEqual(climbColor(heat(36)), darken(heat(36)), "skin-neutral white gets a darker pixel");
+  assert.deepEqual(climbColor(heat(40)), darken(heat(40)), "warm yellow gets a darker pixel");
+  assert.deepEqual(climbColor(heat(55)), brighten(heat(55)), "orange gets a brighter pixel");
+  assert.deepEqual(climbColor(heat(70)), brighten(heat(70)), "red gets a brighter pixel");
+  assert.deepEqual(climbColor(heat(20)), brighten(heat(20)), "cold blue gets a brighter pixel");
+});
+
+test("heating at a skin-neutral 36 °C climbs a visibly darker pixel through the near-white bar", async (t) => {
+  clock(t, "2026-10-08T12:30:00+02:00"); // bucket 9 → x55
+  const { scene, device, publish, relay } = await setup(t);
+  publish(36); // round(16 / 5) = 3 rows: y39..41
+  relay(2150);
+  const bar = heat(36);
+  const pixel = darken(bar);
+  const climbs = [];
+  for (let frame = 1; frame <= 6; frame++) {
+    await scene.render(device);
+    const lit = [];
+    for (let y = 39; y <= 41; y++) {
+      const got = at(device, 55, y);
+      if (got.join() === pixel.join()) lit.push(y);
+      else assert.deepEqual(got, bar, `frame ${frame}, y${y}`);
+    }
+    assert.equal(lit.length, 1, `frame ${frame}`);
+    climbs.push(lit[0]);
+  }
+  assert.deepEqual(climbs, [41, 40, 40, 39, 39, 41]);
+  assert.ok(contrast(bar, pixel) > 3);
+});
+
 test("boiler not heating: below threshold, stale relay, missing power or a raised threshold keep the grey triangle", async (t) => {
   clock(t, "2026-10-08T12:30:00+02:00");
   const { scene, device, publish, relay } = await setup(t);
@@ -409,6 +450,11 @@ test("boiler colour follows temperature feel: blue, skin-neutral white at 36, wa
     [50, [255, 150, 20]], [60, [255, 80, 0]], [70, [230, 20, 0]],
   ]);
   for (const [t, c] of BOILER_COLOR_STOPS) assert.deepEqual(heat(t), c, `stop ${t}`);
+  // Pinned interpolation (linear in RGB between stops), so a snapping or easing change fails here.
+  for (const [t, c] of [
+    [27.5, [45, 169, 255]], [33, [140, 211, 239]], [40, [250, 215, 114]],
+    [45, [255, 184, 45]], [55, [255, 115, 10]], [65, [243, 50, 0]],
+  ]) assert.deepEqual(heat(t), c, `${t} °C`);
   assert.deepEqual(heat(10), heat(20), "clamped below 20");
   assert.deepEqual(heat(90), heat(70), "clamped above 70");
   assert.deepEqual(heat(null), [80, 80, 80], "no reading is dim");
@@ -417,6 +463,7 @@ test("boiler colour follows temperature feel: blue, skin-neutral white at 36, wa
   assert.ok(r - b >= 120, "40 °C is clearly saturated");
   for (let t = 15; t <= 75; t += 0.25) {
     const [cr, cg, cb] = heat(t);
+    // At most a near-neutral tint around 35 °C (e.g. [223, 232, 225]); never a green that could read as "good".
     assert.ok(!(cg > cr + 20 && cg > cb + 20), `${t} °C must not be green-dominant: ${heat(t)}`);
   }
   for (let t = 36; t < 70; t += 0.5) assert.ok(heat(t + 0.5)[2] <= heat(t)[2], `blue never rises when warming past 36 (${t})`);
