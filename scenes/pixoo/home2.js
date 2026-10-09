@@ -26,8 +26,9 @@
  * Row 0 temperature cell (x 44-63): pool (lower terrace) level with TE, Dachterrasse level
  *   with OL. Values are right-aligned so every degree pixel, the boiler's included, is at x 62.
  *
- * Boiler cell: the current-time triangle turns red while the boiler draws power, and a bright
- *   pixel climbs the current bar (1 px/s) like the battery's charge sweep.
+ * Boiler cell: colour = temperature feel (blue → white at ~36 °C → yellow → amber → red), shared
+ *   by the number and the current bar. Only a bottom triangle marks the current bucket; it
+ *   turns red while the boiler draws power, and a bright pixel climbs the current bar (1 px/s).
  *
  * Data sources:
  *   nuki/463F8F47/state                           numeric 1=locked 2=unlocking 3=unlocked 4=locking  (Nuki VR)
@@ -516,17 +517,22 @@ function emptyBoilerDay(now) {
   };
 }
 
+// Colour = how the water feels (Markus, PIXD-60): cold blue, white at skin-neutral ~36 °C, warm
+// yellow around 40 °C, then amber, orange and red. Never green-dominant: the battery uses green
+// for "good". The number and the current bar share it; past bars are dimmed.
+const BOILER_COLOR_STOPS = [
+  [20, [60, 120, 255]], // cold — blue
+  [30, [40, 185, 255]], // cool — light blue
+  [36, [240, 236, 222]], // skin-neutral — warm white
+  [42, [255, 205, 60]], // comfortably warm — yellow
+  [50, [255, 150, 20]], // warm — amber
+  [60, [255, 80, 0]], // hot — orange
+  [70, [230, 20, 0]], // very hot — red
+];
+
 function _boilerTempColor(tempC) {
   if (tempC === null) return C.dimWhite;
-  // Cold → hot without passing through green: blue, cyan, a pale neutral, amber, red.
-  const stops = [
-    [20, [80, 150, 255]], // cold blue
-    [32, [40, 200, 240]], // cyan
-    [40, [200, 200, 215]], // pale neutral (lukewarm)
-    [48, [255, 190, 40]], // amber
-    [58, [255, 90, 0]], // orange
-    [70, [230, 20, 0]], // hot red
-  ];
+  const stops = BOILER_COLOR_STOPS;
   if (tempC <= stops[0][0]) return stops[0][1];
   for (let i = 1; i < stops.length; i++) {
     const [t0, c0] = stops[i - 1];
@@ -549,8 +555,8 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
   const dimGray = [60, 60, 60];
   const nowX = curveX0 + nowBucket;
 
-  // Same current-column background and bottom arrow as home's UV chart.
-  vLine(d, nowX, cellY0, cellY0 + 17, ...dimGray);
+  // Only the bottom triangle marks the current bucket. The column line home's UV chart draws
+  // above it ran behind the digits and is gone (PIXD-60).
 
   hLine(d, yTickX, curveX0 + BOILER_BUCKETS - 1, baselineY, ...dimGray);
   for (const offset of [0, 5, 10]) d._setPixel(yTickX, baselineY - offset, ...dimGray);
@@ -643,6 +649,8 @@ function pingHost(ip) {
 }
 
 // ── Scene export ──────────────────────────────────────────────────────────────
+
+export { BOILER_COLOR_STOPS, _boilerTempColor as boilerTempColor };
 
 export default {
   name: "home2",
