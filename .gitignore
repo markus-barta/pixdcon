@@ -23,6 +23,7 @@ npm-debug.log*
 data/
 tmp/
 .cache/
+scenes/**/.state/
 
 # IDE
 .vscode/
