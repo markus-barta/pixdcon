@@ -1,12 +1,12 @@
 /**
- * home — Pixoo64 smart home dashboard
+ * home2 — Pixoo64 smart home dashboard with boiler day history
  *
  * 3×3 grid layout (64×64), except row 0 which is 2 cells:
  *   y 0-6:   header — HOME label + HH:MM clock
  *   y 7:     horizontal separator
  *   y 8-25:  row 0 — [Nuki VR/KE + TE terrace + OL skylights] [roof/pool temps]
  *   y 26:    horizontal separator
- *   y 27-44: row 1 — [Battery SOC] [PV↑ Cons↓] [UV index + curve]
+ *   y 27-44: row 1 — [Battery SOC] [PV↑ Cons↓] [Boiler temperature + day chart]
  *   y 45:    horizontal separator
  *   y 46-63: row 2 — [PS5] [TV] [PC]  ← device icons, syncbox ring on active PS5/PC
  *
@@ -37,13 +37,7 @@
  *     direct sun and read 40.5 °C against a 30.2 °C Graz reference over 24 h (~+10 K).
  *   z2m/te/temp/pool                              {temperature} — pool water (Sonoff probe)
  *   home/ke/sonnenbattery/status                  {USOC, BatteryCharging, BatteryDischarging, Production_W, Consumption_W}
- *   HTTPS https://air-quality-api.open-meteo.com/v1/air-quality  UV current + hourly (no API key)
- *     params: latitude, longitude, current=uv_index, hourly=uv_index, timezone=auto, forecast_days=1
- *     CAMS-based: cloud-aware biologically-effective UVI (vs. GFS approximation on /v1/forecast)
- *   homeassistant/weather/forecast_home/uv_index  numeric — met.no via HA. CLEAR-SKY UVI (cloud-blind,
- *     hour-granular, retained) — last-resort fallback only
- *   pixdcon/debug/uv_now_override                 number | "" (clears) — for testing
- *   pixdcon/debug/uv_hourly_override              JSON [h6..h19] | "" (clears) — for testing
+ *   jhw2211/health/boiler                         {state, temp_c} — retained boiler temperature
  *   z2m/wz/plug/zisp08                            {power} — sony-tv
  *   z2m/wz/plug/zisp28                            {power} — PS5
  *   z2m/wz/plug/zisp05                            {power} — windows-pc
@@ -53,8 +47,8 @@
  * Brightness (elevation-based, smooth curve):
  *   homeassistant/sun/sun/elevation  float degrees → lerp(−6°..10°) → bri_night..bri_day
  *   homeassistant/sun/sun/state      above_horizon | below_horizon  (fallback if no elevation yet)
- *   pixdcon/<device>/home/settings/bri_day    (default 100)
- *   pixdcon/<device>/home/settings/bri_night  (default 7)
+ *   pixdcon/<device>/home2/settings/bri_day    (default 100)
+ *   pixdcon/<device>/home2/settings/bri_night  (default 7)
  *   pixdcon/debug/bri_override                number | "" (clears)
  *
  *   Twilight zone: elevation −6° (astro dusk) → 10° (full day), ~30–45 min natural fade.
@@ -62,6 +56,8 @@
  */
 
 import https from "https";
+import { promises as fs } from "fs";
+import { randomUUID } from "crypto";
 import { execFile } from "child_process";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -92,11 +88,7 @@ const DEFAULT_SETTINGS = {
   syncboxFreshMs: 30000,
   syncboxInputPs5: "input4",
   syncboxInputPc: "input2",
-  uvLat: 47.1,
-  uvLon: 15.47,
-  uvPollMs: 900000,
-  uvTimeoutMs: 5000,
-  uvStaleMs: 3600000,
+  boilerStaleMs: 30 * 60 * 1000,
   // Battery-powered Zigbee temp sensors report on change, not on a schedule —
   // the pool probe can go 30 min between publishes. 5 min would read as stale.
   tempStaleMs: 5400000,
@@ -484,207 +476,95 @@ async function drawPvCons(d, cx, cy, productionW, consumptionW) {
   await drawKwTight(d, cx + 1, cy + 2, consumptionW, consColor);
 }
 
-// ── UV index — color bands (WHO standard) ────────────────────────────────────
-//
-// 0-2  Low       → green
-// 3-5  Moderate  → yellow
-// 6-7  High      → orange
-// 8-10 Very High → red
-// 11+  Extreme   → violet
+// ── Boiler day history / chart ───────────────────────────────────────────────
 
-const UV_BANDS = [
-  [2, [40, 200, 80]],
-  [5, [230, 200, 40]],
-  [7, [255, 140, 0]],
-  [10, [230, 40, 40]],
-  [Infinity, [180, 80, 220]],
-];
+const BOILER_BUCKETS = 18;
+const BOILER_SAMPLE_MS = 60000;
+const BOILER_SAVE_MS = 5 * 60000;
+const BOILER_STATE_PATH = resolve(__dirname, ".state", "home2-boiler.json");
 
-function uvBandColor(uvi) {
-  if (uvi == null || !Number.isFinite(uvi) || uvi < 0) return C.dimWhite;
-  for (const [maxV, color] of UV_BANDS) if (uvi <= maxV) return color;
-  return UV_BANDS[UV_BANDS.length - 1][1];
+function boilerLocalDate(now) {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
-// ── Cell: UV index + 14-hour forecast curve ───────────────────────────────────
-//
-// Layout (cell anchored at cellX0, cellY0; 20w × 18h):
-//   y 28-32 (5 rows): current UV value, right-aligned, color = current uvBand
-//   y 32-41 (10 rows): curve area, 1px per UVI unit (cap 11)
-//   y 42:    x-axis baseline (dim gray)
-//   y 43:    x-tick row (dots at 06:00, 12:00, 18:00)
-//   x 46:    y-tick column (dots at UVI 0, 5, 10)
-//   x 47-60: 14 hourly bars (06..19), each height = round(uvi[h]) capped at 11
-//   Now markers: axis-gray bg column behind the now col (drawn first, full cell
-//   height), bright-gray up-arrow at the cell bottom (y43 tip, y44 3px base)
-//
-// Per-hour bar at 50% RGB (cell bg is black). The "now" column draws at 100%
-// using the current UVI (interpolated between CAMS hourly points, see
-// uvInterpNow). Upcoming-hour bars draw their top (peak) pixel at 100% to
-// highlight the forecast curve.
-
-// ── Tight fractional UVI renderer ─────────────────────────────────────────────
-//
-// Same kerning idea as drawKwTight: hand-placed 1px decimal dot instead of the
-// 3px-wide "." font glyph (which wastes 2 blank columns). Right-aligned so the
-// value hugs the cell's right edge like the previous integer display.
-// <10  → N(3) gap(1) dot(1) gap(1) F(3) = 9px   e.g. "4.3"
-// ≥10  → integer via normal text ("11" — no dot needed)
-// 0    → bare "0"; null → "--"
-
-async function drawUvValueTight(d, rightX, y, uvi, color) {
-  if (uvi == null || !Number.isFinite(uvi)) {
-    await d.drawTextRgbaAligned("--", [rightX, y], color, "right");
-    return;
-  }
-  if (uvi < 0.05) {
-    await d.drawTextRgbaAligned("0", [rightX, y], color, "right");
-    return;
-  }
-  if (uvi >= 9.95) {
-    await d.drawTextRgbaAligned(
-      String(Math.round(uvi)),
-      [rightX, y],
-      color,
-      "right",
-    );
-    return;
-  }
-  const [intStr, fracStr] = uvi.toFixed(1).split("."); // "4.3" → "4", "3"
-  const intX = rightX - 9; // int(3) gap(1) dot(1) gap(1) frac(3) ends at rightX-1
-  const [r, g, b] = color;
-  await d.drawTextRgbaAligned(intStr, [intX, y], color, "left");
-  d._setPixel(intX + 4, y + 4, r, g, b); // dot at font baseline
-  await d.drawTextRgbaAligned(fracStr, [intX + 6, y], color, "left");
+function boilerBucket(now) {
+  // Wall-clock minutes, not elapsed time: DST repeats/skips within fixed bins.
+  return clamp(Math.floor((now.getHours() * 60 + now.getMinutes()) / 80), 0, 17);
 }
 
-// Epoch timestamps keep missing hours, DST and yesterday's forecast unambiguous.
-function uvInterpNow(hourly, times, now) {
-  if (!Array.isArray(hourly) || !Array.isArray(times)) return null;
-  const ms = now.getTime();
-  const h = times.findIndex((t) => ms >= t && ms < t + 3600000);
-  if (h < 0 || !Number.isFinite(hourly[h])) return null;
-  const fraction = Math.floor((ms - times[h]) / 60000) / 60;
-  const v0 = hourly[h];
-  if (fraction === 0 || h === times.length - 1) return v0;
-  const v1 = hourly[h + 1];
-  if (times[h + 1] - times[h] !== 3600000 || !Number.isFinite(v1)) return null;
-  return v0 + (v1 - v0) * fraction;
+function emptyBoilerDay(now) {
+  return {
+    date: boilerLocalDate(now),
+    buckets: Array.from({ length: BOILER_BUCKETS }, () => ({ sum: 0, count: 0 })),
+  };
 }
 
-async function drawUv(d, cellX0, cellY0, currentUvi, hourlyUvi, nowDate) {
-  const baselineY = cellY0 + 15; // y=42 — x-axis
-  const tickRowY = cellY0 + 16; // y=43 — x-tick markers below axis
-  const yTickX = cellX0 + 2; // x=46 — y-tick column (1px left of curve)
-  const curveX0 = cellX0 + 3; // x=47 — first hour col (06:00)
-  const HOURS = 14; // 06..19 inclusive (half-open up to 20)
-  const TEXT_RIGHT_X = cellX0 + 19; // x=63 — cell right edge
-  const TEXT_TOP_Y = cellY0 + 1; // y=28 — 1px below cell top for visual breathing room
+function _boilerTempColor(tempC) {
+  if (tempC === null) return C.dimWhite;
+  // Cold → hot without passing through green: blue, cyan, a pale neutral, amber, red.
+  const stops = [
+    [20, [80, 150, 255]], // cold blue
+    [32, [40, 200, 240]], // cyan
+    [40, [200, 200, 215]], // pale neutral (lukewarm)
+    [48, [255, 190, 40]], // amber
+    [58, [255, 90, 0]], // orange
+    [70, [230, 20, 0]], // hot red
+  ];
+  if (tempC <= stops[0][0]) return stops[0][1];
+  for (let i = 1; i < stops.length; i++) {
+    const [t0, c0] = stops[i - 1];
+    const [t1, c1] = stops[i];
+    if (tempC <= t1) {
+      const u = (tempC - t0) / (t1 - t0);
+      return c0.map((v, j) => Math.round(v + u * (c1[j] - v)));
+    }
+  }
+  return stops[stops.length - 1][1];
+}
+
+async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket) {
+  const baselineY = cellY0 + 15; // y=42; chart rows y=32..41 (5°C/px)
+  const tickRowY = cellY0 + 16; // y=43
+  const yTickX = cellX0 + 1; // x=45
+  const curveX0 = cellX0 + 2; // x=46..63: all 18 day buckets
+  const rightX = cellX0 + 19; // exclusive text anchor, same as the UV value
+  const textY = cellY0 + 1; // y=28
   const dimGray = [60, 60, 60];
+  const nowX = curveX0 + nowBucket;
 
-  // Now-col offset (round-to-nearest hour, in window iff 06:00..19:30)
-  const nowH = nowDate.getHours() + nowDate.getMinutes() / 60;
-  const nowColOffset = Math.round(nowH - 6);
-  const nowInWindow = nowColOffset >= 0 && nowColOffset < HOURS;
-  const nowX = curveX0 + nowColOffset;
+  // Same current-column background and bottom arrow as home's UV chart.
+  vLine(d, nowX, cellY0, cellY0 + 17, ...dimGray);
 
-  // Now-col background line — full cell height in axis gray, drawn FIRST so
-  // the value text, bars, curve and now-line all paint on top of it.
-  if (nowInWindow) {
-    vLine(d, nowX, cellY0, cellY0 + 17, ...dimGray);
+  hLine(d, yTickX, curveX0 + BOILER_BUCKETS - 1, baselineY, ...dimGray);
+  for (const offset of [0, 5, 10]) d._setPixel(yTickX, baselineY - offset, ...dimGray);
+  // Tick columns are the buckets containing 06:00 / 12:00 / 18:00.
+  for (const minutes of [360, 720, 1080]) {
+    d._setPixel(curveX0 + Math.floor(minutes / 80), tickRowY, ...dimGray);
   }
 
-  // Number (right-aligned at top-right) — tight-kerned 1 decimal below 10
-  // ("4.3"), integer above ("11"), bare "0" at night to keep the cell quiet.
-  const nowColor = uvBandColor(currentUvi);
-  await drawUvValueTight(d, TEXT_RIGHT_X, TEXT_TOP_Y, currentUvi, nowColor);
-
-  // X-axis baseline (full width of plot area incl. y-tick col)
-  hLine(d, yTickX, curveX0 + HOURS - 1, baselineY, ...dimGray);
-
-  // Y-axis tick column — UVI 0, 5, 10
-  d._setPixel(yTickX, baselineY, ...dimGray); // already on baseline; reinforces
-  d._setPixel(yTickX, baselineY - 5, ...dimGray);
-  d._setPixel(yTickX, baselineY - 10, ...dimGray);
-
-  // X-axis tick row — 06:00 (col 0), 12:00 (col 6), 18:00 (col 12)
-  d._setPixel(curveX0 + 0, tickRowY, ...dimGray);
-  d._setPixel(curveX0 + 6, tickRowY, ...dimGray);
-  d._setPixel(curveX0 + 12, tickRowY, ...dimGray);
-
-  // Hourly bars at 50% RGB; skip the now-col (drawn fully below).
-  // Upcoming hours (i > nowColOffset) get their top pixel at 100%; the curve
-  // pass at the end bridges vertical gaps between adjacent tops so the peak
-  // line reads as connected instead of dotted.
-  const tops = new Array(HOURS).fill(null); // per-column peak y (upcoming + now)
-  if (Array.isArray(hourlyUvi) && hourlyUvi.length === HOURS) {
-    for (let i = 0; i < HOURS; i++) {
-      if (nowInWindow && i === nowColOffset) continue;
-      const v = Number(hourlyUvi[i]);
-      if (!Number.isFinite(v) || v <= 0) continue;
-      const h = Math.min(11, Math.round(v));
-      const [r, g, b] = uvBandColor(v);
-      const x = curveX0 + i;
-      const topY = baselineY - h;
-      const isUpcoming = i > nowColOffset;
-      const bodyTop = isUpcoming ? topY + 1 : topY;
-      if (bodyTop <= baselineY - 1) {
-        vLine(d, x, bodyTop, baselineY - 1, r >> 1, g >> 1, b >> 1);
-      }
-      if (isUpcoming) {
-        d._setPixel(x, topY, r, g, b);
-        tops[i] = topY;
-      }
-    }
+  for (let i = 0; i <= nowBucket; i++) {
+    const { sum, count } = buckets[i];
+    const average = count > 0 ? sum / count : null;
+    const value = i === nowBucket ? current ?? average : average;
+    if (value === null) continue;
+    const height = clamp(Math.round((value - 20) / 5), 0, 10);
+    const color = _boilerTempColor(value);
+    const barColor = i === nowBucket ? color : color.map((v) => Math.round(v * 0.65));
+    vLine(d, curveX0 + i, baselineY - height, baselineY - 1, ...barColor);
   }
 
-  // Now-line at 100% — height from live current value
-  if (nowInWindow && currentUvi != null && Number.isFinite(currentUvi)) {
-    const h = Math.min(11, Math.round(currentUvi));
-    if (h > 0) {
-      vLine(
-        d,
-        curveX0 + nowColOffset,
-        baselineY - h,
-        baselineY - 1,
-        ...nowColor,
-      );
-      tops[nowColOffset] = baselineY - h;
-    }
-  }
+  const arrowGray = [200, 200, 205];
+  d._setPixel(nowX, tickRowY, ...arrowGray);
+  // The final bucket touches x=63: clip the arrow base to its own cell.
+  hLine(d, Math.max(cellX0, nowX - 1), Math.min(cellX0 + 19, nowX + 1), cellY0 + 17, ...arrowGray);
 
-  // Curve smoothing — a ≥2px jump between adjacent peaks leaves a vertical gap
-  // that reads as a dotted line. Fill the in-between rows at 65% brightness,
-  // split between the two columns (each side carries the half nearest its own
-  // peak — poor-man's anti-aliasing). Connectors sit strictly between the two
-  // peak pixels, so they never overwrite a 100% pixel.
-  if (Array.isArray(hourlyUvi) && hourlyUvi.length === HOURS) {
-    const dim65 = (c) => c.map((v) => Math.round(v * 0.65));
-    const start = Math.max(0, nowInWindow ? nowColOffset : 0);
-    for (let i = start; i < HOURS - 1; i++) {
-      const ta = tops[i];
-      const tb = tops[i + 1];
-      if (ta == null || tb == null) continue;
-      if (Math.abs(tb - ta) < 2) continue;
-      const step = ta < tb ? 1 : -1; // walk rows from ta toward tb
-      const between = [];
-      for (let y = ta + step; y !== tb; y += step) between.push(y);
-      const nearA = Math.floor(between.length / 2);
-      const [ra, ga, ba] = dim65(uvBandColor(Number(hourlyUvi[i])));
-      const [rb, gb, bb] = dim65(uvBandColor(Number(hourlyUvi[i + 1])));
-      between.forEach((y, k) => {
-        if (k < nearA) d._setPixel(curveX0 + i, y, ra, ga, ba);
-        else d._setPixel(curveX0 + i + 1, y, rb, gb, bb);
-      });
-    }
-  }
-
-  // Now marker — small up-arrow at the very bottom of the cell (rows y43-44),
-  // pointing at the now column: 3px base + 1 centered tip, bright mid-gray.
-  if (nowInWindow) {
-    const arrowGray = [200, 200, 205];
-    d._setPixel(nowX, cellY0 + 16, ...arrowGray); // tip (overwrites tick row)
-    hLine(d, nowX - 1, nowX + 1, cellY0 + 17, ...arrowGray); // base
+  // Text last: full-height bars (≥ 67.5 °C) reach the digits' bottom row (y32).
+  if (current === null) {
+    await d.drawTextRgbaAligned("--", [rightX, textY], C.dimWhite, "right");
+  } else {
+    const color = _boilerTempColor(current);
+    await d.drawTextRgbaAligned(String(Math.round(current)), [rightX - 2, textY], color, "right");
+    d._setPixel(rightX - 1, textY, ...color); // last digit x=60, gap x=61, ° x=62
   }
 }
 
@@ -736,8 +616,8 @@ function pingHost(ip) {
 // ── Scene export ──────────────────────────────────────────────────────────────
 
 export default {
-  name: "home",
-  pretty_name: "Home Dashboard",
+  name: "home2",
+  pretty_name: "Home Dashboard 2",
   deviceType: "pixoo",
 
   settingsSchema: {
@@ -909,47 +789,11 @@ export default {
       group: "Sources",
       default: "input2",
     },
-    uv_lat: {
-      type: "float",
-      label: "UV Latitude",
-      group: "Sources",
-      default: 47.1,
-      min: -90,
-      max: 90,
-      step: 0.01,
-    },
-    uv_lon: {
-      type: "float",
-      label: "UV Longitude",
-      group: "Sources",
-      default: 15.47,
-      min: -180,
-      max: 180,
-      step: 0.01,
-    },
-    uv_poll_ms: {
+    boiler_stale_ms: {
       type: "int",
-      label: "UV Poll (ms)",
-      group: "Polling",
-      default: 900000,
-      min: 60000,
-      max: 21600000,
-      step: 60000,
-    },
-    uv_timeout_ms: {
-      type: "int",
-      label: "UV Timeout (ms)",
-      group: "Polling",
-      default: 5000,
-      min: 1000,
-      max: 30000,
-      step: 500,
-    },
-    uv_stale_ms: {
-      type: "int",
-      label: "UV Stale Timeout (ms)",
+      label: "Boiler Stale Timeout (ms)",
       group: "Timing",
-      default: 3600000,
+      default: 1800000,
       min: 60000,
       max: 21600000,
       step: 60000,
@@ -1012,15 +856,6 @@ export default {
         this._startSyncboxPoll(context.logger);
       }
       if (
-        prev.uvLat !== this._cfg.uvLat ||
-        prev.uvLon !== this._cfg.uvLon ||
-        prev.uvPollMs !== this._cfg.uvPollMs ||
-        prev.uvTimeoutMs !== this._cfg.uvTimeoutMs
-      ) {
-        this._stopUvPoll();
-        this._startUvPoll(context.logger);
-      }
-      if (
         this._healRunner &&
         (prev.healRetryMs !== this._cfg.healRetryMs ||
           prev.healInitialDelayMs !== this._cfg.healInitialDelayMs)
@@ -1070,16 +905,9 @@ export default {
       productionW: null,
       consumptionW: null,
       energySeen: null,
-      // UV — CAMS via Open-Meteo air-quality API (current + hourly);
-      // met.no MQTT kept as last-resort fallback (clear-sky, cloud-blind)
-      uvCurrentMqtt: null,
-      uvCurrentApi: null,
-      uvHourly24: null, // hourly samples, including 23/25-hour DST days
-      uvHourlyTimes: null, // UNIX epoch milliseconds for the hourly samples
-      uvApiSeen: null,
-      uvMqttSeen: null,
-      uvCurrentOverride: null,
-      uvHourlyOverride: null,
+      // Boiler — latest finite MQTT reading, independently freshness-tracked.
+      boilerTempC: null,
+      boilerTempSeen: null,
       // Row 2 — media (power in watts)
       tvPower: null,
       tvSeen: null,
@@ -1091,6 +919,8 @@ export default {
       syncSeen: null,
       syncEnabled: false,
     };
+
+    await this._startBoilerHistory();
 
     const parseContact = (msg) => {
       try {
@@ -1154,12 +984,12 @@ export default {
       const v = parseFloat(msg.trim());
       if (!isNaN(v)) {
         this._s.sunElevation = v;
-        this._logger.info(`[home] sun elevation = ${v}°`);
+        this._logger.info(`[home2] sun elevation = ${v}°`);
       }
     });
     sub("homeassistant/sun/sun/state", (msg) => {
       this._s.sunAbove = msg.trim() === "above_horizon";
-      this._logger.info(`[home] sun state = ${msg.trim()}`);
+      this._logger.info(`[home2] sun state = ${msg.trim()}`);
     });
 
     const NUKI = { 1: "locked", 2: "unlocking", 3: "unlocked", 4: "locking" };
@@ -1227,7 +1057,7 @@ export default {
         this._healTimer = null;
         clearTimeout(this._healTimeout);
         this._healTimeout = null;
-        context.logger.info("[home] self-heal: all topics resolved, stopping");
+        context.logger.info("[home2] self-heal: all topics resolved, stopping");
         return;
       }
       for (const [topic] of pending) {
@@ -1237,7 +1067,7 @@ export default {
           } else {
             context.mqtt.subscribe(topic, _h[topic]);
           }
-          context.logger.info(`[home] self-heal: re-subscribed ${topic}`);
+          context.logger.info(`[home2] self-heal: re-subscribed ${topic}`);
         }
       }
     };
@@ -1282,43 +1112,15 @@ export default {
       } catch {}
     });
 
-    // UV current — met.no via HA. CLEAR-SKY value (over-reads under clouds) at
-    // hour granularity; kept only as last-resort fallback when CAMS is down.
-    context.mqtt.subscribe(
-      "homeassistant/weather/forecast_home/uv_index",
-      (msg) => {
-        const v = parseFloat(msg.trim());
-        if (Number.isFinite(v)) {
-          this._s.uvCurrentMqtt = v;
-          this._s.uvMqttSeen = Date.now();
+    sub("jhw2211/health/boiler", (msg) => {
+      if (!this._boilerSampling) return;
+      try {
+        const temp = JSON.parse(msg)?.temp_c;
+        if (typeof temp === "number" && Number.isFinite(temp)) {
+          this._s.boilerTempC = temp;
+          this._s.boilerTempSeen = Date.now();
         }
-      },
-    );
-
-    // UV debug overrides — for testing without waiting for nature
-    sub("pixdcon/debug/uv_now_override", (msg) => {
-      const t = msg.trim();
-      if (t === "") {
-        this._s.uvCurrentOverride = null;
-      } else {
-        const v = parseFloat(t);
-        if (Number.isFinite(v)) this._s.uvCurrentOverride = v;
-      }
-    });
-    sub("pixdcon/debug/uv_hourly_override", (msg) => {
-      const t = msg.trim();
-      if (t === "") {
-        this._s.uvHourlyOverride = null;
-      } else {
-        try {
-          const arr = JSON.parse(t);
-          if (Array.isArray(arr) && arr.length === 14) {
-            this._s.uvHourlyOverride = arr.map((v) =>
-              typeof v === "number" && Number.isFinite(v) ? v : null,
-            );
-          }
-        } catch {}
-      }
+      } catch {}
     });
 
     context.mqtt.subscribe("z2m/wz/plug/zisp08", (msg) => {
@@ -1343,15 +1145,13 @@ export default {
     });
 
     this._startSyncboxPoll(context.logger);
-    this._startUvPoll(context.logger);
-    context.logger.info("[home] Scene initialized");
+    context.logger.info("[home2] Scene initialized");
   },
 
   async destroy(context) {
     this._nukiPollGeneration = null;
     this._unsubscribeSettings?.();
     this._stopSyncboxPoll();
-    this._stopUvPoll();
     if (this._nukiVrPoll) {
       clearInterval(this._nukiVrPoll);
       this._nukiVrPoll = null;
@@ -1369,7 +1169,8 @@ export default {
       this._healTimeout = null;
     }
     context.mqtt.unsubscribeAll();
-    context.logger.info("[home] Scene destroyed");
+    await this._stopBoilerHistory();
+    context.logger.info("[home2] Scene destroyed");
   },
 
   async render(device) {
@@ -1413,7 +1214,7 @@ export default {
         this._lastBriVal = targetBri;
         this._lastBriSet = Date.now();
         this._logger.info(
-          `[home] setBrightness(${targetBri}) elev=${s.sunElevation} above=${s.sunAbove}`,
+          `[home2] setBrightness(${targetBri}) elev=${s.sunElevation} above=${s.sunAbove}`,
         );
       }
     }
@@ -1546,28 +1347,14 @@ export default {
     if (isStale(s.energySeen, this._cfg.staleMs))
       drawErrorMark(device, 1, 1, this._frame);
 
-    // UV cell — anchored at cell top-left (COLS[2].x0=44, ROWS[1].y0=27)
-    // Current-value priority: debug override → interpolated CAMS hourly
-    // (smooth, updates every render) → CAMS current (hour-step) → met.no
-    // MQTT (clear-sky, last resort).
-    const uvNow = new Date();
-    const apiFresh = !isStale(s.uvApiSeen, this._cfg.uvStaleMs);
-    const mqttFresh = !isStale(s.uvMqttSeen, this._cfg.uvStaleMs);
-    const uvCurrent =
-      s.uvCurrentOverride ??
-      (apiFresh ? uvInterpNow(s.uvHourly24, s.uvHourlyTimes, uvNow) ?? s.uvCurrentApi : null) ??
-      (mqttFresh ? s.uvCurrentMqtt : null);
-    const hourlyToday = s.uvHourlyTimes?.length
-      ? Array.from({ length: 14 }, (_, i) => {
-          const t = new Date(uvNow.getFullYear(), uvNow.getMonth(), uvNow.getDate(), i + 6).getTime();
-          const index = s.uvHourlyTimes.indexOf(t);
-          return index < 0 ? null : s.uvHourly24[index];
-        })
-      : null;
-    const uvHourly = s.uvHourlyOverride ?? (apiFresh ? hourlyToday : null);
-    await drawUv(device, COLS[2].x0, ROWS[1].y0, uvCurrent, uvHourly, uvNow);
-    if (!apiFresh && !mqttFresh)
-      drawErrorMark(device, 2, 1, this._frame);
+    // Boiler cell — fixed local calendar day, 18 buckets of 80 minutes.
+    this._ensureBoilerDay(now);
+    const boilerCurrent = this._boilerCurrent(now.getTime());
+    await drawBoiler(
+      device, COLS[2].x0, ROWS[1].y0, boilerCurrent,
+      this._boilerHistory.buckets, boilerBucket(now),
+    );
+    if (boilerCurrent === null) drawErrorMark(device, 2, 1, this._frame);
 
     // ── Row 2: Media ─────────────────────────────────────────────────────────
 
@@ -1655,7 +1442,7 @@ export default {
     const token = process.env.SYNCBOX_BEARER_TOKEN;
     if (!token) {
       logger.warn(
-        "[home] SYNCBOX_BEARER_TOKEN not set — syncbox input tracking disabled",
+        "[home2] SYNCBOX_BEARER_TOKEN not set — syncbox input tracking disabled",
       );
       return;
     }
@@ -1713,13 +1500,13 @@ export default {
       try {
         await poll();
       } catch (err) {
-        logger.warn(`[home] Syncbox poll failed: ${err.message}`);
+        logger.warn(`[home2] Syncbox poll failed: ${err.message}`);
       }
     };
     run();
     this._syncPoll = setInterval(run, this._cfg.syncboxPollMs);
     logger.info(
-      `[home] Syncbox polling started (every ${this._cfg.syncboxPollMs}ms)`,
+      `[home2] Syncbox polling started (every ${this._cfg.syncboxPollMs}ms)`,
     );
   },
 
@@ -1733,98 +1520,103 @@ export default {
     for (const req of requests || []) req.destroy();
   },
 
-  // ── Open-Meteo air-quality UV poll (CAMS, no API key, free) ───────────────
-  // CAMS computes biologically-effective UVI including cloud cover — unlike
-  // met.no (clear-sky only) and the /v1/forecast endpoint (GFS approximation).
-  // Retains timestamped samples for interpolation and the 06..19 display bars.
+  // ── Boiler sampling and atomic, best-effort persistence ───────────────────
 
-  _startUvPoll(logger) {
-    const requests = new Set();
-    this._uvRequests = requests;
-    const poll = () =>
-      new Promise((resolve) => {
-        const lat = this._cfg.uvLat;
-        const lon = this._cfg.uvLon;
-        const path =
-          `/v1/air-quality?latitude=${lat}&longitude=${lon}` +
-          `&current=uv_index&hourly=uv_index&timezone=auto&forecast_days=1&timeformat=unixtime`;
-        const req = https.request(
-          {
-            hostname: "air-quality-api.open-meteo.com",
-            path,
-            method: "GET",
-            timeout: this._cfg.uvTimeoutMs,
-          },
-          (res) => {
-            let body = "";
-            res.on("data", (c) => {
-              body += c;
-            });
-            res.on("end", () => {
-              if (this._uvRequests !== requests || res.statusCode !== 200) {
-                resolve();
-                return;
-              }
-              try {
-                const d = JSON.parse(body);
-                const cur = d?.current?.uv_index;
-                const hourly = d?.hourly?.uv_index;
-                const times = d?.hourly?.time;
-                const hasCurrent = typeof cur === "number" && Number.isFinite(cur);
-                const hasHourly = Array.isArray(hourly) && Array.isArray(times) &&
-                  hourly.length > 0 && hourly.length === times.length &&
-                  hourly.some((v) => typeof v === "number" && Number.isFinite(v)) &&
-                  times.every((t, i) => typeof t === "number" && Number.isFinite(t) &&
-                    (i === 0 || t > times[i - 1]));
-                if (hasCurrent || hasHourly) {
-                  this._s.uvCurrentApi = hasCurrent ? cur : null;
-                  this._s.uvHourly24 = hasHourly ? hourly.map((v) =>
-                    typeof v === "number" && Number.isFinite(v) ? v : null,
-                  ) : null;
-                  this._s.uvHourlyTimes = hasHourly ? times.map((t) => t * 1000) : null;
-                  this._s.uvApiSeen = Date.now();
-                }
-              } catch {}
-              resolve();
-            });
-            res.on("error", resolve);
-          },
-        );
-        requests.add(req);
-        req.on("close", () => {
-          requests.delete(req);
-          resolve();
-        });
-        req.on("error", resolve);
-        req.on("timeout", () => {
-          req.destroy();
-          resolve();
-        });
-        req.end();
-      });
-
-    const run = async () => {
-      try {
-        await poll();
-      } catch (err) {
-        logger.warn(`[home] UV poll failed: ${err.message}`);
+  async _startBoilerHistory() {
+    const now = new Date();
+    this._boilerHistory = emptyBoilerDay(now);
+    this._boilerBucketIndex = boilerBucket(now);
+    this._boilerRevision = 0;
+    this._boilerDirty = false;
+    this._boilerLastSaveAt = now.getTime();
+    this._boilerSave = Promise.resolve();
+    this._boilerStateWarned = new Set();
+    this._boilerStatePath ??= BOILER_STATE_PATH;
+    try {
+      const saved = JSON.parse(await fs.readFile(this._boilerStatePath, "utf8"));
+      if (saved?.date === boilerLocalDate(now)) {
+        if (!Array.isArray(saved.buckets) || saved.buckets.length !== BOILER_BUCKETS ||
+          !saved.buckets.every((b) => b && Number.isFinite(b.sum) &&
+            Number.isSafeInteger(b.count) && b.count >= 0 && (b.count > 0 || b.sum === 0))) {
+          throw new Error("invalid boiler history");
+        }
+        this._boilerHistory = saved;
       }
-    };
-    run();
-    this._uvPoll = setInterval(run, this._cfg.uvPollMs);
-    logger.info(
-      `[home] UV polling started (every ${this._cfg.uvPollMs}ms, lat=${this._cfg.uvLat} lon=${this._cfg.uvLon})`,
-    );
+    } catch (err) {
+      // No file yet (first run) is normal; anything else is worth one warning.
+      if (err.code !== "ENOENT") this._warnBoilerState(err, "load");
+    }
+    this._ensureBoilerDay(new Date());
+    this._boilerSampling = true;
+    this._boilerTimer = setInterval(() => { void this._sampleBoiler(); }, BOILER_SAMPLE_MS);
   },
 
-  _stopUvPoll() {
-    if (this._uvPoll) {
-      clearInterval(this._uvPoll);
-      this._uvPoll = null;
+  _warnBoilerState(err, kind) {
+    // One warning per kind (load / save) per instance, so a failed load does not hide a later write error.
+    if (this._boilerStateWarned.has(kind)) return;
+    this._boilerStateWarned.add(kind);
+    this._logger.warn(`[home2] Boiler history ${kind} failed: ${err.message}; continuing in memory`);
+  },
+
+  _ensureBoilerDay(now) {
+    if (this._boilerHistory.date === boilerLocalDate(now)) return false;
+    this._boilerHistory = emptyBoilerDay(now);
+    this._boilerDirty = true;
+    this._boilerRevision++;
+    return true;
+  },
+
+  _boilerCurrent(ms = Date.now()) {
+    const { boilerTempC, boilerTempSeen } = this._s;
+    return Number.isFinite(boilerTempC) && boilerTempSeen !== null &&
+      ms - boilerTempSeen <= this._cfg.boilerStaleMs ? boilerTempC : null;
+  },
+
+  async _sampleBoiler() {
+    if (!this._boilerSampling) return;
+    const now = new Date();
+    const newDay = this._ensureBoilerDay(now);
+    const index = boilerBucket(now);
+    const bucketChanged = index !== this._boilerBucketIndex;
+    this._boilerBucketIndex = index;
+    const current = this._boilerCurrent(now.getTime());
+    if (current !== null) {
+      const bucket = this._boilerHistory.buckets[index];
+      bucket.sum += current;
+      bucket.count++;
+      this._boilerDirty = true;
+      this._boilerRevision++;
     }
-    const requests = this._uvRequests;
-    this._uvRequests = null;
-    for (const req of requests || []) req.destroy();
+    await this._saveBoilerHistory(newDay || bucketChanged);
+  },
+
+  _saveBoilerHistory(force = false) {
+    // Serialize writes; snapshot inside the queue so a flush includes new samples.
+    this._boilerSave = this._boilerSave.then(async () => {
+      if (!force && (!this._boilerDirty || Date.now() - this._boilerLastSaveAt < BOILER_SAVE_MS)) return;
+      const revision = this._boilerRevision;
+      const body = JSON.stringify(this._boilerHistory);
+      const tempPath = `${this._boilerStatePath}.${randomUUID()}.tmp`;
+      this._boilerLastSaveAt = Date.now();
+      try {
+        await fs.mkdir(dirname(this._boilerStatePath), { recursive: true });
+        await fs.writeFile(tempPath, body, "utf8");
+        await fs.rename(tempPath, this._boilerStatePath);
+        if (this._boilerRevision === revision) this._boilerDirty = false;
+      } catch (err) {
+        this._warnBoilerState(err, "save");
+        try { await fs.unlink(tempPath); } catch {}
+      }
+    });
+    return this._boilerSave;
+  },
+
+  async _stopBoilerHistory() {
+    this._boilerSampling = false;
+    if (this._boilerTimer) clearInterval(this._boilerTimer);
+    this._boilerTimer = null;
+    if (!this._boilerSave) return; // init failed before the history started
+    await this._saveBoilerHistory(true);
   },
 
   _restartNukiPolls() {
@@ -1838,7 +1630,7 @@ export default {
         const alive = await pingHost(ip);
         if (this._nukiPollGeneration === generation) this._s[key] = alive;
       } catch (err) {
-        this._logger.warn(`[home] Nuki ping failed: ${err.message}`);
+        this._logger.warn(`[home2] Nuki ping failed: ${err.message}`);
       }
     };
     const vrPoll = () => poll(this._cfg.nukiVrIp, "nukiVrAlive");
@@ -1887,11 +1679,7 @@ export default {
         values.syncbox_input_ps5 ?? DEFAULT_SETTINGS.syncboxInputPs5,
       syncboxInputPc:
         values.syncbox_input_pc ?? DEFAULT_SETTINGS.syncboxInputPc,
-      uvLat: values.uv_lat ?? DEFAULT_SETTINGS.uvLat,
-      uvLon: values.uv_lon ?? DEFAULT_SETTINGS.uvLon,
-      uvPollMs: values.uv_poll_ms ?? DEFAULT_SETTINGS.uvPollMs,
-      uvTimeoutMs: values.uv_timeout_ms ?? DEFAULT_SETTINGS.uvTimeoutMs,
-      uvStaleMs: values.uv_stale_ms ?? DEFAULT_SETTINGS.uvStaleMs,
+      boilerStaleMs: values.boiler_stale_ms ?? DEFAULT_SETTINGS.boilerStaleMs,
       tempStaleMs: values.temp_stale_ms ?? DEFAULT_SETTINGS.tempStaleMs,
     };
   },
