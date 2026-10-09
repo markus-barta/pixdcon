@@ -3,12 +3,12 @@
  *
  * Error handling strategy:
  *   - Each failed render attempt increments a consecutive-error counter.
- *   - Backoff doubles per failure: 1s → 2s → 4s → … → 10 min (cap).
+ *   - Backoff doubles per failure: 1s → 2s → 4s → … → 30 s (cap, maxBackoff).
  *   - After 10 consecutive errors the circuit opens.
- *   - If a powerCyclePlugin is configured: power-cycle the device via MQTT,
+ *   - If a powerCyclePlugin is configured and MQTT is connected: power-cycle the device,
  *     then reset the error counter and retry.  After maxPowerCycles failed
  *     cycles the loop gives up permanently and logs a fatal error.
- *   - Without powerCyclePlugin: sleep for the capped backoff duration then retry.
+ *   - Otherwise: sleep for the backoff with liveness probing, then retry.
  *   - A single successful render resets the counter and backoff to defaults.
  *
  * Frame-rate throttling (minFrameMs):
@@ -643,7 +643,7 @@ export class RenderLoop {
    * Sleep for `totalMs` but probe driver liveness every `probeIntervalMs`.
    * On first successful probe, exit early. Lets the loop reclaim a device
    * within seconds of it coming back, instead of waiting out the full
-   * circuit-breaker backoff (default 10 min).
+   * circuit-breaker backoff (capped at maxBackoff, 30 s).
    *
    * Probe is best-effort — `initialize()` returning truthy is the signal.
    * Failed probes are silent (we're already in error state); successful

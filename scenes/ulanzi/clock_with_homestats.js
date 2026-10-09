@@ -34,7 +34,7 @@
  * pixdcon/debug/battery_state    "charging" | "discharging" | "standby" | ""
  *
  * ── Sensor source topics ────────────────────────────────────────────────────
- * homeassistant/lock/nuki_vr/state                                              → string
+ * nuki/463F8F47/state                                                           → numeric 1=locked 2=unlocking 3=unlocked 4=locking (Nuki VR)
  * z2m/wz/contact/te-door                                                        → {contact: bool}
  * z2m/vk/contact/w13                                                            → {contact: bool}
  * z2m/vr/contact/w14                                                            → {contact: bool}
