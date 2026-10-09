@@ -7,7 +7,7 @@
 | Host       | `hsb1` (SSH as `mba@hsb1`)                        |
 | Mount root | `~/docker/mounts/pixdcon/`                        |
 | Stack      | nixcfg-managed — `compose-hsb1.service` (OPS-116) |
-| Image      | `ghcr.io/markus-barta/pixdcon:latest`             |
+| Image      | `ghcr.io/markus-barta/pixdcon:<version>@sha256:…` (pinned in nixcfg) |
 
 > ⚠ **There is no `~/docker/docker-compose.yml` any more.** The hsb1 container
 > stack moved into nixcfg and is reconciled by a systemd oneshot,
@@ -64,7 +64,7 @@ Scene paths in `config.json` are **relative** to the config file (e.g. `./scenes
 | `config.json` (effective)       | `mba@hsb1:~/docker/mounts/pixdcon/config.json`       | Web UI saves + manual `scp`  |
 | `scenes/*.js` (committed)       | Repo `scenes/`, mirrored to host on deploy           | Editor + `scp` to live mount |
 | `generated-scenes/*.js`         | `mba@hsb1:~/docker/mounts/pixdcon/generated-scenes/` | Web UI "Clone & Detach" only |
-| App code (`src/`, `lib/`, deps) | Image `ghcr.io/markus-barta/pixdcon:latest`          | CI on push to `main`         |
+| App code (`src/`, `lib/`, deps) | Release image `ghcr.io/markus-barta/pixdcon:<version>` | `v<version>` tag → release workflow; hsb1 pin in nixcfg |
 
 **Before any change to a scene that's currently running:**
 
@@ -202,79 +202,75 @@ ConfigWatcher picks it up automatically. No restart needed.
 
 Config is mounted rw — the web UI can persist settings edits from inside the container.
 
-### 3. Core code changed (`src/`, `lib/`, `package.json`, `Dockerfile`)
+### 3. Core code changed (`src/`, `lib/`, `package.json`, `Dockerfile`) — a release
 
-Merge to `main` through a PR — GitHub Actions builds and pushes to GHCR:
+hsb1 runs a **pinned release image**: nixcfg `hosts/hsb1/docker/compose-spec.nix` sets
+`image = "ghcr.io/markus-barta/pixdcon:<version>@sha256:<index digest>"` (PIXD-50). Pulling `latest`
+or recreating the container does **not** change what runs; only a new pin does. `latest` is still
+built on every main push, for local use only.
+
+1. **Reserve the release coordinate** in `version.json`: current UTC as `YYMMDDhhmmss.0.0`, scheme
+   `inspr-calver-3`, strictly later than the previous release. Commit it in the release PR.
+2. **Review the shared presentation pin** (versioning doctrine, "already adopted"): compare
+   `vendor/inspr-versioning/manifest.json` with inspr-at/inspr; re-vendor only if the approved display
+   config or renderer changed.
+3. **PR → CI green → merge.** Then tag the merge commit and push the tag:
+   ```bash
+   git tag -a v<version> <merge-sha> -m "pixdcon <version>"; git push origin v<version>
+   gh run watch          # release workflow: tag == version.json → :<version> (amd64 + arm64)
+   docker buildx imagetools inspect ghcr.io/markus-barta/pixdcon:<version> | grep -m1 '^Digest'
+   ```
+4. **Backup** scenes + config.json outside the mount (section 1a / below) and, if the release
+   changes `scenes/`, check the live files for drift.
+5. **Pin PR in nixcfg** (OPS, release-pin carve-out): only the image line + its comment,
+   `# release <version> (PIXD-n)`. Cross-family gate, then **Markus's explicit go** — the hsb1 switch
+   also force-recreates `hsb1-home`.
+6. **At the switch:** copy changed scene files (section 1) right before or after; the switch
+   recreates pixdcon on the new pinned image (and on env-file rotation, via the `pixdcon.env-rev` label).
+7. **Verify** (below) and record version, digest and evidence on the tickets.
 
 ```bash
-gh run watch          # build-and-push.yml: test → amd64 + arm64 → manifest
-```
-
-Watchtower (weekly scope) would pull `latest` eventually; deploy explicitly instead:
-
-```bash
-# 1. Backup + rollback point (outside the mount). The rollback tag points at the
-#    image the container is RUNNING (not local `latest`, which a previous pull may
-#    already have moved) and is unique per deploy.
+# Backup (outside the mount); hsb1's login shell is fish, so run bash explicitly
 ssh mba@hsb1 'bash -s' <<'EOS'
-set -e
-ts=$(date +%Y%m%d-%H%M%S)
-B=~/backups/pixdcon/$ts; mkdir -p "$B"
-cp -a ~/docker/mounts/pixdcon/scenes "$B/scenes"; cp -a ~/docker/mounts/pixdcon/config.json "$B/"
-f=$(docker ps -a --filter 'name=^pixdcon$' --format '{{.Label "com.docker.compose.project.config_files"}}')
-d=$(docker ps -a --filter 'name=^pixdcon$' --format '{{.Label "com.docker.compose.project.working_dir"}}')
-id=$(docker compose -p docker -f "$f" --project-directory "$d" images pixdcon --quiet)
-docker tag "$id" "ghcr.io/markus-barta/pixdcon:rollback-$ts"
-echo "backup: $B  rollback tag: rollback-$ts ($id)"
-EOS
-
-# 2. Pull the new image (no effect until the container is recreated)
-ssh mba@hsb1 "docker pull ghcr.io/markus-barta/pixdcon:latest"
-
-# 3. Copy changed scene files first if the release changes scenes/ (section 1)
-
-# 4. Recreate pixdcon only (below)
-```
-
-#### Recreate pixdcon only
-
-Uses the compose file and project directory the running container was created
-from (compose labels — the nix store path changes with every nixcfg switch) and
-the same lock as `compose-hsb1.service`:
-
-```bash
-ssh mba@hsb1 'bash -s' <<'EOS'
-set -e
-f=$(docker ps -a --filter 'name=^pixdcon$' --format '{{.Label "com.docker.compose.project.config_files"}}')
-d=$(docker ps -a --filter 'name=^pixdcon$' --format '{{.Label "com.docker.compose.project.working_dir"}}')
-flock -w 570 /run/lock/compose-hsb1.lock docker compose -p docker -f "$f" --project-directory "$d" up -d --no-deps pixdcon
+B=~/backups/pixdcon/$(date +%Y%m%d-%H%M%S); mkdir -p "$B"
+cp -a ~/docker/mounts/pixdcon/scenes "$B/scenes"; cp -a ~/docker/mounts/pixdcon/config.json "$B/"; echo "$B"
 EOS
 ```
 
-`up -d` recreates pixdcon only if its image or definition changed; add
-`--force-recreate` to pick up a changed env file (agenix secret) with the same image.
+#### Recreate pixdcon only (same image, e.g. after a manual config fix)
+
+Uses the compose file and project directory the running container was created from (compose
+labels — the nix store path changes with every nixcfg switch) and the same lock as
+`compose-hsb1.service`. It never changes the image: the pin decides that.
+
+```bash
+ssh mba@hsb1 'bash -s' <<'EOS'
+set -e
+f=$(docker ps -a --filter 'name=^pixdcon$' --format '{{.Label "com.docker.compose.project.config_files"}}')
+d=$(docker ps -a --filter 'name=^pixdcon$' --format '{{.Label "com.docker.compose.project.working_dir"}}')
+flock -w 570 /run/lock/compose-hsb1.lock docker compose -p docker -f "$f" --project-directory "$d" up -d --force-recreate --no-deps pixdcon
+EOS
+```
 
 #### Verify
 
 Never use `docker inspect` (it prints the resolved environment, secrets included).
 
 ```bash
-ssh mba@hsb1 "docker image ls ghcr.io/markus-barta/pixdcon --format '{{.Tag}} {{.ID}} {{.CreatedAt}}'"
-ssh mba@hsb1 "docker ps --filter name=pixdcon --format '{{.Names}} {{.Status}}'"
-curl -s http://192.168.1.101:8080/api/status | jq '{mqttConnected, version, deviceHealth}'
+curl -s http://192.168.1.101:8080/api/status | jq '{version, version_scheme, mqttConnected, deviceHealth}'
+ssh mba@hsb1 "docker ps --filter name=pixdcon --format '{{.Names}} | {{.Image}} | {{.Status}}'"
 ssh mba@hsb1 "docker logs pixdcon --since 2m 2>&1 | grep -E ' WARN | ERROR |Running'"
 node scripts/preview-to-png.js --host 192.168.1.101:8080 --device pixoo-159 --out /tmp/frame.png --scale 8
 ```
 
 #### Roll back
 
-```bash
-ssh mba@hsb1 "docker tag ghcr.io/markus-barta/pixdcon:rollback-<ts> ghcr.io/markus-barta/pixdcon:latest"
-# copy the backed-up scenes/ and config.json back if they changed, then "Recreate pixdcon only"
-```
+Revert the nixcfg pin commit to the previous `<version>@sha256:…` (a PR, Markus's go, hsb1 switch),
+and copy the backed-up scenes/ and config.json back if the release changed them. Earlier release
+images stay in GHCR under their immutable version tags.
 
 Workflow: `.github/workflows/build-and-push.yml`
-Image: `ghcr.io/markus-barta/pixdcon:latest`
+Images: `ghcr.io/markus-barta/pixdcon:<version>` (releases), `:latest` (main, not deployed)
 Platforms: `linux/amd64`, `linux/arm64`
 
 ---

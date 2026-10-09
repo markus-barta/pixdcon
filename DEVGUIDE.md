@@ -378,14 +378,11 @@ git add scenes/pixoo/home.js && git commit -m "..." && git push
 
 **Full path — src/ or lib/ changes (needs image rebuild):**
 
-```bash
-git add . && git commit -m "..." && git push
-# Wait for CI to finish (gh run watch), then:
-ssh mba@hsb1.lan "cd ~/docker && docker compose pull pixdcon && docker compose up -d pixdcon"
-```
+A code change ships as a release: reserve `version.json`, PR → merge, tag `v<version>`, then OPS
+pins the new image digest in nixcfg and switches hsb1 with Markus's go. See `docs/DEPLOY.md` § 3.
 
 > Scene + config changes hot-reload via file watchers — no restart needed.
-> src/ or lib/ changes require a new image build + pull.
+> src/ or lib/ changes require a release; hsb1 runs a pinned image, so a pull alone changes nothing.
 
 Live preview notes:
 
@@ -457,22 +454,21 @@ The upstream bundler omits its source license: include `LICENSE` from the same
 source commit in the file manifest before pinning its final digest, retaining the
 upstream manifest digest as `upstreamManifestSha256`. No renderer bytes are changed.
 
+Full procedure: `docs/DEPLOY.md` (or `/deploy`).
+
 ```bash
 # Scene file change (fast — hot-reloads in seconds):
 scp scenes/pixoo/home.js mba@hsb1:~/docker/mounts/pixdcon/scenes/pixoo/home.js
 
-# Config-only change (hot-reloads, no restart needed):
-scp config.json mba@hsb1:~/docker/mounts/pixdcon/config.json
+# Config change: pull the LIVE config, edit, push back (never copy the repo's dev sample over it):
+scp mba@hsb1:~/docker/mounts/pixdcon/config.json /tmp/config.live.json   # then edit + scp back
 
-# lib/ or src/ change (needs CI build):
-git add . && git commit -m "..." && git push
-gh run watch --exit-status   # wait for CI
-ssh mba@hsb1 "cd ~/docker && docker compose pull pixdcon && docker compose up -d pixdcon"
+# lib/ or src/ change = a release: version.json → PR → tag v<version> → OPS pins the
+# image digest in nixcfg → hsb1 switch with Markus's go. hsb1 runs a pinned image, so
+# Watchtower and `latest` no longer change what runs.
 
 # Watch logs:
 ssh mba@hsb1 "docker logs -f pixdcon"
-
-# Watchtower handles weekly auto-updates automatically.
 ```
 
 ## Deployment on hsb1
@@ -518,17 +514,17 @@ Image (/app/)                     Host mount (/data/)
 - Config: `~/docker/mounts/pixdcon/config.json`
 - Scenes: `~/docker/mounts/pixdcon/scenes/{ulanzi,pixoo}/`
 - Generated scenes: `~/docker/mounts/pixdcon/generated-scenes/`
-- Secrets: `/run/agenix/hsb1-pixdcon-env` (MOSQUITTO_HOST/USER/PASS, SONNEN_BATTERY_HOST/TOKEN)
+- Secrets: `/run/agenix/hsb1-pixdcon-env` (MOSQUITTO_HOST/USER/PASS, SONNEN_BATTERY_HOST/TOKEN, SYNCBOX_BEARER_TOKEN)
 
 ```bash
 # Logs
 ssh mba@hsb1.lan "docker logs -f pixdcon"
 
-# Restart
-ssh mba@hsb1.lan "cd ~/docker && docker compose restart pixdcon"
+# Restart (same image)
+ssh mba@hsb1.lan "docker restart pixdcon"
 
-# Stop
-ssh mba@hsb1.lan "cd ~/docker && docker compose stop pixdcon"
+# Stop (compose-hsb1.service would start it again on the next switch)
+ssh mba@hsb1.lan "docker stop pixdcon"
 ```
 
 ## Device Drivers
