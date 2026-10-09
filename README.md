@@ -232,4 +232,4 @@ Script never prints the password and uses `curl -F 'password=<file'` to keep the
 
 ## License
 
-AGPL-3.0 | Markus Barta
+AGPL-3.0 (full text in [LICENSE](LICENSE)) | Markus Barta
