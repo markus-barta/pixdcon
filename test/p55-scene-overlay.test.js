@@ -429,3 +429,49 @@ test("a stalled first open cannot overwrite the newer state of a second open", a
   assert.equal(ui.isSceneSettingOverridden("level"), true);
   assert.equal(ui.sceneSettingsState["panel-a"].clock.overlay.level, 55);
 });
+
+test("a stalled older reload cannot overwrite the newer state of an open", async () => {
+  const { server, service } = fixture();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const { ui } = await loadUi(server, {
+    fetch: async (url, options) => {
+      const response = await request(server, url, options ? JSON.parse(options.body) : undefined);
+      if (url === "/api/scene-settings" && ++calls === 1) await gate; // the reload's GET stalls (no overlay)
+      return { ok: response.status === 200, json: async () => JSON.parse(response.body) };
+    },
+  });
+  const reload = ui.reloadUiState();
+  await new Promise((resolve) => setImmediate(resolve));
+  await service.applyOverlay("panel-a", "clock", { level: 55 });
+  await ui.openSceneSettings("panel-a", "clock");
+  assert.equal(ui.isSceneSettingOverridden("level"), true);
+  release();
+  await reload;
+  assert.equal(ui.isSceneSettingOverridden("level"), true);
+  assert.equal(ui.sceneSettingsForm.level, 55);
+});
+
+test("clear, close and reopen before the clear returns shows the cleared values", async () => {
+  const { server, service } = fixture();
+  await service.applyOverlay("panel-a", "clock", { level: 30 });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { ui } = await loadUi(server, {
+    fetch: async (url, options) => {
+      if (url === "/api/scene-settings/overlay/clear") await gate; // clear POST in flight
+      const response = await request(server, url, options ? JSON.parse(options.body) : undefined);
+      return { ok: response.status === 200, json: async () => JSON.parse(response.body) };
+    },
+  });
+  await ui.openSceneSettings("panel-a", "clock");
+  assert.equal(ui.sceneSettingsForm.level, 30);
+  const clearing = ui.clearSceneOverlay();
+  ui.closeSceneSettings();
+  await ui.openSceneSettings("panel-a", "clock"); // still sees the overlay: the clear has not run yet
+  release();
+  await clearing;
+  assert.equal(ui.isSceneSettingOverridden("level"), false);
+  assert.equal(ui.sceneSettingsForm.level, 5); // saved value of panel-a, not the stale 30
+});
