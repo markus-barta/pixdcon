@@ -372,6 +372,24 @@ test("the current temperature stays readable above full-height past bars", async
   for (const x of [58, 59, 60]) assert.deepEqual(at(device, x, 32), [230, 20, 0], `x${x}`);
 });
 
+test("boiler readings too wide for the cell read -- instead of crossing the x43 separator", async (t) => {
+  clock(t, "2026-10-08T12:30:00+02:00");
+  const { scene, device, publish } = await setup(t);
+  const text = t.mock.method(device, "drawTextRgbaAligned");
+  for (const [value, expected] of [[1234, "1234"], [12345.6, "--"], [-1234, "--"]]) {
+    publish(value);
+    text.mock.resetCalls();
+    await scene.render(device);
+    const calls = text.mock.calls.filter(({ arguments: [, [x, y]] }) => y === 28 && x >= 44);
+    assert.deepEqual(calls.map(({ arguments: [str] }) => str), [expected], String(value));
+    for (let y = 28; y <= 32; y++) {
+      assert.deepEqual(at(device, 43, y), [25, 25, 25], `${value}: separator at y${y}`);
+      assert.deepEqual(at(device, 44, y), black, `${value}: margin at y${y}`);
+    }
+    if (expected === "--") assert.deepEqual(at(device, 62, 28), black, `${value}: no degree`);
+  }
+});
+
 test("boiler colour runs blue → cyan → pale neutral → amber → orange → red, never through green", async (t) => {
   clock(t);
   const { scene, device, publish } = await setup(t);

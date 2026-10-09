@@ -585,11 +585,14 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
   hLine(d, Math.max(cellX0, nowX - 1), Math.min(cellX0 + 19, nowX + 1), cellY0 + 17, ...arrowColor);
 
   // Text last: full-height bars (≥ 67.5 °C) reach the digits' bottom row (y32).
-  if (current === null) {
+  const text = current === null ? null : String(Math.round(current));
+  // Like the terrace temperatures: a reading too wide to keep the x45 margin (5 glyphs) is
+  // implausible, so it reads as "--" rather than spilling past the x43 separator.
+  if (text === null || DEGREE_X - 1 - (text.length * 4 - 1) < cellX0 + 1) {
     await d.drawTextRgbaAligned("--", [rightX, textY], C.dimWhite, "right");
   } else {
     const color = _boilerTempColor(current);
-    await d.drawTextRgbaAligned(String(Math.round(current)), [DEGREE_X - 1, textY], color, "right");
+    await d.drawTextRgbaAligned(text, [DEGREE_X - 1, textY], color, "right");
     d._setPixel(DEGREE_X, textY, ...color); // last digit x=60, gap x=61, ° x=62
   }
 }
