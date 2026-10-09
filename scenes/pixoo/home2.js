@@ -26,8 +26,9 @@
  * Row 0 temperature cell (x 44-63): pool (lower terrace) level with TE, Dachterrasse level
  *   with OL. Values are right-aligned so every degree pixel, the boiler's included, is at x 62.
  *
- * Boiler cell: the current-time triangle turns red while the boiler draws power, and a bright
- *   pixel climbs the current bar (1 px/s) like the battery's charge sweep.
+ * Boiler cell: colour = temperature feel (blue → white at ~36 °C → yellow → amber → red), shared
+ *   by the number and the current bar. Only a bottom triangle marks the current bucket; it
+ *   turns red while the boiler draws power, and a contrasting pixel climbs the current bar (1 px/s).
  *
  * Data sources:
  *   nuki/463F8F47/state                           numeric 1=locked 2=unlocking 3=unlocked 4=locking  (Nuki VR)
@@ -516,17 +517,40 @@ function emptyBoilerDay(now) {
   };
 }
 
+// Colour = how the water feels (Markus, PIXD-60): cold blue, white at skin-neutral ~36 °C, warm
+// yellow around 40 °C, then amber, orange and red. Never green-dominant (only a near-neutral tint
+// around 35 °C): the battery uses green for "good". The number and the current bar share it; past
+// bars are dimmed.
+const BOILER_COLOR_STOPS = [
+  [20, [60, 120, 255]], // cold — blue
+  [30, [40, 185, 255]], // cool — light blue
+  [36, [240, 236, 222]], // skin-neutral — warm white
+  [42, [255, 205, 60]], // comfortably warm — yellow
+  [50, [255, 150, 20]], // warm — amber
+  [60, [255, 80, 0]], // hot — orange
+  [70, [230, 20, 0]], // very hot — red
+];
+
+// WCAG relative luminance (0..1) of an sRGB colour.
+function _luminance(rgb) {
+  const [r, g, b] = rgb.map((v) => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+// The heating pixel must stand out on every bar colour: light bars (the white ~36 °C and the
+// yellows) get a darker pixel, darker bars (blues, orange, red) a brighter one.
+function _climbColor(color) {
+  return _luminance(color) > 0.4
+    ? color.map((v) => Math.round(v * 0.5))
+    : color.map((v) => Math.round(v + (255 - v) * 0.5));
+}
+
 function _boilerTempColor(tempC) {
   if (tempC === null) return C.dimWhite;
-  // Cold → hot without passing through green: blue, cyan, a pale neutral, amber, red.
-  const stops = [
-    [20, [80, 150, 255]], // cold blue
-    [32, [40, 200, 240]], // cyan
-    [40, [200, 200, 215]], // pale neutral (lukewarm)
-    [48, [255, 190, 40]], // amber
-    [58, [255, 90, 0]], // orange
-    [70, [230, 20, 0]], // hot red
-  ];
+  const stops = BOILER_COLOR_STOPS;
   if (tempC <= stops[0][0]) return stops[0][1];
   for (let i = 1; i < stops.length; i++) {
     const [t0, c0] = stops[i - 1];
@@ -549,8 +573,8 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
   const dimGray = [60, 60, 60];
   const nowX = curveX0 + nowBucket;
 
-  // Same current-column background and bottom arrow as home's UV chart.
-  vLine(d, nowX, cellY0, cellY0 + 17, ...dimGray);
+  // Only the bottom triangle marks the current bucket. The column line home's UV chart draws
+  // above it ran behind the digits and is gone (PIXD-60).
 
   hLine(d, yTickX, curveX0 + BOILER_BUCKETS - 1, baselineY, ...dimGray);
   for (const offset of [0, 5, 10]) d._setPixel(yTickX, baselineY - offset, ...dimGray);
@@ -568,13 +592,13 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
     const color = _boilerTempColor(value);
     const barColor = i === nowBucket ? color : color.map((v) => Math.round(v * 0.65));
     vLine(d, curveX0 + i, baselineY - height, baselineY - 1, ...barColor);
-    // Heating: a bright pixel climbs the current bar, bottom to top, 1 px/s (500 ms frames),
+    // Heating: a contrasting pixel (_climbColor) climbs the current bar, bottom to top, 1 px/s (500 ms frames),
     // in the spirit of the battery's charge sweep. It stays below y32, the digits' bottom row,
     // which the text drawn last would otherwise hide under a full-height bar.
     const climbRows = Math.min(height, 9);
     if (heating && i === nowBucket && climbRows > 1) {
       const climbY = baselineY - 1 - (Math.floor(frame / 2) % climbRows);
-      d._setPixel(nowX, climbY, ...color.map((v) => Math.round(v + (255 - v) * 0.5)));
+      d._setPixel(nowX, climbY, ..._climbColor(color));
     }
   }
 
@@ -643,6 +667,8 @@ function pingHost(ip) {
 }
 
 // ── Scene export ──────────────────────────────────────────────────────────────
+
+export { BOILER_COLOR_STOPS, _boilerTempColor as boilerTempColor, _climbColor as climbColor, _luminance as luminance };
 
 export default {
   name: "home2",
