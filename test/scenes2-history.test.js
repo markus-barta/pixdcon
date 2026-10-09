@@ -91,12 +91,16 @@ test("home2 metadata, boiler settings and subscriptions replace UV", async (t) =
   assert.equal(scene.deviceType, "pixoo");
   assert.equal(scene._cfg.boilerStaleMs, 1800000);
   assert.equal(scene.settingsSchema.boiler_stale_ms.default, 1800000);
+  assert.equal(scene._cfg.boilerHeatingW, 100);
+  assert.equal(scene.settingsSchema.boiler_heating_w.default, 100);
+  assert.ok(handlers.has("z2m/bz/powercontrol/boiler"));
   assert.ok(handlers.has(topic));
   assert.ok(![...handlers.keys()].some((key) => /uv/i.test(key)));
   assert.ok(!Object.keys(scene.settingsSchema).some((key) => key.startsWith("uv_")));
   assert.equal(scene._startUvPoll, undefined);
-  update({ boiler_stale_ms: 60000 });
+  update({ boiler_stale_ms: 60000, boiler_heating_w: 1500 });
   assert.equal(scene._cfg.boilerStaleMs, 60000);
+  assert.equal(scene._cfg.boilerHeatingW, 1500);
 });
 
 test("wall-clock buckets include 00:00, 01:19, 01:20 and 23:59", async (t) => {

@@ -64,7 +64,8 @@ async function setup(t, template = home2) {
   device.setBrightness = async () => {};
   device.push = async () => {};
   const publish = (temp) => handlers.get("jhw2211/health/boiler")(JSON.stringify({ state: "ok", temp_c: temp }));
-  return { scene, device, publish };
+  const relay = (power) => handlers.get("z2m/bz/powercontrol/boiler")?.(JSON.stringify({ state: power > 0 ? "ON" : "OFF", power }));
+  return { scene, device, publish, relay };
 }
 
 function at(device, x, y) {
@@ -147,6 +148,154 @@ test("null and stale top-right temperatures draw dim -- without a degree", async
       for (let x = 44; x <= 63; x++) assert.deepEqual(at(device, x, y), black);
       for (const x of [45, 46, 47, 49, 50, 51]) assert.deepEqual(at(device, x, y + 2), [80, 80, 80]);
       assert.deepEqual(at(device, 48, y + 2), black);
+    }
+  }
+});
+
+test("home2 puts pool beside TE and Dachterrasse beside OL, right-aligned on the boiler's degree column", async (t) => {
+  clock(t, "2026-10-08T12:30:00+02:00");
+  const { scene, device, publish } = await setup(t);
+  publish(56);
+  // [value, first integer column]: the integer ends at x54, dot x56, fraction x58..60, gap x61, ° x62.
+  for (const [value, intX] of [[7.7, 52], [17.6, 48], [-7.7, 48]]) {
+    Object.assign(scene._s, {
+      poolTempC: value, roofTempC: value,
+      poolTempSeen: Date.now(), roofTempSeen: Date.now(),
+    });
+    await scene.render(device);
+    for (const [y, color] of [[9, pool], [18, roof]]) {
+      assert.deepEqual(at(device, 62, y), color, `degree for ${value}`);
+      assert.deepEqual(at(device, 61, y), black, `degree gap for ${value}`);
+      assert.deepEqual(at(device, 62, y + 1), black, `single-pixel degree for ${value}`);
+      assert.deepEqual(at(device, 56, y + 4), color, `decimal dot for ${value}`);
+      assert.deepEqual(at(device, 55, y + 4), black, `gap before the dot for ${value}`);
+      assert.deepEqual(at(device, 57, y + 4), black, `gap after the dot for ${value}`);
+      for (let x = 44; x < intX; x++) {
+        for (let row = y; row < y + 5; row++) assert.deepEqual(at(device, x, row), black, `left of ${value} at x${x}`);
+      }
+      assert.deepEqual(at(device, 43, y + 2), [25, 25, 25], "separator untouched");
+    }
+  }
+  // The boiler's degree shares the column.
+  assert.deepEqual(at(device, 62, 28), [255, 110, 8]);
+});
+
+test("home2 pool and Dachterrasse readings follow their own sources and colours", async (t) => {
+  clock(t, "2026-10-08T12:30:00+02:00");
+  const { scene, device } = await setup(t);
+  const text = t.mock.method(device, "drawTextRgbaAligned");
+  Object.assign(scene._s, {
+    poolTempC: 16.1, roofTempC: 17.6,
+    poolTempSeen: Date.now(), roofTempSeen: Date.now(),
+  });
+  await scene.render(device);
+  // x ≥ 44: the temperature cell only, not the TE / OL labels on the same rows.
+  const row = (row) => text.mock.calls
+    .filter(({ arguments: [, [x, y]] }) => y === row && x >= 44)
+    .map(({ arguments: [str, , color] }) => [str, color]);
+  const at9 = row(9);
+  const at18 = row(18);
+  assert.deepEqual(at9, [["16", pool], ["1", pool]]);
+  assert.deepEqual(at18, [["17", roof], ["6", roof]]);
+});
+
+test("home2 wide temperatures drop the decimal and keep the degree on x62; -- is right-aligned", async (t) => {
+  clock(t, "2026-10-08T12:30:00+02:00");
+  const { scene, device } = await setup(t);
+  const text = t.mock.method(device, "drawTextRgbaAligned");
+  for (const value of [-12.4, -123.4]) {
+    Object.assign(scene._s, { poolTempC: value, poolTempSeen: Date.now() });
+    text.mock.resetCalls();
+    await scene.render(device);
+    const calls = text.mock.calls.filter(({ arguments: [, [x, y]] }) => y === 9 && x >= 44);
+    assert.equal(calls.length, 1, String(value));
+    const [str, [x]] = calls[0].arguments;
+    assert.equal(str, value === -12.4 ? "-12" : "-123");
+    assert.equal(x + str.length * 4 - 1, 61, "integer ends at x60");
+    assert.deepEqual(at(device, 62, 9), pool);
+    assert.deepEqual(at(device, 61, 9), black);
+    assert.ok(x >= 45, "keeps the left margin");
+  }
+  Object.assign(scene._s, { poolTempC: null, roofTempSeen: Date.now() - scene._cfg.tempStaleMs - 1 });
+  await scene.render(device);
+  for (const y of [9, 18]) {
+    for (const x of [56, 57, 58, 60, 61, 62]) assert.deepEqual(at(device, x, y + 2), [80, 80, 80], `-- at x${x}`);
+    assert.deepEqual(at(device, 59, y + 2), black);
+    assert.deepEqual(at(device, 62, y), black, "no degree without a value");
+  }
+});
+
+test("boiler heating turns the triangle red and climbs a bright pixel up the current bar at 1 px/s", async (t) => {
+  clock(t, "2026-10-08T12:30:00+02:00"); // bucket 9 → x55
+  const { scene, device, publish, relay } = await setup(t);
+  publish(55); // 7 rows: y35..41, colour [255, 120, 12]
+  relay(2150);
+  const bar = [255, 120, 12];
+  const bright = [255, 188, 134];
+  const red = [230, 30, 20];
+  const climbs = [];
+  for (let frame = 1; frame <= 16; frame++) {
+    await scene.render(device);
+    assert.equal(scene._frame, frame);
+    const lit = [];
+    for (let y = 35; y <= 41; y++) {
+      const pixel = at(device, 55, y);
+      if (pixel.join() === bright.join()) lit.push(y);
+      else assert.deepEqual(pixel, bar, `frame ${frame}, y${y}`);
+    }
+    assert.equal(lit.length, 1, `one climbing pixel on frame ${frame}`);
+    climbs.push(lit[0]);
+    assert.deepEqual(at(device, 55, 43), red);
+    for (const x of [54, 55, 56]) assert.deepEqual(at(device, x, 44), red);
+  }
+  // Two 500 ms frames per row, bottom to top, then wrap to the bottom.
+  assert.deepEqual(climbs, [41, 40, 40, 39, 39, 38, 38, 37, 37, 36, 36, 35, 35, 41, 41, 40]);
+});
+
+test("boiler not heating: below threshold, stale relay, missing power or a raised threshold keep the grey triangle", async (t) => {
+  clock(t, "2026-10-08T12:30:00+02:00");
+  const { scene, device, publish, relay } = await setup(t);
+  publish(55);
+  const grey = [200, 200, 205];
+  const check = async (label) => {
+    for (let i = 0; i < 4; i++) {
+      await scene.render(device);
+      for (let y = 35; y <= 41; y++) assert.deepEqual(at(device, 55, y), [255, 120, 12], `${label}: y${y}`);
+      assert.deepEqual(at(device, 55, 43), grey, label);
+      for (const x of [54, 55, 56]) assert.deepEqual(at(device, x, 44), grey, label);
+    }
+  };
+  await check("no relay message yet");
+  relay(0);
+  await check("relay off");
+  relay(99);
+  await check("below 100 W");
+  relay(2150);
+  scene._s.boilerPowerSeen = Date.now() - scene._cfg.staleMs - 1;
+  await check("stale relay reading");
+  scene._s.boilerPowerSeen = Date.now();
+  scene._s.boilerPowerW = null;
+  await check("payload without power");
+  relay(2150);
+  scene._cfg = scene._mapSettings({ boiler_heating_w: 3000 });
+  await check("threshold raised to 3000 W");
+  relay(100);
+  scene._cfg = scene._mapSettings({});
+  assert.equal(scene._boilerHeating(), true, "100 W meets the default threshold");
+});
+
+test("a heating boiler with a bar under two rows keeps the red triangle but has nothing to climb", async (t) => {
+  clock(t, "2026-10-08T12:30:00+02:00");
+  const { scene, device, publish, relay } = await setup(t);
+  relay(2150);
+  for (const [temp, rows] of [[25, 1], [21, 0]]) {
+    publish(temp);
+    for (let i = 0; i < 3; i++) {
+      await scene.render(device);
+      assert.deepEqual(at(device, 55, 43), [230, 30, 20]);
+      if (rows === 1) assert.deepEqual(at(device, 55, 41), [63, 171, 249], `${temp} keeps its bar colour`);
+      // y32 is the digits' bottom row; below it, only the current-column background.
+      for (let y = 33; y < 42 - rows; y++) assert.deepEqual(at(device, 55, y), gray, `${temp} y${y}`);
     }
   }
 });
@@ -256,7 +405,7 @@ test("the final bucket's current marker and full-height bar stay within x44..63"
   assert.deepEqual(at(device, 43, 44), [25, 25, 25]);
 });
 
-test("home2 matches home at every pixel outside the boiler cell across normal/stale states", async (t) => {
+test("home2 matches home at every pixel outside the boiler and temperature cells across normal/stale states", async (t) => {
   clock(t, "2026-10-08T12:30:00+02:00");
   const first = await setup(t, home);
   const second = await setup(t);
@@ -274,7 +423,8 @@ test("home2 matches home at every pixel outside the boiler cell across normal/st
     assert.equal(await second.scene.render(second.device), 500);
     for (let y = 0; y < 64; y++) {
       for (let x = 0; x < 64; x++) {
-        if (x >= 44 && y >= 27 && y <= 44) continue;
+        if (x >= 44 && y >= 27 && y <= 44) continue; // boiler cell
+        if (x >= 44 && y >= 8 && y <= 25) continue; // home2 swaps and right-aligns the temperatures
         assert.deepEqual(at(first.device, x, y), at(second.device, x, y), `x${x}, y${y}`);
       }
     }
@@ -297,6 +447,7 @@ test("write coordinator previews for home and home2 with a cold/heated/cooling b
     second.scene._boilerHistory.buckets[index] = { sum: value * 80, count: 80 };
   }
   second.publish(40);
+  second.relay(2150);
   const previews = resolve(".previews");
   await fs.mkdir(previews, { recursive: true });
   for (const { scene, device } of [first, second]) {

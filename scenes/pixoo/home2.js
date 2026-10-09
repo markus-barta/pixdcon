@@ -4,7 +4,7 @@
  * 3×3 grid layout (64×64), except row 0 which is 2 cells:
  *   y 0-6:   header — HOME label + HH:MM clock
  *   y 7:     horizontal separator
- *   y 8-25:  row 0 — [Nuki VR/KE + TE terrace + OL skylights] [roof/pool temps]
+ *   y 8-25:  row 0 — [Nuki VR/KE + TE terrace + OL skylights] [pool/roof temps]
  *   y 26:    horizontal separator
  *   y 27-44: row 1 — [Battery SOC] [PV↑ Cons↓] [Boiler temperature + day chart]
  *   y 45:    horizontal separator
@@ -23,6 +23,12 @@
  *   the panel sits behind palladium-coated glass and C.dimWhite (80,80,80), used
  *   by the HOME label, is not readable in daylight through it.
  *
+ * Row 0 temperature cell (x 44-63): pool (lower terrace) level with TE, Dachterrasse level
+ *   with OL. Values are right-aligned so every degree pixel, the boiler's included, is at x 62.
+ *
+ * Boiler cell: the current-time triangle turns red while the boiler draws power, and a bright
+ *   pixel climbs the current bar (1 px/s) like the battery's charge sweep.
+ *
  * Data sources:
  *   nuki/463F8F47/state                           numeric 1=locked 2=unlocking 3=unlocked 4=locking  (Nuki VR)
  *   nuki/4A5D18FF/state                           numeric 1=locked 2=unlocking 3=unlocked 4=locking  (Nuki Keller)
@@ -38,6 +44,7 @@
  *   z2m/te/temp/pool                              {temperature} — pool water (Sonoff probe)
  *   home/ke/sonnenbattery/status                  {USOC, BatteryCharging, BatteryDischarging, Production_W, Consumption_W}
  *   jhw2211/health/boiler                         {state, temp_c} — retained boiler temperature
+ *   z2m/bz/powercontrol/boiler                    {state, power} — boiler relay; heating = power ≥ boiler_heating_w
  *   z2m/wz/plug/zisp08                            {power} — sony-tv
  *   z2m/wz/plug/zisp28                            {power} — PS5
  *   z2m/wz/plug/zisp05                            {power} — windows-pc
@@ -89,6 +96,7 @@ const DEFAULT_SETTINGS = {
   syncboxInputPs5: "input4",
   syncboxInputPc: "input2",
   boilerStaleMs: 30 * 60 * 1000,
+  boilerHeatingW: 100,
   // Battery-powered Zigbee temp sensors report on change, not on a schedule —
   // the pool probe can go 30 min between publishes. 5 min would read as stale.
   tempStaleMs: 5400000,
@@ -260,26 +268,30 @@ function drawOpeningBadge(d, x, y, open, online, bright, outline) {
 // Value + degree pixel. Same kerning trick as drawKwTight: the decimal point is
 // a hand-placed pixel on the baseline rather than a font glyph, so "32.3" fits
 // in 13px instead of the 15px the 3×5 face would need.
+// Every temperature's degree pixel, the boiler's included, sits in this column.
+const DEGREE_X = COLS[2].x1 - 1; // x=62
+
+// Right-aligned on DEGREE_X, right to left: ° | gap | fraction (3px) | gap | dot | gap | integer.
 async function drawTempValue(d, cellX0, y, value, color) {
   const [r, g, b] = color;
-  const x0 = cellX0 + 1;
   if (value === null) {
-    await d.drawTextRgbaAligned("--", [x0, y], C.dimWhite, "left");
+    await d.drawTextRgbaAligned("--", [DEGREE_X + 1, y], C.dimWhite, "right");
     return;
   }
 
   const [intStr, fracStr] = value.toFixed(1).split(".");
-  const intW = intStr.length * 4 - 1;
-  await d.drawTextRgbaAligned(intStr, [x0, y], color, "left");
-  // Fraction adds 6px; the degree adds a 1px gap and a single top-row pixel.
-  if (x0 + intW + 6 + 1 > cellX0 + 19) {
-    d._setPixel(x0 + intW + 1, y, r, g, b);
+  const intW = intStr.length * 4 - 1; // 4n-1 glyph run
+  const fracX = DEGREE_X - 4;
+  const dotX = fracX - 2;
+  d._setPixel(DEGREE_X, y, r, g, b);
+  // Too wide for the decimal: the integer alone, then the same gap and degree.
+  if (dotX - 1 - intW < cellX0 + 1) {
+    await d.drawTextRgbaAligned(intStr, [DEGREE_X - 1 - intW, y], color, "left");
     return;
   }
-  const dotX = x0 + intW + 1; // 4n-1 glyph run, then a 1px gap
+  await d.drawTextRgbaAligned(intStr, [dotX - 1 - intW, y], color, "left");
   d._setPixel(dotX, y + 4, r, g, b);
-  await d.drawTextRgbaAligned(fracStr, [dotX + 2, y], color, "left");
-  d._setPixel(dotX + 6, y, r, g, b);
+  await d.drawTextRgbaAligned(fracStr, [fracX, y], color, "left");
 }
 
 function drawMediaIcon(d, image, cx, cy) {
@@ -522,7 +534,7 @@ function _boilerTempColor(tempC) {
   return stops[stops.length - 1][1];
 }
 
-async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket) {
+async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heating = false, frame = 0) {
   const baselineY = cellY0 + 15; // y=42; chart rows y=32..41 (5°C/px)
   const tickRowY = cellY0 + 16; // y=43
   const yTickX = cellX0 + 1; // x=45
@@ -551,20 +563,27 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket) {
     const color = _boilerTempColor(value);
     const barColor = i === nowBucket ? color : color.map((v) => Math.round(v * 0.65));
     vLine(d, curveX0 + i, baselineY - height, baselineY - 1, ...barColor);
+    // Heating: a bright pixel climbs the current bar, bottom to top, 1 px/s (500 ms frames),
+    // in the spirit of the battery's charge sweep.
+    if (heating && i === nowBucket && height > 1) {
+      const climbY = baselineY - 1 - (Math.floor(frame / 2) % height);
+      d._setPixel(nowX, climbY, ...color.map((v) => Math.round(v + (255 - v) * 0.5)));
+    }
   }
 
-  const arrowGray = [200, 200, 205];
-  d._setPixel(nowX, tickRowY, ...arrowGray);
+  // Current-time triangle: red while the boiler is heating.
+  const arrowColor = heating ? [230, 30, 20] : [200, 200, 205];
+  d._setPixel(nowX, tickRowY, ...arrowColor);
   // The final bucket touches x=63: clip the arrow base to its own cell.
-  hLine(d, Math.max(cellX0, nowX - 1), Math.min(cellX0 + 19, nowX + 1), cellY0 + 17, ...arrowGray);
+  hLine(d, Math.max(cellX0, nowX - 1), Math.min(cellX0 + 19, nowX + 1), cellY0 + 17, ...arrowColor);
 
   // Text last: full-height bars (≥ 67.5 °C) reach the digits' bottom row (y32).
   if (current === null) {
     await d.drawTextRgbaAligned("--", [rightX, textY], C.dimWhite, "right");
   } else {
     const color = _boilerTempColor(current);
-    await d.drawTextRgbaAligned(String(Math.round(current)), [rightX - 2, textY], color, "right");
-    d._setPixel(rightX - 1, textY, ...color); // last digit x=60, gap x=61, ° x=62
+    await d.drawTextRgbaAligned(String(Math.round(current)), [DEGREE_X - 1, textY], color, "right");
+    d._setPixel(DEGREE_X, textY, ...color); // last digit x=60, gap x=61, ° x=62
   }
 }
 
@@ -744,6 +763,15 @@ export default {
       max: 500,
       step: 1,
     },
+    boiler_heating_w: {
+      type: "int",
+      label: "Boiler Heating Threshold (W)",
+      group: "Thresholds",
+      default: 100,
+      min: 0,
+      max: 5000,
+      step: 10,
+    },
     syncbox_host: {
       type: "string",
       label: "Syncbox Host",
@@ -908,6 +936,9 @@ export default {
       // Boiler — latest finite MQTT reading, independently freshness-tracked.
       boilerTempC: null,
       boilerTempSeen: null,
+      // Boiler relay draw (W): heating while fresh and ≥ boiler_heating_w.
+      boilerPowerW: null,
+      boilerPowerSeen: null,
       // Row 2 — media (power in watts)
       tvPower: null,
       tvSeen: null,
@@ -1135,6 +1166,14 @@ export default {
       } catch {}
     });
 
+    // Boiler relay (Zigbee power meter; Node-RED's state machine switches it via .../set).
+    // Its measured draw, not the state machine's decision, says whether the element heats:
+    // the boiler's own thermostat cuts it while the relay stays ON.
+    context.mqtt.subscribe("z2m/bz/powercontrol/boiler", (msg) => {
+      this._s.boilerPowerW = parsePower(msg);
+      this._s.boilerPowerSeen = Date.now();
+    });
+
     context.mqtt.subscribe("z2m/wz/plug/zisp08", (msg) => {
       this._s.tvPower = parsePower(msg);
       this._s.tvSeen = Date.now();
@@ -1320,20 +1359,21 @@ export default {
       C.olOutline,
     );
 
-    // Temperatures (x 44..63): Dachterrasse above, pool water below.
+    // Temperatures (x 44..63), level with their labels: pool (lower terrace) beside TE,
+    // Dachterrasse (upper terrace) beside OL.
     await drawTempValue(
       device,
       COLS[2].x0,
       9,
-      isStale(s.roofTempSeen, this._cfg.tempStaleMs) ? null : s.roofTempC,
-      C.tempRoof,
+      isStale(s.poolTempSeen, this._cfg.tempStaleMs) ? null : s.poolTempC,
+      C.tempPool,
     );
     await drawTempValue(
       device,
       COLS[2].x0,
       18,
-      isStale(s.poolTempSeen, this._cfg.tempStaleMs) ? null : s.poolTempC,
-      C.tempPool,
+      isStale(s.roofTempSeen, this._cfg.tempStaleMs) ? null : s.roofTempC,
+      C.tempRoof,
     );
 
     // ── Row 1: Energy ────────────────────────────────────────────────────────
@@ -1365,6 +1405,7 @@ export default {
     await drawBoiler(
       device, COLS[2].x0, ROWS[1].y0, boilerCurrent,
       this._boilerHistory.buckets, boilerBucket(now),
+      this._boilerHeating(), this._frame,
     );
     if (boilerCurrent === null) drawErrorMark(device, 2, 1, this._frame);
 
@@ -1584,6 +1625,12 @@ export default {
       ms - boilerTempSeen <= this._cfg.boilerStaleMs ? boilerTempC : null;
   },
 
+  _boilerHeating() {
+    const { boilerPowerW, boilerPowerSeen } = this._s;
+    return Number.isFinite(boilerPowerW) && !isStale(boilerPowerSeen, this._cfg.staleMs) &&
+      boilerPowerW >= this._cfg.boilerHeatingW;
+  },
+
   async _sampleBoiler() {
     if (!this._boilerSampling) return;
     const now = new Date();
@@ -1692,6 +1739,7 @@ export default {
       syncboxInputPc:
         values.syncbox_input_pc ?? DEFAULT_SETTINGS.syncboxInputPc,
       boilerStaleMs: values.boiler_stale_ms ?? DEFAULT_SETTINGS.boilerStaleMs,
+      boilerHeatingW: values.boiler_heating_w ?? DEFAULT_SETTINGS.boilerHeatingW,
       tempStaleMs: values.temp_stale_ms ?? DEFAULT_SETTINGS.tempStaleMs,
     };
   },
