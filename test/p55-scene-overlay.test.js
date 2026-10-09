@@ -505,3 +505,38 @@ test("opening the modal shows the server's normalized values", async () => {
   await ui.openSceneSettings("panel-a", "clock");
   assert.equal(ui.sceneSettingsForm.level, 50);
 });
+
+test("save, clear inside the lag, reopen while the clear reload is pending: the cleared value shows", async (t) => {
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "pixd-p55-r11-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { config, server, service } = fixture();
+  for (const d of config.devices) Object.assign(d, { type: "pixoo", ip: "127.0.0.1" });
+  server.configPath = join(root, "config.json");
+  await writeFile(server.configPath, JSON.stringify(config)); // running config never reloads: the lag
+  await service.applyOverlay("panel-a", "clock", { level: 30 });
+  let release;
+  let holdNextGet = false;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { ui } = await loadUi(server, {
+    fetch: async (url, options) => {
+      const response = await request(server, url, options ? JSON.parse(options.body) : undefined);
+      if (url === "/api/scene-settings" && holdNextGet) { holdNextGet = false; await gate; }
+      return { ok: response.status === 200, json: async () => JSON.parse(response.body) };
+    },
+  });
+  await ui.openSceneSettings("panel-a", "clock");
+  ui.resetSceneSetting("enabled");
+  await ui.saveSceneSettings(); // persisted { level: 5 }; the server keeps serving { level: 5, enabled: false }
+  holdNextGet = true; // the clear's reload GET stalls
+  const clearing = ui.clearSceneOverlay();
+  await new Promise((resolve) => setImmediate(resolve));
+  ui.closeSceneSettings();
+  await ui.openSceneSettings("panel-a", "clock"); // supersedes the stalled reload
+  release();
+  await clearing;
+  assert.equal(ui.isSceneSettingOverridden("level"), false);
+  assert.equal(ui.sceneSettingsForm.level, 5);
+});
