@@ -1180,9 +1180,11 @@ export default {
       this._s.boilerPowerW = parsePower(msg);
       // z2m's last_seen dates the reading, so a retained ON payload from a relay that has since
       // gone quiet does not count as fresh after a restart; receipt time is the fallback.
+      // z2m emits it as an ISO string or, with last_seen: epoch, as milliseconds.
       let lastSeen = NaN;
       try {
-        lastSeen = Date.parse(JSON.parse(msg)?.last_seen);
+        const raw = JSON.parse(msg)?.last_seen;
+        lastSeen = typeof raw === "number" ? raw : typeof raw === "string" ? Date.parse(raw) : NaN;
       } catch {}
       this._s.boilerPowerSeen = Number.isFinite(lastSeen) ? Math.min(lastSeen, Date.now()) : Date.now();
     });

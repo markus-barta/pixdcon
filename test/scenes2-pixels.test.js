@@ -66,7 +66,7 @@ async function setup(t, template = home2) {
   const publish = (temp) => handlers.get("jhw2211/health/boiler")(JSON.stringify({ state: "ok", temp_c: temp }));
   const relay = (power, extra = {}) => handlers.get("z2m/bz/powercontrol/boiler")?.(
     JSON.stringify(power === undefined ? { state: "ON", ...extra } : { state: power > 0 ? "ON" : "OFF", power, ...extra }));
-  return { scene, device, publish, relay };
+  return { scene, device, publish, relay, handlers };
 }
 
 function at(device, x, y) {
@@ -183,12 +183,11 @@ test("home2 puts pool beside TE and Dachterrasse beside OL, right-aligned on the
 
 test("home2 pool and Dachterrasse readings follow their own sources and colours", async (t) => {
   clock(t, "2026-10-08T12:30:00+02:00");
-  const { scene, device } = await setup(t);
+  const { scene, device, handlers } = await setup(t);
   const text = t.mock.method(device, "drawTextRgbaAligned");
-  Object.assign(scene._s, {
-    poolTempC: 16.1, roofTempC: 17.6,
-    poolTempSeen: Date.now(), roofTempSeen: Date.now(),
-  });
+  // Through the real subscriptions, so swapped topic handlers would fail here.
+  handlers.get("z2m/te/temp/pool")(JSON.stringify({ temperature: 16.1 }));
+  handlers.get("z2m/dt/motion/hueoutdoor")(JSON.stringify({ temperature: 17.6 }));
   await scene.render(device);
   // x ≥ 44: the temperature cell only, not the TE / OL labels on the same rows.
   const row = (row) => text.mock.calls
@@ -293,8 +292,14 @@ test("boiler not heating: below threshold, stale relay, missing power or a raise
   await check("payload without power");
   relay(2150, { last_seen: new Date(Date.now() - scene._cfg.staleMs - 1000).toISOString() });
   await check("retained payload whose last_seen is older than staleMs");
+  relay(2150, { last_seen: Date.now() - 3600000 });
+  await check("retained payload with an hour-old epoch last_seen");
+  relay(2150, { last_seen: Date.now() - 1000 });
+  assert.equal(scene._boilerHeating(), true, "a recent epoch last_seen counts as fresh");
+  relay(2150, { last_seen: Date.now() + 3600000 });
+  assert.equal(scene._s.boilerPowerSeen, Date.now(), "a future last_seen is clamped to now");
   relay(2150, { last_seen: new Date(Date.now() - 1000).toISOString() });
-  assert.equal(scene._boilerHeating(), true, "a recent last_seen counts as fresh");
+  assert.equal(scene._boilerHeating(), true, "a recent ISO last_seen counts as fresh");
   relay(2150);
   scene._cfg = scene._mapSettings({ boiler_heating_w: 3000 });
   await check("threshold raised to 3000 W");
