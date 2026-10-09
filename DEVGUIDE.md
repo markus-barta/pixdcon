@@ -139,7 +139,8 @@ pixdcon/
 │   ├── pixoo/
 │   │   ├── home.js        # 3-row smart home dashboard: Nuki/doors/skylights/energy/media + keyboard status
 │   │   ├── home2.js       # home with a boiler day chart (jhw2211/health/boiler) instead of UV; history in .state/home2-boiler.json;
-│   │   │                  #   heating = z2m/bz/powercontrol/boiler power ≥ boiler_heating_w (red marker, rising pixel); pool/roof temps beside TE/OL
+│   │   │                  #   heating = z2m/bz/powercontrol/boiler power ≥ boiler_heating_w (red marker, red dot rising past the bar;
+│   │   │                  #   heating_fps sets its frame rate, needs the device's minFrameMs ≤ 1000/fps); pool/roof temps beside TE/OL
 │   │   ├── funkeykid.js   # Educational keyboard display (letter + word on bg image)
 │   │   └── health.js      # 4-tab network/device health dashboard (legacy/low priority)
 │   └── ulanzi/
