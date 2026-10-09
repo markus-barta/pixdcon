@@ -10,7 +10,7 @@ import { UlanziDriver } from "../lib/ulanzi-driver.js";
 import { PixooDriver } from "../lib/pixoo-driver.js";
 import { MqttService } from "../lib/mqtt-service.js";
 import { ConfigWatcher } from "../lib/config-watcher.js";
-import { ConfigOverlay } from "../lib/config-overlay.js";
+import { ConfigOverlay, recomputeWithSavedSceneSettings } from "../lib/config-overlay.js";
 import { ScenesWatcher } from "../lib/scenes-watcher.js";
 import { WebServer } from "../lib/web-server.js";
 import { FramePreviewStore } from "../lib/frame-preview-store.js";
@@ -369,6 +369,28 @@ async function reloadConfig(newConfigContent) {
   }
 }
 
+// The UI persisted scene settings: reflect them in the running config now, as the
+// reload paths would (overlay merge + loader), instead of waiting ~500 ms for the
+// file watcher. The reload then recomputes the same result.
+function applySavedSceneSettings(deviceName, sceneName, values) {
+  if (shuttingDown || !baseConfig) return;
+  try {
+    const next = recomputeWithSavedSceneSettings({
+      baseConfig,
+      overlay: configOverlay,
+      loader: new ConfigLoader(configPath),
+      deviceName,
+      sceneName,
+      values,
+    });
+    if (!next) return;
+    baseConfig = next.base;
+    effectiveConfig = next.effective;
+  } catch (error) {
+    logger.warn(`[pixdcon] Saved scene settings wait for the config reload: ${error.message}`);
+  }
+}
+
 async function shutdown(signal, exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -514,6 +536,7 @@ async function main() {
     mqttService,
     sceneSettingsService,
     telemetryCollector,
+    onSceneSettingsSaved: applySavedSceneSettings,
     logger,
   });
   webServer.start();

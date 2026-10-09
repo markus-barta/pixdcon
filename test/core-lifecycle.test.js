@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import * as path from "node:path";
 import * as url from "node:url";
 import { ConfigLoader } from "../lib/config-loader.js";
-import { ConfigOverlay } from "../lib/config-overlay.js";
+import { ConfigOverlay, recomputeWithSavedSceneSettings } from "../lib/config-overlay.js";
 import { RenderLoop } from "../src/render-loop.js";
 import { SceneSettingsService } from "../lib/scene-settings-service.js";
 
@@ -154,7 +154,7 @@ async function harness(options = {}) {
     "../lib/pixoo-driver.js": { PixooDriver: FakeDriver },
     "../lib/mqtt-service.js": { MqttService: FakeMqtt },
     "../lib/config-watcher.js": { ConfigWatcher: FakeConfigWatcher },
-    "../lib/config-overlay.js": { ConfigOverlay },
+    "../lib/config-overlay.js": { ConfigOverlay, recomputeWithSavedSceneSettings },
     "../lib/scenes-watcher.js": { ScenesWatcher: FakeScenesWatcher },
     "../lib/web-server.js": { WebServer: FakeWebServer },
     "../lib/frame-preview-store.js": { FramePreviewStore: FakePreview },
