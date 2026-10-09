@@ -344,3 +344,43 @@ test("a clear finishing after a modal switch preserves the new device draft", as
   assert.equal(ui.isSceneSettingsDirty(), true);
   assert.deepEqual(plain(ui.sceneSettingsState["panel-a"].clock.overlay), {});
 });
+
+test("a dropped publish leaves no local overlay and emits nothing", async (t) => {
+  const { service, mqttService } = fixture();
+  mqttService.publishRaw = () => false;
+  const { emissions, unsubscribe } = watch(service);
+  t.after(unsubscribe);
+  await service.applyOverlay("panel-a", "clock", { level: 42 });
+  assert.deepEqual(service.getOverlayValues("panel-a", "clock"), {});
+  assert.equal(emissions.length, 0);
+});
+
+test("clear also removes overlay keys that are no longer in the schema", async () => {
+  const { service, published } = fixture();
+  service.overlay.set("panel-a::clock", { level: 7, retired_key: 3 });
+  await service.clearOverlay("panel-a", "clock");
+  assert.deepEqual(service.getOverlayValues("panel-a", "clock"), {});
+  assert.ok(published.some((p) => p.topic === "pixdcon/panel-a/clock/settings/retired_key" && p.payload === ""));
+});
+
+test("opening the modal refreshes overlays that arrived after page load", async () => {
+  const { server, service } = fixture();
+  const { ui } = await loadUi(server);
+  await service.applyOverlay("panel-a", "clock", { level: 42 }); // e.g. Home Assistant via MQTT
+  assert.equal(ui.sceneSettingsState["panel-a"].clock.overlay.level, undefined);
+  await ui.openSceneSettings("panel-a", "clock");
+  assert.equal(ui.isSceneSettingOverridden("level"), true);
+  assert.equal(ui.sceneSettingsForm.level, 42);
+});
+
+test("the open-time refresh does not clobber edits made meanwhile", async () => {
+  const { server, service } = fixture();
+  const { ui } = await loadUi(server);
+  await service.applyOverlay("panel-a", "clock", { level: 42 });
+  const opening = ui.openSceneSettings("panel-a", "clock");
+  ui.sceneSettingsForm.level = 77;
+  ui.editSceneSetting("level");
+  await opening;
+  assert.equal(ui.sceneSettingsForm.level, 77);
+  assert.equal(ui.isSceneSettingOverridden("level"), true); // badge state is refreshed regardless
+});
