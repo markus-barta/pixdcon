@@ -79,7 +79,7 @@ async function setup(t, { content, settings = {} } = {}) {
 }
 
 function savedDay(date = "2026-10-08") {
-  return { date, buckets: Array.from({ length: 18 }, () => ({ sum: 0, count: 0 })) };
+  return { date, buckets: Array.from({ length: 16 }, () => ({ sum: 0, count: 0 })) };
 }
 
 test("home2 metadata, boiler settings and subscriptions replace UV", async (t) => {
@@ -106,11 +106,11 @@ test("home2 metadata, boiler settings and subscriptions replace UV", async (t) =
   assert.equal(scene._cfg.boilerHeatingW, 1500);
 });
 
-test("wall-clock buckets include 00:00, 01:19, 01:20 and 23:59", async (t) => {
+test("wall-clock 90-min buckets include 00:00, 01:29, 01:30 and 23:59", async (t) => {
   const setTime = clock(t);
   timers(t);
   const { scene, publish } = await setup(t);
-  for (const [time, index] of [["00:00:00", 0], ["01:19:00", 0], ["01:20:00", 1], ["23:59:00", 17]]) {
+  for (const [time, index] of [["00:00:00", 0], ["01:29:00", 0], ["01:30:00", 1], ["23:59:00", 15]]) {
     setTime(`2026-10-08T${time}+02:00`);
     publish(45);
     await scene._sampleBoiler();
@@ -118,10 +118,10 @@ test("wall-clock buckets include 00:00, 01:19, 01:20 and 23:59", async (t) => {
   }
   assert.deepEqual(scene._boilerHistory.buckets[0], { sum: 90, count: 2 });
   assert.deepEqual(scene._boilerHistory.buckets[1], { sum: 45, count: 1 });
-  assert.deepEqual(scene._boilerHistory.buckets[17], { sum: 45, count: 1 });
+  assert.deepEqual(scene._boilerHistory.buckets[15], { sum: 45, count: 1 });
 });
 
-test("DST 23/25-hour days use local minutes and the same 18 calendar buckets", async (t) => {
+test("DST 23/25-hour days use local minutes and the same 16 calendar buckets", async (t) => {
   const setTime = clock(t);
   timers(t);
   const { scene, publish } = await setup(t);
@@ -135,13 +135,13 @@ test("DST 23/25-hour days use local minutes and the same 18 calendar buckets", a
       await scene._sampleBoiler();
     }
     const { buckets } = scene._boilerHistory;
-    assert.equal(buckets.length, 18);
+    assert.equal(buckets.length, 16);
     assert.equal(buckets.reduce((n, b) => n + b.count, 0), hours);
-    assert.equal(buckets[1].count, repeatedCount); // 02:00 is skipped / repeated.
+    assert.equal(buckets[1].count, repeatedCount); // 02:00 (in 01:30–03:00) is skipped / repeated.
     assert.equal(buckets[0].count, 2);
-    assert.equal(buckets[17].count, 1);
+    assert.equal(buckets[15].count, 1);
     assert.equal(scene._boilerHistory.date, date);
-    assert.equal(scene._boilerBucketIndex, 17);
+    assert.equal(scene._boilerBucketIndex, 15);
   }
 });
 
@@ -203,7 +203,7 @@ test("day change resets history during render and samples into the new local dat
   publish(60);
   await scene._sampleBoiler();
   assert.deepEqual(scene._boilerHistory.buckets[0], { sum: 60, count: 1 });
-  assert.equal(scene._boilerHistory.buckets[17].count, 0);
+  assert.equal(scene._boilerHistory.buckets[15].count, 0);
   assert.equal(JSON.parse(await fs.readFile(path, "utf8")).date, "2026-10-09");
 });
 
@@ -230,25 +230,50 @@ test("persistence round-trip retains sums/counts and batches writes for five min
 });
 
 test("bucket changes persist immediately, even inside the five-minute write interval", async (t) => {
-  const setTime = clock(t, "2026-10-08T01:19:00+02:00");
+  const setTime = clock(t, "2026-10-08T01:29:00+02:00");
   timers(t);
   const { scene, publish, path } = await setup(t);
   publish(30);
   await scene._sampleBoiler();
   await assert.rejects(fs.readFile(path), { code: "ENOENT" });
-  setTime("2026-10-08T01:20:00+02:00");
+  setTime("2026-10-08T01:30:00+02:00");
   publish(60);
   await scene._sampleBoiler();
   const saved = JSON.parse(await fs.readFile(path, "utf8"));
   assert.deepEqual(saved.buckets.slice(0, 2), [{ sum: 30, count: 1 }, { sum: 60, count: 1 }]);
 });
 
+test("today's 18 × 80-min history (before PIXD-62) is re-binned to 16 × 90 min by minute overlap and re-saved", async (t) => {
+  clock(t);
+  timers(t);
+  const legacy = { date: "2026-10-08", buckets: Array.from({ length: 18 }, () => ({ sum: 0, count: 0 })) };
+  legacy.buckets[0] = { sum: 80, count: 2 }; // 00:00–01:20, average 40
+  legacy.buckets[1] = { sum: 150, count: 3 }; // 01:20–02:40, average 50
+  legacy.buckets[17] = { sum: 55, count: 1 }; // 22:40–24:00
+  const { scene, warnings, path } = await setup(t, { content: JSON.stringify(legacy) });
+  assert.equal(warnings.length, 0);
+  const { buckets } = scene._boilerHistory;
+  assert.equal(buckets.length, 16);
+  // New 0 (00:00–01:30): all of old 0 (weight 2) + 10/80 of old 1 (weight 0.375) → count 2.
+  assert.equal(buckets[0].count, 2);
+  assert.ok(Math.abs(buckets[0].sum / buckets[0].count - (80 + 18.75) / 2.375) < 1e-9);
+  // New 1 (01:30–03:00): 70/80 of old 1 → weight 2.625 → count 3, average 50.
+  assert.deepEqual(buckets[1], { sum: 150, count: 3 });
+  // New 15 (22:30–24:00): 80/80 of old 17 → count 1, average 55.
+  assert.deepEqual(buckets[15], { sum: 55, count: 1 });
+  for (const i of [2, 3, 14]) assert.deepEqual(buckets[i], { sum: 0, count: 0 }, `bucket ${i}`);
+  assert.equal(scene._boilerDirty, true, "re-saved in the new form");
+  await scene._saveBoilerHistory(true);
+  assert.equal(JSON.parse(await fs.readFile(path, "utf8")).buckets.length, 16);
+});
+
 test("corrupt or malformed histories warn once and start with empty buckets", async (t) => {
   clock(t);
   timers(t);
   for (const content of ["{", JSON.stringify({ date: "2026-10-08", buckets: [] }),
-    JSON.stringify({ ...savedDay(), buckets: Array(18).fill({ sum: "60", count: 1 }) }),
-    JSON.stringify({ ...savedDay(), buckets: Array(18).fill({ sum: 60, count: -1 }) })]) {
+    JSON.stringify({ ...savedDay(), buckets: Array(16).fill({ sum: "60", count: 1 }) }),
+    JSON.stringify({ ...savedDay(), buckets: Array(18).fill({ sum: 60, count: -1 }) }),
+    JSON.stringify({ ...savedDay(), buckets: Array(17).fill({ sum: 0, count: 0 }) })]) {
     const { scene, warnings } = await setup(t, { content });
     assert.ok(scene._boilerHistory.buckets.every((b) => b.count === 0));
     assert.equal(warnings.length, 1);
