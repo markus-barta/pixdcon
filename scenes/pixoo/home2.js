@@ -17,9 +17,9 @@
  *   Nuki VR (y 9-15) and Nuki KE (y 18-24) keep their 7×7 sprites — the artwork
  *   carries lock state, plus an amber offline dot when the ping stops answering.
  *   TE (terrace) and OL (Oberlichten = skylights) are text labels at x 20, with
- *   3×3 badges left-aligned at x 29. Hue identifies the opening — green terrace,
- *   blue skylights — and fill carries state: hollow = closed, filled = open,
- *   olive + amber checker = stale/offline. Label brightness is deliberately high:
+ *   3×3 badges left-aligned at x 29. Labels share the temperatures' warm white; the badge
+ *   carries state twice, in colour and shape: filled green = open, hollow red = closed,
+ *   olive + amber checker = stale/offline. Text brightness is deliberately high:
  *   the panel sits behind palladium-coated glass and C.dimWhite (80,80,80), used
  *   by the HOME label, is not readable in daylight through it.
  *
@@ -128,12 +128,10 @@ const C = {
   doorHandle: [200, 100, 80], // warm highlight for handle
   // Row 0 merged status cell — hue is identity, fill is state.
   // Labels run bright: they must clear C.dimWhite (unreadable behind the glass).
-  teLabel: [90, 240, 125], // terrace — bright green
-  teOutline: [26, 120, 50], // terrace closed (hollow badge)
-  olLabel: [110, 185, 255], // Oberlichten — bright blue
-  olOutline: [34, 88, 150], // skylight closed (hollow badge)
-  tempRoof: [200, 200, 160], // Dachterrasse value + identity dot
-  tempPool: [0, 190, 220], // pool value + identity dot
+  // TE / OL labels and both terrace temperatures share the clock's warm white (PIXD-62).
+  rowText: [200, 200, 160],
+  badgeOpen: [40, 210, 80], // filled green badge = open
+  badgeClosed: [210, 30, 30], // hollow red badge = closed
   ok: [0, 200, 80],
   warn: [220, 160, 0],
   bad: [200, 30, 30],
@@ -235,9 +233,8 @@ function drawNukiIcon(d, image, cx, cy, alive) {
 
 // ── Cell: merged door/lock status (row 0, x 0..42) ────────────────────────────
 
-// 3×3 badge. Hue is passed in by the caller and means "which opening"; this
-// function only encodes state: hollow = closed, filled = open, olive + amber
-// checker = stale/offline. Stale must never look like closed — a sensor that
+// 3×3 badge: filled `bright` = open, hollow `outline` = closed (home2 passes green / red, so
+// shape and colour both carry state), olive + amber checker = stale/offline. Stale must never look like closed — a sensor that
 // dropped off while a window was open is the failure that matters.
 function drawOpeningBadge(d, x, y, open, online, bright, outline) {
   if (open === null || online === false) {
@@ -498,7 +495,12 @@ async function drawPvCons(d, cx, cy, productionW, consumptionW) {
 
 // ── Boiler day history / chart ───────────────────────────────────────────────
 
-const BOILER_BUCKETS = 18;
+// 16 buckets of 90 min: 6 h is exactly 4 px, so the 00/06/12/18/24 ticks sit evenly (PIXD-62).
+// Until 2026-10-09 the day had 18 × 80-min buckets; such a state file is re-binned on load.
+const BOILER_BUCKETS = 16;
+const BOILER_BUCKET_MIN = 90;
+const BOILER_LEGACY_BUCKETS = 18;
+const BOILER_LEGACY_BUCKET_MIN = 80;
 const BOILER_SAMPLE_MS = 60000;
 const BOILER_SAVE_MS = 5 * 60000;
 const BOILER_STATE_PATH = resolve(__dirname, ".state", "home2-boiler.json");
@@ -509,7 +511,26 @@ function boilerLocalDate(now) {
 
 function boilerBucket(now) {
   // Wall-clock minutes, not elapsed time: DST repeats/skips within fixed bins.
-  return clamp(Math.floor((now.getHours() * 60 + now.getMinutes()) / 80), 0, 17);
+  return clamp(Math.floor((now.getHours() * 60 + now.getMinutes()) / BOILER_BUCKET_MIN), 0, BOILER_BUCKETS - 1);
+}
+
+// Re-bin a day of {sum, count} buckets to BOILER_BUCKETS by minute overlap. Each new bucket keeps
+// the overlap-weighted average of the old ones, with an integer count (≥ 1 when anything overlaps).
+function rebinBoilerBuckets(old, oldMinutes) {
+  return Array.from({ length: BOILER_BUCKETS }, (_, j) => {
+    const [b0, b1] = [j * BOILER_BUCKET_MIN, (j + 1) * BOILER_BUCKET_MIN];
+    let sum = 0;
+    let weight = 0;
+    old.forEach((bucket, i) => {
+      const overlap = Math.min(b1, (i + 1) * oldMinutes) - Math.max(b0, i * oldMinutes);
+      if (overlap <= 0 || bucket.count === 0) return;
+      sum += bucket.sum * (overlap / oldMinutes);
+      weight += bucket.count * (overlap / oldMinutes);
+    });
+    if (weight === 0) return { sum: 0, count: 0 };
+    const count = Math.max(1, Math.round(weight));
+    return { sum: (sum / weight) * count, count };
+  });
 }
 
 function emptyBoilerDay(now) {
@@ -635,8 +656,8 @@ function _boilerTempColor(tempC) {
 async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heating = false, heatCycle = null, nowMs = Date.now()) {
   const baselineY = cellY0 + 15; // y=42; chart rows y=32..41 (5°C/px)
   const tickRowY = cellY0 + 16; // y=43
-  const yTickX = cellX0 + 1; // x=45
-  const curveX0 = cellX0 + 2; // x=46..63: all 18 day buckets
+  const yTickX = cellX0 + 2; // x=46
+  const curveX0 = cellX0 + 3; // x=47..62: all 16 day buckets, ending under the degree column
   const rightX = cellX0 + 19; // exclusive text anchor, same as the UV value
   const textY = cellY0 + 1; // y=28
   const dimGray = [60, 60, 60];
@@ -646,10 +667,14 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
   // above it ran behind the digits and is gone (PIXD-60).
 
   hLine(d, yTickX, curveX0 + BOILER_BUCKETS - 1, baselineY, ...dimGray);
-  for (const offset of [0, 5, 10]) d._setPixel(yTickX, baselineY - offset, ...dimGray);
-  // Tick columns are the buckets containing 06:00 / 12:00 / 18:00.
-  for (const minutes of [360, 720, 1080]) {
-    d._setPixel(curveX0 + Math.floor(minutes / 80), tickRowY, ...dimGray);
+  // Y ticks at temperatures that mean something: 40 °C, below which a shower feels cold (faint
+  // blue), and 60 °C, which scalds within seconds and keeps legionella down (faint red).
+  d._setPixel(yTickX, baselineY - (40 - 20) / 5, 50, 80, 150);
+  d._setPixel(yTickX, baselineY - (60 - 20) / 5, 150, 45, 35);
+  // Time ticks every 6 h at the start of the bucket beginning at 00/06/12/18, and 24:00 just
+  // past the last bucket: x47, 51, 55, 59, 63.
+  for (let hour = 0; hour <= 24; hour += 6) {
+    d._setPixel(curveX0 + (hour * 60) / BOILER_BUCKET_MIN, tickRowY, ...dimGray);
   }
 
   for (let i = 0; i <= nowBucket; i++) {
@@ -1460,26 +1485,27 @@ export default {
 
     // TE (terrace door) and OL (Oberlichten) share a label x; the leftmost badge
     // of each row shares a second x, so the two rows read as aligned statements.
-    await device.drawTextRgbaAligned("TE", [20, 9], C.teLabel, "left");
+    // Rows sit centred in y8..25: TE y10..14, OL y19..23 (2 px top, 4 px gap, 2 px bottom).
+    await device.drawTextRgbaAligned("TE", [20, 10], C.rowText, "left");
     drawOpeningBadge(
       device,
       29,
-      10,
+      11,
       s.terraceOpen,
       s.terraceOnline,
-      C.teLabel,
-      C.teOutline,
+      C.badgeOpen,
+      C.badgeClosed,
     );
 
-    await device.drawTextRgbaAligned("OL", [20, 19], C.olLabel, "left");
+    await device.drawTextRgbaAligned("OL", [20, 19], C.rowText, "left");
     drawOpeningBadge(
       device,
       29,
       20,
       s.w13Open,
       s.w13Online,
-      C.olLabel,
-      C.olOutline,
+      C.badgeOpen,
+      C.badgeClosed,
     );
     drawOpeningBadge(
       device,
@@ -1487,8 +1513,8 @@ export default {
       20,
       s.w14Open,
       s.w14Online,
-      C.olLabel,
-      C.olOutline,
+      C.badgeOpen,
+      C.badgeClosed,
     );
 
     // Temperatures (x 44..63), level with their labels: pool (lower terrace) beside TE,
@@ -1496,16 +1522,16 @@ export default {
     await drawTempValue(
       device,
       COLS[2].x0,
-      9,
+      10,
       isStale(s.poolTempSeen, this._cfg.tempStaleMs) ? null : s.poolTempC,
-      C.tempPool,
+      C.rowText,
     );
     await drawTempValue(
       device,
       COLS[2].x0,
-      18,
+      19,
       isStale(s.roofTempSeen, this._cfg.tempStaleMs) ? null : s.roofTempC,
-      C.tempRoof,
+      C.rowText,
     );
 
     // ── Row 1: Energy ────────────────────────────────────────────────────────
@@ -1531,7 +1557,7 @@ export default {
     if (isStale(s.energySeen, this._cfg.staleMs))
       drawErrorMark(device, 1, 1, this._frame);
 
-    // Boiler cell — fixed local calendar day, 18 buckets of 80 minutes.
+    // Boiler cell — fixed local calendar day, 16 buckets of 90 minutes.
     this._ensureBoilerDay(now);
     const boilerCurrent = this._boilerCurrent(now.getTime());
     await drawBoiler(
@@ -1724,12 +1750,24 @@ export default {
     try {
       const saved = JSON.parse(await fs.readFile(this._boilerStatePath, "utf8"));
       if (saved?.date === boilerLocalDate(now)) {
-        if (!Array.isArray(saved.buckets) || saved.buckets.length !== BOILER_BUCKETS ||
+        const length = saved.buckets?.length;
+        if (!Array.isArray(saved.buckets) ||
+          (length !== BOILER_BUCKETS && length !== BOILER_LEGACY_BUCKETS) ||
           !saved.buckets.every((b) => b && Number.isFinite(b.sum) &&
             Number.isSafeInteger(b.count) && b.count >= 0 && (b.count > 0 || b.sum === 0))) {
           throw new Error("invalid boiler history");
         }
-        this._boilerHistory = saved;
+        if (length === BOILER_LEGACY_BUCKETS) {
+          // Today's history from the 18 × 80-min layout: keep it, re-binned, and save the new form.
+          this._boilerHistory = {
+            date: saved.date,
+            buckets: rebinBoilerBuckets(saved.buckets, BOILER_LEGACY_BUCKET_MIN),
+          };
+          this._boilerDirty = true;
+          this._boilerRevision++;
+        } else {
+          this._boilerHistory = saved;
+        }
       }
     } catch (err) {
       // No file yet (first run) is normal; anything else is worth one warning.
