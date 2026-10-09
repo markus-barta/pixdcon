@@ -592,3 +592,24 @@ test("the save response carries the normalised persisted values", async (t) => {
   assert.equal(res.status, 200);
   assert.deepEqual(JSON.parse(res.body), { ok: true, saved: { enabled: false, level: 100 } });
 });
+
+test("after saving a field that has an active overlay, the form shows the live overlay value", async (t) => {
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "pixd-p55-ov-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { config, server, service } = fixture();
+  for (const d of config.devices) Object.assign(d, { type: "pixoo", ip: "127.0.0.1" });
+  server.configPath = join(root, "config.json");
+  await writeFile(server.configPath, JSON.stringify(config));
+  await service.applyOverlay("panel-a", "clock", { level: 30 });
+  const { ui } = await loadUi(server);
+  await ui.openSceneSettings("panel-a", "clock");
+  ui.sceneSettingsForm.level = 150;
+  ui.editSceneSetting("level");
+  await ui.saveSceneSettings();
+  assert.deepEqual(plain(ui._sceneSettingsSaved).level, 100);
+  assert.equal(ui.sceneSettingsForm.level, 30); // the overlay is what runs
+  assert.equal(ui.isSceneSettingOverridden("level"), true);
+});
