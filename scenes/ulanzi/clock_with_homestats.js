@@ -13,8 +13,8 @@
  *   TRANSITIONING = Yellow (Nuki only)
  *   ERROR/UNKNOWN = Yellow (caution); Blue only for Nuki jammed/error
  *
- * Day mode  (configurable, default 07:00–19:00): HH:MM:SS at x1, bright colors
- * Night mode (configurable, default 19:00–07:00): HH:MM at x7, all colors dim,
+ * Day mode  (configurable, default 07:00–19:00): HH:MM:SS at x0, bright colors
+ * Night mode (configurable, default 19:00–07:00): HH:MM at x5, all colors dim,
  *   child-safe brightness. No bright anything — boy must sleep well.
  *
  * Brightness heartbeat: re-asserted every 5 min (guards missed transitions).
@@ -44,7 +44,8 @@
  *
  * ── Draw layout ─────────────────────────────────────────────────────────────
  * Day:   x0  time HH:MM:SS
- * Night: x6  time HH:MM (+6px right, shorter text)
+ * Night: x5  time HH:MM (+5px right, shorter text)
+ *        (the x position follows show_seconds_*, not day/night: with seconds x0, without x5)
  * x0–6   terrace door segments (row 7)
  * x11–12 skylight W13 2×2 (rows 6–7)
  * x14–15 skylight W14 2×2 (rows 6–7)

@@ -21,7 +21,7 @@ You are a software developer working on **pixdcon**, a Node.js (ESM) controller 
 
 - `version.json` (`inspr-calver-3`, `YYMMDDhhmmss.0.0`) is authoritative.
 - A release is the tag `v<version>`. The tag build publishes `ghcr.io/markus-barta/pixdcon:<version>`.
-- `scripts/verify-versioning.mjs` and `scripts/verify-versioning-bundle.mjs` run first in `npm test` and in CI.
+- `scripts/verify-versioning.mjs` and `scripts/verify-versioning-bundle.mjs` run at the start of `npm test`, which CI runs after lint.
 - Scene-only changes need no version bump.
 
 ## Before/After Any Change
