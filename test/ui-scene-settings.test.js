@@ -211,23 +211,23 @@ test("saving a field reset through the API preserves sibling settings, other sce
   const { ui } = await loadUi(server, {
     fetch: async (url, options) => {
       const res = await request(server, url, options ? JSON.parse(options.body) : undefined);
-      return { json: async () => JSON.parse(res.body) };
+      return { ok: res.status === 200, json: async () => JSON.parse(res.body) };
     },
   });
-  ui.openSceneSettings("panel-a", "clock");
+  await ui.openSceneSettings("panel-a", "clock");
   ui.resetSceneSetting("level");
   await ui.saveSceneSettings();
   const persisted = JSON.parse(await readFile(server.configPath, "utf-8"));
   assert.deepEqual(persisted.devices[0].sceneSettings, { clock: { enabled: false, text: "" }, other: { keep: true } });
   assert.deepEqual(persisted.devices[1], config.devices[1]);
   assert.deepEqual(service.getOverlayValues("panel-a", "clock"), { level: 25 });
-  // The runtime snapshot deliberately still has the old saved key until hot reload.
-  assert.equal(service.getSavedValues("panel-a", "clock").level, 0);
+  // The running config reflects the save at once (no wait for the ~500 ms hot reload).
+  assert.equal(Object.hasOwn(service.getSavedValues("panel-a", "clock"), "level"), false);
   assert.equal(ui.isSceneSettingDefault("level"), true);
   assert.equal(ui.isSceneSettingOverridden("level"), true);
   assert.equal(ui.sceneSettingsForm.level, 25);
   assert.equal(ui.isSceneSettingsDirty(), false);
-  ui.openSceneSettings("panel-a", "clock");
+  await ui.openSceneSettings("panel-a", "clock");
   assert.equal(ui.isSceneSettingDefault("level"), true);
   ui.resetSceneSetting("enabled");
   await ui.saveSceneSettings();
@@ -256,7 +256,7 @@ test("a save finishing after switching devices does not replace the new device's
   const { ui } = await loadUi(server, {
     fetch: (url) => url === "/api/scene-settings/save"
       ? new Promise((resolve) => { finishSave = resolve; })
-      : request(server, url).then((res) => ({ json: async () => JSON.parse(res.body) })),
+      : request(server, url).then((res) => ({ ok: res.status === 200, json: async () => JSON.parse(res.body) })),
   });
   ui.openSceneSettings("panel-a", "clock");
   ui.resetSceneSetting("level");
