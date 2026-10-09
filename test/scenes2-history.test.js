@@ -267,6 +267,36 @@ test("today's 18 × 80-min history (before PIXD-62) is re-binned to 16 × 90 min
   assert.equal(JSON.parse(await fs.readFile(path, "utf8")).buckets.length, 16);
 });
 
+test("re-binning keeps a tiny overlap as count 1, ignores another day's legacy file, and the first sample saves 16 buckets", async (t) => {
+  const setTime = clock(t);
+  timers(t);
+  // Legacy bucket 1 (01:20–02:40) overlaps new bucket 0 (00:00–01:30) by only 10 min: weight 0.125.
+  const legacy = { date: "2026-10-08", buckets: Array.from({ length: 18 }, () => ({ sum: 0, count: 0 })) };
+  legacy.buckets[1] = { sum: 48, count: 1 };
+  const { scene, publish, path } = await setup(t, { content: JSON.stringify(legacy) });
+  assert.deepEqual(scene._boilerHistory.buckets[0], { sum: 48, count: 1 }, "rounds up to a single sample");
+  assert.deepEqual(scene._boilerHistory.buckets[1], { sum: 48, count: 1 }, "70 min → weight 0.875 → 1");
+  // The first sample after the migration lands in a 16-bucket day and is persisted as such.
+  setTime("2026-10-08T00:30:00+02:00");
+  publish(60);
+  await scene._sampleBoiler();
+  await scene._saveBoilerHistory(true);
+  const saved = JSON.parse(await fs.readFile(path, "utf8"));
+  assert.equal(saved.buckets.length, 16);
+  assert.deepEqual(saved.buckets[0], { sum: 108, count: 2 });
+});
+
+test("another day's 18-bucket file is discarded without a warning", async (t) => {
+  clock(t);
+  timers(t);
+  const legacy = { date: "2026-10-07", buckets: Array.from({ length: 18 }, () => ({ sum: 50, count: 1 })) };
+  const { scene, warnings } = await setup(t, { content: JSON.stringify(legacy) });
+  assert.equal(scene._boilerHistory.date, "2026-10-08");
+  assert.equal(scene._boilerHistory.buckets.length, 16);
+  assert.ok(scene._boilerHistory.buckets.every((b) => b.count === 0));
+  assert.equal(warnings.length, 0);
+});
+
 test("corrupt or malformed histories warn once and start with empty buckets", async (t) => {
   clock(t);
   timers(t);

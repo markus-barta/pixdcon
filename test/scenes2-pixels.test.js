@@ -490,9 +490,9 @@ test("boiler scale clamps 19/20 to empty and 70/71 to ten rows; 45 is five rows"
 });
 
 test("the current temperature stays readable above full-height past bars", async (t) => {
-  clock(t, "2026-10-08T23:30:00+02:00"); // bucket 17: x54..60 under the digits are all PAST buckets
+  clock(t, "2026-10-08T23:30:00+02:00"); // bucket 15 (x62): x54..60 under the digits are all PAST buckets
   const { scene, device, publish } = await setup(t);
-  for (let i = 0; i <= 17; i++) scene._boilerHistory.buckets[i] = { sum: 70, count: 1 };
+  for (let i = 0; i < scene._boilerHistory.buckets.length; i++) scene._boilerHistory.buckets[i] = { sum: 70, count: 1 };
   publish(70);
   await scene.render(device);
   // "70" ends at x60; the "0" glyph's bottom row (y32) spans x58..60. Drawn last, it keeps the text colour
@@ -640,8 +640,9 @@ test("home2 matches home at every pixel outside the boiler and temperature cells
     for (let y = 0; y < 64; y++) {
       for (let x = 0; x < 64; x++) {
         if (x >= 44 && y >= 27 && y <= 44) continue; // boiler cell
-        // Row 0 right of the Nuki icons: home2 recolours and re-centres labels, badges and temps.
-        if (x >= 20 && y >= 8 && y <= 25) continue;
+        // Row 0: home2 recolours and re-centres the labels and badges (x20..36) and the
+        // temperatures (x44..63); margins and the x43 separator must still match.
+        if (y >= 8 && y <= 25 && ((x >= 20 && x <= 36) || x >= 44)) continue;
         assert.deepEqual(at(first.device, x, y), at(second.device, x, y), `x${x}, y${y}`);
       }
     }
