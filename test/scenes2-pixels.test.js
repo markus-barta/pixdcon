@@ -471,6 +471,48 @@ test("row 0 is centred and neutral: TE row y10, OL row y19; badges open = filled
   assert.deepEqual(at(device, 35, 20), [70, 50, 0]);
 });
 
+test("Nuki attention dot follows each lock's MQTT connected / batteryCritical, not ICMP ping", async (t) => {
+  clock(t, "2026-10-08T12:30:00+02:00");
+  const { scene, device, handlers } = await setup(t);
+  const amber = [255, 190, 40];
+  const ke = (field, msg) => handlers.get("nuki/4A5D18FF/#")(msg, `nuki/4A5D18FF/${field}`);
+  const vr = (field, msg) => handlers.get("nuki/463F8F47/#")(msg, `nuki/463F8F47/${field}`);
+  // Dot pixels: one column right of each 7×7 icon (x14), at its centre row and the one above.
+  const dot = async (cy) => {
+    await scene.render(device);
+    const pixels = [at(device, 14, cy - 1), at(device, 14, cy)].map((p) => p.join());
+    assert.equal(pixels[0], pixels[1], "both dot pixels agree");
+    return pixels[0] === amber.join();
+  };
+  const KE = 21;
+  const VR = 12;
+  assert.equal(await dot(KE), false, "no message yet: no dot");
+  ke("connected", "false");
+  assert.equal(await dot(KE), true, "disconnected");
+  assert.equal(await dot(VR), false, "the other lock is unaffected");
+  ke("connected", "maybe");
+  assert.equal(await dot(KE), true, "an unparseable payload keeps the last value");
+  ke("connected", " TRUE\n");
+  assert.equal(await dot(KE), false, "connected again");
+  ke("batteryCritical", "true");
+  assert.equal(await dot(KE), true, "battery critical");
+  ke("batteryCritical", "false");
+  assert.equal(await dot(KE), false);
+  ke("batteryChargeState", "3");
+  ke("state", "3");
+  assert.equal(scene._s.nukiKeState, "unlocked", "the lock state still comes from the same subscription");
+  assert.equal(await dot(KE), false, "other fields do not touch the dot");
+  vr("connected", "false");
+  assert.equal(await dot(VR), true);
+});
+
+test("home2 no longer pings the Nukis: no ICMP code, polls or ping settings", async () => {
+  const source = await fs.readFile(new URL("../scenes/pixoo/home2.js", import.meta.url), "utf8");
+  assert.ok(!/execFile|pingHost|child_process/.test(source));
+  assert.equal(home2._restartNukiPolls, undefined);
+  for (const key of ["nuki_vr_ip", "nuki_ke_ip", "nuki_ping_ms"]) assert.equal(home2.settingsSchema[key], undefined, key);
+});
+
 test("boiler scale clamps 19/20 to empty and 70/71 to ten rows; 45 is five rows", async (t) => {
   clock(t);
   const { scene, device, publish } = await setup(t);
