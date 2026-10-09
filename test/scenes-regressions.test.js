@@ -485,3 +485,21 @@ test("health rejects non-finite sensor readings and propagates device errors to 
   await assert.rejects(scene.render(device), /display offline/);
   await scene.destroy(ctx);
 });
+
+test("health reads the boiler temperature Node-RED publishes as a numeric string", async (t) => {
+  const handled = [];
+  const scene = Object.create(health);
+  const ctx = context();
+  t.mock.method(childProcess, "execFile", (_file, _args, _options, cb) => { cb(new Error("offline"), ""); });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  t.mock.method(globalThis, "fetch", async () => { throw new Error("offline"); });
+  await scene.init(ctx);
+  t.after(() => scene.destroy(ctx));
+  const handler = [...ctx.handlers.entries()].find(([topic]) => topic === "jhw2211/health/boiler" || topic.includes("health"))?.[1];
+  assert.ok(handler, "health subscribes to the boiler health topic");
+  handler(JSON.stringify({ state: "ok", temp_c: "52.37" }), "jhw2211/health/boiler");
+  handled.push(scene._state?.boiler?.tempC ?? scene.state?.boiler?.tempC);
+  assert.equal(handled[0], 52.37);
+});
+

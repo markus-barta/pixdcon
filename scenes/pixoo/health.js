@@ -499,7 +499,10 @@ function handleMqtt(topic, raw, state, logger) {
     if (topic === CONFIG.healthTopics.boiler) {
       const data = JSON.parse(raw);
       state.boiler.state       = typeof data.state === "string" && data.state ? data.state : "unknown";
-      state.boiler.tempC       = typeof data.temp_c === "number" && Number.isFinite(data.temp_c) ? data.temp_c : null;
+      // temp_c arrives as a numeric string from Node-RED (Shelly payload, e.g. "52.37").
+      const boilerTemp = typeof data.temp_c === "number" ? data.temp_c
+        : typeof data.temp_c === "string" && data.temp_c.trim() !== "" ? Number(data.temp_c) : NaN;
+      state.boiler.tempC       = Number.isFinite(boilerTemp) ? boilerTemp : null;
       state.boiler.nrRunning   = typeof data.nr_running === "boolean" ? data.nr_running : null;
       state.boiler.lastChecked = new Date();
       return;
