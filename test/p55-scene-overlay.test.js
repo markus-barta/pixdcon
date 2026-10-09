@@ -475,3 +475,35 @@ test("clear, close and reopen before the clear returns shows the cleared values"
   assert.equal(ui.isSceneSettingOverridden("level"), false);
   assert.equal(ui.sceneSettingsForm.level, 5); // saved value of panel-a, not the stale 30
 });
+
+test("saving keeps an MQTT config blob's scene settings in force until the reload recomputes them", async (t) => {
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "pixd-p55-blob-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { config, server, service } = fixture();
+  server.configPath = join(root, "config.json");
+  for (const d of config.devices) Object.assign(d, { type: "pixoo", ip: "127.0.0.1" }); // loader-valid file
+  // File: level 5 saved. Running config: a retained blob overlay drives level 80.
+  await writeFile(server.configPath, JSON.stringify(config));
+  config.devices[0].sceneSettings = { clock: { level: 80 } };
+  const res = await request(server, "/api/scene-settings/save", { deviceName: "panel-a", sceneName: "clock", values: {} });
+  assert.equal(res.status, 200);
+  assert.equal(service.getEffectiveValues("panel-a", "clock").level, 80); // blob keeps precedence
+});
+
+test("saving updates the running config immediately when no blob drives it", async (t) => {
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "pixd-p55-save-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { config, server, service } = fixture();
+  server.configPath = join(root, "config.json");
+  for (const d of config.devices) Object.assign(d, { type: "pixoo", ip: "127.0.0.1" }); // loader-valid file
+  await writeFile(server.configPath, JSON.stringify(config));
+  const res = await request(server, "/api/scene-settings/save", { deviceName: "panel-a", sceneName: "clock", values: { level: 33 } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(service.getSavedValues("panel-a", "clock"), { level: 33 });
+});
