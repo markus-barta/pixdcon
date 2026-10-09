@@ -534,13 +534,6 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket) {
 
   // Same current-column background and bottom arrow as home's UV chart.
   vLine(d, nowX, cellY0, cellY0 + 17, ...dimGray);
-  if (current === null) {
-    await d.drawTextRgbaAligned("--", [rightX, textY], C.dimWhite, "right");
-  } else {
-    const color = _boilerTempColor(current);
-    await d.drawTextRgbaAligned(String(Math.round(current)), [rightX - 2, textY], color, "right");
-    d._setPixel(rightX - 1, textY, ...color); // last digit x=60, gap x=61, ° x=62
-  }
 
   hLine(d, yTickX, curveX0 + BOILER_BUCKETS - 1, baselineY, ...dimGray);
   for (const offset of [0, 5, 10]) d._setPixel(yTickX, baselineY - offset, ...dimGray);
@@ -564,6 +557,15 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket) {
   d._setPixel(nowX, tickRowY, ...arrowGray);
   // The final bucket touches x=63: clip the arrow base to its own cell.
   hLine(d, Math.max(cellX0, nowX - 1), Math.min(cellX0 + 19, nowX + 1), cellY0 + 17, ...arrowGray);
+
+  // Text last: full-height bars (≥ 67.5 °C) reach the digits' bottom row (y32).
+  if (current === null) {
+    await d.drawTextRgbaAligned("--", [rightX, textY], C.dimWhite, "right");
+  } else {
+    const color = _boilerTempColor(current);
+    await d.drawTextRgbaAligned(String(Math.round(current)), [rightX - 2, textY], color, "right");
+    d._setPixel(rightX - 1, textY, ...color); // last digit x=60, gap x=61, ° x=62
+  }
 }
 
 // ── Media icons ───────────────────────────────────────────────────────────────
@@ -1528,7 +1530,7 @@ export default {
     this._boilerDirty = false;
     this._boilerLastSaveAt = now.getTime();
     this._boilerSave = Promise.resolve();
-    this._boilerStateWarned = false;
+    this._boilerStateWarned = new Set();
     this._boilerStatePath ??= BOILER_STATE_PATH;
     try {
       const saved = JSON.parse(await fs.readFile(this._boilerStatePath, "utf8"));
@@ -1541,17 +1543,19 @@ export default {
         this._boilerHistory = saved;
       }
     } catch (err) {
-      this._warnBoilerState(err);
+      // No file yet (first run) is normal; anything else is worth one warning.
+      if (err.code !== "ENOENT") this._warnBoilerState(err, "load");
     }
     this._ensureBoilerDay(new Date());
     this._boilerSampling = true;
     this._boilerTimer = setInterval(() => { void this._sampleBoiler(); }, BOILER_SAMPLE_MS);
   },
 
-  _warnBoilerState(err) {
-    if (this._boilerStateWarned) return;
-    this._boilerStateWarned = true;
-    this._logger.warn(`[home2] Boiler history unavailable: ${err.message}; continuing in memory`);
+  _warnBoilerState(err, kind) {
+    // One warning per kind (load / save) per instance, so a failed load does not hide a later write error.
+    if (this._boilerStateWarned.has(kind)) return;
+    this._boilerStateWarned.add(kind);
+    this._logger.warn(`[home2] Boiler history ${kind} failed: ${err.message}; continuing in memory`);
   },
 
   _ensureBoilerDay(now) {
@@ -1600,7 +1604,7 @@ export default {
         await fs.rename(tempPath, this._boilerStatePath);
         if (this._boilerRevision === revision) this._boilerDirty = false;
       } catch (err) {
-        this._warnBoilerState(err);
+        this._warnBoilerState(err, "save");
         try { await fs.unlink(tempPath); } catch {}
       }
     });
@@ -1611,6 +1615,7 @@ export default {
     this._boilerSampling = false;
     if (this._boilerTimer) clearInterval(this._boilerTimer);
     this._boilerTimer = null;
+    if (!this._boilerSave) return; // init failed before the history started
     await this._saveBoilerHistory(true);
   },
 

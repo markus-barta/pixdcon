@@ -169,6 +169,17 @@ test("boiler scale clamps 19/20 to empty and 70/71 to ten rows; 45 is five rows"
   }
 });
 
+test("the current temperature stays readable above full-height past bars", async (t) => {
+  clock(t, "2026-10-08T23:30:00+02:00"); // bucket 17: x54..60 under the digits are all PAST buckets
+  const { scene, device, publish } = await setup(t);
+  for (let i = 0; i <= 17; i++) scene._boilerHistory.buckets[i] = { sum: 70, count: 1 };
+  publish(70);
+  await scene.render(device);
+  // "70" ends at x60; the "0" glyph's bottom row (y32) spans x58..60. Drawn last, it keeps the text colour
+  // instead of the dimmed full-height bar colour [150, 13, 0] underneath.
+  for (const x of [58, 59, 60]) assert.deepEqual(at(device, x, 32), [230, 20, 0], `x${x}`);
+});
+
 test("boiler colour runs blue → cyan → pale neutral → amber → orange → red, never through green", async (t) => {
   clock(t);
   const { scene, device, publish } = await setup(t);
@@ -270,7 +281,7 @@ test("home2 matches home at every pixel outside the boiler cell across normal/st
   }
 });
 
-test("write coordinator previews for home and home2 with a cold/heated/cooling boiler day", async (t) => {
+test("write coordinator previews for home and home2 with a cold/heated/cooling boiler day", { skip: !process.env.PIXDCON_PREVIEWS && "set PIXDCON_PREVIEWS=1 to write .previews/*.png" }, async (t) => {
   clock(t, "2026-10-08T18:30:00+02:00");
   const first = await setup(t, home);
   const second = await setup(t);

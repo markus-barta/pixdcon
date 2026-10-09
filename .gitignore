@@ -24,6 +24,7 @@ data/
 tmp/
 .cache/
 scenes/**/.state/
+.previews/
 
 # IDE
 .vscode/

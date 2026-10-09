@@ -304,7 +304,7 @@ test("missing and unwritable state paths never break rendering", async (t) => {
   clock(t);
   timers(t);
   const { scene, publish, warnings } = await setup(t);
-  assert.equal(warnings.length, 1); // Missing file is logged once.
+  assert.equal(warnings.length, 0); // A missing file is the normal first run: silent.
   publish(50);
   await scene._sampleBoiler();
   t.mock.method(fs, "mkdir", async () => { throw new Error("unwritable directory"); });
@@ -314,8 +314,15 @@ test("missing and unwritable state paths never break rendering", async (t) => {
   device.setBrightness = async () => {};
   device.push = async () => {};
   assert.equal(await scene.render(device), 500);
-  assert.equal(warnings.length, 1);
+  assert.equal(warnings.length, 1); // one save warning, however often the save fails
+  assert.match(warnings[0], /save failed/);
   assert.deepEqual(scene._boilerHistory.buckets[0], { sum: 50, count: 1 });
+});
+
+test("destroy after a failed init does not throw", async () => {
+  const { default: home2 } = await import("../scenes/pixoo/home2.js");
+  const scene = Object.create(home2);
+  await scene._stopBoilerHistory(); // nothing started: no save queue, no timer
 });
 
 test("destroy flushes unsaved samples, clears timers and ignores late callbacks", async (t) => {
