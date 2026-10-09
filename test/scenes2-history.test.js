@@ -93,6 +93,9 @@ test("home2 metadata, boiler settings and subscriptions replace UV", async (t) =
   assert.equal(scene.settingsSchema.boiler_stale_ms.default, 1800000);
   assert.equal(scene._cfg.boilerHeatingW, 100);
   assert.equal(scene.settingsSchema.boiler_heating_w.default, 100);
+  assert.equal(scene._cfg.heatingFps, 2);
+  assert.equal(scene.settingsSchema.heating_fps.default, 2);
+  assert.deepEqual([scene.settingsSchema.heating_fps.min, scene.settingsSchema.heating_fps.max], [1, 4]);
   assert.ok(handlers.has("z2m/bz/powercontrol/boiler"));
   assert.ok(handlers.has(topic));
   assert.ok(![...handlers.keys()].some((key) => /uv/i.test(key)));

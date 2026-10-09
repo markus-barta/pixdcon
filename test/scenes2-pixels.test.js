@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import sharp from "sharp";
 import home from "../scenes/pixoo/home.js";
-import home2, { BOILER_COLOR_STOPS, boilerTempColor as heat, climbColor, luminance } from "../scenes/pixoo/home2.js";
+import home2, { BOILER_COLOR_STOPS, boilerTempColor as heat, heatDotRed, deltaE, mix } from "../scenes/pixoo/home2.js";
 import { PixooDriver } from "../lib/pixoo-driver.js";
 
 const logger = { info() {}, warn() {}, error() {}, debug() {} };
@@ -13,12 +13,10 @@ const black = [0, 0, 0];
 const gray = [60, 60, 60];
 // Boiler colours come from the scene's scale (pinned by its own test below).
 const dim = (c) => c.map((v) => Math.round(v * 0.65));
-const brighten = (c) => c.map((v) => Math.round(v + (255 - v) * 0.5));
-const darken = (c) => c.map((v) => Math.round(v * 0.5));
-const contrast = (a, b) => {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-};
+const RED = [255, 40, 25];
+const PALE_RED = [255, 150, 130];
+// The heating dot is red mixed into what is behind it: 70 % at full strength.
+const dot = (bg, a = 1) => mix(bg, heatDotRed(bg), 0.7 * a);
 const roof = [200, 200, 160];
 const pool = [0, 190, 220];
 
@@ -248,67 +246,80 @@ test("home2 wide temperatures drop the decimal and keep the degree on x62; -- is
   }
 });
 
-test("boiler heating turns the triangle red and climbs a bright pixel up the current bar at 1 px/s", async (t) => {
-  clock(t, "2026-10-08T12:30:00+02:00"); // bucket 9 → x55
+test("heating: red triangle and a red dot mixed into the bar, rising 1 row/s with a sub-pixel glide to one row above the bar", async (t) => {
+  const setTime = clock(t, "2026-10-08T12:30:00+02:00"); // bucket 9 → x55
   const { scene, device, publish, relay } = await setup(t);
-  publish(55); // 7 rows: y35..41
+  publish(40); // 4 rows: y38..41; the dot ends at y37, one row above
   relay(2150);
-  const bar = heat(55);
-  const bright = brighten(bar);
-  const red = [230, 30, 20];
-  const climbs = [];
-  for (let frame = 1; frame <= 16; frame++) {
+  const bar = heat(40);
+  assert.deepEqual(heatDotRed(bar), RED, "deep red over warm yellow");
+  const start = Date.parse("2026-10-08T12:30:00+02:00");
+  const frame = async (seconds) => {
+    setTime(start + seconds * 1000);
     await scene.render(device);
-    assert.equal(scene._frame, frame);
-    const lit = [];
-    for (let y = 35; y <= 41; y++) {
-      const pixel = at(device, 55, y);
-      if (pixel.join() === bright.join()) lit.push(y);
-      else assert.deepEqual(pixel, bar, `frame ${frame}, y${y}`);
-    }
-    assert.equal(lit.length, 1, `one climbing pixel on frame ${frame}`);
-    climbs.push(lit[0]);
-    assert.deepEqual(at(device, 55, 43), red);
-    for (const x of [54, 55, 56]) assert.deepEqual(at(device, x, 44), red);
-  }
-  // Two 500 ms frames per row, bottom to top, then wrap to the bottom.
-  assert.deepEqual(climbs, [41, 40, 40, 39, 39, 38, 38, 37, 37, 36, 36, 35, 35, 41, 41, 40]);
+    const column = {};
+    for (let y = 36; y <= 41; y++) column[y] = at(device, 55, y);
+    assert.deepEqual(at(device, 55, 43), [230, 30, 20], `red triangle at ${seconds}s`);
+    return column;
+  };
+  // t=0: the dot sits on the bottom row at full strength; nothing else is touched.
+  let c = await frame(0);
+  assert.deepEqual(c[41], dot(bar));
+  for (const y of [38, 39, 40]) assert.deepEqual(c[y], bar);
+  assert.deepEqual(c[37], black);
+  // t=0.5: halfway between y41 and y40, half strength on each (the glide).
+  c = await frame(0.5);
+  assert.deepEqual(c[41], dot(bar, 0.5));
+  assert.deepEqual(c[40], dot(bar, 0.5));
+  // t=2.25: rows 2.25 → y39 at 75 %, y38 at 25 %; tail (pos 1.25) adds 30 % × 75 % to y40, 30 % × 25 % to y39.
+  c = await frame(2.25);
+  assert.deepEqual(c[40], dot(bar, 0.3 * 0.75));
+  assert.deepEqual(c[39], dot(bar, 0.75 + 0.3 * 0.25));
+  assert.deepEqual(c[38], dot(bar, 0.25));
+  assert.deepEqual(c[41], bar);
+  // t=4: one row above the bar, on black, full strength; t=4.5 half faded; t=5 restarts at the bottom.
+  c = await frame(4);
+  assert.deepEqual(c[37], dot(black));
+  assert.deepEqual(c[38], dot(bar, 0.3), "tail on the bar's top row");
+  assert.deepEqual(c[36], black);
+  c = await frame(4.5);
+  assert.deepEqual(c[37], dot(black, 0.5));
+  c = await frame(5);
+  assert.deepEqual(c[41], dot(bar));
+  assert.deepEqual(c[37], black);
 });
 
-test("the heating pixel keeps at least 1.5:1 contrast on every bar colour: dark on light bars, bright on dark ones", () => {
+test("the red mix stands out on every bar colour (ΔE ≥ 25): deep red on cool bars, pale hot red on orange/red", () => {
   for (let t = 20; t <= 70; t += 0.25) {
     const bar = heat(t);
-    const ratio = contrast(bar, climbColor(bar));
-    assert.ok(ratio >= 1.5, `${t} °C: ${bar} vs ${climbColor(bar)} is only ${ratio.toFixed(2)}:1`);
+    const distance = deltaE(dot(bar), bar);
+    assert.ok(distance >= 25, `${t} °C: ${dot(bar)} on ${bar} is only ΔE ${distance.toFixed(1)}`);
   }
-  assert.deepEqual(climbColor(heat(36)), darken(heat(36)), "skin-neutral white gets a darker pixel");
-  assert.deepEqual(climbColor(heat(40)), darken(heat(40)), "warm yellow gets a darker pixel");
-  assert.deepEqual(climbColor(heat(55)), brighten(heat(55)), "orange gets a brighter pixel");
-  assert.deepEqual(climbColor(heat(70)), brighten(heat(70)), "red gets a brighter pixel");
-  assert.deepEqual(climbColor(heat(20)), brighten(heat(20)), "cold blue gets a brighter pixel");
+  for (const t of [20, 30, 36, 40, 45, 50]) assert.deepEqual(heatDotRed(heat(t)), RED, `${t} °C`);
+  for (const t of [56, 60, 65, 70]) assert.deepEqual(heatDotRed(heat(t)), PALE_RED, `${t} °C`);
+  assert.ok(deltaE(dot(black), black) >= 25, "visible on black above the bar");
 });
 
-test("heating at a skin-neutral 36 °C climbs a visibly darker pixel through the near-white bar", async (t) => {
-  clock(t, "2026-10-08T12:30:00+02:00"); // bucket 9 → x55
+test("heating_fps: faster frames only while heating; the battery sweep and error blink keep their 2 fps pace", async (t) => {
+  const setTime = clock(t, "2026-10-08T12:30:00+02:00");
   const { scene, device, publish, relay } = await setup(t);
-  publish(36); // round(16 / 5) = 3 rows: y39..41
+  publish(40);
+  assert.equal(scene._cfg.heatingFps, 2);
+  assert.equal(await scene.render(device), 500, "not heating");
   relay(2150);
-  const bar = heat(36);
-  const pixel = darken(bar);
-  const climbs = [];
-  for (let frame = 1; frame <= 6; frame++) {
-    await scene.render(device);
-    const lit = [];
-    for (let y = 39; y <= 41; y++) {
-      const got = at(device, 55, y);
-      if (got.join() === pixel.join()) lit.push(y);
-      else assert.deepEqual(got, bar, `frame ${frame}, y${y}`);
-    }
-    assert.equal(lit.length, 1, `frame ${frame}`);
-    climbs.push(lit[0]);
-  }
-  assert.deepEqual(climbs, [41, 40, 40, 39, 39, 41]);
-  assert.ok(contrast(bar, pixel) > 3);
+  assert.equal(await scene.render(device), 500, "heating at the default 2 fps");
+  scene._cfg = scene._mapSettings({ heating_fps: 4 });
+  const before = scene._frame;
+  for (let i = 0; i < 4; i++) assert.equal(await scene.render(device), 250, "heating at 4 fps");
+  assert.equal(scene._frame - before, 2, "four 4-fps renders advance the 2-fps frame clock by two");
+  relay(0);
+  assert.equal(await scene.render(device), 500, "back to 500 ms once heating stops");
+  // Render time counts against the target: a 100 ms render asks for 150 ms more at 4 fps.
+  relay(2150);
+  const realPush = device.push;
+  device.push = async () => { setTime(Date.now() + 100); };
+  assert.equal(await scene.render(device), 150);
+  device.push = realPush;
 });
 
 test("boiler not heating: below threshold, stale relay, missing power or a raised threshold keep the grey triangle", async (t) => {
@@ -352,38 +363,45 @@ test("boiler not heating: below threshold, stale relay, missing power or a raise
   assert.equal(scene._boilerHeating(), true, "100 W meets the default threshold");
 });
 
-test("under the digits, a full-height heating bar keeps its climbing pixel visible below y32", async (t) => {
-  clock(t, "2026-10-08T16:00:00+02:00"); // bucket 12 → x58, under "70" (x54..60)
+test("on a full-height bar the dot stops at y33 and never touches the digits' row", async (t) => {
+  const setTime = clock(t, "2026-10-08T16:00:00+02:00"); // bucket 12 → x58, under "70" (x54..60)
   const { scene, device, publish, relay } = await setup(t);
   publish(70);
+  await scene.render(device);
+  const reference = [];
+  for (let y = 27; y <= 32; y++) reference.push(at(device, 58, y));
   relay(2150);
-  const bright = brighten(heat(70));
-  const climbs = [];
-  for (let frame = 1; frame <= 20; frame++) {
+  const start = Date.parse("2026-10-08T16:00:00+02:00");
+  const bar = heat(70);
+  assert.deepEqual(heatDotRed(bar), PALE_RED, "pale hot red over red");
+  for (let step = 0; step <= 40; step++) {
+    setTime(start + step * 250);
     await scene.render(device);
-    const lit = [];
-    for (let y = 33; y <= 41; y++) if (at(device, 58, y).join() === bright.join()) lit.push(y);
-    assert.equal(lit.length, 1, `one visible climbing pixel on frame ${frame}`);
-    climbs.push(lit[0]);
-    assert.deepEqual(at(device, 58, 32), heat(70), "the digit row keeps the text colour");
+    for (let y = 27; y <= 32; y++) assert.deepEqual(at(device, 58, y), reference[y - 27], `y${y} at ${step * 0.25}s`);
   }
-  assert.equal(Math.min(...climbs), 33);
-  assert.equal(Math.max(...climbs), 41);
+  setTime(start + 8000); // rise of 8 rows: at the top (y33), full strength
+  await scene.render(device);
+  assert.deepEqual(at(device, 58, 33), dot(bar));
 });
 
-test("a heating boiler with a bar under two rows keeps the red triangle but has nothing to climb", async (t) => {
-  clock(t, "2026-10-08T12:30:00+02:00");
+test("short bars still show the dot: one row above a 1-row bar, a pulse just above the baseline with no bar", async (t) => {
+  const setTime = clock(t, "2026-10-08T12:30:00+02:00");
   const { scene, device, publish, relay } = await setup(t);
+  const start = Date.parse("2026-10-08T12:30:00+02:00");
   relay(2150);
-  for (const [temp, rows] of [[25, 1], [21, 0]]) {
-    publish(temp);
-    for (let i = 0; i < 3; i++) {
-      await scene.render(device);
-      assert.deepEqual(at(device, 55, 43), [230, 30, 20]);
-      if (rows === 1) assert.deepEqual(at(device, 55, 41), heat(25), `${temp} keeps its bar colour`);
-      // y32 is the digits' bottom row; below it, nothing: no current-column line (PIXD-60).
-      for (let y = 33; y < 42 - rows; y++) assert.deepEqual(at(device, 55, y), black, `${temp} y${y}`);
-    }
+  publish(25); // 1 row (y41); the dot rises to y40 over 1 s
+  setTime(start);
+  await scene.render(device);
+  assert.deepEqual(at(device, 55, 41), dot(heat(25)));
+  setTime(start + 1000);
+  await scene.render(device);
+  assert.deepEqual(at(device, 55, 40), dot(black));
+  assert.deepEqual(at(device, 55, 43), [230, 30, 20]);
+  publish(21); // 0 rows: a 1 s fade at y41, on black
+  for (const [ms, strength] of [[2000, 1], [2500, 0.5]]) {
+    setTime(start + ms);
+    await scene.render(device);
+    assert.deepEqual(at(device, 55, 41), dot(black, strength), `${ms} ms`);
   }
 });
 

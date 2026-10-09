@@ -28,7 +28,8 @@
  *
  * Boiler cell: colour = temperature feel (blue → white at ~36 °C → yellow → amber → red), shared
  *   by the number and the current bar. Only a bottom triangle marks the current bucket; it
- *   turns red while the boiler draws power, and a contrasting pixel climbs the current bar (1 px/s).
+ *   turns red while the boiler draws power, and a red dot (mixed into the bar) rises through the
+ *   current bar to one row above it at 1 row/s, fades out, and restarts (heating_fps sets the FPS).
  *
  * Data sources:
  *   nuki/463F8F47/state                           numeric 1=locked 2=unlocking 3=unlocked 4=locking  (Nuki VR)
@@ -98,6 +99,7 @@ const DEFAULT_SETTINGS = {
   syncboxInputPc: "input2",
   boilerStaleMs: 30 * 60 * 1000,
   boilerHeatingW: 100,
+  heatingFps: 2,
   // Battery-powered Zigbee temp sensors report on change, not on a schedule —
   // the pool probe can go 30 min between publishes. 5 min would read as stale.
   tempStaleMs: 5400000,
@@ -531,21 +533,72 @@ const BOILER_COLOR_STOPS = [
   [70, [230, 20, 0]], // very hot — red
 ];
 
-// WCAG relative luminance (0..1) of an sRGB colour.
-function _luminance(rgb) {
+// ── Heating dot (PIXD-61) ─────────────────────────────────────────────────────
+// While heating, a red dot rises through the current bar at 1 row/s and ends one row above it
+// ("heating past the current temperature"), holds there fading out, then restarts at the bottom.
+// It is red mixed into whatever is behind it (bar or black): a sub-pixel split across the two
+// rows it straddles, plus a faint tail, makes it glide even at 2 fps. Time-based, so the speed
+// does not depend on the frame rate (heating_fps).
+const HEAT_DOT_ROWS_PER_S = 1;
+const HEAT_DOT_FADE_S = 1;
+const HEAT_DOT_MIX = 0.7; // red share at full strength
+const HEAT_DOT_TAIL = 0.3; // tail strength, one row below the dot
+const HEAT_DOT_TOP_ROW = 8; // y33: never the digits' bottom row (y32)
+const HEAT_RED = [255, 40, 25];
+const HEAT_RED_PALE = [255, 150, 130]; // for orange/red bars, where red would vanish
+
+// CIELAB (D65) of an sRGB colour, for perceptual colour distance (red on blue has similar
+// luminance but is obviously visible; a luminance-only measure would call it invisible).
+function _lab(rgb) {
   const [r, g, b] = rgb.map((v) => {
     const c = v / 255;
     return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
   });
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const f = (t) => (t > 216 / 24389 ? Math.cbrt(t) : ((24389 / 27) * t + 16) / 116);
+  const fx = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047);
+  const fy = f(0.2126 * r + 0.7152 * g + 0.0722 * b);
+  const fz = f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
 }
 
-// The heating pixel must stand out on every bar colour: light bars (the white ~36 °C and the
-// yellows) get a darker pixel, darker bars (blues, orange, red) a brighter one.
-function _climbColor(color) {
-  return _luminance(color) > 0.4
-    ? color.map((v) => Math.round(v * 0.5))
-    : color.map((v) => Math.round(v + (255 - v) * 0.5));
+function _deltaE(a, b) {
+  const [p, q] = [_lab(a), _lab(b)];
+  return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+}
+
+function _mix(bg, fg, alpha) {
+  return bg.map((v, j) => Math.round(v + (fg[j] - v) * alpha));
+}
+
+// The red the dot mixes in over this bar: heating red, or pale hot red where that stands out more.
+function _heatDotRed(barColor) {
+  const full = (red) => _deltaE(_mix(barColor, red, HEAT_DOT_MIX), barColor);
+  return full(HEAT_RED_PALE) > full(HEAT_RED) ? HEAT_RED_PALE : HEAT_RED;
+}
+
+// rows: 0 = y41 (just above the baseline). The bar fills rows 0..height-1.
+function drawHeatDot(d, x, baselineY, height, barColor, t) {
+  const top = Math.min(height, HEAT_DOT_TOP_ROW);
+  const rise = top / HEAT_DOT_ROWS_PER_S;
+  const tau = t % (rise + HEAT_DOT_FADE_S);
+  const pos = tau < rise ? tau * HEAT_DOT_ROWS_PER_S : top;
+  const strength = tau < rise ? 1 : 1 - (tau - rise) / HEAT_DOT_FADE_S;
+  const red = _heatDotRed(barColor);
+  const alpha = new Map();
+  const splat = (p, a) => {
+    if (p < 0) return;
+    const row = Math.floor(p);
+    const frac = p - row;
+    alpha.set(row, (alpha.get(row) ?? 0) + a * (1 - frac));
+    if (frac > 0) alpha.set(row + 1, (alpha.get(row + 1) ?? 0) + a * frac);
+  };
+  splat(pos, strength);
+  splat(pos - 1, strength * HEAT_DOT_TAIL);
+  for (const [row, a] of alpha) {
+    if (row > top || a <= 0) continue;
+    const bg = row < height ? barColor : [0, 0, 0];
+    d._setPixel(x, baselineY - 1 - row, ..._mix(bg, red, Math.min(1, a) * HEAT_DOT_MIX));
+  }
 }
 
 function _boilerTempColor(tempC) {
@@ -563,7 +616,7 @@ function _boilerTempColor(tempC) {
   return stops[stops.length - 1][1];
 }
 
-async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heating = false, frame = 0) {
+async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heating = false, heatT = null) {
   const baselineY = cellY0 + 15; // y=42; chart rows y=32..41 (5°C/px)
   const tickRowY = cellY0 + 16; // y=43
   const yTickX = cellX0 + 1; // x=45
@@ -592,14 +645,7 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
     const color = _boilerTempColor(value);
     const barColor = i === nowBucket ? color : color.map((v) => Math.round(v * 0.65));
     vLine(d, curveX0 + i, baselineY - height, baselineY - 1, ...barColor);
-    // Heating: a contrasting pixel (_climbColor) climbs the current bar, bottom to top, 1 px/s (500 ms frames),
-    // in the spirit of the battery's charge sweep. It stays below y32, the digits' bottom row,
-    // which the text drawn last would otherwise hide under a full-height bar.
-    const climbRows = Math.min(height, 9);
-    if (heating && i === nowBucket && climbRows > 1) {
-      const climbY = baselineY - 1 - (Math.floor(frame / 2) % climbRows);
-      d._setPixel(nowX, climbY, ..._climbColor(color));
-    }
+    if (heating && heatT !== null && i === nowBucket) drawHeatDot(d, nowX, baselineY, height, color, heatT);
   }
 
   // Current-time triangle: red while the boiler is heating.
@@ -668,7 +714,7 @@ function pingHost(ip) {
 
 // ── Scene export ──────────────────────────────────────────────────────────────
 
-export { BOILER_COLOR_STOPS, _boilerTempColor as boilerTempColor, _climbColor as climbColor, _luminance as luminance };
+export { BOILER_COLOR_STOPS, _boilerTempColor as boilerTempColor, _heatDotRed as heatDotRed, _deltaE as deltaE, _mix as mix };
 
 export default {
   name: "home2",
@@ -852,6 +898,15 @@ export default {
       label: "Syncbox Input for PC",
       group: "Sources",
       default: "input2",
+    },
+    heating_fps: {
+      type: "int",
+      label: "Heating Animation FPS (device minFrameMs must be ≤ 1000/fps)",
+      group: "Timing",
+      default: 2,
+      min: 1,
+      max: 4,
+      step: 1,
     },
     boiler_stale_ms: {
       type: "int",
@@ -1270,7 +1325,18 @@ export default {
 
   async render(device) {
     if (!this._s) return 500;
-    this._frame++;
+    const frameStart = Date.now();
+    // While heating, frames may run faster (heating_fps). _frame stays a 2 fps clock for the
+    // battery sweep and error blink: it advances 2/fps per render.
+    const heating = this._boilerHeating();
+    const fps = heating ? this._cfg.heatingFps : 2;
+    this._frameAcc = (this._frameAcc ?? 0) + 2 / fps;
+    while (this._frameAcc >= 1) {
+      this._frame++;
+      this._frameAcc -= 1;
+    }
+    if (!heating) this._heatSince = null;
+    else this._heatSince ??= frameStart;
     const s = this._s;
 
     // ── Brightness (elevation-based smooth curve) ─────────────────────────────
@@ -1449,7 +1515,7 @@ export default {
     await drawBoiler(
       device, COLS[2].x0, ROWS[1].y0, boilerCurrent,
       this._boilerHistory.buckets, boilerBucket(now),
-      this._boilerHeating(), this._frame,
+      heating, heating ? (frameStart - this._heatSince) / 1000 : null,
     );
     if (boilerCurrent === null) drawErrorMark(device, 2, 1, this._frame);
 
@@ -1530,7 +1596,10 @@ export default {
     if (pcStale) drawErrorMark(device, 2, 2, this._frame);
 
     await device.push();
-    return 500;
+    // Not heating: unchanged 500 ms frames. Heating: aim for 1000/heating_fps from frame start;
+    // the device's minFrameMs still floors the cadence.
+    if (!heating) return 500;
+    return Math.max(0, Math.round(1000 / fps) - (Date.now() - frameStart));
   },
 
   // ── Syncbox HTTP poll (self-signed cert) ──────────────────────────────────
@@ -1784,6 +1853,7 @@ export default {
         values.syncbox_input_pc ?? DEFAULT_SETTINGS.syncboxInputPc,
       boilerStaleMs: values.boiler_stale_ms ?? DEFAULT_SETTINGS.boilerStaleMs,
       boilerHeatingW: values.boiler_heating_w ?? DEFAULT_SETTINGS.boilerHeatingW,
+      heatingFps: values.heating_fps ?? DEFAULT_SETTINGS.heatingFps,
       tempStaleMs: values.temp_stale_ms ?? DEFAULT_SETTINGS.tempStaleMs,
     };
   },
