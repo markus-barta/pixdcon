@@ -283,15 +283,20 @@ async function drawTempValue(d, cellX0, y, value, color) {
   const intW = intStr.length * 4 - 1; // 4n-1 glyph run
   const fracX = DEGREE_X - 4;
   const dotX = fracX - 2;
-  d._setPixel(DEGREE_X, y, r, g, b);
-  // Too wide for the decimal: the integer alone, then the same gap and degree.
-  if (dotX - 1 - intW < cellX0 + 1) {
+  const minX = cellX0 + 1; // keep a 1px margin from the x43 separator
+  if (dotX - 1 - intW >= minX) {
+    await d.drawTextRgbaAligned(intStr, [dotX - 1 - intW, y], color, "left");
+    d._setPixel(dotX, y + 4, r, g, b);
+    await d.drawTextRgbaAligned(fracStr, [fracX, y], color, "left");
+  } else if (DEGREE_X - 1 - intW >= minX) {
+    // Too wide for the decimal: the integer alone, then the same gap and degree.
     await d.drawTextRgbaAligned(intStr, [DEGREE_X - 1 - intW, y], color, "left");
+  } else {
+    // Not even the integer fits (implausible reading): never spill into the next cell.
+    await d.drawTextRgbaAligned("--", [DEGREE_X + 1, y], C.dimWhite, "right");
     return;
   }
-  await d.drawTextRgbaAligned(intStr, [dotX - 1 - intW, y], color, "left");
-  d._setPixel(dotX, y + 4, r, g, b);
-  await d.drawTextRgbaAligned(fracStr, [fracX, y], color, "left");
+  d._setPixel(DEGREE_X, y, r, g, b);
 }
 
 function drawMediaIcon(d, image, cx, cy) {
@@ -564,9 +569,11 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
     const barColor = i === nowBucket ? color : color.map((v) => Math.round(v * 0.65));
     vLine(d, curveX0 + i, baselineY - height, baselineY - 1, ...barColor);
     // Heating: a bright pixel climbs the current bar, bottom to top, 1 px/s (500 ms frames),
-    // in the spirit of the battery's charge sweep.
-    if (heating && i === nowBucket && height > 1) {
-      const climbY = baselineY - 1 - (Math.floor(frame / 2) % height);
+    // in the spirit of the battery's charge sweep. It stays below y32, the digits' bottom row,
+    // which the text drawn last would otherwise hide under a full-height bar.
+    const climbRows = Math.min(height, 9);
+    if (heating && i === nowBucket && climbRows > 1) {
+      const climbY = baselineY - 1 - (Math.floor(frame / 2) % climbRows);
       d._setPixel(nowX, climbY, ...color.map((v) => Math.round(v + (255 - v) * 0.5)));
     }
   }
@@ -1171,7 +1178,13 @@ export default {
     // the boiler's own thermostat cuts it while the relay stays ON.
     context.mqtt.subscribe("z2m/bz/powercontrol/boiler", (msg) => {
       this._s.boilerPowerW = parsePower(msg);
-      this._s.boilerPowerSeen = Date.now();
+      // z2m's last_seen dates the reading, so a retained ON payload from a relay that has since
+      // gone quiet does not count as fresh after a restart; receipt time is the fallback.
+      let lastSeen = NaN;
+      try {
+        lastSeen = Date.parse(JSON.parse(msg)?.last_seen);
+      } catch {}
+      this._s.boilerPowerSeen = Number.isFinite(lastSeen) ? Math.min(lastSeen, Date.now()) : Date.now();
     });
 
     context.mqtt.subscribe("z2m/wz/plug/zisp08", (msg) => {

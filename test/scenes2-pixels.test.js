@@ -64,7 +64,8 @@ async function setup(t, template = home2) {
   device.setBrightness = async () => {};
   device.push = async () => {};
   const publish = (temp) => handlers.get("jhw2211/health/boiler")(JSON.stringify({ state: "ok", temp_c: temp }));
-  const relay = (power) => handlers.get("z2m/bz/powercontrol/boiler")?.(JSON.stringify({ state: power > 0 ? "ON" : "OFF", power }));
+  const relay = (power, extra = {}) => handlers.get("z2m/bz/powercontrol/boiler")?.(
+    JSON.stringify(power === undefined ? { state: "ON", ...extra } : { state: power > 0 ? "ON" : "OFF", power, ...extra }));
   return { scene, device, publish, relay };
 }
 
@@ -216,7 +217,22 @@ test("home2 wide temperatures drop the decimal and keep the degree on x62; -- is
     assert.deepEqual(at(device, 61, 9), black);
     assert.ok(x >= 45, "keeps the left margin");
   }
-  Object.assign(scene._s, { poolTempC: null, roofTempSeen: Date.now() - scene._cfg.tempStaleMs - 1 });
+  // Five glyphs cannot fit even without the decimal: dim -- rather than spilling past x43.
+  for (const value of [-1234.5, 12345.6]) {
+    Object.assign(scene._s, { poolTempC: value, poolTempSeen: Date.now() });
+    await scene.render(device);
+    for (let y = 9; y <= 13; y++) {
+      assert.deepEqual(at(device, 43, y), [25, 25, 25], `${value}: separator untouched at y${y}`);
+      assert.deepEqual(at(device, 44, y), black, `${value}: left margin at y${y}`);
+    }
+    for (const x of [56, 57, 58, 60, 61, 62]) assert.deepEqual(at(device, x, 11), [80, 80, 80], `${value} -- at x${x}`);
+    assert.deepEqual(at(device, 62, 9), black, `${value}: no degree`);
+  }
+  // Null pool, and a populated but stale Dachterrasse reading: both dim --.
+  Object.assign(scene._s, {
+    poolTempC: null, poolTempSeen: Date.now(),
+    roofTempC: 17.6, roofTempSeen: Date.now() - scene._cfg.tempStaleMs - 1,
+  });
   await scene.render(device);
   for (const y of [9, 18]) {
     for (const x of [56, 57, 58, 60, 61, 62]) assert.deepEqual(at(device, x, y + 2), [80, 80, 80], `-- at x${x}`);
@@ -273,15 +289,37 @@ test("boiler not heating: below threshold, stale relay, missing power or a raise
   relay(2150);
   scene._s.boilerPowerSeen = Date.now() - scene._cfg.staleMs - 1;
   await check("stale relay reading");
-  scene._s.boilerPowerSeen = Date.now();
-  scene._s.boilerPowerW = null;
+  relay(undefined);
   await check("payload without power");
+  relay(2150, { last_seen: new Date(Date.now() - scene._cfg.staleMs - 1000).toISOString() });
+  await check("retained payload whose last_seen is older than staleMs");
+  relay(2150, { last_seen: new Date(Date.now() - 1000).toISOString() });
+  assert.equal(scene._boilerHeating(), true, "a recent last_seen counts as fresh");
   relay(2150);
   scene._cfg = scene._mapSettings({ boiler_heating_w: 3000 });
   await check("threshold raised to 3000 W");
   relay(100);
   scene._cfg = scene._mapSettings({});
   assert.equal(scene._boilerHeating(), true, "100 W meets the default threshold");
+});
+
+test("under the digits, a full-height heating bar keeps its climbing pixel visible below y32", async (t) => {
+  clock(t, "2026-10-08T16:00:00+02:00"); // bucket 12 → x58, under "70" (x54..60)
+  const { scene, device, publish, relay } = await setup(t);
+  publish(70);
+  relay(2150);
+  const bright = [243, 138, 128];
+  const climbs = [];
+  for (let frame = 1; frame <= 20; frame++) {
+    await scene.render(device);
+    const lit = [];
+    for (let y = 33; y <= 41; y++) if (at(device, 58, y).join() === bright.join()) lit.push(y);
+    assert.equal(lit.length, 1, `one visible climbing pixel on frame ${frame}`);
+    climbs.push(lit[0]);
+    assert.deepEqual(at(device, 58, 32), [230, 20, 0], "the digit row keeps the text colour");
+  }
+  assert.equal(Math.min(...climbs), 33);
+  assert.equal(Math.max(...climbs), 41);
 });
 
 test("a heating boiler with a bar under two rows keeps the red triangle but has nothing to climb", async (t) => {
