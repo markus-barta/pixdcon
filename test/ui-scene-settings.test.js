@@ -221,8 +221,8 @@ test("saving a field reset through the API preserves sibling settings, other sce
   assert.deepEqual(persisted.devices[0].sceneSettings, { clock: { enabled: false, text: "" }, other: { keep: true } });
   assert.deepEqual(persisted.devices[1], config.devices[1]);
   assert.deepEqual(service.getOverlayValues("panel-a", "clock"), { level: 25 });
-  // The running config reflects the save at once (no wait for the ~500 ms hot reload).
-  assert.equal(Object.hasOwn(service.getSavedValues("panel-a", "clock"), "level"), false);
+  // The runtime snapshot deliberately still has the old saved key until hot reload.
+  assert.equal(service.getSavedValues("panel-a", "clock").level, 0);
   assert.equal(ui.isSceneSettingDefault("level"), true);
   assert.equal(ui.isSceneSettingOverridden("level"), true);
   assert.equal(ui.sceneSettingsForm.level, 25);

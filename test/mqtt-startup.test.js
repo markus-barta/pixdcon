@@ -10,7 +10,7 @@ import * as path from "node:path";
 import * as url from "node:url";
 import * as vm from "node:vm";
 import { ConfigLoader } from "../lib/config-loader.js";
-import { ConfigOverlay, recomputeWithSavedSceneSettings } from "../lib/config-overlay.js";
+import { ConfigOverlay } from "../lib/config-overlay.js";
 import { SceneLoader, loadSceneMetadata } from "../lib/scene-loader.js";
 import { SceneSettingsService } from "../lib/scene-settings-service.js";
 
@@ -113,7 +113,7 @@ async function startup(t, { online = true, overlayIp } = {}) {
     "../lib/pixoo-driver.js": { PixooDriver: FakeDriver },
     "../lib/mqtt-service.js": { MqttService: FakeMqtt },
     "../lib/config-watcher.js": { ConfigWatcher: FakeWatcher },
-    "../lib/config-overlay.js": { ConfigOverlay, recomputeWithSavedSceneSettings },
+    "../lib/config-overlay.js": { ConfigOverlay },
     "../lib/scenes-watcher.js": { ScenesWatcher: FakeWatcher },
     "../lib/web-server.js": { WebServer: FakeWeb },
     "../lib/frame-preview-store.js": { FramePreviewStore: FakePreview },
