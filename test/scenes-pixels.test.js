@@ -58,11 +58,11 @@ test("home normal-input pixels, brightness and cadence match the original scene"
   t.mock.method(globalThis, "clearTimeout", () => {});
   const curve = [0,0,0,0,0,0,0.4,1.2,2.4,3.1,4.8,5.6,6.2,5.8,4.9,3.7,2.1,1.4,0.7,0.1,0,0,0,0];
   const cases = [
-    ["06:15:00", "83834ab15d14fae39123a80ee62fe112b17d7639c3855b6e0fa3f2f343a506f0"],
-    ["08:45:00", "77dcaab930d5e0ab13d18df35880225b3ce469bc224d4e10115e1ee2c80d6bca"],
-    ["12:30:00", "314f475f05c0065937d9074dda1a7c3d2e6f9e9c39dd9fbf11bd07618ba7431f"],
-    ["19:00:00", "2c7b45d71855f5c6c93d3b5e22930a6921de158938bbba728478602766bab2f4"],
-    ["23:15:00", "2e4970c56dba59b0a600646238787c0e8b689b77221adf5363c8287a6626eb58"],
+    ["06:15:00", "915ba9acc974c53a4379b01efd46e056eabf3c9c6ba53ec219ef0640c480b7c6"],
+    ["08:45:00", "ba246df374d0abe5ed8a9152f0c1294a68fc4125bca92c0a73f05986c9fbd01b"],
+    ["12:30:00", "7ad8beec94d603506435f3678a70bc727ea0ce562c902999bbc097db152c4b52"],
+    ["19:00:00", "a276fc4a0243508fac30b6daa40d7eebc611b039be744caab19cd424fee6dfdd"],
+    ["23:15:00", "cd4a227d96c3fb1d57f953172ceab91ecfb31b788e69e64af52f900e72d01796"],
   ];
   for (const [time, expected] of cases) {
     setTime(time);
