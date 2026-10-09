@@ -28,7 +28,7 @@
  *
  * Boiler cell: colour = temperature feel (blue → white at ~36 °C → yellow → amber → red), shared
  *   by the number and the current bar. Only a bottom triangle marks the current bucket; it
- *   turns red while the boiler draws power, and a bright pixel climbs the current bar (1 px/s).
+ *   turns red while the boiler draws power, and a contrasting pixel climbs the current bar (1 px/s).
  *
  * Data sources:
  *   nuki/463F8F47/state                           numeric 1=locked 2=unlocking 3=unlocked 4=locking  (Nuki VR)
@@ -592,7 +592,7 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
     const color = _boilerTempColor(value);
     const barColor = i === nowBucket ? color : color.map((v) => Math.round(v * 0.65));
     vLine(d, curveX0 + i, baselineY - height, baselineY - 1, ...barColor);
-    // Heating: a bright pixel climbs the current bar, bottom to top, 1 px/s (500 ms frames),
+    // Heating: a contrasting pixel (_climbColor) climbs the current bar, bottom to top, 1 px/s (500 ms frames),
     // in the spirit of the battery's charge sweep. It stays below y32, the digits' bottom row,
     // which the text drawn last would otherwise hide under a full-height bar.
     const climbRows = Math.min(height, 9);
