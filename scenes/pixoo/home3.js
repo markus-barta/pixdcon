@@ -354,11 +354,13 @@ function _socColor(i, n) {
 // "energy packet" crawls through the charge (PIXD-71): a bright, soft-edged bar the full fill height,
 // moving at MOVE_PX_PER_S (half a pixel per frame), split across the columns it straddles and fading
 // in and out at the ends, so it never jumps. Energy enters and leaves through the terminal (the nub
-// on the right, where the Model X cable comes in): charging runs a light packet right → left into the
-// charge; discharging runs a dark gap left → right out of it (readable on a low, red fill). The car
-// only charges (no vehicle-to-grid; driving is not shown). The fill edge carries a steady tint.
+// on the right, where the Model X cable comes in): charging runs a bright green-white packet right →
+// left into the charge; discharging runs a bright warm-white packet left → right out of it (Markus:
+// bright, never a dark gap). The car only charges (no vehicle-to-grid; driving is not shown). The fill
+// edge carries a steady tint.
 // `limitPct` puts a darker tick on the top frame.
 const PACKET_CHARGE = [200, 255, 170];
+const PACKET_DISCHARGE = [255, 245, 200];
 function drawFlowBattery(d, x, y, pct, mode, nowMs, limitPct = null) {
   const w = 13, h = 6, B = [95, 95, 95];
   hLine(d, x, x + w - 1, y, ...B); hLine(d, x, x + w - 1, y + h - 1, ...B);
@@ -379,7 +381,7 @@ function drawFlowBattery(d, x, y, pct, mode, nowMs, limitPct = null) {
     let c = i < filled ? base : base.map((v) => Math.round(v * 0.1));
     if (active && i === filled - 1) c = _mixRgb(c, edgeTint, 0.6);
     const k = Math.max(0, 1 - Math.abs(i - pos) / 1.5); // soft 3-px packet, split across columns
-    if (active && i < filled) c = charging ? _mixRgb(c, PACKET_CHARGE, 0.7 * k) : _mixRgb(c, [0, 0, 0], 0.75 * k);
+    if (active && i < filled) c = _mixRgb(c, charging ? PACKET_CHARGE : PACKET_DISCHARGE, (charging ? 0.7 : 0.8) * k);
     vLine(d, x + 1 + i, y + 1, y + h - 2, ...c);
   }
   if (limitPct !== null && Number.isFinite(limitPct)) {

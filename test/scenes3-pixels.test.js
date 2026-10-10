@@ -216,7 +216,7 @@ test("media: home2 icons; the Sync Box connector sits in the gap 1 px above the 
   for (const x of [26, 41, 57]) assert.notDeepEqual(at(device, x, 61), black, `LED bar x${x}`);
 });
 
-test("battery energy packet: clearly visible, ~half a pixel per frame, no flashes; charging flows in from the terminal, discharge is a dark gap going out", async (t) => {
+test("battery energy packet: clearly visible, ~half a pixel per frame, no flashes; charging flows in from the terminal, discharge is a bright packet going out", async (t) => {
   const setTime = clock(t);
   const { scene, device } = await setup(t);
   const start = Date.parse("2026-10-10T12:30:00+02:00");
@@ -228,7 +228,7 @@ test("battery energy packet: clearly visible, ~half a pixel per frame, no flashe
     return Array.from({ length: 11 }, (_, i) => column(7 + i));
   };
   const idle = await profile("standby", 0);
-  for (const [mode, sign] of [["charging", 1], ["discharging", -1]]) {
+  for (const [mode, sign] of [["charging", 1], ["discharging", 1]]) { // both packets are bright
     let previous = null;
     let previousCentre = null;
     let peak = 0;
@@ -237,7 +237,7 @@ test("battery energy packet: clearly visible, ~half a pixel per frame, no flashe
     let netMove = 0;
     for (let step = 0; step < 24; step++) {
       const cols = await profile(mode, step * 500);
-      // packet strength per column: brighter (charging) or darker (discharging) than the idle fill
+      // packet strength per column: how much brighter than the idle fill
       const strength = cols.map((c, i) => Math.max(0, sign * (c.reduce((a, b) => a + b, 0) - idle[i].reduce((a, b) => a + b, 0))));
       strength[strength.length - 1] = 0; // ignore the fill edge column (steady tint)
       for (let i = 0; i < 11; i++) if (i === 6) strength[i] = 0; // 62 % → 7 filled; col 6 is the tinted edge
