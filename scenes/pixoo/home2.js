@@ -475,19 +475,44 @@ async function drawKwTight(d, cx, cy, value, color) {
 
 // ── Cell: PV production + home consumption ────────────────────────────────────
 
-async function drawPvCons(d, cx, cy, productionW, consumptionW) {
+// Colours by level (PIXD-68: chosen with hysteresis in render, faded there over ENERGY_FADE_MS).
+const PV_COLORS = [C.dimWhite, [255, 220, 0]]; // off (no sun) / generating
+const CONS_COLORS = [[120, 20, 20], [200, 40, 40], [255, 60, 60]]; // < 500 W / < 1 kW / ≥ 1 kW
+const ENERGY_FADE_MS = 2000;
+
+// Threshold hysteresis: the level is how many ascending thresholds the value reaches. It rises
+// with the `up` thresholds and falls only below the lower `down` ones, so a value hovering at a
+// boundary does not flap.
+function hysteresisLevel(previous, value, up, down) {
+  const reached = (thresholds) => thresholds.filter((t) => value >= t).length;
+  const raise = reached(up);
+  if (previous === null || raise > previous) return raise;
+  return Math.min(previous, reached(down));
+}
+
+// The colour shown: an ease (smoothstep) from `from` to `to` over ENERGY_FADE_MS.
+function fadeColor(fade, nowMs) {
+  const u = clamp((nowMs - fade.start) / ENERGY_FADE_MS, 0, 1);
+  return _mix(fade.from, fade.to, u * u * (3 - 2 * u));
+}
+
+// Start a fade when the target changes. A change mid-fade starts from the colour on screen, so
+// there is never a jump; the first frame shows the target directly.
+function fadeTo(fade, target, nowMs) {
+  if (!fade) return { from: target, to: target, start: nowMs };
+  if (fade.to.join() === target.join()) return fade;
+  return { from: fadeColor(fade, nowMs), to: target, start: nowMs };
+}
+
+async function drawPvCons(d, cx, cy, productionW, consumptionW, pvColor, consColor) {
   // Arrow glyphs at cell left edge (x=COLS[1].x0+1=23), independent of number
   const ax = COLS[1].x0 + 1;
 
-  // Production: grey if 0/null (no sun), bright yellow if generating
-  const pvColor = !productionW ? C.dimWhite : [255, 220, 0];
+  // Production: grey when off (no sun), bright yellow when generating
   drawPlus(d, ax, cy - 6, ...pvColor);
   await drawKwTight(d, cx + 1, cy - 6, productionW, pvColor);
 
   // Consumption: dark-red → red → bright-red by kW tier
-  const cons = consumptionW ?? 0;
-  const consColor =
-    cons < 500 ? [120, 20, 20] : cons <= 1000 ? [200, 40, 40] : [255, 60, 60];
   drawMinus(d, ax, cy + 2, ...consColor);
   await drawKwTight(d, cx + 1, cy + 2, consumptionW, consColor);
 }
@@ -760,7 +785,7 @@ function parseNukiBool(msg) {
 
 // ── Scene export ──────────────────────────────────────────────────────────────
 
-export { BOILER_COLOR_STOPS, _boilerTempColor as boilerTempColor, _boilerRowColor as boilerRowColor, _heatDotRed as heatDotRed, _deltaE as deltaE, _mix as mix };
+export { hysteresisLevel, fadeColor, fadeTo, BOILER_COLOR_STOPS, _boilerTempColor as boilerTempColor, _boilerRowColor as boilerRowColor, _heatDotRed as heatDotRed, _deltaE as deltaE, _mix as mix };
 
 export default {
   name: "home2",
@@ -1523,12 +1548,21 @@ export default {
     if (isStale(s.battSeen, this._cfg.staleMs))
       drawErrorMark(device, 0, 1, this._frame);
 
+    // Energy colours: hysteresis picks the level, a 2 s ease fades between levels (PIXD-68).
+    // PV is on from 20 W and off below 5 W; consumption steps up at 500 W / 1 kW and back
+    // down below 450 W / 900 W.
+    this._pvLevel = hysteresisLevel(this._pvLevel ?? null, s.productionW ?? 0, [20], [5]);
+    this._consLevel = hysteresisLevel(this._consLevel ?? null, s.consumptionW ?? 0, [500, 1000], [450, 900]);
+    this._pvFade = fadeTo(this._pvFade, PV_COLORS[this._pvLevel], frameStart);
+    this._consFade = fadeTo(this._consFade, CONS_COLORS[this._consLevel], frameStart);
     await drawPvCons(
       device,
       COLS[1].cx,
       ROWS[1].cy,
       s.productionW,
       s.consumptionW,
+      fadeColor(this._pvFade, frameStart),
+      fadeColor(this._consFade, frameStart),
     );
     if (isStale(s.energySeen, this._cfg.staleMs))
       drawErrorMark(device, 1, 1, this._frame);
