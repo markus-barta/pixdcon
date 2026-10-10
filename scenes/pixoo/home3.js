@@ -353,14 +353,13 @@ function _socColor(i, n) {
 // 13×6 battery (both batteries share it): SOC gradient fill. While charging / discharging an
 // "energy packet" crawls through the charge (PIXD-71): a bright, soft-edged bar the full fill height,
 // moving at MOVE_PX_PER_S (half a pixel per frame), split across the columns it straddles and fading
-// in and out at the ends, so it never jumps. Energy enters and leaves through the terminal (the nub
-// on the right, where the Model X cable comes in): charging runs a bright green-white packet right →
-// left into the charge; discharging runs a bright warm-white packet left → right out of it (Markus:
-// bright, never a dark gap). The car only charges (no vehicle-to-grid; driving is not shown). The fill
-// edge carries a steady tint.
+// in and out at the ends, so it never jumps. Left is low charge, right is high (Markus, PIXD-73):
+// charging runs a bright green packet left → right (filling up), discharging a bright orange packet
+// right → left (draining); bright, never a dark gap. The car only charges (no vehicle-to-grid; driving
+// is not shown). The fill edge carries a matching steady tint.
 // `limitPct` puts a darker tick on the top frame.
-const PACKET_CHARGE = [200, 255, 170];
-const PACKET_DISCHARGE = [255, 245, 200];
+const PACKET_CHARGE = [150, 255, 110]; // bright green
+const PACKET_DISCHARGE = [255, 185, 60]; // bright orange, lighter than the red/orange fill under it
 function drawFlowBattery(d, x, y, pct, mode, nowMs, limitPct = null) {
   const w = 13, h = 6, B = [95, 95, 95];
   hLine(d, x, x + w - 1, y, ...B); hLine(d, x, x + w - 1, y + h - 1, ...B);
@@ -370,18 +369,18 @@ function drawFlowBattery(d, x, y, pct, mode, nowMs, limitPct = null) {
   const filled = pct === null ? 0 : clamp(Math.round((pct / 100) * inner), 0, inner);
   const charging = mode === "charging";
   const active = charging || mode === "discharging";
-  const edgeTint = charging ? [120, 255, 90] : [255, 170, 60];
+  const edgeTint = charging ? [120, 255, 90] : [255, 140, 30];
   // the packet centre runs between 2 px outside either end of the fill, then restarts
   const span = filled + 4;
   const run = ((nowMs / 1000) * MOVE_PX_PER_S) % span;
-  const pos = charging ? filled + 1 - run : run - 2;
+  const pos = charging ? run - 2 : filled + 1 - run;
 
   for (let i = 0; i < inner; i++) {
     const base = _socColor(i, inner);
     let c = i < filled ? base : base.map((v) => Math.round(v * 0.1));
     if (active && i === filled - 1) c = _mixRgb(c, edgeTint, 0.6);
     const k = Math.max(0, 1 - Math.abs(i - pos) / 1.5); // soft 3-px packet, split across columns
-    if (active && i < filled) c = _mixRgb(c, charging ? PACKET_CHARGE : PACKET_DISCHARGE, (charging ? 0.7 : 0.8) * k);
+    if (active && i < filled) c = _mixRgb(c, charging ? PACKET_CHARGE : PACKET_DISCHARGE, 0.9 * k);
     vLine(d, x + 1 + i, y + 1, y + h - 2, ...c);
   }
   if (limitPct !== null && Number.isFinite(limitPct)) {
@@ -1625,10 +1624,12 @@ export default {
       // Cable and charging only while the car is at home: away it may charge elsewhere.
       const carHere = s.carHome === true;
       if (carHere && s.carPlugged) {
+        // pts[0] is the device end (at the car), so the charging dot runs right → left into the car;
+        // the cable fades out towards the car.
         const pts = [];
-        for (let x = COLS[0].x1; x >= 6; x--) pts.push([x, y0 + 8]);
+        for (let x = 6; x <= COLS[0].x1; x++) pts.push([x, y0 + 8]);
         const n = pts.length;
-        drawCable(device, pts, s.carCharging, frameStart, (k) => 1 - (k / (n - 1)) ** 2);
+        drawCable(device, pts, s.carCharging, frameStart, (k) => 1 - ((n - 1 - k) / (n - 1)) ** 2);
       }
       drawTinted(device, this._home3Images.car, -3, y0 + 3, 0.42);
       if (s.carPct === null) await device.drawTextRgbaAligned("--", [COLS[0].x1 - 1, y0 + 1], C.dimWhite, "right");

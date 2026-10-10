@@ -216,7 +216,7 @@ test("media: home2 icons; the Sync Box connector sits in the gap 1 px above the 
   for (const x of [26, 41, 57]) assert.notDeepEqual(at(device, x, 61), black, `LED bar x${x}`);
 });
 
-test("battery energy packet: clearly visible, ~half a pixel per frame, no flashes; charging flows in from the terminal, discharge is a bright packet going out", async (t) => {
+test("battery energy packet: clearly visible, ~half a pixel per frame, no flashes; charging fills left → right, discharging drains right → left", async (t) => {
   const setTime = clock(t);
   const { scene, device } = await setup(t);
   const start = Date.parse("2026-10-10T12:30:00+02:00");
@@ -255,8 +255,29 @@ test("battery energy packet: clearly visible, ~half a pixel per frame, no flashe
     assert.ok(peak >= 150, `${mode}: clearly visible packet (peak ${peak} over the idle fill)`);
     assert.ok(maxMove <= 0.75, `${mode}: moves at most ~half a pixel per frame (max ${maxMove.toFixed(2)})`);
     assert.ok(maxJump <= 90, `${mode}: no flashes (largest single-frame change ${maxJump})`);
-    // energy enters / leaves through the terminal on the right: charging flows right → left
-    if (mode === "charging") assert.ok(netMove < -2, `charging flows right → left (net ${netMove.toFixed(1)})`);
-    else assert.ok(netMove > 2, `discharging flows left → right (net ${netMove.toFixed(1)})`);
+    // left is low charge, right is high: charging fills left → right, discharging drains right → left
+    if (mode === "charging") assert.ok(netMove > 2, `charging flows left → right (net ${netMove.toFixed(1)})`);
+    else assert.ok(netMove < -2, `discharging flows right → left (net ${netMove.toFixed(1)})`);
   }
 });
+
+test("Model X charging: the cable's dot runs right → left into the car", async (t) => {
+  const setTime = clock(t);
+  const { scene, device, send } = await setup(t);
+  send("homeassistant/device_tracker/model_x_markus_location/state", "home");
+  send("homeassistant/binary_sensor/model_x_markus_charge_cable/state", "on");
+  send("homeassistant/sensor/model_x_markus_charging/state", "charging");
+  const start = Date.parse("2026-10-10T12:30:00+02:00");
+  const centres = [];
+  for (let step = 0; step < 16; step++) {
+    setTime(start + step * 500);
+    await scene.render(device);
+    let sum = 0, weight = 0;
+    for (let x = 13; x <= 20; x++) { const w = Math.max(0, at(device, x, 51)[1] - 60); sum += w * x; weight += w; } // right of the car
+    centres.push(weight > 20 ? sum / weight : null);
+  }
+  let net = 0;
+  for (let k = 1; k < centres.length; k++) if (centres[k] !== null && centres[k - 1] !== null) net += centres[k] - centres[k - 1];
+  assert.ok(net < -2, `dot moves towards the car (net ${net.toFixed(1)})`);
+});
+
