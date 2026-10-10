@@ -71,12 +71,14 @@ test("home3 metadata, data-topic settings and subscriptions; no keyboard topic",
   assert.equal(scene.pretty_name, "Home Dashboard 3");
   assert.equal(scene.settingsSchema.nuki_vr_plug_topic.default, "z2m/vr/plug/zisp03");
   assert.equal(scene.settingsSchema.nuki_ke_plug_topic.default, "");
-  assert.equal(scene.settingsSchema.car_battery_topic.default, "homeassistant/sensor/battery_level_2/state");
+  assert.equal(scene.settingsSchema.car_battery_topic.default, "homeassistant/sensor/model_x_markus_battery_level/state");
   for (const topic of [
     "home/ke/sonnenbattery/latestdata", "z2m/vr/plug/zisp03",
-    "homeassistant/sensor/battery_level_2/state", "homeassistant/sensor/charging_2/state",
-    "homeassistant/binary_sensor/charge_cable_2/state", "homeassistant/number/charge_limit_2/state",
+    "homeassistant/sensor/model_x_markus_battery_level/state", "homeassistant/sensor/model_x_markus_charging/state",
+    "homeassistant/binary_sensor/model_x_markus_charge_cable/state", "homeassistant/number/model_x_markus_charge_limit/state",
+    "homeassistant/device_tracker/model_x_markus_location/state",
   ]) assert.ok(handlers.has(topic), topic);
+  assert.ok(![...handlers.keys()].some((k) => /_2\/state$/.test(k)), "the stale *_2 entities are not used");
   assert.ok(![...handlers.keys()].some((k) => /keyboard/.test(k)), "the keyboard dots are gone");
   assert.ok(![...handlers.keys()].includes(""), "an empty Keller plug topic is not subscribed");
 });
@@ -104,13 +106,25 @@ test("Nukis centred in the first cell; a plugged lock gets a dark cable into its
   for (let x = 0; x <= 6; x++) assert.deepEqual(at(device, x, 14), black, "the Keller lock is not plugged");
   handlers.get("nuki/463F8F47/#")("true", "nuki/463F8F47/batteryCharging"); // the wildcard handler
   assert.equal(scene._s.nukiVrCharging, true);
-  const lit = new Set();
-  for (let step = 0; step < 12; step++) {
-    setTime(Date.parse("2026-10-10T12:30:00+02:00") + step * 200);
+  // The dot crawls at most half a pixel per 500 ms frame, split across two pixels (Markus, PIXD-70).
+  const centroid = () => {
+    let sum = 0, weight = 0;
+    for (let x = 0; x <= 6; x++) {
+      const w = Math.max(0, at(device, x, 5)[1] - cable[1]); // green rises with the dot
+      sum += w * x; weight += w;
+    }
+    return weight > 0 ? sum / weight : null;
+  };
+  const positions = [];
+  for (let step = 0; step < 16; step++) {
+    setTime(Date.parse("2026-10-10T12:30:00+02:00") + step * 500);
     await scene.render(device);
-    for (let x = 0; x <= 6; x++) if (at(device, x, 5).join() !== cable.join()) lit.add(x);
+    positions.push(centroid());
   }
-  assert.ok(lit.size >= 4, `the charging dot travels along the cable (${[...lit]})`);
+  const moves = positions.slice(1).map((p, k) => (p !== null && positions[k] !== null ? Math.abs(p - positions[k]) : 0));
+  assert.ok(Math.max(...moves) <= 0.75, `at most ~half a pixel per frame: ${moves.map((m) => m.toFixed(2))}`);
+  const seen = positions.filter((p) => p !== null);
+  assert.ok(Math.max(...seen) - Math.min(...seen) >= 3, "but it does travel along the cable");
   send("z2m/vr/plug/zisp03", { state: "OFF" });
   await scene.render(device);
   for (let x = 0; x <= 6; x++) assert.deepEqual(at(device, x, 5), black, "unplugged again");
@@ -145,10 +159,11 @@ test("house and car battery: same position in their cells; car % keeps the last 
   const { scene, device, send } = await setup(t);
   const text = t.mock.method(device, "drawTextRgbaAligned");
   Object.assign(scene._s, { battPct: 62, battState: "charging", battSeen: Date.now() });
-  send("homeassistant/sensor/battery_level_2/state", "50");
-  send("homeassistant/number/charge_limit_2/state", "70");
-  send("homeassistant/binary_sensor/charge_cable_2/state", "on");
-  send("homeassistant/sensor/charging_2/state", "charging");
+  send("homeassistant/sensor/model_x_markus_battery_level/state", "50");
+  send("homeassistant/number/model_x_markus_charge_limit/state", "70");
+  send("homeassistant/binary_sensor/model_x_markus_charge_cable/state", "on");
+  send("homeassistant/sensor/model_x_markus_charging/state", "charging");
+  send("homeassistant/device_tracker/model_x_markus_location/state", "home");
   await scene.render(device);
   const label = (s) => text.mock.calls.find(({ arguments: [str] }) => str === s)?.arguments[1];
   assert.deepEqual(label("62%"), [19, 23], "house %: right-aligned, ends at x18 (2 px off the edge), cell y+1");
@@ -160,15 +175,23 @@ test("house and car battery: same position in their cells; car % keeps the last 
   assert.deepEqual(at(device, 14, 56), [150, 150, 155], "70 % limit tick on the car battery's top frame");
   for (const y of [23, 44]) { assert.deepEqual(at(device, 19, y + 2), black); assert.deepEqual(at(device, 20, y + 2), black); }
   assert.deepEqual(at(device, 20, 51), cable, "the car cable enters from the right, 2 px below the %");
-  send("homeassistant/sensor/battery_level_2/state", "unknown");
-  send("homeassistant/sensor/charging_2/state", "unavailable");
+  send("homeassistant/sensor/model_x_markus_battery_level/state", "unknown");
+  send("homeassistant/sensor/model_x_markus_charging/state", "unavailable");
   text.mock.resetCalls();
   await scene.render(device);
   assert.deepEqual(label("50%"), [19, 44], "unknown keeps the last good value");
   assert.equal(scene._s.carCharging, true, "unavailable keeps the charging state");
-  send("homeassistant/binary_sensor/charge_cable_2/state", "off");
+  send("homeassistant/binary_sensor/model_x_markus_charge_cable/state", "off");
   await scene.render(device);
   assert.deepEqual(at(device, 20, 51), black, "no cable when unplugged");
+  // Away: plugged and "charging" somewhere else must not look like charging at home.
+  send("homeassistant/binary_sensor/model_x_markus_charge_cable/state", "on");
+  send("homeassistant/device_tracker/model_x_markus_location/state", "not_home");
+  await scene.render(device);
+  assert.equal(scene._s.carHome, false);
+  for (let x = 6; x <= 20; x++) assert.deepEqual(at(device, x, 51).join() === cable.join(), false, `no cable while away x${x}`);
+  send("homeassistant/device_tracker/model_x_markus_location/state", "unavailable");
+  assert.equal(scene._s.carHome, false, "unavailable keeps the last location");
 });
 
 test("media: home2 icons; the Sync Box connector sits in the gap 1 px above the TV's bottom frame, yellow syncing / grey idle", async (t) => {
@@ -191,4 +214,28 @@ test("media: home2 icons; the Sync Box connector sits in the gap 1 px above the 
   assert.deepEqual(at(device, 33, 56), [255, 255, 255]);
   assert.deepEqual(at(device, 33, 55), [255, 255, 255], "the link row y55 is the frame's left edge, so the PS5 link touches it");
   for (const x of [26, 41, 57]) assert.notDeepEqual(at(device, x, 61), black, `LED bar x${x}`);
+});
+
+test("battery animation stays calm: between 500 ms frames no battery pixel changes by more than a little", async (t) => {
+  const setTime = clock(t);
+  const { scene, device } = await setup(t);
+  Object.assign(scene._s, { battPct: 62, battState: "charging", battSeen: Date.now() });
+  const start = Date.parse("2026-10-10T12:30:00+02:00");
+  let previous = null;
+  let maxDelta = 0;
+  let total = 0;
+  for (let step = 0; step < 20; step++) {
+    setTime(start + step * 500);
+    await scene.render(device);
+    const now = [];
+    for (let y = 36; y <= 39; y++) for (let x = 7; x <= 17; x++) now.push(...at(device, x, y));
+    if (previous) {
+      const deltas = now.map((v, i) => Math.abs(v - previous[i]));
+      maxDelta = Math.max(maxDelta, ...deltas);
+      total += deltas.reduce((a, b) => a + b, 0);
+    }
+    previous = now;
+  }
+  assert.ok(maxDelta <= 24, `largest per-frame change ${maxDelta}`);
+  assert.ok(total > 0, "it still moves");
 });

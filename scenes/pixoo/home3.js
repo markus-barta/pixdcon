@@ -39,7 +39,7 @@
  *   nuki/<id>/batteryCharging                     true|false — the charging animation on the cable
  *   <nuki_vr_plug_topic> / <nuki_ke_plug_topic>   z2m plug {state: ON|OFF} — ON = cable plugged
  *   home/ke/sonnenbattery/latestdata              ic_status['Eclipse Led'] — the cabinet's ring LED
- *   homeassistant/…/battery_level_2|charging_2|charge_cable_2|charge_limit_2/state — Model X (HA)
+ *   homeassistant/…/model_x_markus_{battery_level,charging,charge_cable,charge_limit,location}/state — Model X
  *   z2m/bz/powercontrol/boiler                    {state, power} — boiler relay; heating = power ≥ boiler_heating_w
  *   z2m/wz/plug/zisp08                            {power} — sony-tv
  *   z2m/wz/plug/zisp28                            {power} — PS5
@@ -92,10 +92,11 @@ const DEFAULT_SETTINGS = {
   heatingFps: 2,
   nukiVrPlugTopic: "z2m/vr/plug/zisp03",
   nukiKePlugTopic: "",
-  carBatteryTopic: "homeassistant/sensor/battery_level_2/state",
-  carChargingTopic: "homeassistant/sensor/charging_2/state",
-  carCableTopic: "homeassistant/binary_sensor/charge_cable_2/state",
-  carLimitTopic: "homeassistant/number/charge_limit_2/state",
+  carBatteryTopic: "homeassistant/sensor/model_x_markus_battery_level/state",
+  carChargingTopic: "homeassistant/sensor/model_x_markus_charging/state",
+  carCableTopic: "homeassistant/binary_sensor/model_x_markus_charge_cable/state",
+  carLimitTopic: "homeassistant/number/model_x_markus_charge_limit/state",
+  carLocationTopic: "homeassistant/device_tracker/model_x_markus_location/state",
   // Battery-powered Zigbee temp sensors report on change, not on a schedule —
   // the pool probe can go 30 min between publishes. 5 min would read as stale.
   tempStaleMs: 5400000,
@@ -325,30 +326,34 @@ function drawTinted(d, image, x, y, tint) {
 
 const CHARGE_DOT = [190, 255, 70];
 const CABLE = [38, 38, 42];
-// A plugged cable (pts[0] is the device end). Charging: a green-yellow dot runs from the far end
-// into the device with a soft tail. `fade(i)` scales the cable towards the far end.
+// Anything that moves goes at most half a pixel per frame (Markus, PIXD-70): at ~2 fps that is
+// 1 px/s, and the moving dot is split across the two pixels it straddles, so a pixel only half
+// changes per frame instead of jumping.
+const MOVE_PX_PER_S = 1;
+
+// A plugged cable (pts[0] is the device end). Charging: a green-yellow dot crawls from the far end
+// into the device with a short soft tail. `fade(i)` scales the cable towards the far end.
 function drawCable(d, pts, charging, nowMs, fade = () => 1) {
   const n = pts.length;
   pts.forEach(([x, y], i) => d._setPixel(x, y, ...CABLE.map((v) => Math.round(v * fade(i)))));
   if (!charging) return;
-  const period = 2400;
-  const head = Math.round((n - 1) - ((nowMs % period) / period) * (n + 5));
-  for (let k = 0; k <= 5; k++) {
-    const i = head + k;
-    if (i < 0 || i >= n) continue;
-    const [x, y] = pts[i];
-    const a = (k === 0 ? 1 : 0.6 * (1 - k / 6)) * fade(i);
-    d._setPixel(x, y, ..._mixRgb(_getRgb(d, x, y), CHARGE_DOT, a));
-  }
+  const travel = n + 4; // start just beyond the far end, finish just inside the device
+  const p = n + 1 - ((nowMs / 1000) * MOVE_PX_PER_S) % travel;
+  pts.forEach(([x, y], i) => {
+    let a = Math.max(0, 1 - Math.abs(i - p)); // the dot, linearly split across two pixels
+    for (let k = 1; k <= 3; k++) a += 0.45 * (1 - k / 4) * Math.max(0, 1 - Math.abs(i - (p + k))); // tail
+    if (a > 0) d._setPixel(x, y, ..._mixRgb(_getRgb(d, x, y), CHARGE_DOT, Math.min(1, a) * fade(i)));
+  });
 }
 
 function _socColor(i, n) {
   const t = n <= 1 ? 1 : i / (n - 1);
   return t < 0.5 ? [220, Math.round(220 * t * 2), 30] : [Math.round(220 * (1 - (t - 0.5) * 2)), 210, 40];
 }
-// 13×6 battery (both batteries share it): SOC gradient fill; while charging/discharging a soft wide
-// light band drifts slowly with the energy flow and the fill edge breathes (green-ish charging,
-// amber discharging). `limitPct` puts a darker tick on the top frame.
+// 13×6 battery (both batteries share it): SOC gradient fill. While charging / discharging one soft,
+// wide, faint light band drifts with the energy flow at MOVE_PX_PER_S (no breathing, nothing that
+// jumps), and the fill edge carries a steady tint (green-ish charging, amber discharging).
+// `limitPct` puts a darker tick on the top frame.
 function drawFlowBattery(d, x, y, pct, mode, nowMs, limitPct = null) {
   const w = 13, h = 6, B = [95, 95, 95];
   hLine(d, x, x + w - 1, y, ...B); hLine(d, x, x + w - 1, y + h - 1, ...B);
@@ -356,22 +361,18 @@ function drawFlowBattery(d, x, y, pct, mode, nowMs, limitPct = null) {
   vLine(d, x + w, y + 2, y + h - 3, ...B); // nub
   const inner = w - 2;
   const filled = pct === null ? 0 : clamp(Math.round((pct / 100) * inner), 0, inner);
-  const t = nowMs / 1000;
   const active = mode === "charging" || mode === "discharging";
   const edgeTint = mode === "charging" ? [120, 255, 90] : [255, 170, 60];
-  const breathe = 0.5 + 0.5 * Math.sin((t / 2.4) * Math.PI * 2);
+  const span = filled + 8; // the band enters and leaves softly beyond both ends
+  const run = ((nowMs / 1000) * MOVE_PX_PER_S) % span;
+  const pos = mode === "charging" ? run - 4 : filled + 3 - run;
   for (let i = 0; i < inner; i++) {
     const base = _socColor(i, inner);
     let c = i < filled ? base : base.map((v) => Math.round(v * 0.1));
-    if (active && i < filled) {
-      const period = 3.2, span = filled + 6;
-      const pos = mode === "charging" ? ((t % period) / period) * span - 3 : filled + 3 - ((t % period) / period) * span;
-      c = _mixRgb(c, [255, 255, 255], Math.exp(-(((i - pos) / 2.2) ** 2)) * 0.38);
-    }
-    if (active && i === filled - 1) c = _mixRgb(c, edgeTint, 0.35 + 0.45 * breathe);
+    if (active && i < filled) c = _mixRgb(c, [255, 255, 255], Math.exp(-(((i - pos) / 2.2) ** 2)) * 0.22);
+    if (active && i === filled - 1) c = _mixRgb(c, edgeTint, 0.45);
     vLine(d, x + 1 + i, y + 1, y + h - 2, ...c);
   }
-  if (active && filled < inner) vLine(d, x + 1 + filled, y + 1, y + h - 2, ...edgeTint.map((v) => Math.round(v * 0.25 * breathe)));
   if (limitPct !== null && Number.isFinite(limitPct)) {
     const lx = x + 1 + clamp(Math.round((limitPct / 100) * inner), 1, inner) - 1;
     d._setPixel(lx, y, 150, 150, 155);
@@ -947,25 +948,31 @@ export default {
       type: "string",
       label: "Model X battery level topic (HA statestream) — applies on scene reload",
       group: "Sources",
-      default: "homeassistant/sensor/battery_level_2/state",
+      default: "homeassistant/sensor/model_x_markus_battery_level/state",
     },
     car_charging_topic: {
       type: "string",
       label: "Model X charging state topic (HA statestream) — applies on scene reload",
       group: "Sources",
-      default: "homeassistant/sensor/charging_2/state",
+      default: "homeassistant/sensor/model_x_markus_charging/state",
     },
     car_cable_topic: {
       type: "string",
       label: "Model X charge cable topic (HA statestream) — applies on scene reload",
       group: "Sources",
-      default: "homeassistant/binary_sensor/charge_cable_2/state",
+      default: "homeassistant/binary_sensor/model_x_markus_charge_cable/state",
     },
     car_limit_topic: {
       type: "string",
       label: "Model X charge limit topic (HA statestream) — applies on scene reload",
       group: "Sources",
-      default: "homeassistant/number/charge_limit_2/state",
+      default: "homeassistant/number/model_x_markus_charge_limit/state",
+    },
+    car_location_topic: {
+      type: "string",
+      label: "Model X location topic (HA statestream; cable shown only when home) — applies on scene reload",
+      group: "Sources",
+      default: "homeassistant/device_tracker/model_x_markus_location/state",
     },
     heating_fps: {
       type: "int",
@@ -1071,6 +1078,7 @@ export default {
       carCharging: false,
       carPlugged: false,
       carLimit: null,
+      carHome: null, // device tracker: true at home, false away, null unknown
       // Sun
       sunElevation: null, // float degrees, from HA MQTT
       sunAbove: null, // bool fallback (above_horizon)
@@ -1384,8 +1392,9 @@ export default {
         } catch {}
       });
     }
-    // Model X via the HA statestream. The car is polled on a budget, so "unknown"/"unavailable"
-    // keep the last good value.
+    // Model X via the HA statestream (the live model_x_markus_* entities; the *_2 ones are stale
+    // leftovers frozen in June). The car is polled on a budget, so "unknown"/"unavailable" keep the
+    // last good value.
     const car = this._cfg;
     if (car.carBatteryTopic) context.mqtt.subscribe(car.carBatteryTopic, (msg) => {
       const v = parseHaNumber(msg);
@@ -1398,6 +1407,10 @@ export default {
     if (car.carChargingTopic) context.mqtt.subscribe(car.carChargingTopic, (msg) => {
       const v = String(msg).trim().toLowerCase();
       if (v && v !== "unknown" && v !== "unavailable") this._s.carCharging = v === "charging";
+    });
+    if (car.carLocationTopic) context.mqtt.subscribe(car.carLocationTopic, (msg) => {
+      const v = String(msg).trim().toLowerCase();
+      if (v && v !== "unknown" && v !== "unavailable") this._s.carHome = v === "home";
     });
     if (car.carCableTopic) context.mqtt.subscribe(car.carCableTopic, (msg) => {
       const v = String(msg).trim().toLowerCase();
@@ -1598,7 +1611,9 @@ export default {
     // out as it reaches the car and passing behind it; the car is drawn over it, dark-tinted.
     {
       const y0 = ROWS[2].y0;
-      if (s.carPlugged) {
+      // Cable and charging only while the car is at home: away it may charge elsewhere.
+      const carHere = s.carHome === true;
+      if (carHere && s.carPlugged) {
         const pts = [];
         for (let x = COLS[0].x1; x >= 6; x--) pts.push([x, y0 + 8]);
         const n = pts.length;
@@ -1607,7 +1622,7 @@ export default {
       drawTinted(device, this._home3Images.car, -3, y0 + 3, 0.42);
       if (s.carPct === null) await device.drawTextRgbaAligned("--", [COLS[0].x1 - 1, y0 + 1], C.dimWhite, "right");
       else await device.drawTextRgbaAligned(`${s.carPct}%`, [COLS[0].x1 - 1, y0 + 1], C.rowText, "right");
-      drawFlowBattery(device, 6, y0 + 13, s.carPct, s.carCharging ? "charging" : "idle", frameStart, s.carLimit);
+      drawFlowBattery(device, 6, y0 + 13, s.carPct, carHere && s.carCharging ? "charging" : "idle", frameStart, s.carLimit);
     }
 
     // Media (row 2, x22..63): the home2 icons, power-LED bars (green on, amber standby, grey stale),
@@ -1890,6 +1905,7 @@ export default {
       carChargingTopic: values.car_charging_topic ?? DEFAULT_SETTINGS.carChargingTopic,
       carCableTopic: values.car_cable_topic ?? DEFAULT_SETTINGS.carCableTopic,
       carLimitTopic: values.car_limit_topic ?? DEFAULT_SETTINGS.carLimitTopic,
+      carLocationTopic: values.car_location_topic ?? DEFAULT_SETTINGS.carLocationTopic,
       tempStaleMs: values.temp_stale_ms ?? DEFAULT_SETTINGS.tempStaleMs,
     };
   },
