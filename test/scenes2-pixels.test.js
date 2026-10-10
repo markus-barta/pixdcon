@@ -270,6 +270,10 @@ test("heating: red triangle and a red dot mixed into each row, rising 1 row/s wi
   assert.deepEqual(c[41], dot(lvl(41)));
   for (const y of [38, 39, 40]) assert.deepEqual(c[y], lvl(y));
   assert.deepEqual(c[37], black);
+  // Pinned fractional mixes, independent of the helpers.
+  assert.deepEqual(dot(lvl(40), 0.5), [180, 126, 175]);
+  assert.deepEqual(dot(lvl(38), 0.25), [78, 81, 215]);
+  assert.deepEqual(dot(black, 0.5), [89, 14, 9]);
   // t=0.5: halfway between y41 and y40, half strength on each; the tail slides in under y41.
   c = await frame(0.5);
   assert.deepEqual(c[41], dot(lvl(41), 0.5 + 0.15));
@@ -560,13 +564,16 @@ test("boiler readings too wide for the cell read -- instead of crossing the x43 
   }
 });
 
-test("boiler colour runs blue → cyan → pale neutral → amber → orange → red, never through green", async (t) => {
+test("the big number takes its value's gradient colour (pinned RGB, including between rows)", async (t) => {
   clock(t);
   const { scene, device, publish } = await setup(t);
-  for (const value of [27.5, 35, 40, 45, 50, 55]) {
+  for (const [value, rgb] of [
+    [27.5, [165, 194, 255]], [35, [90, 132, 255]], [40, [40, 90, 255]], [45, [105, 70, 238]],
+    [52, [182, 45, 179]], [55, [200, 38, 118]],
+  ]) {
     publish(value);
     await scene.render(device);
-    assert.deepEqual(at(device, 62, 28), heat(value), String(value));
+    assert.deepEqual(at(device, 62, 28), rgb, String(value));
   }
 });
 
