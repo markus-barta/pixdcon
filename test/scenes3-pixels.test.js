@@ -216,26 +216,47 @@ test("media: home2 icons; the Sync Box connector sits in the gap 1 px above the 
   for (const x of [26, 41, 57]) assert.notDeepEqual(at(device, x, 61), black, `LED bar x${x}`);
 });
 
-test("battery animation stays calm: between 500 ms frames no battery pixel changes by more than a little", async (t) => {
+test("battery energy packet: clearly visible, ~half a pixel per frame, no flashes; charging flows in from the terminal, discharge is a dark gap going out", async (t) => {
   const setTime = clock(t);
   const { scene, device } = await setup(t);
-  Object.assign(scene._s, { battPct: 62, battState: "charging", battSeen: Date.now() });
   const start = Date.parse("2026-10-10T12:30:00+02:00");
-  let previous = null;
-  let maxDelta = 0;
-  let total = 0;
-  for (let step = 0; step < 20; step++) {
-    setTime(start + step * 500);
+  const column = (x) => at(device, x, 37); // a fill row of the house battery (x7..17)
+  const profile = async (mode, ms) => {
+    Object.assign(scene._s, { battPct: 62, battState: mode, battSeen: Date.now() });
+    setTime(start + ms);
     await scene.render(device);
-    const now = [];
-    for (let y = 36; y <= 39; y++) for (let x = 7; x <= 17; x++) now.push(...at(device, x, y));
-    if (previous) {
-      const deltas = now.map((v, i) => Math.abs(v - previous[i]));
-      maxDelta = Math.max(maxDelta, ...deltas);
-      total += deltas.reduce((a, b) => a + b, 0);
+    return Array.from({ length: 11 }, (_, i) => column(7 + i));
+  };
+  const idle = await profile("standby", 0);
+  for (const [mode, sign] of [["charging", 1], ["discharging", -1]]) {
+    let previous = null;
+    let previousCentre = null;
+    let peak = 0;
+    let maxJump = 0;
+    let maxMove = 0;
+    let netMove = 0;
+    for (let step = 0; step < 24; step++) {
+      const cols = await profile(mode, step * 500);
+      // packet strength per column: brighter (charging) or darker (discharging) than the idle fill
+      const strength = cols.map((c, i) => Math.max(0, sign * (c.reduce((a, b) => a + b, 0) - idle[i].reduce((a, b) => a + b, 0))));
+      strength[strength.length - 1] = 0; // ignore the fill edge column (steady tint)
+      for (let i = 0; i < 11; i++) if (i === 6) strength[i] = 0; // 62 % → 7 filled; col 6 is the tinted edge
+      const total = strength.reduce((a, b) => a + b, 0);
+      peak = Math.max(peak, ...strength);
+      const centre = total > 30 ? strength.reduce((a, v, i) => a + v * i, 0) / total : null;
+      if (centre !== null && previousCentre !== null) {
+        maxMove = Math.max(maxMove, Math.abs(centre - previousCentre));
+        netMove += centre - previousCentre;
+      }
+      previousCentre = centre;
+      if (previous) for (let i = 0; i < 11; i++) for (let ch = 0; ch < 3; ch++) maxJump = Math.max(maxJump, Math.abs(cols[i][ch] - previous[i][ch]));
+      previous = cols;
     }
-    previous = now;
+    assert.ok(peak >= 150, `${mode}: clearly visible packet (peak ${peak} over the idle fill)`);
+    assert.ok(maxMove <= 0.75, `${mode}: moves at most ~half a pixel per frame (max ${maxMove.toFixed(2)})`);
+    assert.ok(maxJump <= 90, `${mode}: no flashes (largest single-frame change ${maxJump})`);
+    // energy enters / leaves through the terminal on the right: charging flows right → left
+    if (mode === "charging") assert.ok(netMove < -2, `charging flows right → left (net ${netMove.toFixed(1)})`);
+    else assert.ok(netMove > 2, `discharging flows left → right (net ${netMove.toFixed(1)})`);
   }
-  assert.ok(maxDelta <= 24, `largest per-frame change ${maxDelta}`);
-  assert.ok(total > 0, "it still moves");
 });
