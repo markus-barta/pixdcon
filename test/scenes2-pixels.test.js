@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import sharp from "sharp";
 import home from "../scenes/pixoo/home.js";
-import home2, { BOILER_COLOR_STOPS, boilerTempColor as heat, boilerRowColor, heatDotRed, deltaE, mix } from "../scenes/pixoo/home2.js";
+import home2, { hysteresisLevel, BOILER_COLOR_STOPS, boilerTempColor as heat, boilerRowColor, heatDotRed, deltaE, mix } from "../scenes/pixoo/home2.js";
 import { PixooDriver } from "../lib/pixoo-driver.js";
 
 const logger = { info() {}, warn() {}, error() {}, debug() {} };
@@ -517,6 +517,74 @@ test("home2 no longer pings the Nukis: no ICMP code, polls or ping settings", as
   for (const key of ["nuki_vr_ip", "nuki_ke_ip", "nuki_ping_ms"]) assert.equal(home2.settingsSchema[key], undefined, key);
 });
 
+test("energy hysteresis: PV on from 20 W / off below 5 W; consumption up at 500 / 1000 W, down below 450 / 900 W", () => {
+  const pv = (prev, w) => hysteresisLevel(prev, w, [20], [5]);
+  assert.equal(pv(null, 0), 0);
+  assert.equal(pv(null, 25), 1, "first reading decides directly");
+  assert.equal(pv(0, 19), 0, "below 20 W stays off");
+  assert.equal(pv(0, 20), 1);
+  assert.equal(pv(1, 10), 1, "between 5 and 20 W stays on");
+  assert.equal(pv(1, 4), 0);
+  const cons = (prev, w) => hysteresisLevel(prev, w, [500, 1000], [450, 900]);
+  assert.equal(cons(null, 600), 1);
+  assert.equal(cons(0, 499), 0);
+  assert.equal(cons(0, 500), 1);
+  assert.equal(cons(1, 470), 1, "hovering just under 500 W stays up");
+  assert.equal(cons(1, 449), 0);
+  assert.equal(cons(1, 1000), 2);
+  assert.equal(cons(0, 1500), 2, "jumps straight to the top tier");
+  assert.equal(cons(2, 950), 2, "hovering just under 1 kW stays up");
+  assert.equal(cons(2, 899), 1);
+  assert.equal(cons(2, 100), 0, "falls straight to the bottom tier");
+});
+
+test("energy colours ease over 2 s (smoothstep) between levels; a flip mid-fade starts from the colour on screen", async (t) => {
+  const setTime = clock(t, "2026-10-08T12:30:00+02:00");
+  const { scene, device } = await setup(t);
+  const start = Date.parse("2026-10-08T12:30:00+02:00");
+  const text = t.mock.method(device, "drawTextRgbaAligned");
+  const colorAt = (y) => {
+    const call = text.mock.calls.find(({ arguments: [, [x, cy]] }) => cy === y && x >= 22 && x <= 42);
+    return call.arguments[2];
+  };
+  const frame = async (ms, productionW, consumptionW) => {
+    Object.assign(scene._s, { productionW, consumptionW, energySeen: start + ms });
+    setTime(start + ms);
+    text.mock.resetCalls();
+    await scene.render(device);
+    return { pv: colorAt(29), cons: colorAt(37) };
+  };
+  const grey = [80, 80, 80];
+  const yellow = [255, 220, 0];
+  let c = await frame(0, 0, 600);
+  assert.deepEqual(c.pv, grey, "first frame: off, no fade");
+  assert.deepEqual(c.cons, [200, 40, 40], "first frame: tier 1, no fade");
+  c = await frame(500, 2150, 600);
+  assert.deepEqual(c.pv, grey, "fade starts at the change");
+  c = await frame(1500, 2150, 600);
+  assert.deepEqual(c.pv, [168, 150, 40], "halfway: smoothstep(0.5) = 0.5");
+  c = await frame(2000, 2150, 600);
+  assert.deepEqual(c.pv, [228, 198, 13], "1.5 s in: smoothstep(0.75) = 0.84375");
+  c = await frame(2500, 2150, 600);
+  assert.deepEqual(c.pv, yellow, "done after 2 s");
+  // Off again, then back on 0.5 s later: the second fade starts where the first one was.
+  await frame(3000, 0, 600);
+  c = await frame(3500, 0, 600);
+  assert.deepEqual(c.pv, [228, 198, 13], "0.5 s into fading out: smoothstep(0.25) = 0.15625");
+  c = await frame(3500, 2150, 600);
+  assert.deepEqual(c.pv, [228, 198, 13], "no jump when the target flips back");
+  c = await frame(5500, 2150, 600);
+  assert.deepEqual(c.pv, yellow);
+  // Consumption: 470 W stays tier 1 (hysteresis); 440 W fades down to tier 0.
+  c = await frame(6000, 2150, 470);
+  assert.deepEqual(c.cons, [200, 40, 40]);
+  await frame(6500, 2150, 440);
+  c = await frame(7500, 2150, 440);
+  assert.deepEqual(c.cons, [160, 30, 30], "halfway between tier 1 and tier 0");
+  c = await frame(8500, 2150, 440);
+  assert.deepEqual(c.cons, [120, 20, 20]);
+});
+
 test("boiler scale clamps 19/20 to empty and 70/71 to ten rows; 45 is five rows", async (t) => {
   clock(t);
   const { scene, device, publish } = await setup(t);
@@ -696,6 +764,7 @@ test("home2 matches home at every pixel outside the boiler and temperature cells
         // Row 0: home2 recolours and re-centres the labels and badges (x20..36) and the
         // temperatures (x44..63); margins and the x43 separator must still match.
         if (y >= 8 && y <= 25 && ((x >= 20 && x <= 36) || x >= 44)) continue;
+        if (x >= 22 && x <= 42 && y >= 27 && y <= 44) continue; // home2 fades the energy colours
         assert.deepEqual(at(first.device, x, y), at(second.device, x, y), `x${x}, y${y}`);
       }
     }
