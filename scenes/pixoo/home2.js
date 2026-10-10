@@ -658,8 +658,8 @@ const _boilerRowColor = (row) => _boilerTempColor(25 + 5 * row);
 async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heating = false, heatCycle = null, nowMs = Date.now()) {
   const baselineY = cellY0 + 15; // y=42; chart rows y=32..41 (5°C/px)
   const tickRowY = cellY0 + 16; // y=43
-  const yTickX = cellX0 + 2; // x=46
-  const curveX0 = cellX0 + 3; // x=47..62: all 16 day buckets, ending under the degree column
+  const yTickX = cellX0 + 1; // x=45: the vertical axis
+  const curveX0 = cellX0 + 2; // x=46..61: all 16 day buckets (PIXD-66: 1 px left for the axis)
   const rightX = cellX0 + 19; // exclusive text anchor, same as the UV value
   const textY = cellY0 + 1; // y=28
   const dimGray = [60, 60, 60];
@@ -668,15 +668,17 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
   // Only the bottom triangle marks the current bucket. The column line home's UV chart draws
   // above it ran behind the digits and is gone (PIXD-60).
 
+  // Axes: the baseline and a vertical line on the left, joined in an L (PIXD-66).
   hLine(d, yTickX, curveX0 + BOILER_BUCKETS - 1, baselineY, ...dimGray);
+  vLine(d, yTickX, baselineY - 10, baselineY, ...dimGray);
   // Y ticks at temperatures that mean something, in the chart's own colours for those rows:
   // 40 °C, below which a shower feels cold (blue), and 60 °C, which scalds within seconds and keeps
   // legionella down (red).
   d._setPixel(yTickX, baselineY - (40 - 20) / 5, ..._boilerTempColor(40));
   d._setPixel(yTickX, baselineY - (60 - 20) / 5, ..._boilerTempColor(60));
-  // Time ticks every 6 h at the start of the bucket beginning at 00/06/12/18, and 24:00 just
-  // past the last bucket: x47, 51, 55, 59, 63.
-  for (let hour = 0; hour <= 24; hour += 6) {
+  // Time ticks every 6 h, under the bucket beginning at 00/06/12/18: x46, 50, 54, 58. (A 24:00
+  // tick past the last bucket looked stray at the cell edge and is gone, PIXD-66.)
+  for (let hour = 0; hour < 24; hour += 6) {
     d._setPixel(curveX0 + (hour * 60) / BOILER_BUCKET_MIN, tickRowY, ...dimGray);
   }
 
