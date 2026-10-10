@@ -17,18 +17,20 @@
  *   Nuki VR (y 9-15) and Nuki KE (y 18-24) keep their 7×7 sprites — the artwork
  *   carries lock state, plus an amber dot when the lock's own MQTT reports it disconnected
  *   or its battery critical (PIXD-63).
- *   TE (terrace) and OL (Oberlichten = skylights) are text labels at x 20, with
+ *   OL (Oberlichten = skylights, upper floor) on top and TE (terrace) below are text labels at x 20, with
  *   3×3 badges left-aligned at x 29. Labels share the temperatures' warm white; the badge
  *   carries state twice, in colour and shape: filled green = open, hollow red = closed,
  *   olive + amber checker = stale/offline. Text brightness is deliberately high:
  *   the panel sits behind palladium-coated glass and C.dimWhite (80,80,80), used
  *   by the HOME label, is not readable in daylight through it.
  *
- * Row 0 temperature cell (x 44-63): pool (lower terrace) level with TE, Dachterrasse level
- *   with OL. Values are right-aligned so every degree pixel, the boiler's included, is at x 62.
+ * Row 0 temperature cell (x 44-63): Dachterrasse (upper terrace) level with OL, pool (lower
+ *   terrace) level with TE. Values are right-aligned so every degree pixel, the boiler's included,
+ *   is at x 62.
  *
- * Boiler cell: colour = temperature feel (blue → white at ~36 °C → yellow → amber → red), shared
- *   by the number and the current bar. Only a bottom triangle marks the current bucket; it
+ * Boiler cell: thermometer gradient — each chart row has its level's colour (white-blue → blue at
+ *   40 °C → violet → red at 60 °C → bright red), matching the 40/60 °C ticks; the number takes its
+ *   value's colour. Only a bottom triangle marks the current bucket; it
  *   turns red while the boiler draws power, and a red dot (mixed into the bar) rises through the
  *   current bar to one row above it at 1 row/s, fades out, and restarts (heating_fps sets the FPS).
  *
@@ -537,18 +539,17 @@ function emptyBoilerDay(now) {
   };
 }
 
-// Colour = how the water feels (Markus, PIXD-60): cold blue, white at skin-neutral ~36 °C, warm
-// yellow around 40 °C, then amber, orange and red. Never green-dominant (only a near-neutral tint
-// around 35 °C): the battery uses green for "good". The number and the current bar share it; past
-// bars are dimmed.
+// Thermometer scale (Markus, PIXD-64): every chart row has the colour of its level, so each bar is
+// a gradient from white-blue at the bottom up to its height. 40 °C (below it a shower feels cold) is
+// the blue of the 40 °C tick, 60 °C (scalds within seconds) the red of the 60 °C tick; violet sits
+// between, bright red above. Never green: the battery uses green for "good". The big number takes
+// the colour of its value; past bars are dimmed.
 const BOILER_COLOR_STOPS = [
-  [20, [60, 120, 255]], // cold — blue
-  [30, [40, 185, 255]], // cool — light blue
-  [36, [240, 236, 222]], // skin-neutral — warm white
-  [42, [255, 205, 60]], // comfortably warm — yellow
-  [50, [255, 150, 20]], // warm — amber
-  [60, [255, 80, 0]], // hot — orange
-  [70, [230, 20, 0]], // very hot — red
+  [25, [190, 215, 255]], // bottom row — white-blue
+  [40, [40, 90, 255]], // 40 °C tick — blue
+  [50, [170, 50, 220]], // violet
+  [60, [230, 25, 15]], // 60 °C tick — red
+  [70, [255, 70, 45]], // top row — bright red
 ];
 
 // ── Heating dot (PIXD-61) ─────────────────────────────────────────────────────
@@ -588,9 +589,11 @@ function _mix(bg, fg, alpha) {
   return bg.map((v, j) => Math.round(v + (fg[j] - v) * alpha));
 }
 
-// The red the dot mixes in over this bar: heating red, or pale hot red where that stands out more.
-function _heatDotRed(barColor) {
-  const full = (red) => _deltaE(_mix(barColor, red, HEAT_DOT_MIX), barColor);
+// The red the dot mixes in over this background: heating red, or pale hot red where that stands
+// out more (red rows). Above the bar, on black, it is always heating red.
+function _heatDotRed(bg) {
+  if (bg.every((v) => v === 0)) return HEAT_RED;
+  const full = (red) => _deltaE(_mix(bg, red, HEAT_DOT_MIX), bg);
   return full(HEAT_RED_PALE) > full(HEAT_RED) ? HEAT_RED_PALE : HEAT_RED;
 }
 
@@ -607,14 +610,13 @@ function _heatDotPhase(cycle, nowMs, top) {
   return Math.max(0, (nowMs - cycle.start) / 1000);
 }
 
-// rows: 0 = y41 (just above the baseline). The bar fills rows 0..height-1.
-function drawHeatDot(d, x, baselineY, height, barColor, cycle, nowMs) {
+// rows: 0 = y41 (just above the baseline). The bar fills rows 0..height-1 in rowColor(row).
+function drawHeatDot(d, x, baselineY, height, rowColor, cycle, nowMs) {
   const tau = _heatDotPhase(cycle, nowMs, Math.min(height, HEAT_DOT_TOP_ROW));
   const top = Math.min(cycle.top, HEAT_DOT_TOP_ROW);
   const rise = top / HEAT_DOT_ROWS_PER_S;
   const pos = tau < rise ? tau * HEAT_DOT_ROWS_PER_S : top;
   const strength = tau < rise ? 1 : Math.max(0, 1 - (tau - rise) / HEAT_DOT_FADE_S);
-  const red = _heatDotRed(barColor);
   const alpha = new Map();
   const add = (row, a) => {
     if (row >= 0 && a > 0) alpha.set(row, (alpha.get(row) ?? 0) + a);
@@ -630,8 +632,8 @@ function drawHeatDot(d, x, baselineY, height, barColor, cycle, nowMs) {
   splat(pos - 1, strength * HEAT_DOT_TAIL);
   for (const [row, a] of alpha) {
     if (row > top || a <= 0) continue;
-    const bg = row < height ? barColor : [0, 0, 0];
-    d._setPixel(x, baselineY - 1 - row, ..._mix(bg, red, Math.min(1, a) * HEAT_DOT_MIX));
+    const bg = row < height ? rowColor(row) : [0, 0, 0];
+    d._setPixel(x, baselineY - 1 - row, ..._mix(bg, _heatDotRed(bg), Math.min(1, a) * HEAT_DOT_MIX));
   }
 }
 
@@ -650,6 +652,9 @@ function _boilerTempColor(tempC) {
   return stops[stops.length - 1][1];
 }
 
+// Chart row k (0 = y41) shows level 25 + 5k °C: row 3 (y38) is 40 °C, row 7 (y34) is 60 °C.
+const _boilerRowColor = (row) => _boilerTempColor(25 + 5 * row);
+
 async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heating = false, heatCycle = null, nowMs = Date.now()) {
   const baselineY = cellY0 + 15; // y=42; chart rows y=32..41 (5°C/px)
   const tickRowY = cellY0 + 16; // y=43
@@ -664,10 +669,11 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
   // above it ran behind the digits and is gone (PIXD-60).
 
   hLine(d, yTickX, curveX0 + BOILER_BUCKETS - 1, baselineY, ...dimGray);
-  // Y ticks at temperatures that mean something: 40 °C, below which a shower feels cold (faint
-  // blue), and 60 °C, which scalds within seconds and keeps legionella down (faint red).
-  d._setPixel(yTickX, baselineY - (40 - 20) / 5, 50, 80, 150);
-  d._setPixel(yTickX, baselineY - (60 - 20) / 5, 150, 45, 35);
+  // Y ticks at temperatures that mean something, in the chart's own colours for those rows:
+  // 40 °C, below which a shower feels cold (blue), and 60 °C, which scalds within seconds and keeps
+  // legionella down (red).
+  d._setPixel(yTickX, baselineY - (40 - 20) / 5, ..._boilerTempColor(40));
+  d._setPixel(yTickX, baselineY - (60 - 20) / 5, ..._boilerTempColor(60));
   // Time ticks every 6 h at the start of the bucket beginning at 00/06/12/18, and 24:00 just
   // past the last bucket: x47, 51, 55, 59, 63.
   for (let hour = 0; hour <= 24; hour += 6) {
@@ -680,10 +686,12 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
     const value = i === nowBucket ? current ?? average : average;
     if (value === null) continue;
     const height = clamp(Math.round((value - 20) / 5), 0, 10);
-    const color = _boilerTempColor(value);
-    const barColor = i === nowBucket ? color : color.map((v) => Math.round(v * 0.65));
-    vLine(d, curveX0 + i, baselineY - height, baselineY - 1, ...barColor);
-    if (heating && heatCycle && i === nowBucket) drawHeatDot(d, nowX, baselineY, height, color, heatCycle, nowMs);
+    const past = i !== nowBucket;
+    for (let row = 0; row < height; row++) {
+      const color = _boilerRowColor(row);
+      d._setPixel(curveX0 + i, baselineY - 1 - row, ...(past ? color.map((v) => Math.round(v * 0.65)) : color));
+    }
+    if (heating && heatCycle && !past) drawHeatDot(d, nowX, baselineY, height, _boilerRowColor, heatCycle, nowMs);
   }
 
   // Current-time triangle: red while the boiler is heating.
@@ -748,7 +756,7 @@ function parseNukiBool(msg) {
 
 // ── Scene export ──────────────────────────────────────────────────────────────
 
-export { BOILER_COLOR_STOPS, _boilerTempColor as boilerTempColor, _heatDotRed as heatDotRed, _deltaE as deltaE, _mix as mix };
+export { BOILER_COLOR_STOPS, _boilerTempColor as boilerTempColor, _boilerRowColor as boilerRowColor, _heatDotRed as heatDotRed, _deltaE as deltaE, _mix as mix };
 
 export default {
   name: "home2",
@@ -1448,23 +1456,13 @@ export default {
 
     // TE (terrace door) and OL (Oberlichten) share a label x; the leftmost badge
     // of each row shares a second x, so the two rows read as aligned statements.
-    // Rows sit centred in y8..25: TE y10..14, OL y19..23 (2 px top, 4 px gap, 2 px bottom).
-    await device.drawTextRgbaAligned("TE", [20, 10], C.rowText, "left");
+    // Rows sit centred in y8..25 (2 px top, 4 px gap, 2 px bottom), upper floor on top (PIXD-64):
+    // OL (skylights) y10..14, TE (terrace) y19..23.
+    await device.drawTextRgbaAligned("OL", [20, 10], C.rowText, "left");
     drawOpeningBadge(
       device,
       29,
       11,
-      s.terraceOpen,
-      s.terraceOnline,
-      C.badgeOpen,
-      C.badgeClosed,
-    );
-
-    await device.drawTextRgbaAligned("OL", [20, 19], C.rowText, "left");
-    drawOpeningBadge(
-      device,
-      29,
-      20,
       s.w13Open,
       s.w13Online,
       C.badgeOpen,
@@ -1473,27 +1471,38 @@ export default {
     drawOpeningBadge(
       device,
       34,
-      20,
+      11,
       s.w14Open,
       s.w14Online,
       C.badgeOpen,
       C.badgeClosed,
     );
 
-    // Temperatures (x 44..63), level with their labels: pool (lower terrace) beside TE,
-    // Dachterrasse (upper terrace) beside OL.
+    await device.drawTextRgbaAligned("TE", [20, 19], C.rowText, "left");
+    drawOpeningBadge(
+      device,
+      29,
+      20,
+      s.terraceOpen,
+      s.terraceOnline,
+      C.badgeOpen,
+      C.badgeClosed,
+    );
+
+    // Temperatures (x 44..63), level with their labels: Dachterrasse (upper terrace) beside OL,
+    // pool (lower terrace) beside TE.
     await drawTempValue(
       device,
       COLS[2].x0,
       10,
-      isStale(s.poolTempSeen, this._cfg.tempStaleMs) ? null : s.poolTempC,
+      isStale(s.roofTempSeen, this._cfg.tempStaleMs) ? null : s.roofTempC,
       C.rowText,
     );
     await drawTempValue(
       device,
       COLS[2].x0,
       19,
-      isStale(s.roofTempSeen, this._cfg.tempStaleMs) ? null : s.roofTempC,
+      isStale(s.poolTempSeen, this._cfg.tempStaleMs) ? null : s.poolTempC,
       C.rowText,
     );
 
