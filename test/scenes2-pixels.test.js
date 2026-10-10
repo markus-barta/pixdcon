@@ -249,7 +249,7 @@ test("home2 wide temperatures drop the decimal and keep the degree on x62; -- is
 });
 
 test("heating: red triangle and a red dot mixed into each row, rising 1 row/s with a sub-pixel glide to one row above the bar", async (t) => {
-  const setTime = clock(t, "2026-10-08T12:30:00+02:00"); // bucket 8 → x55
+  const setTime = clock(t, "2026-10-08T12:30:00+02:00"); // bucket 8 → x54
   const { scene, device, publish, relay } = await setup(t);
   publish(40); // 4 rows: y38..41 (25/30/35/40 °C colours); the dot ends at y37, one row above
   relay(2150);
@@ -261,8 +261,8 @@ test("heating: red triangle and a red dot mixed into each row, rising 1 row/s wi
     setTime(start + seconds * 1000);
     await scene.render(device);
     const column = {};
-    for (let y = 36; y <= 41; y++) column[y] = at(device, 55, y);
-    assert.deepEqual(at(device, 55, 43), [230, 30, 20], `red triangle at ${seconds}s`);
+    for (let y = 36; y <= 41; y++) column[y] = at(device, 54, y);
+    assert.deepEqual(at(device, 54, 43), [230, 30, 20], `red triangle at ${seconds}s`);
     return column;
   };
   // t=0: the dot sits on the bottom row at full strength; the other rows keep their gradient.
@@ -354,18 +354,18 @@ test("a bar that grows mid-rise never makes the dot jump back; the new top appli
   await scene.render(device);
   setTime(start + 7000); // second cycle, 2 s in: dot on row 2 (y39)
   await scene.render(device);
-  assert.deepEqual(at(device, 55, 39), dot(lvl(39)));
+  assert.deepEqual(at(device, 54, 39), dot(lvl(39)));
   publish(45); // 5 rows now, mid-rise
   setTime(start + 7250); // keeps rising: row 2.25 → y38 at 25 % (a re-based phase would drop back to 1.25)
   await scene.render(device);
-  assert.deepEqual(at(device, 55, 38), dot(lvl(38), 0.25));
-  assert.deepEqual(at(device, 55, 39), dot(lvl(39), 0.75 + 0.3 * 0.25));
+  assert.deepEqual(at(device, 54, 38), dot(lvl(38), 0.25));
+  assert.deepEqual(at(device, 54, 39), dot(lvl(39), 0.75 + 0.3 * 0.25));
   setTime(start + 9000); // this cycle keeps its 4-row top: y37, now inside the taller bar
   await scene.render(device);
-  assert.deepEqual(at(device, 55, 37), dot(lvl(37)));
+  assert.deepEqual(at(device, 54, 37), dot(lvl(37)));
   setTime(start + 10000 + 5000); // next cycle (5 rows → 6 s) at 5 s: its top, y36, one above the bar
   await scene.render(device);
-  assert.deepEqual(at(device, 55, 36), dot(black));
+  assert.deepEqual(at(device, 54, 36), dot(black));
 });
 
 test("boiler not heating: below threshold, stale relay, missing power or a raised threshold keep the grey triangle", async (t) => {
@@ -376,9 +376,9 @@ test("boiler not heating: below threshold, stale relay, missing power or a raise
   const check = async (label) => {
     for (let i = 0; i < 4; i++) {
       await scene.render(device);
-      for (let y = 35; y <= 41; y++) assert.deepEqual(at(device, 55, y), lvl(y), `${label}: y${y}`);
-      assert.deepEqual(at(device, 55, 43), grey, label);
-      for (const x of [54, 55, 56]) assert.deepEqual(at(device, x, 44), grey, label);
+      for (let y = 35; y <= 41; y++) assert.deepEqual(at(device, 54, y), lvl(y), `${label}: y${y}`);
+      assert.deepEqual(at(device, 54, 43), grey, label);
+      for (const x of [53, 54, 55]) assert.deepEqual(at(device, x, 44), grey, label);
     }
   };
   await check("no relay message yet");
@@ -410,12 +410,12 @@ test("boiler not heating: below threshold, stale relay, missing power or a raise
 });
 
 test("on a full-height bar the dot stops at y33 and never touches the digits' row", async (t) => {
-  const setTime = clock(t, "2026-10-08T16:00:00+02:00"); // bucket 10 (15:00–16:30) → x57, under "70" (x54..60)
+  const setTime = clock(t, "2026-10-08T16:00:00+02:00"); // bucket 10 (15:00–16:30) → x56, under "70" (x54..60)
   const { scene, device, publish, relay } = await setup(t);
   publish(70);
   await scene.render(device);
   const reference = [];
-  for (let y = 27; y <= 32; y++) reference.push(at(device, 57, y));
+  for (let y = 27; y <= 32; y++) reference.push(at(device, 56, y));
   relay(2150);
   const start = Date.parse("2026-10-08T16:00:00+02:00");
   assert.deepEqual(heatDotRed(lvl(33)), PALE_RED, "pale hot red over the 65 °C row");
@@ -423,8 +423,8 @@ test("on a full-height bar the dot stops at y33 and never touches the digits' ro
   for (let step = 0; step <= 40; step++) {
     setTime(start + step * 250);
     await scene.render(device);
-    for (let y = 27; y <= 32; y++) assert.deepEqual(at(device, 57, y), reference[y - 27], `y${y} at ${step * 0.25}s`);
-    if (step === 32) assert.deepEqual(at(device, 57, 33), dot(lvl(33)), "8 rows up at 8 s: the top, y33");
+    for (let y = 27; y <= 32; y++) assert.deepEqual(at(device, 56, y), reference[y - 27], `y${y} at ${step * 0.25}s`);
+    if (step === 32) assert.deepEqual(at(device, 56, 33), dot(lvl(33)), "8 rows up at 8 s: the top, y33");
   }
 });
 
@@ -436,16 +436,16 @@ test("short bars still show the dot: one row above a 1-row bar, a pulse just abo
   publish(25); // 1 row (y41); the dot rises to y40 over 1 s
   setTime(start);
   await scene.render(device);
-  assert.deepEqual(at(device, 55, 41), dot(heat(25)));
+  assert.deepEqual(at(device, 54, 41), dot(heat(25)));
   setTime(start + 1000);
   await scene.render(device);
-  assert.deepEqual(at(device, 55, 40), dot(black));
-  assert.deepEqual(at(device, 55, 43), [230, 30, 20]);
+  assert.deepEqual(at(device, 54, 40), dot(black));
+  assert.deepEqual(at(device, 54, 43), [230, 30, 20]);
   publish(21); // 0 rows: a 1 s fade at y41, on black
   for (const [ms, strength] of [[2000, 1], [2500, 0.5]]) {
     setTime(start + ms);
     await scene.render(device);
-    assert.deepEqual(at(device, 55, 41), dot(black, strength), `${ms} ms`);
+    assert.deepEqual(at(device, 54, 41), dot(black, strength), `${ms} ms`);
   }
 });
 
@@ -527,7 +527,7 @@ test("boiler scale clamps 19/20 to empty and 70/71 to ten rows; 45 is five rows"
     publish(value);
     await scene.render(device);
     for (let y = 32; y < 42; y++) {
-      assert.deepEqual(at(device, 47, y), y >= 42 - height ? lvl(y) : black, `${value} at y${y}`);
+      assert.deepEqual(at(device, 46, y), y >= 42 - height ? lvl(y) : black, `${value} at y${y}`);
     }
     assert.deepEqual(at(device, 62, 28), color, "degree at the top row");
     assert.deepEqual(at(device, 61, 28), black, "one-pixel degree gap");
@@ -536,7 +536,7 @@ test("boiler scale clamps 19/20 to empty and 70/71 to ten rows; 45 is five rows"
 });
 
 test("the current temperature stays readable above full-height past bars", async (t) => {
-  clock(t, "2026-10-08T23:30:00+02:00"); // bucket 15 (x62): x54..60 under the digits are all PAST buckets
+  clock(t, "2026-10-08T23:30:00+02:00"); // bucket 15 (x61): x54..60 under the digits are all PAST buckets
   const { scene, device, publish } = await setup(t);
   for (let i = 0; i < scene._boilerHistory.buckets.length; i++) scene._boilerHistory.buckets[i] = { sum: 70, count: 1 };
   publish(70);
@@ -597,24 +597,25 @@ test("thermometer scale: white-blue → blue (40, tick) → violet → red (60, 
 });
 
 test("past bars use their average at dim65; current uses live temperature; future has only baseline", async (t) => {
-  clock(t, "2026-10-08T12:30:00+02:00"); // bucket 8 (12:00–13:30) → x55
+  clock(t, "2026-10-08T12:30:00+02:00"); // bucket 8 (12:00–13:30) → x54
   const { scene, device, publish } = await setup(t);
-  scene._boilerHistory.buckets[0] = { sum: 90, count: 2 }; // average 45 → x47
-  scene._boilerHistory.buckets[1] = { sum: 140, count: 2 }; // average 70 → x48
+  scene._boilerHistory.buckets[0] = { sum: 90, count: 2 }; // average 45 → x46
+  scene._boilerHistory.buckets[1] = { sum: 140, count: 2 }; // average 70 → x47
   scene._boilerHistory.buckets[8] = { sum: 45, count: 1 }; // current bucket
   scene._boilerHistory.buckets[9] = { sum: 70, count: 1 }; // future must not render
   publish(70);
   await scene.render(device);
-  for (let y = 37; y <= 41; y++) assert.deepEqual(at(device, 47, y), dim(lvl(y)), `past 45 °C, y${y}`);
-  assert.deepEqual(at(device, 47, 36), black);
-  for (let y = 32; y <= 41; y++) assert.deepEqual(at(device, 48, y), dim(lvl(y)), `past 70 °C, y${y}`);
-  assert.deepEqual(at(device, 48, 41), [124, 140, 166], "pinned: white-blue at 65 %");
-  assert.deepEqual(at(device, 48, 32), [166, 46, 29], "pinned: bright red at 65 %");
-  for (let y = 33; y <= 41; y++) assert.deepEqual(at(device, 55, y), lvl(y), `current, full brightness, y${y}`);
-  for (let x = 56; x <= 62; x++) {
+  for (let y = 37; y <= 41; y++) assert.deepEqual(at(device, 46, y), dim(lvl(y)), `past 45 °C, y${y}`);
+  assert.deepEqual(at(device, 46, 36), black);
+  for (let y = 32; y <= 41; y++) assert.deepEqual(at(device, 47, y), dim(lvl(y)), `past 70 °C, y${y}`);
+  assert.deepEqual(at(device, 47, 41), [124, 140, 166], "pinned: white-blue at 65 %");
+  assert.deepEqual(at(device, 47, 32), [166, 46, 29], "pinned: bright red at 65 %");
+  for (let y = 33; y <= 41; y++) assert.deepEqual(at(device, 54, y), lvl(y), `current, full brightness, y${y}`);
+  for (let x = 55; x <= 61; x++) {
     for (let y = 33; y <= 41; y++) assert.deepEqual(at(device, x, y), black, `future x${x}, y${y}`);
     assert.deepEqual(at(device, x, 42), gray);
   }
+  for (const x of [62, 63]) for (let y = 33; y <= 42; y++) assert.deepEqual(at(device, x, y), black, `right margin x${x}, y${y}`);
 });
 
 test("stale current shows -- and blinking error while the current bucket retains its average", async (t) => {
@@ -627,44 +628,45 @@ test("stale current shows -- and blinking error while the current bucket retains
   for (const [x, y] of [[60, 28], [62, 28], [61, 29], [60, 30], [62, 30]]) {
     assert.deepEqual(at(device, x, y), [200, 0, 0]);
   }
-  for (let y = 37; y <= 41; y++) assert.deepEqual(at(device, 55, y), lvl(y), `average 45 → 5 gradient rows, y${y}`);
+  for (let y = 37; y <= 41; y++) assert.deepEqual(at(device, 54, y), lvl(y), `average 45 → 5 gradient rows, y${y}`);
   await scene.render(device); // Even frame: no error X, no degree pixel.
   for (const x of [56, 57, 58, 60, 61, 62]) assert.deepEqual(at(device, x, 30), [80, 80, 80]);
   assert.deepEqual(at(device, 62, 28), black);
   scene._boilerHistory.buckets[8] = { sum: 0, count: 0 };
   await scene.render(device);
   // No value and no current-column line (PIXD-60): the column is empty above the baseline.
-  for (let y = 27; y <= 41; y++) assert.deepEqual(at(device, 55, y), black, `y${y}`);
+  for (let y = 27; y <= 41; y++) assert.deepEqual(at(device, 54, y), black, `y${y}`);
 });
 
-test("boiler axes: 40 °C (blue) and 60 °C (red) ticks in the bars' own row colours; 6-hour ticks evenly at x47/51/55/59/63", async (t) => {
-  clock(t, "2026-10-08T01:50:00+02:00"); // bucket 1 (01:30–03:00) → x48
+test("boiler axes: an L of dim grey at x45 / y42 with the 40 °C (blue) and 60 °C (red) ticks on it; 6-hour ticks at x46/50/54/58", async (t) => {
+  clock(t, "2026-10-08T01:50:00+02:00"); // bucket 1 (01:30–03:00) → x47
   const { scene, device, publish } = await setup(t);
   publish(20);
   await scene.render(device);
-  assert.deepEqual(at(device, 46, 38), [40, 90, 255], "40 °C = the y38 row colour");
-  assert.deepEqual(at(device, 46, 34), [230, 25, 15], "60 °C = the y34 row colour");
-  assert.deepEqual(at(device, 46, 38), lvl(38));
-  assert.deepEqual(at(device, 46, 34), lvl(34));
-  for (const y of [32, 33, 35, 36, 37, 39, 40, 41]) assert.deepEqual(at(device, 46, y), black, `no tick at y${y}`);
-  for (let y = 32; y <= 42; y++) assert.deepEqual(at(device, 45, y), black, `x45 is margin now, y${y}`);
-  for (let x = 46; x <= 62; x++) assert.deepEqual(at(device, x, 42), gray, `baseline x${x}`);
-  assert.deepEqual(at(device, 63, 42), black, "the chart ends at x62, under the degree column");
-  for (const x of [47, 51, 55, 59, 63]) assert.deepEqual(at(device, x, 43), gray, `6 h tick x${x}`);
-  for (const x of [49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62]) assert.deepEqual(at(device, x, 43), black, `x${x}`);
-  assert.deepEqual(at(device, 48, 43), [200, 200, 205], "triangle tip under the current bucket");
+  assert.deepEqual(at(device, 45, 38), [40, 90, 255], "40 °C tick on the axis");
+  assert.deepEqual(at(device, 45, 34), [230, 25, 15], "60 °C tick on the axis");
+  assert.deepEqual(at(device, 45, 38), lvl(38));
+  assert.deepEqual(at(device, 45, 34), lvl(34));
+  for (let y = 32; y <= 42; y++) if (y !== 34 && y !== 38) assert.deepEqual(at(device, 45, y), gray, `axis y${y}`);
+  assert.deepEqual(at(device, 45, 31), black, "the axis stops at the chart's top row");
+  for (let y = 32; y <= 43; y++) assert.deepEqual(at(device, 44, y), black, `1 px margin to the separator, y${y}`);
+  for (let x = 45; x <= 61; x++) assert.deepEqual(at(device, x, 42), gray, `baseline x${x}`);
+  for (const x of [62, 63]) assert.deepEqual(at(device, x, 42), black, `no baseline at x${x}`);
+  for (const x of [46, 50, 54, 58]) assert.deepEqual(at(device, x, 43), gray, `6 h tick x${x}`);
+  for (const x of [48, 49, 51, 52, 53, 55, 56, 57, 59, 60, 61, 62, 63]) assert.deepEqual(at(device, x, 43), black, `x${x}`);
+  assert.deepEqual(at(device, 47, 43), [200, 200, 205], "triangle tip under the current bucket");
 });
 
-test("the final bucket's current marker and full-height bar stay within the cell; the chart ends at x62", async (t) => {
-  clock(t, "2026-10-08T23:59:00+02:00"); // bucket 15 → x62
+test("the final bucket's current marker and full-height bar stay within the cell; the chart ends at x61", async (t) => {
+  clock(t, "2026-10-08T23:59:00+02:00"); // bucket 15 → x61
   const { scene, device, publish } = await setup(t);
   const pixel = t.mock.method(device, "_setPixel");
   publish(70);
   await scene.render(device);
   assert.ok(pixel.mock.calls.every(({ arguments: [x, y] }) => x >= 0 && x <= 63 && y >= 0 && y <= 63));
-  for (let y = 32; y <= 41; y++) assert.deepEqual(at(device, 62, y), lvl(y));
-  for (let y = 33; y <= 41; y++) assert.deepEqual(at(device, 63, y), black, `x63 is margin, y${y}`);
-  for (const x of [61, 62, 63]) assert.deepEqual(at(device, x, 44), [200, 200, 205], `arrow base x${x}`);
+  for (let y = 32; y <= 41; y++) assert.deepEqual(at(device, 61, y), lvl(y));
+  for (const x of [62, 63]) for (let y = 33; y <= 41; y++) assert.deepEqual(at(device, x, y), black, `margin x${x}, y${y}`);
+  for (const x of [60, 61, 62]) assert.deepEqual(at(device, x, 44), [200, 200, 205], `arrow base x${x}`);
   assert.deepEqual(at(device, 43, 44), [25, 25, 25]);
 });
 
