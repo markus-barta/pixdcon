@@ -536,7 +536,7 @@ test("boiler scale clamps 19/20 to empty and 70/71 to ten rows; 45 is five rows"
 });
 
 test("the current temperature stays readable above full-height past bars", async (t) => {
-  clock(t, "2026-10-08T23:30:00+02:00"); // bucket 15 (x62): x54..60 under the digits are all PAST buckets
+  clock(t, "2026-10-08T23:30:00+02:00"); // bucket 15 (x61): x54..60 under the digits are all PAST buckets
   const { scene, device, publish } = await setup(t);
   for (let i = 0; i < scene._boilerHistory.buckets.length; i++) scene._boilerHistory.buckets[i] = { sum: 70, count: 1 };
   publish(70);

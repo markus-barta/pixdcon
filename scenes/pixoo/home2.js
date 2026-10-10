@@ -699,7 +699,7 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
   // Current-time triangle: red while the boiler is heating.
   const arrowColor = heating ? [230, 30, 20] : [200, 200, 205];
   d._setPixel(nowX, tickRowY, ...arrowColor);
-  // The final bucket touches x=63: clip the arrow base to its own cell.
+  // The final bucket is x61 (base up to x62); keep the clip so the arrow can never leave the cell.
   hLine(d, Math.max(cellX0, nowX - 1), Math.min(cellX0 + 19, nowX + 1), cellY0 + 17, ...arrowColor);
 
   // Text last: full-height bars (≥ 67.5 °C) reach the digits' bottom row (y32).
