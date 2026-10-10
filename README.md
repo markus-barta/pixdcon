@@ -27,7 +27,7 @@ legacy anchor; it is not the app's release version. Development, CI and Docker u
 | ----------- | ----------------- | ------------------------------------ |
 | `ulanzi-56` | Ulanzi TC001 32×8 | Clock + Nuki/doors/skylights/battery |
 | `ulanzi-57` | Ulanzi TC001 32×8 | Clock + Nuki/doors/skylights/battery |
-| `pixoo-159` | Pixoo64 64×64     | 3-row smart home dashboard (`home2`: boiler day chart, red marker + rising pixel while heating; `home`: UV) |
+| `pixoo-159` | Pixoo64 64×64     | 3-row smart home dashboard (`home3`: no title bar, Model X + Sonnen batteries, Nuki charging, compact media; `home2`: with clock; `home`: UV) |
 | `pixoo-189` | Pixoo64 64×64     | funkeykid educational keyboard display |
 
 ---
