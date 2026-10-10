@@ -668,18 +668,20 @@ async function drawBoiler(d, cellX0, cellY0, current, buckets, nowBucket, heatin
   // Only the bottom triangle marks the current bucket. The column line home's UV chart draws
   // above it ran behind the digits and is gone (PIXD-60).
 
-  // Axes: the baseline and a vertical line on the left, joined in an L (PIXD-66).
-  hLine(d, yTickX, curveX0 + BOILER_BUCKETS - 1, baselineY, ...dimGray);
-  vLine(d, yTickX, baselineY - 10, baselineY, ...dimGray);
+  // Axes cross at the origin and overshoot it by 1 px (PIXD-67): baseline x44..63, vertical axis
+  // y32..43 at x45.
+  hLine(d, yTickX - 1, curveX0 + BOILER_BUCKETS + 1, baselineY, ...dimGray);
+  vLine(d, yTickX, baselineY - 10, baselineY + 1, ...dimGray);
   // Y ticks at temperatures that mean something, in the chart's own colours for those rows:
   // 40 °C, below which a shower feels cold (blue), and 60 °C, which scalds within seconds and keeps
   // legionella down (red).
   d._setPixel(yTickX, baselineY - (40 - 20) / 5, ..._boilerTempColor(40));
   d._setPixel(yTickX, baselineY - (60 - 20) / 5, ..._boilerTempColor(60));
-  // Time ticks every 6 h, under the bucket beginning at 00/06/12/18: x46, 50, 54, 58. (A 24:00
-  // tick past the last bucket looked stray at the cell edge and is gone, PIXD-66.)
-  for (let hour = 0; hour < 24; hour += 6) {
-    d._setPixel(curveX0 + (hour * 60) / BOILER_BUCKET_MIN, tickRowY, ...dimGray);
+  // Time ticks every 6 h as brighter points inside the x-axis, at the start of the bucket beginning
+  // at 00/06/12/18 and at 24:00 just past the last one: x46, 50, 54, 58, 62. The row below holds
+  // only the current-time triangle.
+  for (let hour = 0; hour <= 24; hour += 6) {
+    d._setPixel(curveX0 + (hour * 60) / BOILER_BUCKET_MIN, baselineY, 130, 130, 130);
   }
 
   for (let i = 0; i <= nowBucket; i++) {

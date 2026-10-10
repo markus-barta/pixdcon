@@ -613,9 +613,9 @@ test("past bars use their average at dim65; current uses live temperature; futur
   for (let y = 33; y <= 41; y++) assert.deepEqual(at(device, 54, y), lvl(y), `current, full brightness, y${y}`);
   for (let x = 55; x <= 61; x++) {
     for (let y = 33; y <= 41; y++) assert.deepEqual(at(device, x, y), black, `future x${x}, y${y}`);
-    assert.deepEqual(at(device, x, 42), gray);
+    assert.deepEqual(at(device, x, 42), x === 58 ? [130, 130, 130] : gray, `x-axis x${x}`);
   }
-  for (const x of [62, 63]) for (let y = 33; y <= 42; y++) assert.deepEqual(at(device, x, y), black, `right margin x${x}, y${y}`);
+  for (const x of [62, 63]) for (let y = 33; y <= 41; y++) assert.deepEqual(at(device, x, y), black, `right margin x${x}, y${y}`);
 });
 
 test("stale current shows -- and blinking error while the current bucket retains its average", async (t) => {
@@ -638,22 +638,26 @@ test("stale current shows -- and blinking error while the current bucket retains
   for (let y = 27; y <= 41; y++) assert.deepEqual(at(device, 54, y), black, `y${y}`);
 });
 
-test("boiler axes: an L of dim grey at x45 / y42 with the 40 °C (blue) and 60 °C (red) ticks on it; 6-hour ticks at x46/50/54/58", async (t) => {
+test("boiler axes cross at the origin (x44..63 / y32..43); 6-hour ticks brighter inside the x-axis incl. 24:00; 40/60 °C on the y-axis", async (t) => {
   clock(t, "2026-10-08T01:50:00+02:00"); // bucket 1 (01:30–03:00) → x47
   const { scene, device, publish } = await setup(t);
   publish(20);
   await scene.render(device);
-  assert.deepEqual(at(device, 45, 38), [40, 90, 255], "40 °C tick on the axis");
-  assert.deepEqual(at(device, 45, 34), [230, 25, 15], "60 °C tick on the axis");
-  assert.deepEqual(at(device, 45, 38), lvl(38));
-  assert.deepEqual(at(device, 45, 34), lvl(34));
-  for (let y = 32; y <= 42; y++) if (y !== 34 && y !== 38) assert.deepEqual(at(device, 45, y), gray, `axis y${y}`);
-  assert.deepEqual(at(device, 45, 31), black, "the axis stops at the chart's top row");
-  for (let y = 32; y <= 43; y++) assert.deepEqual(at(device, 44, y), black, `1 px margin to the separator, y${y}`);
-  for (let x = 45; x <= 61; x++) assert.deepEqual(at(device, x, 42), gray, `baseline x${x}`);
-  for (const x of [62, 63]) assert.deepEqual(at(device, x, 42), black, `no baseline at x${x}`);
-  for (const x of [46, 50, 54, 58]) assert.deepEqual(at(device, x, 43), gray, `6 h tick x${x}`);
-  for (const x of [48, 49, 51, 52, 53, 55, 56, 57, 59, 60, 61, 62, 63]) assert.deepEqual(at(device, x, 43), black, `x${x}`);
+  const tick = [130, 130, 130];
+  // y-axis at x45: dim grey y32..43 (1 px past the baseline), coloured 40/60 °C points.
+  assert.deepEqual(at(device, 45, 38), [40, 90, 255], "40 °C");
+  assert.deepEqual(at(device, 45, 34), [230, 25, 15], "60 °C");
+  for (let y = 32; y <= 43; y++) if (y !== 34 && y !== 38) assert.deepEqual(at(device, 45, y), gray, `y-axis y${y}`);
+  assert.deepEqual(at(device, 45, 31), black, "stops at the chart's top row");
+  assert.deepEqual(at(device, 45, 44), black, "overshoots the baseline by exactly 1 px");
+  // x-axis at y42: x44..63 (1 px left of the y-axis, to the cell edge), ticks at 00/06/12/18/24.
+  for (let x = 44; x <= 63; x++) {
+    const expected = [46, 50, 54, 58, 62].includes(x) ? tick : gray;
+    assert.deepEqual(at(device, x, 42), expected, `x-axis x${x}`);
+  }
+  assert.deepEqual(at(device, 43, 42), [25, 25, 25], "the separator is untouched");
+  // The row below holds only the triangle (and the y-axis overshoot at x45).
+  for (let x = 46; x <= 63; x++) if (x !== 47) assert.deepEqual(at(device, x, 43), black, `y43 x${x}`);
   assert.deepEqual(at(device, 47, 43), [200, 200, 205], "triangle tip under the current bucket");
 });
 
