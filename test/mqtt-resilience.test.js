@@ -151,9 +151,17 @@ test("offline UI scene choice survives reconnect, clears retained state and pres
   assert.equal(overlay.merge(saved).devices[0].ip, "new-blob-ip");
   assert.ok(state.packets.some((p) => p.cmd === "publish" && p.topic === sceneTopic && p.retain && p.qos === 1 && p.payload.length === 0));
   assert.ok(!state.packets.some((p) => p.cmd === "publish" && p.topic === otherTopic));
-  // Even a retained packet already queued before the acknowledgement is stale.
-  service.client.emit("message", sceneTopic, Buffer.from("builtin:clock"), { retain: true });
-  assert.equal(overlay.merge(saved).devices[0].scene, "funkeykid");
+  // Once the empty echo has arrived, a newer HA scene written while offline
+  // must survive the next retained replay rather than being cleared again.
+  assert.equal(overlay._clearedDeviceScenes.has("panel"), false);
+  const closedAgain = once(service.client, "close");
+  state.streams.at(-1).destroy();
+  await closedAgain;
+  state.retained[sceneTopic] = "builtin:clock";
+  service.client.reconnect();
+  await waitFor(() => service.connected && overlay.merge(saved).devices[0].scene === "builtin:clock");
+  assert.equal(overlay.merge(saved).devices[0].scene, "builtin:clock");
+  assert.equal(state.retained[sceneTopic], "builtin:clock");
   // A later live MQTT choice remains supported.
   service.client.emit("message", sceneTopic, Buffer.from("home"), { retain: false });
   assert.equal(overlay.merge(saved).devices[0].scene, "home");

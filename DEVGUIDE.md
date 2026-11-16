@@ -231,18 +231,28 @@ render() returns null     # scene is done → advance to next scene
   A scene patch uses the same overlay clear as `/api/scene`. Devices absent from
   the file return 404; a missing file is never recreated from effective config.
 - File writes and scene clears share the daemon's lifecycle queue with reloads.
-  The base config updates before clear echoes can trigger an overlay reload.
-  Writes stage a sibling temp file and rename it, preserving file permissions.
+  The base config updates before publishing clears. Empty clears that remove
+  nothing and our own blob echoes do not reload devices; the file watcher
+  performs the single full reload for a saved scene choice. If disk JSON is
+  malformed, `/api/scene` returns `persisted: false`, keeps the file untouched,
+  and updates the live scene and in-memory base so later overlay reloads retain
+  that choice (until restart or a newer scene command).
+  Writes resolve config symlinks and stage a sibling temp file beside the real
+  target, restoring its owner, group and exact mode before rename. Symlinks stay
+  intact; failure to preserve metadata aborts the replacement.
   A single-file Docker bind mount rejects rename with `EBUSY`; only that error
   falls back to an in-place write of the validated content. This fallback is
   serialized but is not crash-atomic. Mount the containing directory to allow
   atomic replacements. The config watcher re-arms after replacement.
 - Offline scene choices remove local overlay fields immediately. Granular
   retained clears queue in memory, use QoS 1, retry each second while connected,
-  and survive reconnect until acknowledged. Late retained scene packets remain
-  suppressed for devices chosen in this process. A later live MQTT scene
-  command can intentionally establish a new overlay. On reconnect a blob is
-  read from the fresh retained replay, stripped of only those scene fields,
+  and survive reconnect until acknowledged. Late retained scene packets are
+  suppressed until that topic's empty clear echo arrives; broker per-topic
+  ordering then permits genuinely newer retained HA choices. Blob suppression
+  has a separate guard until its sanitized echo (or a snapshot with no scene
+  fields), because granular and blob echoes may arrive independently. A later
+  live MQTT scene command can intentionally establish a new overlay. On
+  reconnect a blob is read from the fresh retained replay, stripped of only those scene fields,
   then republished; an offline whole-blob snapshot is never replayed. Blob
   writes use QoS 0 with local send-error retries, so mqtt.js cannot resend an
   old whole blob after reconnect. Pending clears and suppression are not
@@ -251,7 +261,10 @@ render() returns null     # scene is done → advance to next scene
 - `GET /api/status` includes `deviceScenes`, keyed by device name. One-second
   status polling updates each card's scene and its Alpine `x-model` binding;
   responses predating a UI choice and missing devices during reload are
-  ignored for scene updates. Array order never identifies a device.
+  ignored for scene updates. Per-option `:selected` bindings select options
+  rendered late inside optgroups, including built-ins from `refreshScenes()`.
+  Array order never identifies a device. The DOM regression uses jsdom and real
+  Alpine, with no network requests.
 - FunKeyKid renders its color-cycling `fun` / `key` / `kid` start screen without
   receiving any MQTT messages.
 

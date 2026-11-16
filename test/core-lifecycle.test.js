@@ -198,10 +198,10 @@ if (typeof SourceTextModule !== "function") {
     const { stdout } = await promisify(execFile)(process.execPath, [
       "--experimental-vm-modules", "--test", url.fileURLToPath(import.meta.url),
     ], { timeout: 15_000, env: childEnv });
-    assert.match(stdout, /(?:tests 7|# tests 7)/);
+    assert.match(stdout, /(?:tests 8|# tests 8)/);
   });
 } else {
-  test("UI scene persistence shares the lifecycle queue and precedes the MQTT-clear echo reload", async (t) => {
+  test("UI scene persistence shares the lifecycle queue and restarts once, from the file watcher", async (t) => {
     const root = await mkdtemp(path.join(tmpdir(), "pixd75-lifecycle-"));
     t.after(() => rm(root, { recursive: true, force: true }));
     const configPath = path.join(root, "config.json");
@@ -217,6 +217,7 @@ if (typeof SourceTextModule !== "function") {
     });
     await waitFor(() => state.ready);
     assert.equal(state.web.getRenderLoops()[0].loop.scene, "builtin:clock");
+    const originalLoop = state.web.getRenderLoops()[0].loop;
     const server = new WebServer({ ...state.web, configPath });
     const req = Readable.from([Buffer.from(JSON.stringify({ deviceName: "panel", scene: "funkeykid" }))]);
     req.method = "POST";
@@ -224,13 +225,49 @@ if (typeof SourceTextModule !== "function") {
     const res = { writeHead(status) { this.status = status; }, end() {} };
     await server._handle(req, res);
     assert.equal(res.status, 200);
-    // The MQTT echo debounces at 300 ms; the file watcher would fire at 500.
-    // Verify this earlier reload already sees the new base file scene.
-    await waitFor(() => state.events.filter((e) => e === "init:one").length > 1);
+    // Neither the clear echo nor an unchanged self-echo should reload devices.
+    await delay(350);
+    assert.equal(state.web.getRenderLoops()[0].loop, originalLoop);
+    assert.equal(state.events.filter((e) => e === "loader").length, 1);
     assert.equal(state.web.getEffectiveConfig().devices[0].scene, "funkeykid");
     await state.reload(await readFile(configPath, "utf8"));
     assert.equal(state.web.getRenderLoops()[0].loop.scene, "funkeykid");
     await waitFor(() => state.events.includes("render:funkeykid:panel"));
+    await delay(350);
+    assert.notEqual(state.web.getRenderLoops()[0].loop, originalLoop);
+    assert.equal(state.events.filter((e) => e === "loader").length, 2);
+  });
+
+  test("a live UI scene choice with invalid disk JSON survives later overlay reloads", async (t) => {
+    const root = await mkdtemp(path.join(tmpdir(), "pixd75-invalid-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const configPath = path.join(root, "config.json");
+    const invalid = "{ invalid config";
+    await writeFile(configPath, invalid);
+    const config = {
+      devices: [{ name: "panel", type: "pixoo", ip: "one", scene: "clock" }],
+      scenes: { clock: { path: "./clock.js" }, funkeykid: { path: "./funkeykid.js" } },
+    };
+    const state = await harness({ config, overlayScene: "builtin:clock" });
+    t.after(async () => {
+      state.proc.emit("SIGTERM");
+      await waitFor(() => state.events.includes("exit:0"));
+    });
+    await waitFor(() => state.ready);
+    const server = new WebServer({ ...state.web, configPath });
+    const req = Readable.from([Buffer.from(JSON.stringify({ deviceName: "panel", scene: "funkeykid" }))]);
+    req.method = "POST";
+    req.url = "/api/scene";
+    const res = { writeHead(status) { this.status = status; }, end(body) { this.body = body; } };
+    await server._handle(req, res);
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(res.body), { ok: true, persisted: false });
+    assert.equal(await readFile(configPath, "utf8"), invalid);
+    // Exercise a genuine later overlay change, even when clear echoes are no-ops.
+    state.web.configOverlay._handleGranular("base/overlay/device/panel/ip", "two", { retain: false });
+    await waitFor(() => state.web.getEffectiveConfig().devices[0].ip === "two");
+    assert.equal(state.web.getRenderLoops()[0].loop.scene, "funkeykid");
+    assert.equal(state.web.getEffectiveConfig().devices[0].scene, "funkeykid");
   });
 
   test("startup applies retained settings after metadata and shutdown destroys scenes", async () => {

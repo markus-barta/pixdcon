@@ -506,6 +506,15 @@ async function main() {
       // Any intervening overlay reload must already use the saved choice.
       baseConfig = new ConfigLoader(configPath).parse(JSON.stringify(config));
     },
+    onUiSceneChanged: (deviceName, scene) => {
+      // Invalid disk JSON still permits a live switch. Keep that choice in
+      // the last valid base so a later overlay reload cannot revert it.
+      const device = baseConfig.devices.find((d) => d.name === deviceName);
+      if (device) {
+        device.scene = scene;
+        delete device.scenes;
+      }
+    },
     getEffectiveConfig: () => effectiveConfig,
     getSceneMetadata: () => sceneMetadata,
     getSceneSettingsState: () => sceneSettingsService?.getUiState() || {},
