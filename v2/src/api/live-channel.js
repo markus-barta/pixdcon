@@ -8,17 +8,21 @@
  * previews at their 1 s cadence.
  *
  * Wire format:
- *   id: <seq>            one counter for the whole stream, increasing
+ *   id: <epoch>-<seq>    epoch: this run of the process; seq: one counter for the whole stream, increasing
  *   event: <type>        see LiveEvent in types.js
  *   data: <JSON>         one line
  *
  * Rules:
  *  - On connect the first event is "snapshot" (the same content as
- *    GET /api/v2/bootstrap). With `since=<seq>` or a Last-Event-ID header the
- *    missed events are replayed from a ring instead; when the ring no longer
- *    reaches back that far, a snapshot is sent.
- *  - Events are delivered in seq order. A view inside an event carries its own
- *    `rev`; the page drops what is older than what it shows (build rule 3).
+ *    GET /api/v2/bootstrap). With `since=<epoch>-<seq>` or a Last-Event-ID
+ *    header the missed events are replayed from a ring instead. A snapshot
+ *    is sent when the ring no longer reaches back that far, and always when
+ *    the cursor names another epoch or cannot be read: `seq` and every `rev`
+ *    start again with the process, so a number from an earlier run means
+ *    nothing here (B-177). A bare number without an epoch is such a cursor.
+ *  - Events are delivered in seq order. A view inside an event carries its
+ *    `epoch` and its own `rev`; the page drops what is not of its snapshot's
+ *    epoch or not newer than what it shows (build rule 3).
  *  - "preview" events are sent at most once per second and device, and not at
  *    all when the frame did not change, except to refresh `receivedAt`.
  *  - "ping" every 15 s keeps proxies from closing the stream and lets the page
@@ -38,7 +42,8 @@ import { todo } from "../core/todo.js";
 
 /**
  * @typedef {object} LiveChannelDeps
- * @property {() => Omit<Snapshot, "seq">} snapshot built by main.js from the stores
+ * @property {import("../types.js").Epoch} epoch
+ * @property {() => Omit<Snapshot, "seq"|"epoch">} snapshot built by main.js from the stores
  * @property {(session: string, connected: boolean) => void} onSession
  * @property {import("../types.js").Clock} clock
  * @property {import("../types.js").Logger} logger
@@ -102,6 +107,8 @@ export class LiveChannel {
  *   config "file" / "changed"         → "config"
  *   mqtt "status"                     → "mqtt"
  *   logger line                       → "log"       (only to streams opened with log=1)
+ * The "controller" event is not wired here: main.js publishes it when the
+ * measured controller status, its reasons or `restartRequired` change.
  *
  * @param {LiveChannel} channel
  * @param {import("./routes-v1.js").ApiDeps} deps

@@ -8,6 +8,7 @@
  *   lib/pixoo-image.js      loadPixooImage, drawPixooImage (imported by the Pixoo scenes; needs `sharp`)
  *   lib/pixoo-font.js       the 3×5 bitmap font (the Pixoo scene surface draws text with it)
  *   lib/collectors/*.js     ping and RPC collectors (imported by scenes/pixoo/health.js)
+ *   lib/version.js          v1's validator of the release coordinate; v2 calls it instead of keeping a copy (A-104)
  *   assets/                 sprites the scenes resolve relative to their own file
  *   version.json            the release coordinate (inspr-calver-3), one per repository
  *   vendor/inspr-versioning the pinned version presentation bundle served to the UI
@@ -18,13 +19,13 @@
  * Two layouts, found by looking for lib/pixoo-image.js:
  *   repository checkout   <repo>/v2/src/scenes/v1-shared.js   → shared root <repo>
  *   container image       /app/src/scenes/v1-shared.js        → shared root /app
- *     (v2/Dockerfile copies lib/, scenes/, assets/, version.json and vendor/ next to src/)
+ *     (v2/Dockerfile copies the shared files of lib/, scenes/, assets/, version.json and vendor/ next to src/)
  *
  * Owner: fixtures + edge lane worker.
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { registerHooks } from "node:module";
+import { createRequire, registerHooks } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { todo } from "../core/todo.js";
@@ -107,6 +108,29 @@ export function installSharedResolution(options = {}) {
   });
 }
 
+const requireShared = createRequire(import.meta.url);
+
+/**
+ * Check a version record with v1's own validator (lib/version.js): scheme
+ * exactly "inspr-calver-3", version YYMMDDhhmmss.0.0 with years 10 to 99,
+ * a real month, day, hour, minute and second, and a date that exists in the
+ * calendar (matrix A-104). One validator for the one release coordinate of
+ * the repository: v2 keeps no copy of the grammar that could drift.
+ *
+ * Loading lib/version.js also makes it read <shared root>/version.json
+ * itself and fail closed for a bad record, with v1's message.
+ *
+ * @param {unknown} record parsed content of a version.json
+ * @returns {{version: string, version_scheme: string}}
+ * @throws {Error} "Invalid version.json: …", v1's wording
+ */
+export function validateVersionRecord(record) {
+  const { libDir } = sharedPaths();
+  const v1 = requireShared(resolve(libDir, "version.js"));
+  const valid = v1.validateVersion(record);
+  return { version: valid.version, version_scheme: valid.scheme };
+}
+
 /**
  * The release coordinate of the repository. Fails closed like v1 (matrix
  * A-001, A-104): no valid version record, no start.
@@ -123,18 +147,7 @@ export function readVersion() {
       `Invalid version.json: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  const version = record?.version;
-  const scheme = record?.version_scheme;
-  if (
-    scheme !== "inspr-calver-3" ||
-    typeof version !== "string" ||
-    !/^\d{12}\.0\.0$/.test(version)
-  ) {
-    throw new Error(
-      "Invalid version.json: expected version YYMMDDhhmmss.0.0 and version_scheme inspr-calver-3",
-    );
-  }
-  return { version, version_scheme: scheme };
+  return validateVersionRecord(record);
 }
 
 /**

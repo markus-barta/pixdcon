@@ -12,10 +12,16 @@
  * Fixed:
  *  - handling a change refreshes that file's stamp, so a re-watch does not
  *    report the same edit again (B-169, S-49)
- *  - asset folders next to a scene (e.g. scenes/pixoo/home3-assets/) are
- *    watched too and reload the scenes of that directory (B-017). Decoded
- *    images stay cached inside the shared helper lib/pixoo-image.js, which v2
- *    cannot edit: a replaced sprite still needs a process restart (S-19).
+ *  - asset folders a scene names in its resources (SceneMeta.resources,
+ *    e.g. scenes/pixoo/home3-assets/) are watched too, and a change there
+ *    reloads the scenes that use the folder (first half of B-017's fix).
+ *
+ * Not fixed, on purpose: a replaced picture still needs a process restart.
+ * Decoded images are cached for the life of the process inside the shared
+ * helper lib/pixoo-image.js, which the scenes import directly and v2 may not
+ * edit (D-045, S-19). The reload above therefore re-runs init with the old
+ * picture. This is v1's behaviour; the fix belongs to the helper and is
+ * deferred until v1 is retired, together with D-049.
  *
  * Owner: fixtures + edge lane worker.
  */

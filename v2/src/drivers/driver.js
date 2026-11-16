@@ -61,6 +61,7 @@ import { todo } from "../core/todo.js";
  * @property {((options?: {signal?: AbortSignal}) => Promise<Frame|null>)|null} readScreen Ulanzi GET /api/screen as a 32×8 frame; null for displays without read-back
  * @property {((notification: Record<string, unknown>) => Promise<void>)|null} notify AWTRIX POST /api/notify, payload unchanged (v1 scene surface only, D-071); null for Pixoo
  * @property {((appName: string) => Promise<void>)|null} switchApp AWTRIX POST /api/switch with any app name (v1 scene surface, D-070); null for Pixoo
+ * @property {((index: number) => Promise<void>)|null} selectChannel Pixoo {Command:"Channel/SetIndex", SelectIndex: index} with any index, forwarded unchanged and without touching `ready`, as v1's setChannel (D-008); queued like every request. For the v1 scene surface; the loop itself uses activateBuiltin and reclaim. null for Ulanzi.
  * @property {() => Promise<void>} close cancel requests in flight
  */
 
@@ -77,9 +78,11 @@ import { todo } from "../core/todo.js";
 /**
  * Build the driver for a device. Output "shadow" always yields the shadow
  * driver, whatever the type: nothing leaves the process for that device.
+ * `output` is the resolved policy (`EffectiveDevice.output.mode`); the
+ * factory takes it as given and looks at nothing else.
  *
  * @param {{name: string, type: DeviceType, address: string, output: import("../types.js").OutputMode, cleanupLegacyApps?: boolean}} device
- * @param {{logger: import("../types.js").Logger, clock: import("../types.js").Clock}} deps
+ * @param {{logger: import("../types.js").Logger, clock: import("../types.js").Clock, rasterizeAwtrixApp: import("../types.js").Factories["rasterizeAwtrixApp"]}} deps rasterizeAwtrixApp: for the shadow driver's simulated Ulanzi preview
  * @returns {DeviceDriver}
  */
 export function createDriver(device, deps) {

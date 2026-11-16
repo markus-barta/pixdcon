@@ -6,31 +6,41 @@
  * that really happened and from how long ago they happened, and the things
  * that produce those events are themselves watched (scheduler watchdog).
  *
- * Per display (decision Markus, PIXD-81 approval: by time since the last good
- * frame, stale 30 s, offline 2 min; replaces v1's "5 failed renders", B-066, S-14):
+ * Per display. The rule is Markus's, taken literally (PIXD-81 approval; it
+ * replaces v1's "5 failed renders", B-066, S-14):
  *
- *   reference = last good frame, when frames are due
- *               (mode play and a custom scene), else last good contact
- *   age       = now − reference, minus the part of a long frame delay the scene asked for
- *   age < staleAfterMs                    → online   (starting: before the first frame or contact)
- *   staleAfterMs ≤ age < offlineAfterMs   → stale
- *   age ≥ offlineAfterMs                  → offline
- *   no scene chosen and contact fresh     → idle
- *   output shadow                         → shadow   (not measured)
+ *   With an active scene (mode play and a custom scene), by the clock since
+ *   the last frame the display accepted:
+ *     less than 30 s              → online   (starting: before the first good frame)
+ *     30 s up to less than 2 min  → stale
+ *     2 min or more               → offline
+ *   Nothing is subtracted and nothing is added: not the delay the scene asked
+ *   for, not the render time, not a backoff. The thresholds are inclusive at
+ *   their lower end: 29 999 ms is online, 30 000 ms is stale, 119 999 ms is
+ *   stale, 120 000 ms is offline. Before the first good frame the same
+ *   thresholds count from the start of the runtime (starting, then stale,
+ *   then offline).
  *
- * "Frames are not due" covers pause, stop, built-in modes and no scene. There
- * the render loop probes every probeIntervalMs (10 s) and a good probe is the
- * contact, so a quiet display does not drift to stale.
+ *   Without an active scene there are no frames to count: pause, stop, a
+ *   built-in mode, no scene chosen. There the render loop probes every
+ *   probeIntervalMs (10 s), and the same two thresholds apply to the time
+ *   since the last good contact. With no scene chosen and a fresh contact the
+ *   state is idle.
+ *
+ *   output shadow                 → shadow   (not measured)
  *
  * `reason` says why a display is not online: device_unreachable (DeviceError),
  * scene_error (the display answers, the scene fails: no hardware steps, no
  * power cycle, S-6), power_cycles_exhausted, not_started.
  *
  * Controller health for GET /api/health and the Docker HEALTHCHECK (A-161):
- * ok when the HTTP server answers, the scheduler watchdog ran within 2 ×
- * its interval and the event loop is not stalled; degraded when a display is
- * stale or offline, config.json on disk is invalid or a configured broker is
- * offline; failed when the watchdog is overdue.
+ * ok when the scheduler watchdog ran within 2 × its interval; degraded when
+ * a driven display is stale or offline, config.json on disk is invalid, a
+ * configured broker is offline, or a restart is required; failed when the
+ * watchdog is overdue. controller() computes it from inputs that main.js
+ * collects every second; main.js owns that wiring (the status in snapshots,
+ * 503 for failed, the "controller" live event), so building this model is
+ * enough to make the health check real.
  *
  * Events (EventEmitter): "health" ({device: string, health: DeviceHealth, previous: DeviceHealth}).
  *
@@ -51,8 +61,7 @@ import { todo } from "../core/todo.js";
  * @property {number} startedAt epoch ms when the runtime started
  * @property {number|null} lastFrameAt
  * @property {number|null} lastContactAt
- * @property {number|null} lastRequestedDelayMs delay the scene returned with its last frame
- * @property {boolean} framesDue
+ * @property {boolean} framesDue true with an active scene: mode play and a custom scene
  * @property {boolean} hasScene
  * @property {boolean} shadow
  * @property {number} consecutiveErrors
@@ -104,12 +113,12 @@ export class HealthModel extends EventEmitter {
   }
 
   /**
-   * The display accepted a frame.
+   * The display accepted a frame. The time is the clock's now; nothing else
+   * about the frame matters to health.
    * @param {string} device
-   * @param {{requestedDelayMs: number|null}} info
    */
-  frameOk(device, info) {
-    return todo("HealthModel.frameOk", device, info);
+  frameOk(device) {
+    return todo("HealthModel.frameOk", device);
   }
 
   /**
@@ -156,8 +165,8 @@ export class HealthModel extends EventEmitter {
   }
 
   /**
-   * @param {{watchdogAt: string|null, mqtt: import("../types.js").MqttStatus, configValid: boolean}} inputs
-   * @returns {{status: "ok"|"degraded"|"failed", reasons: string[]}}
+   * @param {{watchdogAt: string|null, watchdogIntervalMs: number, mqtt: import("../types.js").MqttStatus, configValid: boolean, restartRequired: boolean}} inputs watchdogAt and watchdogIntervalMs from Scheduler.status()
+   * @returns {{status: "ok"|"degraded"|"failed", reasons: string[]}} reasons as listed for ControllerStatus (types.js)
    */
   controller(inputs) {
     return todo("HealthModel.controller", inputs);

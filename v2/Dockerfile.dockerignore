@@ -9,6 +9,7 @@
 
 !lib/pixoo-image.js
 !lib/pixoo-font.js
+!lib/version.js
 !lib/collectors
 !scenes
 !assets

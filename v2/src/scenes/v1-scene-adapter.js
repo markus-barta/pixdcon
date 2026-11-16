@@ -19,7 +19,9 @@
  *     settings: { schema, values, get(key), all(), subscribe(cb) → unsubscribe },
  *     mqtt: { deviceName, subscribe(topic, cb(payload)), subscribeWildcard(pattern, cb(payload, topic)), unsubscribeAll() },
  *   }
- *   A fresh ctx object is built for init and for destroy, as in v1.
+ *   A fresh ctx object is built for init and for destroy, as in v1. Both
+ *   belong to the same instance (InstanceRef): what init subscribed, destroy
+ *   and the release after it remove, and nothing of another instance.
  *
  *   device = the v1 driver surface, see v1-device-facade.js
  *
@@ -40,12 +42,23 @@
  *  - errors are classified: a DeviceError thrown by the device surface passes
  *    through; everything else becomes a SceneError with the phase
  *
- * Per-instance overrides. Scenes are files v2 must not edit, yet two of them
- * write a history file next to themselves (home2, home3: `this._boilerStatePath
- * ??= <scene dir>/.state/<scene>-boiler.json`, B-153). For a device in shadow
- * output the adapter sets that field on the instance before init, pointing
- * into v2's own data directory, so a shadow never writes into the scenes
- * directory that v1 is using. SCENE_OVERRIDES is the complete list.
+ * One evaluation per device. The runtime imports the scene file once per
+ * device (scene-runtime.js), so `exported` above is that device's own object
+ * and module-level state is not shared between devices (B-005).
+ *
+ * Scene state files. Scenes are files v2 must not edit, yet two of them write
+ * a history file next to themselves (home2, home3:
+ * `this._boilerStatePath ??= <scene dir>/.state/<name>-boiler.json`, B-153).
+ * For a device in shadow output the adapter sets every field named in the
+ * scene's `resources.stateFields` on the instance before init, pointing into
+ * v2's own data directory:
+ *   <data dir>/.pixdcon2/shadow-state/<device>/<scene key>-<field>.json
+ * so a shadow never writes into the scenes directory that v1 is using. The
+ * fields come from the content of the scene file (scene-registry.js), not
+ * from its key: an alias of home3 under another key and a copy of home3 are
+ * redirected exactly like home3 itself (B-183). STATE_FIELD_PATTERNS is the
+ * complete list of what the registry looks for. A driven device keeps the
+ * scene's own path, so the history continues across the switch-over.
  *
  * Owner: fixtures + edge lane worker.
  */
@@ -55,15 +68,21 @@ import { todo } from "../core/todo.js";
 /** @typedef {import("./scene-runtime.js").SceneInstance} SceneInstance */
 
 /**
- * Instance fields set before init for a device in shadow output.
- * Value: path relative to "<data dir>/.pixdcon2/shadow-state/<device>/".
+ * Instance fields that hold the path of a file a scene writes. The registry
+ * reports a field in `SceneMeta.resources.stateFields` when the scene file
+ * mentions it.
  *
- * @type {Readonly<Record<string, Readonly<Record<string, string>>>>}
+ * @type {ReadonlyArray<string>}
  */
-export const SCENE_OVERRIDES = Object.freeze({
-  home2: Object.freeze({ _boilerStatePath: "home2-boiler.json" }),
-  home3: Object.freeze({ _boilerStatePath: "home3-boiler.json" }),
-});
+export const STATE_FIELD_PATTERNS = Object.freeze(["_boilerStatePath"]);
+
+/**
+ * Folders beside a scene file that hold its own pictures are named
+ * "<something>-assets" (scenes/pixoo/home3-assets). The registry reports a
+ * folder in `SceneMeta.resources.assetDirs` when the scene file mentions it
+ * and it exists beside the file.
+ */
+export const ASSET_DIR_PATTERN = /["'`]([A-Za-z0-9._-]+-assets)\//g;
 
 /**
  * v1 `ctx.settings` (matrix A-094, A-095, B-012).
@@ -88,10 +107,11 @@ export const SCENE_OVERRIDES = Object.freeze({
 
 /**
  * @typedef {object} V1AdapterDeps
- * @property {(scene: string, device: string) => V1SettingsContext} settingsContext
- * @property {(scene: string, device: string) => import("../mqtt/mqtt-gateway.js").V1MqttContext} mqttContext
+ * @property {(ref: import("../types.js").InstanceRef) => V1SettingsContext} settingsContext
+ * @property {(ref: import("../types.js").InstanceRef) => import("../mqtt/mqtt-gateway.js").V1MqttContext} mqttContext
  * @property {(device: string, scene: string) => string} settingsTopic topics.settingsRoot
- * @property {string|null} shadowStateDir set for a device in shadow output, else null
+ * @property {string|null} shadowStateDir "<data dir>/.pixdcon2/shadow-state/<device>" for a device in shadow output, else null
+ * @property {import("../types.js").SceneResources} resources of the scene file
  * @property {import("../types.js").Logger} logger
  */
 
@@ -108,7 +128,7 @@ export function checkV1Module(moduleNamespace) {
 /**
  * Create and initialise the instance of a v1 scene for one device.
  *
- * @param {{scene: string, device: string, token: string, moduleNamespace: unknown}} target
+ * @param {{ref: import("../types.js").InstanceRef, moduleNamespace: unknown}} target moduleNamespace: the evaluation of the scene file for this device
  * @param {V1AdapterDeps} deps
  * @returns {Promise<SceneInstance>}
  * @throws {import("../core/errors.js").SceneError} phase "contract" or "init"

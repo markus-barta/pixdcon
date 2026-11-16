@@ -3,7 +3,15 @@
  * in-memory broker, a data directory, and pixdcon 2 itself in this process.
  *
  * Everything listens on loopback and on free ports, so test files can run in
- * parallel. `startStack()` registers its own cleanup with the test context.
+ * parallel.
+ *
+ * Cleanup is registered before the first resource exists, and every resource
+ * adds its own stop step the moment it is acquired. So whatever happens on
+ * the way up (a port that cannot be bound, a config that does not parse, a
+ * start step that throws) nothing stays open: startStack() stops what it had
+ * started and then rejects. Stop steps run in reverse order, each with its
+ * own time limit, and one that fails does not keep the others from running.
+ * The whole run has a hard deadline on top (test/helpers/deadline.js).
  */
 
 import assert from "node:assert/strict";
@@ -66,68 +74,147 @@ export function testConfig(addresses, adjust) {
   return config;
 }
 
+const CLEANUP_STEP_LIMIT_MS = 5000;
+
 /**
- * Start fakes, broker and pixdcon 2. Stops everything when the test ends.
+ * A list of stop steps that is run once, in reverse order.
+ *
+ * @returns {{add: (name: string, step: () => unknown) => void, run: () => Promise<void>}}
+ */
+export function cleanupStack() {
+  /** @type {Array<{name: string, step: () => unknown}>} */
+  const steps = [];
+  let done = false;
+  return {
+    add(name, step) {
+      steps.push({ name, step });
+    },
+    async run() {
+      if (done) return;
+      done = true;
+      /** @type {Error[]} */
+      const failures = [];
+      for (const { name, step } of steps.reverse()) {
+        /** @type {NodeJS.Timeout|undefined} */
+        let timer;
+        try {
+          await Promise.race([
+            Promise.resolve().then(step),
+            new Promise((_resolve, rejectLate) => {
+              timer = setTimeout(
+                () =>
+                  rejectLate(
+                    new Error(
+                      `cleanup step "${name}" did not finish within ${CLEANUP_STEP_LIMIT_MS} ms`,
+                    ),
+                  ),
+                CLEANUP_STEP_LIMIT_MS,
+              );
+              timer.unref();
+            }),
+          ]);
+        } catch (error) {
+          failures.push(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      if (failures.length > 0)
+        throw new AggregateError(
+          failures,
+          `test cleanup: ${failures.map((failure) => failure.message).join("; ")}`,
+        );
+    },
+  };
+}
+
+/**
+ * Start fakes, broker and pixdcon 2. Stops everything when the test ends,
+ * and at once when the start itself fails.
  *
  * @param {import("node:test").TestContext} t
- * @param {{clock?: import("../../src/types.js").Clock, config?: (config: Record<string, any>) => void, env?: Record<string, string>, mqtt?: boolean}} [options]
+ * @param {{clock?: import("../../src/types.js").Clock, config?: (config: Record<string, any>) => void, configText?: string, env?: Record<string, string>, mqtt?: boolean, brokerPort?: number}} [options] configText: write this instead of a generated config.json; brokerPort: bind the broker there instead of a free port
  */
 export async function startStack(t, options = {}) {
   requireNetGuard();
-  const broker = await startMemoryBroker();
-  const pixoo = await startFakePixoo();
-  const awtrix = await startFakeAwtrix();
-  const dataDir = await mkdtemp(join(tmpdir(), "pixdcon2-test-"));
-  const configPath = join(dataDir, "config.json");
-  await writeFile(
-    configPath,
-    `${JSON.stringify(testConfig({ pixoo: pixoo.address, awtrix: awtrix.address }, options.config), null, 2)}\n`,
-  );
+  const cleanup = cleanupStack();
+  t.after(() => cleanup.run());
 
-  /** @type {string[]} */
-  const logLines = [];
-  const logger = createLogger({
-    level: "debug",
-    sink: {
-      out: (line) => logLines.push(line),
-      err: (line) => logLines.push(line),
-    },
-  });
-  const app = createApp(
-    {
-      PIXDCON_CONFIG_PATH: configPath,
-      WEB_PORT: "0",
-      TZ: "Europe/Vienna",
-      ...(options.mqtt === false
-        ? {}
-        : {
-            MOSQUITTO_HOST: broker.host,
-            MQTT_PORT: String(broker.port),
-            PIXDCON2_MQTT_ANONYMOUS: "1",
-          }),
-      PIXDCON2_INSTANCE: "pixdcon2-test",
-      ...options.env,
-    },
-    { clock: options.clock, logger },
-  );
-  const { port } = await app.start();
-  const base = `http://127.0.0.1:${port}`;
+  try {
+    const broker = await startMemoryBroker({ port: options.brokerPort });
+    cleanup.add("broker", () => broker.stop());
+    const pixoo = await startFakePixoo();
+    cleanup.add("fake pixoo", () => pixoo.stop());
+    const awtrix = await startFakeAwtrix();
+    cleanup.add("fake awtrix", () => awtrix.stop());
+    const dataDir = await mkdtemp(join(tmpdir(), "pixdcon2-test-"));
+    cleanup.add("data dir", () =>
+      rm(dataDir, { recursive: true, force: true }),
+    );
+    const configPath = join(dataDir, "config.json");
+    await writeFile(
+      configPath,
+      options.configText ??
+        `${JSON.stringify(testConfig({ pixoo: pixoo.address, awtrix: awtrix.address }, options.config), null, 2)}\n`,
+    );
 
-  t.after(async () => {
-    await app.stop();
-    await Promise.all([pixoo.stop(), awtrix.stop(), broker.stop()]);
-    await rm(dataDir, { recursive: true, force: true });
-  });
+    /** @type {string[]} */
+    const logLines = [];
+    const logger = createLogger({
+      level: "debug",
+      sink: {
+        out: (line) => logLines.push(line),
+        err: (line) => logLines.push(line),
+      },
+    });
+    const app = await createApp(
+      {
+        PIXDCON_CONFIG_PATH: configPath,
+        WEB_PORT: "0",
+        TZ: "Europe/Vienna",
+        ...(options.mqtt === false
+          ? {}
+          : {
+              MOSQUITTO_HOST: broker.host,
+              MQTT_PORT: String(broker.port),
+              PIXDCON2_MQTT_ANONYMOUS: "1",
+            }),
+        PIXDCON2_INSTANCE: "pixdcon2-test",
+        ...options.env,
+      },
+      { clock: options.clock, logger },
+    );
+    // Registered before start(): a start that fails half way is stopped too.
+    cleanup.add("pixdcon2", () => app.stop());
+    const { port } = await app.start();
+    const base = `http://127.0.0.1:${port}`;
 
+    return stackOf({
+      app,
+      base,
+      broker,
+      pixoo,
+      awtrix,
+      dataDir,
+      configPath,
+      logLines,
+    });
+  } catch (error) {
+    await cleanup.run().catch(() => {});
+    throw error;
+  }
+}
+
+/**
+ * @template {{base: string}} T
+ * @param {T} parts
+ */
+function stackOf(parts) {
+  const { base } = parts;
   return {
-    app,
-    base,
-    broker,
-    pixoo,
-    awtrix,
-    dataDir,
-    configPath,
-    logLines,
+    ...parts,
     /**
      * @param {string} path
      * @param {{method?: string, body?: unknown}} [request]

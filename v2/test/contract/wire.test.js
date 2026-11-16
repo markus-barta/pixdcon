@@ -2,8 +2,9 @@
  * Test kind 2 of 3 (API and MQTT contract): the wire strings and the broker premise.
  *
  * Pins what must never move by accident: the v1 topic strings, the built-in
- * mode keys, and how a broker marks a retained replay, which the overlay
- * rules rest on. Owner: core/state worker.
+ * mode keys, and the two facts about brokers that the overlay rules rest on:
+ * a retained replay carries the retain flag, and it may arrive late. The
+ * gateway's own guarantees are named at the end. Owner: core/state worker.
  */
 
 import assert from "node:assert/strict";
@@ -72,11 +73,25 @@ test("MQTT topics: the v1 wire strings are unchanged", () => {
     topics.discoveryBinarySensor("pixoo-159", "reachable"),
     "homeassistant/binary_sensor/pixdcon_pixoo-159_reachable/config",
   );
+  // New in v2, next to the telemetry of the device (C-121, C-137, C-138).
+  assert.equal(
+    topics.availability("ulanzi-56"),
+    "home/hsb1/pixdcon/ulanzi-56/availability",
+  );
+  assert.equal(topics.parse(topics.availability("ulanzi-56")), null);
+  // No transition by default: v2 is the one controller on these topics.
+  assert.equal(topics.transition, false);
+  assert.equal(topics.v1ConfigEffective, topics.configEffective);
 });
 
 test("MQTT topics: incoming topics are told apart, and a second status base moves only the controller topics", () => {
   const topics = createTopics({ statusBaseTopic: "home/hsb1/pixdcon2" });
   assert.equal(topics.health, "home/hsb1/pixdcon2/health");
+  assert.equal(topics.state, "home/hsb1/pixdcon2/state");
+  assert.equal(topics.configEffective, "home/hsb1/pixdcon2/config/effective");
+  // The transition: v1 still publishes its device list under the base, and v2 reads it there.
+  assert.equal(topics.transition, true);
+  assert.equal(topics.v1ConfigEffective, "home/hsb1/pixdcon/config/effective");
   assert.equal(topics.overlayBlob, "home/hsb1/pixdcon/overlay/blob");
   assert.equal(
     topics.telemetry("ulanzi-56"),
@@ -214,3 +229,83 @@ test("broker premise: a retained replay carries the retain flag, a live message 
     "an empty retained payload deletes the stored overlay",
   );
 });
+
+test("broker premise 2: a replay can arrive after the SUBACK, after a sync echo and after the store changed; only its retain flag tells", async (t) => {
+  // aedes answers a SUBSCRIBE with the SUBACK first and streams the retained
+  // messages afterwards. holdRetained() makes that gap as long as the test
+  // wants. This is the order the overlay rules must survive: nothing may be
+  // concluded from "the subscribe is acknowledged and my marker came back".
+  const broker = await startMemoryBroker();
+  t.after(() => broker.stop());
+  const topic = "home/hsb1/pixdcon/overlay/device/pixoo-t/scene";
+  const sync = "home/hsb1/pixdcon/_sync/n1";
+
+  const outside = await mqtt.connectAsync(broker.url);
+  t.after(() => outside.endAsync(true));
+  await outside.publishAsync(topic, "builtin:clock", { retain: true, qos: 1 });
+
+  const subscriber = await mqtt.connectAsync(broker.url);
+  t.after(() => subscriber.endAsync(true));
+  /** @type {Array<{topic: string, payload: string, retain: boolean}>} */
+  const seen = [];
+  /** @type {Array<() => void>} */
+  let waiting = [];
+  subscriber.on("message", (messageTopic, payload, packet) => {
+    seen.push({
+      topic: messageTopic,
+      payload: payload.toString(),
+      retain: packet.retain,
+    });
+    for (const wake of waiting) wake();
+    waiting = [];
+  });
+  /** @param {number} count */
+  const received = async (count) => {
+    while (seen.length < count)
+      await new Promise((wake) => waiting.push(() => wake(undefined)));
+  };
+
+  const release = broker.holdRetained();
+  await subscriber.subscribeAsync([topic, sync], { qos: 1 }); // SUBACK received
+  await subscriber.publishAsync(sync, "n1", { qos: 1 });
+  await received(1);
+  assert.deepEqual(
+    seen,
+    [{ topic: sync, payload: "n1", retain: false }],
+    "the marker is back and the stored overlay has not been delivered yet",
+  );
+
+  // Meanwhile the overlay is cleared on the broker (what a UI choice does).
+  await outside.publishAsync(topic, "", { retain: true, qos: 1 });
+  await received(2);
+  assert.deepEqual(seen[1], { topic, payload: "", retain: false });
+  assert.deepEqual(broker.retained(), {}, "the store holds nothing any more");
+
+  release();
+  await received(3);
+  assert.deepEqual(
+    seen[2],
+    { topic, payload: "builtin:clock", retain: true },
+    "the old value arrives last, as a replay: flag set, although the store is empty",
+  );
+});
+
+// --- Phase 3: what the gateway guarantees (mqtt-gateway.js) ------------------------------------
+test.todo(
+  "gateway: every message carries the retain flag as delivered and the number of its connection; nothing is derived from arrival order",
+);
+test.todo(
+  "gateway settle: a pacing hint only; a replay held back past it (holdRetained) is still delivered to the owner, flag set",
+);
+test.todo(
+  "gateway publish: a QoS 1 publish cut off by a disconnect answers offline and is not sent again on the next connection",
+);
+test.todo(
+  "gateway owners: a second owner of a filter gets the retained replay (C-036); removing one owner leaves the other's handlers and the wire subscription",
+);
+test.todo(
+  "gateway instance tokens: the scene contexts of a running instance and of its replacement are two owners; releasing the replacement leaves the running one subscribed",
+);
+test.todo(
+  "gateway last will: the will of the CONNECT packet is the health topic of the status base the process started with",
+);

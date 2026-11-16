@@ -17,7 +17,17 @@
  *    running, also at process start (A-007, A-031, A-BUG-10), and the state
  *    says what is wrong and where.
  *  - Nothing from the overlay layer is ever written here ("Save never promotes
- *    overlays", C-220).
+ *    overlays", C-220). The one exception is explicit and narrow:
+ *    adoptDevice() writes name, type and address of a device that exists only
+ *    in the blob overlay, when the user asks for exactly that (A-151).
+ *  - The store holds the saved state only. What runs is the effective config
+ *    (state/runtime-config.js); the output a device really has is decided
+ *    there. `output` here is what the file asks for, or null.
+ *  - The `mqtt` block is read once, right after the first load() and before
+ *    the topics, the last will and the gateway are built (main.js). A later
+ *    change of it is saved and reported in the diff (`globalChanged` has
+ *    "mqtt"), and applies after a restart; main.js then sets
+ *    `ControllerStatus.restartRequired`.
  *
  * Events (EventEmitter):
  *  - "changed"  ({config: Config, previous: Config, diff: ConfigDiff, origin: "api"|"file"|"startup"})
@@ -39,7 +49,6 @@ import { todo } from "../core/todo.js";
  * @property {string} path absolute path of config.json (env PIXDCON_CONFIG_PATH, default /data/config.json)
  * @property {import("../types.js").Logger} logger
  * @property {import("../types.js").Clock} clock
- * @property {import("../types.js").OutputMode} [defaultOutput] used when neither the device nor `output.default` says otherwise
  * @property {number} [debounceMs] outside edits are read this long after the last file event, default 500 (A-060)
  */
 
@@ -93,7 +102,7 @@ export class ConfigStore extends EventEmitter {
    * @param {string} deviceName
    * @param {(device: Record<string, unknown>) => void} mutate
    * @returns {Promise<{config: Config, diff: ConfigDiff}>}
-   * @throws {import("../core/errors.js").HttpError} 404 unknown_device, 409 config_invalid (file on disk unusable), 400 invalid_config (result would be invalid)
+   * @throws {import("../core/errors.js").HttpError} 404 unknown_device (also for a device that exists only in the blob overlay), 409 config_invalid (file on disk unusable), 400 invalid_config (result would be invalid)
    */
   async updateDevice(deviceName, mutate) {
     return todo("ConfigStore.updateDevice", deviceName, mutate);
@@ -108,6 +117,22 @@ export class ConfigStore extends EventEmitter {
    */
   async addDevice(device) {
     return todo("ConfigStore.addDevice", device);
+  }
+
+  /**
+   * Adopt a device that so far exists only in the blob overlay (A-151): add
+   * an entry with exactly name, type and ip, plus the scene choice and its
+   * suppressions when the state store passes them, in one atomic write. This
+   * is the only write that takes a value from the overlay layer, and it
+   * happens only on the explicit adoption.
+   *
+   * @param {{name: string, type: import("../types.js").DeviceType, ip: string}} identity as the device runs
+   * @param {{scene?: string|null, supersedes?: DeviceConfig["supersedes"]}} [choice]
+   * @returns {Promise<{config: Config, diff: ConfigDiff}>}
+   * @throws {import("../core/errors.js").HttpError} 400 invalid field, 409 duplicate name or config_invalid
+   */
+  async adoptDevice(identity, choice) {
+    return todo("ConfigStore.adoptDevice", identity, choice);
   }
 
   /**

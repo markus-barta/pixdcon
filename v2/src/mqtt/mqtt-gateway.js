@@ -14,22 +14,51 @@
  * What v2 adds:
  *  - A last will on <statusBase>/health (retained, the v1 health shape with
  *    status "offline"), so Home Assistant marks the entities unavailable when
- *    the process dies (B-C02) without any change to the discovery payloads.
- *  - Every message carries its retain flag and an origin: "startup" for the
- *    retained replay after a (re)connect, "live" afterwards. The overlay rules
- *    depend on this difference (PIXD-75).
- *  - retainedBoundary(): a deterministic end of the retained replay instead of
- *    a fixed sleep (A-013): after the SUBACKs a QoS-1 marker is published to
- *    topics.sync(nonce) and awaited; a timeout is the fallback.
- *  - publish() reports what happened to the message (C-021, B-C15).
+ *    the process dies (B-C02). The will is part of the CONNECT packet, which
+ *    is why the namespace must be known before this object is built.
+ *  - Every connection has a number (1, 2, …). Messages, publish results and
+ *    the connect and disconnect events carry it.
+ *  - Every message carries its retain flag as delivered. That flag is the one
+ *    and only signal for "stored" versus "new" (PIXD-75):
+ *      retain true   a copy from the broker's retained store, sent because of
+ *                    a SUBSCRIBE of this connection (a replay)
+ *      retain false  published while this connection was subscribed (live)
+ *    When a message arrives says nothing: a broker may send the SUBACK first
+ *    and the retained messages later (aedes does, handlers/subscribe.js), and
+ *    a replay may arrive after other traffic.
+ *  - settle(): a pacing hint for the start, replacing v1's fixed 200 ms sleep
+ *    (A-013). After the SUBACKs a QoS-1 marker is published to
+ *    topics.sync(nonce) and awaited; a timeout is the fallback. It answers
+ *    "the replay has probably been delivered, go on". It is never proof that
+ *    a retained message does not exist. Nothing that cannot be undone may be
+ *    decided on it: no saved state is changed and nothing is published
+ *    because the hint passed.
+ *  - publish() reports what happened to the message (C-021, B-C15), and a
+ *    publish belongs to the connection it was sent on. When that connection
+ *    ends before the acknowledgement, the answer is "offline" and the message
+ *    is removed from the client's store: the gateway never sends it again on
+ *    a later connection. Who wants it delivered publishes again, from the
+ *    state of that moment. (v1 sent its blob rewrite with QoS 0 for the same
+ *    reason, lib/config-overlay.js:177.)
  *  - One subscribe call for exact topics and filters. A filter passed where
  *    v1's exact subscribe was meant delivers nothing and is logged (C-225).
  *  - Every new logical subscription gets the broker's retained messages for
- *    its filter, also when another owner already subscribed it (C-036).
+ *    its filter, also when another owner already subscribed it: the gateway
+ *    subscribes again on the wire (C-036). Those replays reach every owner of
+ *    the filter, as in v1, so handlers treat a repeated replay as no change.
+ *  - Owners are opaque strings. Subscriptions are released per owner, and an
+ *    owner's handlers are never replaced or removed by another owner's calls.
+ *    A scene instance owns its subscriptions under its InstanceRef (scene,
+ *    device, token), so the instance that runs and the replacement a hot
+ *    reload is initialising beside it are two owners.
  *  - A handler that throws or rejects is logged and never stops the delivery
  *    to other owners (C-039).
  *
- * Events (EventEmitter): "status" (MqttStatus), "connect" (), "boundary" ().
+ * Events (EventEmitter):
+ *   "status"      (MqttStatus)
+ *   "connect"     ({connection: number})
+ *   "disconnect"  ({connection: number})   every publish of that connection that is not confirmed has been answered "offline"
+ *   "settled"     ({connection: number, complete: boolean})
  *
  * Owner: core/state worker.
  */
@@ -39,22 +68,26 @@ import { todo } from "../core/todo.js";
 
 /** @typedef {import("../types.js").MqttStatus} MqttStatus */
 /** @typedef {import("../types.js").IsoTime} IsoTime */
+/** @typedef {import("../types.js").InstanceRef} InstanceRef */
 
 /**
  * @typedef {object} MqttMessage
  * @property {string} topic
  * @property {string} payload UTF-8 text; "" is the empty payload that clears a retained topic
- * @property {boolean} retain retain flag as delivered: true only for a replay from the broker's retained store
- * @property {"startup"|"live"} origin
+ * @property {boolean} retain retain flag as delivered: true = replay from the broker's retained store, false = live
+ * @property {number} connection number of the connection on which it arrived
  * @property {IsoTime} receivedAt
  */
 
 /**
  * @typedef {object} PublishResult
  * @property {boolean} ok
- * @property {"confirmed"|"sent"|"offline"|"error"} outcome confirmed = broker acknowledged (QoS 1); sent = handed to the client (QoS 0)
+ * @property {"confirmed"|"sent"|"offline"|"error"} outcome confirmed = broker acknowledged (QoS 1); sent = handed to the client (QoS 0); offline = not connected, or the connection ended before the acknowledgement
+ * @property {number} connection connection it was sent on; 0 when it was never sent
  * @property {string|null} error
  */
+
+/** @typedef {{topic: string, payload: string, retain: boolean, qos: 0|1}} LastWill */
 
 /**
  * @typedef {object} MqttGatewayOptions
@@ -63,7 +96,7 @@ import { todo } from "../core/todo.js";
  * @property {string} [username]
  * @property {string} [password] from the environment only; never logged, never served
  * @property {string} clientId
- * @property {{topic: string, payload: string, retain: boolean, qos: 0|1}} [will]
+ * @property {LastWill} [will]
  * @property {(nonce: string) => string} syncTopic topics.sync
  * @property {import("../types.js").Logger} logger
  * @property {import("../types.js").Clock} clock
@@ -76,17 +109,27 @@ import { todo } from "../core/todo.js";
  * @property {string|null} deviceName
  * @property {(topic: string, cb: (payload: string) => unknown) => void} subscribe exact topic
  * @property {(pattern: string, cb: (payload: string, topic: string) => unknown) => void} subscribeWildcard note the argument order
- * @property {() => void} unsubscribeAll
+ * @property {() => void} unsubscribeAll releases the subscriptions of this instance, and of no other
  */
 
 export class MqttGateway extends EventEmitter {
   /**
    * @param {NodeJS.ProcessEnv} env
-   * @param {{instance: string, will?: MqttGatewayOptions["will"], syncTopic: (nonce: string) => string, logger: import("../types.js").Logger, clock: import("../types.js").Clock}} deps
+   * @param {{instance: string, will?: LastWill, syncTopic: (nonce: string) => string, logger: import("../types.js").Logger, clock: import("../types.js").Clock}} deps
    * @returns {MqttGateway|null} null when MQTT is not configured
    */
   static fromEnv(env, deps) {
     return todo("MqttGateway.fromEnv", env, deps);
+  }
+
+  /**
+   * Owner string of a scene instance: "scene:<scene>:<device>:<token>".
+   *
+   * @param {InstanceRef} ref
+   * @returns {string}
+   */
+  static sceneOwner(ref) {
+    return `scene:${ref.scene}:${ref.device}:${ref.token}`;
   }
 
   /** @param {MqttGatewayOptions} options */
@@ -117,7 +160,7 @@ export class MqttGateway extends EventEmitter {
    * Subscribe on behalf of an owner. Registered while offline as well; the
    * wire subscription follows on connect (C-037).
    *
-   * @param {string} owner logical owner, used to remove its subscriptions together
+   * @param {string} owner opaque; its subscriptions are removed together and by nobody else
    * @param {string} filter exact topic or filter with + and #
    * @param {(message: MqttMessage) => unknown} handler
    * @returns {() => void} unsubscribe this one
@@ -126,14 +169,20 @@ export class MqttGateway extends EventEmitter {
     return todo("MqttGateway.subscribe", owner, filter, handler);
   }
 
-  /** @param {string} owner */
+  /**
+   * Remove every subscription of this owner. The wire subscription of a
+   * filter ends when its last owner is gone.
+   *
+   * @param {string} owner
+   */
   unsubscribeAll(owner) {
     return todo("MqttGateway.unsubscribeAll", owner);
   }
 
   /**
    * Publish and learn the outcome. `retain: true` with an empty payload clears
-   * a retained topic. Never throws.
+   * a retained topic. Never throws, and never sends the message again on a
+   * later connection.
    *
    * @param {string} topic full topic
    * @param {string|Record<string, unknown>} payload objects are sent as JSON
@@ -145,38 +194,38 @@ export class MqttGateway extends EventEmitter {
   }
 
   /**
-   * Resolves when the retained messages for every filter subscribed so far on
-   * the current connection have been delivered, or after the timeout.
+   * Pacing hint: resolves when the retained messages for the filters
+   * subscribed so far on the current connection have probably been delivered
+   * (marker round trip), or after the timeout. See the header for what may
+   * not be concluded from it.
    *
    * @param {{timeoutMs?: number}} [options] default 2000
-   * @returns {Promise<{complete: boolean}>} complete false = the timeout decided
+   * @returns {Promise<{connection: number, complete: boolean}>} complete false = the timeout decided, or there is no connection
    */
-  async retainedBoundary(options) {
-    return todo("MqttGateway.retainedBoundary", options);
+  async settle(options) {
+    return todo("MqttGateway.settle", options);
   }
 
   /**
-   * v1 scene context. Owner name "<scene>__<device>" as in v1.
+   * v1 scene context for one scene instance. Owner: sceneOwner(ref).
    *
-   * @param {string} sceneName
-   * @param {string} deviceName
+   * @param {InstanceRef} ref
    * @returns {V1MqttContext}
    */
-  sceneContext(sceneName, deviceName) {
-    return todo("MqttGateway.sceneContext", sceneName, deviceName);
+  sceneContext(ref) {
+    return todo("MqttGateway.sceneContext", ref);
   }
 }
 
 /**
  * Scene context when MQTT is not configured. Offers the same methods as the
  * real one (v1's stub lacked subscribeWildcard, matrix S-17); they do nothing
- * and log once per scene.
+ * and log once per scene instance.
  *
- * @param {string} sceneName
- * @param {string} deviceName
+ * @param {InstanceRef} ref
  * @param {import("../types.js").Logger} logger
  * @returns {V1MqttContext}
  */
-export function offlineSceneContext(sceneName, deviceName, logger) {
-  return todo("offlineSceneContext", sceneName, deviceName, logger);
+export function offlineSceneContext(ref, logger) {
+  return todo("offlineSceneContext", ref, logger);
 }

@@ -36,8 +36,9 @@ COPY v2/package.json ./
 COPY v2/src ./src
 COPY v2/web ./web
 
-# Shared with v1 and read-only for v2.
-COPY lib/pixoo-image.js lib/pixoo-font.js ./lib/
+# Shared with v1 and read-only for v2. lib/version.js is v1's validator of
+# the release coordinate; v2 calls it instead of keeping a copy.
+COPY lib/pixoo-image.js lib/pixoo-font.js lib/version.js ./lib/
 COPY lib/collectors ./lib/collectors
 COPY scenes ./scenes
 COPY assets ./assets

@@ -86,12 +86,50 @@ function freePort() {
   });
 }
 
-const broker = await startMemoryBroker();
-const pixoo = await startFakePixoo();
-const awtrix = await startFakeAwtrix();
+// Everything this process opens is stopped again in reverse order, also when
+// the start fails half way (a port that is taken): each resource registers
+// its stop step the moment it exists.
+/** @type {Array<() => unknown>} */
+const stopSteps = [];
+async function stopEverything() {
+  for (const step of stopSteps.splice(0).reverse()) {
+    try {
+      await step();
+    } catch (error) {
+      say(
+        `stop step failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}
+/**
+ * @template T
+ * @param {Promise<T>} starting
+ * @param {(resource: T) => unknown} stop
+ * @returns {Promise<T>}
+ */
+async function acquire(starting, stop) {
+  try {
+    const resource = await starting;
+    stopSteps.push(() => stop(resource));
+    return resource;
+  } catch (error) {
+    say(
+      `could not start: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    await stopEverything();
+    process.exit(1);
+  }
+}
+
+const broker = await acquire(startMemoryBroker(), (started) => started.stop());
+const pixoo = await acquire(startFakePixoo(), (started) => started.stop());
+const awtrix = await acquire(startFakeAwtrix(), (started) => started.stop());
 const fakes = { pixoo, awtrix };
 
-const dataDir = await mkdtemp(join(tmpdir(), "pixdcon2-dev-"));
+const dataDir = await acquire(mkdtemp(join(tmpdir(), "pixdcon2-dev-")), (dir) =>
+  rm(dir, { recursive: true, force: true }),
+);
 const template = await readFile(join(here, "dev-config.json"), "utf8");
 await writeFile(
   join(dataDir, "config.json"),
@@ -229,8 +267,16 @@ const control = createServer((req, res) => {
     }
   });
 });
-await new Promise((resolveListen) =>
-  control.listen(controlPort, "127.0.0.1", () => resolveListen(undefined)),
+await acquire(
+  new Promise((resolveListen, rejectListen) => {
+    control.once("error", rejectListen);
+    control.listen(controlPort, "127.0.0.1", () => {
+      control.off("error", rejectListen);
+      resolveListen(control);
+    });
+  }),
+  (server) =>
+    new Promise((resolveClose) => server.close(() => resolveClose(undefined))),
 );
 const controlAddress = control.address();
 const controlPortInUse =
@@ -243,11 +289,7 @@ async function shutdown(code) {
   if (stopping) return;
   stopping = true;
   await stopChild();
-  await new Promise((resolveClose) =>
-    control.close(() => resolveClose(undefined)),
-  );
-  await Promise.all([pixoo.stop(), awtrix.stop(), broker.stop()]);
-  await rm(dataDir, { recursive: true, force: true });
+  await stopEverything();
   process.exit(code);
 }
 

@@ -11,15 +11,15 @@
     "node": ">=24"
   },
   "scripts": {
-    "//": "Developer notes: PAIMOS knowledge 'guideline pixdcon-2-interfaces' (project PIXD). dev = v2 against fake devices and an in-memory MQTT broker, restarted on every change under src/. test = the three approved kinds only (golden frames, API/MQTT contract, fake-device smoke), together under 60 s. dev and test preload dev/net-guard.js: only loopback is reachable, so no real display, broker or host is ever contacted. The release version is ../version.json (inspr-calver-3), not the version field above.",
+    "//": "Developer notes: PAIMOS knowledge 'guideline pixdcon-2-interfaces' (project PIXD). dev = v2 against fake devices and an in-memory MQTT broker, restarted on every change under src/. test = the three approved kinds only (golden frames, API/MQTT contract, fake-device smoke), together under 60 s. Every test script goes through test/helpers/run.js: it preloads dev/net-guard.js (only loopback is reachable, also for Node child processes, worker threads, DNS and UDP, so no real display, broker or host is ever contacted) and holds the run to a hard deadline: a single test is cut after 20 s, the whole run ends with exit code 1 after 55 s, and what is still alive then is killed. The release version is ../version.json (inspr-calver-3), not the version field above.",
     "start": "node src/main.js",
     "dev": "node dev/dev-runner.js",
     "dev:once": "node dev/dev-runner.js --once",
-    "test": "node --import ./dev/net-guard.js --test \"test/golden/*.test.js\" \"test/contract/*.test.js\" \"test/smoke/*.test.js\"",
-    "test:golden": "node --import ./dev/net-guard.js --test \"test/golden/*.test.js\"",
-    "test:contract": "node --import ./dev/net-guard.js --test \"test/contract/*.test.js\"",
-    "test:smoke": "node --import ./dev/net-guard.js --test \"test/smoke/*.test.js\"",
-    "golden:update": "UPDATE_GOLDEN=1 node --import ./dev/net-guard.js --test \"test/golden/*.test.js\"",
+    "test": "node test/helpers/run.js \"test/golden/*.test.js\" \"test/contract/*.test.js\" \"test/smoke/*.test.js\"",
+    "test:golden": "node test/helpers/run.js \"test/golden/*.test.js\"",
+    "test:contract": "node test/helpers/run.js \"test/contract/*.test.js\"",
+    "test:smoke": "node test/helpers/run.js \"test/smoke/*.test.js\"",
+    "golden:update": "UPDATE_GOLDEN=1 node test/helpers/run.js \"test/golden/*.test.js\"",
     "typecheck": "tsc -p jsconfig.json",
     "lint": "cd .. && npx --no-install eslint v2"
   },

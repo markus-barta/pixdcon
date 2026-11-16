@@ -129,6 +129,9 @@ test.todo("funkeykid--letter-a-with-picture");
 test.todo("funkeykid--idle-picture-only");
 test.todo("funkeykid--volume-bar-70-percent");
 test.todo("health--home-tab-all-green");
+// Two instances of health, frames rendered in turn: the glow of the second
+// starts where a fresh instance starts, not where the first one is (B-005).
+test.todo("health--second-device-starts-its-own-glow");
 test.todo("health--wlan-tab-one-device-offline");
 test.todo("health--heizung-tab-chain-mismatch");
 test.todo("home--day-all-fresh-uv-chart");

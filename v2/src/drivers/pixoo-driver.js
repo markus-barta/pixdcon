@@ -7,7 +7,9 @@
  *      {Command:"Draw/SendHttpGif", PicNum:1, PicWidth:64, PicHeight:64, PicOffset:0, PicID:<1..9999>, PicSpeed:1000, PicData:<base64 RGB888>}   (D-027, D-028, D-186)
  *    A failed reset is logged and the frame is still sent (v1).
  *  - brightness: {Command:"Channel/SetBrightness", Brightness:<1..100>}, rounded and clamped, floor 1 (D-006, D-196)
- *  - screen: {Command:"Channel/OnOffScreen", OnOff:1|0}   channel: {Command:"Channel/SetIndex", SelectIndex:n}
+ *  - screen: {Command:"Channel/OnOffScreen", OnOff:1|0}
+ *  - channel: {Command:"Channel/SetIndex", SelectIndex:n}; built-in modes use the indexes of builtin-modes.js,
+ *    selectChannel(index) forwards any index a scene asks for, unchanged (D-008)
  *  - telemetry: {Command:"Channel/GetAllConf"} → Brightness, CurClockId (D-183)
  *  - success: HTTP 2xx and error_code absent, 0 or "0"; an unparseable 2xx body counts as success (D-033, D-034)
  *  - 5 s deadline per request; timeout text "Pixoo HTTP timeout after 5000ms" (D-035)

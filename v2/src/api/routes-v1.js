@@ -105,7 +105,7 @@ export const V1_ROUTES = Object.freeze([
     summary:
       "Choose a device's scene: saved, applied at once, scene overlays of the device superseded",
     body: "{deviceName, scene} (scene: string, '' or null for none)",
-    ok: "{ok: true} or {ok: true, persisted: false} when config.json is invalid on disk",
+    ok: "{ok: true}, or {ok: true, persisted: false} when config.json is invalid on disk or the device exists only in the MQTT config overlay (fix: v1 copied such a device into the file; v2 adopts only on POST /api/v2/devices/:name/adopt)",
     errors:
       "400 {ok: false, error} without deviceName or for an unknown scene (fix: v1 accepted any string), 404 {ok: false, error} unknown device",
     rows: "A-149, A-150, A-151, C-076",
@@ -118,8 +118,8 @@ export const V1_ROUTES = Object.freeze([
     body: "{deviceName, sceneName, values: object}",
     ok: "{ok: true, saved: {…}}",
     errors:
-      "400 values not an object (fix), 404 unknown device or scene (fix), 409 config_invalid",
-    rows: "A-137, A-190",
+      "400 values not an object (fix), 404 unknown device or scene (fix), 409 config_invalid, 409 overlay_only_device (fix: v1 copied the device into the file)",
+    rows: "A-137, A-151, A-190",
   },
   {
     method: "POST",
@@ -192,7 +192,10 @@ export const V1_ROUTES = Object.freeze([
 
 /**
  * @typedef {object} ApiDeps What route handlers may use. Built by main.js.
+ * @property {import("../types.js").Epoch} epoch
  * @property {import("../config/config-store.js").ConfigStore} config
+ * @property {import("../state/runtime-config.js").RuntimeConfig} runtime
+ * @property {import("../state/v1-ownership.js").V1Ownership} ownership
  * @property {import("../state/state-store.js").StateStore} state
  * @property {import("../overlay/overlay-service.js").OverlayService} overlays
  * @property {import("../scenes/scene-registry.js").SceneRegistry} scenes
@@ -203,6 +206,7 @@ export const V1_ROUTES = Object.freeze([
  * @property {import("../health/telemetry.js").TelemetryCollector|null} telemetry
  * @property {import("../mqtt/mqtt-gateway.js").MqttGateway|null} mqtt
  * @property {import("./live-channel.js").LiveChannel} live
+ * @property {import("../types.js").Factories["builtinModes"]} builtinModes for the snapshot and GET /api/v2/scenes
  * @property {ReturnType<typeof import("../core/logger.js").createLogger>} logger
  * @property {import("../types.js").Clock} clock
  * @property {() => import("../types.js").ControllerStatus} controller

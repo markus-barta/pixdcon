@@ -18,7 +18,8 @@
  *   clear()                     → Promise<void>     zeroes buf, no network
  *   push()                      → Promise<void>     hands the frame to the display; rejects when it was not accepted
  *   setBrightness(1–100)        → Promise<boolean>
- *   setChannel(index), setScreen(on) → Promise<boolean>
+ *   setChannel(index)           → Promise<boolean>  any channel index, forwarded unchanged (D-008): driver.selectChannel
+ *   setScreen(on)               → Promise<boolean>  driver.setPower
  *   ip, deviceName, initialized (read)
  *   Drawing must be pixel-identical to v1: the golden frames compare against
  *   pictures produced by the v1 driver. The font is v1's (v1-shared.js).
@@ -44,6 +45,11 @@
  *  - a refused frame rejects with a DeviceError, so the loop can tell it from
  *    a bug in the scene
  *
+ * How the render loop gets a surface: through `Factories.createSurface`
+ * (types.js), which main.js builds from the two functions below and the v1
+ * font. The loop does not import this file, and this file does not import
+ * the loop: the SurfaceSink type is the whole agreement between the two.
+ *
  * Owner: fixtures + edge lane worker.
  */
 
@@ -55,7 +61,7 @@ import { todo } from "../core/todo.js";
  * @typedef {object} SurfaceSink
  * @property {(output: import("../drivers/driver.js").DeviceOutput) => Promise<void>} show rejects with DeviceError
  * @property {(native: number) => Promise<boolean>} requestBrightness the scene asks for a level; false when the display refused it
- * @property {import("../drivers/driver.js").DeviceDriver} driver for the rarely used pass-through calls
+ * @property {import("../drivers/driver.js").DeviceDriver} driver for the rarely used pass-through calls (selectChannel, setPower, notify, switchApp, readTelemetry, readScreen); every one goes through the driver's request queue
  */
 
 /**

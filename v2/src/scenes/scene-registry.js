@@ -2,8 +2,10 @@
  * Scene registry: which scenes exist, what they are called, whether they can run.
  *
  * Kept from v1 (lib/scene-loader.js loadSceneMetadata; matrix B-001, B-002, B-010, B-011):
- *  - the registry is the `scenes` map of config.json (key → {path}), plus
- *    scenes and paths from the overlay layer; no directory is scanned
+ *  - the registry is the effective scene map (state/runtime-config.js
+ *    scenes()): the `scenes` map of config.json, then blob overlay scenes,
+ *    then granular path overlays, which may replace a path or add a key
+ *    (A-069, A-072, C-052); no directory is scanned
  *  - a path resolves against the directory of config.json
  *  - metadata is read by importing the file: default export, or the module
  *    namespace when there is no default; name, pretty_name, description,
@@ -21,6 +23,14 @@
  *    scene on every change, S-18)
  *  - the answer to GET /api/v2/scenes keeps scenes and built-in modes apart
  *    (A-BUG-27: a scene key "builtins" collided)
+ *  - a change of the effective scene map is followed: main.js calls
+ *    sync() on every runtime "changed" whose diff names scenes, so a path
+ *    overlay that arrives or goes reloads exactly the scenes it touches
+ *  - every scene reports the files it uses beside its own
+ *    (`SceneMeta.resources`, types.js SceneResources), read from the content
+ *    of the file with the two patterns in v1-scene-adapter.js. The shadow
+ *    redirect of state files and the copy route work from that, so they hold
+ *    for an alias key and for a copy as well (B-183)
  *
  * Events (EventEmitter): "changed" ({keys: string[]}) when metadata or status of scenes changed.
  *
@@ -35,8 +45,8 @@ import { todo } from "../core/todo.js";
 
 export class SceneRegistry extends EventEmitter {
   /**
-   * @param {{baseDir: () => string, scenes: () => Record<string, {path: string}>, logger: import("../types.js").Logger}} deps
-   * `scenes` returns the effective map: config.json plus overlay scenes and paths
+   * @param {{baseDir: () => string, scenes: () => Record<string, import("../types.js").EffectiveScene>, findBuiltin: import("../types.js").Factories["findBuiltin"], logger: import("../types.js").Logger}} deps
+   * `scenes` returns the effective map (RuntimeConfig.scenes); `findBuiltin` answers whether a device type has a built-in mode
    */
   constructor(deps) {
     super();
@@ -49,11 +59,22 @@ export class SceneRegistry extends EventEmitter {
   }
 
   /**
-   * Read the given scenes again: after a file change or a registry change.
+   * Read the given scenes again: after a file change.
    * @param {string[]} keys
    */
   async refresh(keys) {
     return todo("SceneRegistry.refresh", keys);
+  }
+
+  /**
+   * Follow a change of the effective scene map: read added keys and keys
+   * whose path changed, forget removed keys.
+   *
+   * @param {{added: string[], removed: string[], changed: string[]}} change from the runtime config's diff
+   * @returns {Promise<{keys: string[]}>} keys whose metadata, file or existence changed; the caller invalidates their instances
+   */
+  async sync(change) {
+    return todo("SceneRegistry.sync", change);
   }
 
   /** @returns {SceneMeta[]} in registry order */
@@ -88,7 +109,7 @@ export class SceneRegistry extends EventEmitter {
 
   /**
    * Can this scene be chosen for a device of this type? Built-in modes are
-   * checked against drivers/builtin-modes.js.
+   * checked with the injected `findBuiltin`.
    *
    * @param {string|null} scene
    * @param {import("../types.js").DeviceType} type

@@ -11,9 +11,14 @@
  * Behaviour (approved spec section 8, build rules 1 and 2):
  *  - a changed field is previewed on the display at once (PUT …/preview with
  *    this page's session); Revert and leaving the page end the preview
+ *  - every edit raises the form's draft number, and the preview request
+ *    carries it (`draft`); Save names the draft it commits
  *  - Save sends only the changed keys; while it runs the button shows its busy
  *    label and takes no second click, the fields stay editable, and edits made
- *    meanwhile become a new preview instead of being thrown away
+ *    meanwhile become a new preview with a higher draft. The server keeps
+ *    that newer preview when the Save finishes, and the form shows what the
+ *    answer says is still previewed (`state.preview.draft`), so nothing
+ *    typed after the click is thrown away (B-176)
  *  - a JSON field that does not parse shows its error in its reserved line, is
  *    not previewed and blocks Save (mockup pixd-device-json-error)
  *  - while the values of a newly chosen scene are loading: the heading stays

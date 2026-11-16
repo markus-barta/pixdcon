@@ -5,13 +5,15 @@
  *  - Every write changes one thing on one device and answers with the applied
  *    state (DeviceView, SettingsState). No route takes a whole config from the
  *    browser except the raw editor (matrix S-1, S-3, C-220).
- *  - Every view carries `rev`. The page applies an answer or an event only
- *    when its rev is newer than what it shows (B-177).
+ *  - Every view carries `epoch` and `rev`. The page applies an answer or an
+ *    event only when its epoch is the one of the snapshot it holds and its
+ *    rev is newer than what it shows (B-177).
  *  - Errors are {error, code}; `error` is one sentence for a person, shown
  *    beside the control that caused it (B-175). Codes used across routes:
  *    unknown_device, unknown_scene, unknown_overlay, invalid_mode,
  *    invalid_brightness, invalid_field, invalid_config, config_invalid (file on
- *    disk), mqtt_offline, shadow_output, not_implemented.
+ *    disk), overlay_only_device, not_overlay_only, mqtt_offline,
+ *    shadow_output, not_implemented.
  *  - Reads are cheap and side-effect free. The page normally needs only
  *    GET /api/v2/bootstrap and the live channel.
  *
@@ -36,9 +38,9 @@ export const V2_ROUTES = Object.freeze([
     method: "GET",
     path: "/api/v2/events",
     summary:
-      "Live channel, server-sent events. Query: session=<page id>, since=<seq>, log=1 to include log lines",
-    ok: "text/event-stream of LiveEvent, see live-channel.js",
-    rows: "A-123, B-063",
+      "Live channel, server-sent events. Query: session=<page id>, since=<epoch>-<seq>, log=1 to include log lines. A cursor of another epoch gets a snapshot",
+    ok: "text/event-stream of LiveEvent with id <epoch>-<seq>, see live-channel.js",
+    rows: "A-123, B-063, B-177",
   },
 
   // --- devices ----------------------------------------------------------------------------------
@@ -78,11 +80,21 @@ export const V2_ROUTES = Object.freeze([
     method: "PUT",
     path: "/api/v2/devices/:name/scene",
     summary:
-      "Choose the scene: the display switches now, the choice is saved, scene overlays of the device are superseded",
+      "Choose the scene: the display switches now, the choice is saved, scene overlays of the device are superseded. Not saved, but switched: config.json invalid on disk, or a device that exists only in the MQTT config overlay",
     body: "{scene: string|null}",
-    ok: "{device: DeviceView, persisted: boolean}",
+    ok: "{device: DeviceView, persisted: boolean, notSavedReason: 'config_invalid'|'overlay_only_device'|null}",
     errors: "400 unknown_scene, 404 unknown_device",
-    rows: "A-149, B-070, A-082 (PIXD-75)",
+    rows: "A-149, A-150, B-070, A-082 (PIXD-75)",
+  },
+  {
+    method: "POST",
+    path: "/api/v2/devices/:name/adopt",
+    summary:
+      "'Add to config.json' for a device that exists only in the MQTT config overlay: write its name, type and address, plus the scene chosen for it here, and nothing else of the overlay",
+    body: "{}",
+    ok: "DeviceView with origin 'config'",
+    errors: "404 unknown_device, 409 not_overlay_only, 409 config_invalid",
+    rows: "A-151",
   },
   {
     method: "DELETE",
@@ -144,22 +156,22 @@ export const V2_ROUTES = Object.freeze([
     method: "PUT",
     path: "/api/v2/devices/:name/settings/:scene",
     summary:
-      "Save: store the changed keys, remove the reset ones, clear the MQTT overlay of each saved key, end the page's preview",
-    body: "{set?: {key: value}, reset?: string[], session?: string}",
+      "Save: store the changed keys, remove the reset ones, clear the MQTT overlay of each saved key, and commit the page's draft: its preview ends unless it already holds a newer draft",
+    body: "{set?: {key: value}, reset?: string[], session?: string, draft?: number}",
     ok: "{state: SettingsState, rejected: {}, overlaysNotCleared: string[]}",
     errors:
-      "400 invalid_field {rejected: {key: reason}} and nothing is saved, 404, 409 config_invalid",
-    rows: "A-137, B-084, B-086, B-087, C-106",
+      "400 invalid_field {rejected: {key: reason}} and nothing is saved, 404, 409 config_invalid, 409 overlay_only_device",
+    rows: "A-137, B-084, B-086, B-087, B-176, C-106",
   },
   {
     method: "PUT",
     path: "/api/v2/devices/:name/settings/:scene/preview",
     summary:
-      "Try values on the display without saving. Not published to MQTT, ends with the page",
-    body: "{session: string, values: {key: value}}",
-    ok: "{state: SettingsState, rejected: {key: reason}}",
-    errors: "404",
-    rows: "B-085, S-2, C-214",
+      "Try values on the display without saving. Not published to MQTT, ends with the page. draft is the page's edit counter; a request with a draft that is not newer changes nothing",
+    body: "{session: string, draft: number, values: {key: value}}",
+    ok: "{state: SettingsState, rejected: {key: reason}, applied: boolean}",
+    errors: "404, 400 invalid_field without session or draft",
+    rows: "B-085, B-176, S-2, C-214",
   },
   {
     method: "DELETE",
@@ -217,9 +229,9 @@ export const V2_ROUTES = Object.freeze([
     method: "POST",
     path: "/api/v2/scenes/:key/copy",
     summary:
-      "'Separate copy of this scene': copy the file under a new key, or replace the key with the copy (the original file is backed up first)",
+      "'Separate copy of this scene': copy the file under a new key, or replace the key with the copy (the original file is backed up first). The folders named in the source's resources.assetDirs are linked beside the copy under the same names; a copy starts its own history file",
     body: "{targetKey?: string, name?: string, replace?: boolean}",
-    ok: "201 {scene: SceneMeta, path: string, backup: string|null}",
+    ok: "201 {scene: SceneMeta, path: string, backup: string|null, linkedAssetDirs: string[]}",
     errors:
       "400 invalid_field, 404 unknown_scene, 409 key or file exists; the copy is imported before it is registered, a file that does not load is not registered",
     rows: "A-140 to A-146, A-195, A-196, B-091, B-182, B-183",
@@ -256,8 +268,8 @@ export const V2_ROUTES = Object.freeze([
     method: "GET",
     path: "/api/v2/status",
     summary:
-      "Controller, MQTT, config and supervision status for the Health page",
-    ok: "{controller: ControllerStatus, mqtt: MqttStatus, config: ConfigFileState, scheduler: {devices, loopsAlive, restarts, lastWatchdogAt}}",
+      "Controller, MQTT, config, supervision and v1 ownership status for the Health page",
+    ok: "{controller: ControllerStatus, mqtt: MqttStatus, config: ConfigFileState, scheduler: {devices, loopsAlive, restarts, lastWatchdogAt, watchdogIntervalMs}, v1: {transition, known, receivedAt, devices}}",
     rows: "A-131",
   },
   {

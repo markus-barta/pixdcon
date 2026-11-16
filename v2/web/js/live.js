@@ -2,7 +2,10 @@
 /**
  * Live channel client: one EventSource on GET /api/v2/events.
  *
- *  - reconnects by itself, every 5 s, with `since=<last seq>`
+ *  - reconnects by itself, every 5 s, with `since=<epoch>-<last seq>`. When
+ *    pixdcon was restarted meanwhile, that cursor names an epoch that is
+ *    gone, and the server answers with a snapshot instead of a replay; the
+ *    store then starts over from it (store.js)
  *  - reports its own state, so the title line can say "No answer from pixdcon
  *    since 18:41:52 · retrying every 5 s · values below are from 18:41:52"
  *    (mockup pixd-devices-disconnected) and "Live updates paused · retrying"

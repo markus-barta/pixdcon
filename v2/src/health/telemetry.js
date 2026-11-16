@@ -9,7 +9,8 @@
  *    only for a good read; a failed read keeps the last retained snapshot (C-115)
  *  - Pixoo: Channel/GetAllConf → retained {reachable, brightness, cur_clock_id, ip_address, ts},
  *    also for a failed read (reachable false) (C-134)
- *  - Home Assistant discovery from mqtt/ha-discovery.js, retained
+ *  - Home Assistant discovery, retained, built by the injected `discovery`
+ *    functions (mqtt/ha-discovery.js through main.js)
  *  - the last snapshot per device is kept for the UI (uid = access-point name in the recovery dialog)
  *
  * Fixed:
@@ -19,7 +20,11 @@
  *  - discovery is published again after every reconnect and when uid, firmware
  *    or address changed (C-139, B-C05)
  *  - the latest snapshot is published again after a reconnect (C-117)
- *  - a shadow device is not polled and nothing is published for it
+ *  - a shadow device is not polled and nothing is published for it; "shadow"
+ *    is the resolved output policy, so a device the v1 interlock holds back
+ *    is not polled either (v1 is polling it)
+ *  - the per-device availability topic that the discovery payloads name is
+ *    published by the status publisher from the measured health, not here
  *
  * Owner: drivers worker.
  */
@@ -33,6 +38,7 @@ import { todo } from "../core/todo.js";
  * @property {import("./health-model.js").HealthModel} health
  * @property {() => number} intervalMs read on every tick
  * @property {boolean} haDiscovery
+ * @property {import("../types.js").Factories["discovery"]} discovery the payload builders
  * @property {import("../types.js").Clock} clock
  * @property {import("../types.js").Logger} logger
  */
@@ -44,7 +50,7 @@ export class TelemetryCollector {
   }
 
   /**
-   * @param {{name: string, type: import("../types.js").DeviceType, address: string}} device
+   * @param {{name: string, type: import("../types.js").DeviceType, address: string}} device from the EffectiveDevice; the scheduler calls this for driven devices only
    * @param {import("../drivers/driver.js").DeviceDriver} driver
    */
   start(device, driver) {

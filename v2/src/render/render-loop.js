@@ -33,7 +33,13 @@
  *    retryNow() or a good probe starts over (v1: dead until restart, B-035, S-8).
  *    The log says what was really sent (D-B16).
  *  - stop() has a deadline; a render that hangs cannot block the process (B-044, A-028).
- *  - Output "shadow": no MQTT publish, so no power cycle, ever.
+ *  - Output "shadow": no MQTT publish, so no power cycle, ever. `device.output`
+ *    is the resolved policy, the same value that selected the driver.
+ *  - A good frame is reported to the health model as a fact, without the
+ *    delay the scene asked for: health is by the clock since the last good
+ *    frame (stale 30 s, offline 2 min), whatever a scene returns. A scene
+ *    that asks for a delay of 30 s or more shows as stale between its frames;
+ *    the longest delay of a shipped scene is 1 s.
  *
  * The loop reports, it does not judge: it tells the health model about every
  * good frame, contact and error, and the state store about its phase.
@@ -69,8 +75,9 @@ export const LOOP_DEFAULTS = Object.freeze({
 
 /**
  * @typedef {object} RenderLoopDeps
- * @property {{name: string, type: import("../types.js").DeviceType, output: import("../types.js").OutputMode, minFrameMs: number, maxPowerCycles: number, powerCyclePlugin: import("../types.js").PowerCyclePlugin|null}} device
+ * @property {{name: string, type: import("../types.js").DeviceType, address: string, output: import("../types.js").OutputMode, minFrameMs: number, maxPowerCycles: number, powerCyclePlugin: import("../types.js").PowerCyclePlugin|null}} device taken from the EffectiveDevice (types.js); output is its `output.mode`
  * @property {import("../drivers/driver.js").DeviceDriver} driver
+ * @property {import("../types.js").Factories["createSurface"]} createSurface the object a scene draws on; the loop passes itself as the SurfaceSink (scenes/v1-device-facade.js) and creates one surface per driver
  * @property {import("../scenes/scene-runtime.js").SceneRuntime} scenes
  * @property {import("./preview-store.js").PreviewStore} previews
  * @property {import("../health/health-model.js").HealthModel} health

@@ -123,5 +123,21 @@ test.todo(
   "live channel: an event carries the device rev; an older answer never overwrites a newer state",
 );
 test.todo(
+  "boot epoch: every view, snapshot and event id carries the epoch; after a restart a cursor of the old epoch gets a snapshot, not a replay",
+);
+test.todo("boot epoch: a bare number as cursor (no epoch) gets a snapshot");
+test.todo(
+  "settings drafts over HTTP: preview needs session and draft; Save with draft n leaves a preview of draft n+1 in place and says so in the state",
+);
+test.todo(
+  "adopt route: 409 not_overlay_only for a device of config.json; for a blob-only device the answer has origin config",
+);
+test.todo(
+  "scene copy: the folders in the source's resources.assetDirs are linked beside the copy, and a copy of home3 loads",
+);
+test.todo(
+  "GET /api/health: 200 with status degraded while a display is offline, 503 when the scheduler watchdog is overdue",
+);
+test.todo(
   "config: an invalid config.json keeps the last valid config running and the UI reachable, also at start",
 );

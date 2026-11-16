@@ -1,10 +1,12 @@
 /**
- * Status publisher: the controller-level topics, in the v1 shape.
+ * Status publisher: the controller-level topics, in the v1 shape, and the
+ * per-device availability.
  *
  *   <statusBase>/health            retained  {status, timestamp, devices:[{name,status,lastSeen}], errorCount, lastError}   C-022
  *   <statusBase>/state             retained  {running, currentScene, uptime, devices:[{name,scene,frameCount}]}           C-023
  *   <statusBase>/config            retained  {configPath, deviceCount, sceneCount, timestamp}                             C-024
- *   <statusBase>/config/effective  retained  the running config with overlays applied                                     C-024
+ *   <statusBase>/config/effective  retained  the running config with overlays applied (StateStore.runningConfigV1)       C-024
+ *   <base>/<device>/availability   retained  "online" | "offline"                                                          new, C-121, C-137, C-138
  *
  * Kept: topic names, field names, retained, republished on connect and every
  * 30 s (C-013, C-031). The Home Assistant availability template of the Ulanzi
@@ -17,16 +19,30 @@
  *    One display that is down no longer turns every entity unavailable
  *    (B-C03). `errorCount` stays the lifetime counter; `lastSeen` is the last
  *    contact, not the time of the status write (C-027, B-C04).
+ *  - Per-device availability. v1's entities have no freshness of their own:
+ *    an unplugged Ulanzi keeps showing its last values as long as the
+ *    controller is healthy (C-121), and the Pixoo entities never expire
+ *    (C-137, C-138). v2 publishes <base>/<device>/availability for every
+ *    driven device from its measured health: "offline" while the health
+ *    state is offline, "online" otherwise; on every change, on every connect
+ *    and with the 30 s republish. The discovery payloads name this topic
+ *    next to the controller health (ha-discovery.js), so one display that is
+ *    down takes its own entities down and nobody else's.
  *  - A device that left the config leaves both lists (C-028).
  *  - `state.devices[].scene` is the scene on the display and is published at
  *    once when it changes, not only every 100 frames (C-081). Added fields per
  *    device: mode, source. `currentScene` stays null (C-026).
  *  - On a clean stop: state running false and health status "offline"; on a
  *    crash the last will says the same (C-033, B-C02).
- *  - Only devices this instance drives are listed. An instance that drives
- *    nothing (edge lane, shadow) must not use v1's status base.
+ *  - Only devices this instance drives are listed and get an availability
+ *    message. "Drives" is the resolved output policy (RuntimeConfig), so a
+ *    device held back by the v1 interlock is not listed. An instance that
+ *    drives nothing (edge lane, shadow) must not use v1's status base.
+ *  - Nothing is rebuilt here: device entries come from the runtime config,
+ *    the v1-shaped running config from the state store.
  *
- * Owner: API + live channel worker.
+ * Owner: API + live channel worker. The last will below is finished code, so
+ * the gateway (core/state worker) does not depend on this file being built.
  */
 
 import { todo } from "../core/todo.js";
@@ -52,8 +68,9 @@ import { todo } from "../core/todo.js";
  * @typedef {object} StatusPublisherDeps
  * @property {import("./mqtt-gateway.js").MqttGateway} mqtt
  * @property {import("./topics.js").Topics} topics
- * @property {import("../state/state-store.js").StateStore} state
- * @property {import("../config/config-store.js").ConfigStore} config
+ * @property {import("../state/state-store.js").StateStore} state device states, health, and runningConfigV1()
+ * @property {import("../state/runtime-config.js").RuntimeConfig} runtime which devices exist and which are driven
+ * @property {import("../config/config-store.js").ConfigStore} config path of config.json for the summary topic
  * @property {import("../types.js").Clock} clock
  * @property {import("../types.js").Logger} logger
  * @property {number} [intervalMs] default 30000
@@ -61,13 +78,33 @@ import { todo } from "../core/todo.js";
 
 export class StatusPublisher {
   /**
-   * The last will for the gateway: the health topic with status "offline".
+   * The last will for the gateway: the health topic of this process's status
+   * base, retained, in the v1 health shape with status "offline". Home
+   * Assistant's availability template turns that into "offline" for every
+   * entity (B-C02). The broker stores it at connect time, so it has no
+   * timestamp of the death; `timestamp` is null.
+   *
+   * Built from the topics, and the topics from the loaded config: main.js
+   * calls this after config.json was read, never with defaults.
    *
    * @param {import("./topics.js").Topics} topics
-   * @returns {{topic: string, payload: string, retain: boolean, qos: 0|1}}
+   * @returns {import("./mqtt-gateway.js").LastWill}
    */
   static lastWill(topics) {
-    return todo("StatusPublisher.lastWill", topics);
+    /** @type {V1HealthPayload} */
+    const payload = {
+      status: "offline",
+      timestamp: null,
+      devices: [],
+      errorCount: 0,
+      lastError: null,
+    };
+    return {
+      topic: topics.health,
+      payload: JSON.stringify(payload),
+      retain: true,
+      qos: 1,
+    };
   }
 
   /** @param {StatusPublisherDeps} deps */
@@ -96,12 +133,12 @@ export class StatusPublisher {
   }
 
   /**
-   * The running config with overlays applied, as v1 publishes it. Contains no
-   * secrets by construction (the config has none); bookkeeping keys are left out.
+   * Availability of one driven display, for <base>/<device>/availability.
    *
-   * @returns {Record<string, unknown>}
+   * @param {string} device
+   * @returns {"online"|"offline"|null} null for a device this instance does not drive: nothing is published
    */
-  buildEffectiveConfig() {
-    return todo("StatusPublisher.buildEffectiveConfig");
+  buildAvailability(device) {
+    return todo("StatusPublisher.buildAvailability", device);
   }
 }

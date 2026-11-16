@@ -1,5 +1,6 @@
 /**
- * Precedence rules: who decides what a display shows.
+ * Precedence rules: who decides what a display shows, and whether this
+ * instance may touch it.
  *
  * Pure functions, no I/O, no clock of their own. These few functions are the
  * heart of the PIXD-75 fix and of the phase-2 contract tests
@@ -12,14 +13,20 @@
  *      or `scene` in config.json                           → source "config"
  *   4. nothing                                             → source "fallback", scene null (display idles)
  *
- * SUPERSEDED: a UI choice at time T supersedes every scene overlay of that
- * device that is stored at T. Stored means: received before T, or delivered
- * as a retained replay (origin "startup") while the choice marker still
- * exists. A message published live after T is a new command from the outside
- * (the Home Assistant scene toggle) and wins again; it also ends the marker.
- * This is v1's behaviour since PIXD-75 (lib/config-overlay.js clearDeviceScene),
- * with the marker saved in config.json so that a restart cannot bring a stale
- * overlay back.
+ * SUPERSEDED is decided per layer. A UI choice creates one suppression for
+ * the granular layer and one for the blob layer (types.js SceneSuppression;
+ * life cycle in overlay/overlay-service.js, rules S1 to S5). A layer's value
+ * is superseded while the suppression of that layer exists and the value is
+ * what the choice replaced: the record that was in the mirror at the choice,
+ * or a replay (retain flag set) of the same value, or any replay when the
+ * replaced value is not known. A value that arrived live after the choice is
+ * a new command from the outside (the Home Assistant scene toggle) and is
+ * never superseded; so is a replay with another value (stored while pixdcon
+ * was away). Nothing here looks at arrival order or at a boundary in time.
+ *
+ * The two layers are independent: a new granular command ends the granular
+ * suppression and leaves the blob suppression in place, so when that granular
+ * overlay is cleared later, the choice shows and not the stale blob scene.
  *
  * INVALID WINNERS: an overlay that names an unknown scene, or a scene for the
  * other device type, is skipped and reported on the Overlays page; the next
@@ -33,6 +40,8 @@
  * MODE: default "play" < retained control. BRIGHTNESS: scene request < override.
  * ADDRESS: config.json < blob overlay < granular overlay (A-073, D-188).
  *
+ * OUTPUT: one policy for everything that acts outward, see resolveOutput().
+ *
  * Owner: core/state worker.
  */
 
@@ -43,15 +52,16 @@ import { todo } from "../core/todo.js";
 /** @typedef {import("../types.js").SettingField} SettingField */
 /** @typedef {import("../types.js").SettingValue} SettingValue */
 /** @typedef {import("../types.js").IsoTime} IsoTime */
+/** @typedef {import("../types.js").SceneSuppression} SceneSuppression */
+/** @typedef {import("../types.js").OutputMode} OutputMode */
 
 /**
  * @typedef {object} SceneInputs
- * @property {string|null} configScene `scene` of the device in the running config
+ * @property {string|null} configScene `scene` of the device in the running config; null for a device that exists only in the blob
  * @property {IsoTime} configSince when the running config was loaded
  * @property {{scene: string|null, at: IsoTime, persisted: boolean}|null} uiChoice choice made in this process
- * @property {IsoTime|null} supersedesAt `supersedes.scene` of the device in config.json, or the time of `uiChoice`
- * @property {OverlayRecord|null} granular the device-scene overlay, if one is stored
- * @property {{scene: string|null, record: OverlayRecord}|null} blob scene of this device in the blob overlay
+ * @property {{record: OverlayRecord, suppression: SceneSuppression|null}|null} granular the device-scene overlay, if one is stored, and the suppression of the granular layer
+ * @property {{scene: string|null, record: OverlayRecord, suppression: SceneSuppression|null}|null} blob scene of this device in the blob overlay, and the suppression of the blob layer
  * @property {(scene: string) => string|null} check problem text when a scene cannot run on this device, else null
  */
 
@@ -64,14 +74,46 @@ export function resolveScene(inputs) {
 }
 
 /**
- * Is this scene overlay record stale with respect to the user's last choice?
+ * Is this value of a scene layer stale with respect to the user's choice?
+ * See SUPERSEDED above. `value` is the layer's value for the device: the
+ * payload of the granular record, or the device's scene inside the blob.
  *
- * @param {OverlayRecord} record
- * @param {IsoTime|null} supersedesAt
+ * @param {{value: string|null, origin: OverlayRecord["origin"], receivedAt: IsoTime}} stored
+ * @param {SceneSuppression|null} suppression the suppression of the same layer
  * @returns {boolean}
  */
-export function isSuperseded(record, supersedesAt) {
-  return todo("precedence.isSuperseded", record, supersedesAt);
+export function isSuperseded(stored, suppression) {
+  return todo("precedence.isSuperseded", stored, suppression);
+}
+
+/**
+ * The one output policy (types.js OutputDecision). Shadow wins as soon as one
+ * reason for it exists; unknown ownership during the transition is such a
+ * reason. Everything that acts outward asks the result of this function and
+ * nothing else: no caller looks at config.json or at an environment variable
+ * on its own.
+ *
+ * @param {object} inputs
+ * @param {boolean} inputs.forceShadow PIXDCON2_FORCE_SHADOW=1
+ * @param {OutputMode|null} inputs.deviceOutput `output` of the device entry as it runs
+ * @param {OutputMode|null} inputs.configDefault `output.default` of config.json
+ * @param {OutputMode} inputs.envDefault PIXDCON2_DEFAULT_OUTPUT, else "drive"
+ * @param {boolean} inputs.transition `mqtt.statusBaseTopic` differs from `mqtt.baseTopic`
+ * @param {import("../types.js").V1Owner} inputs.owner from state/v1-ownership.js
+ * @returns {import("../types.js").OutputDecision}
+ */
+export function resolveOutput(inputs) {
+  const requested =
+    inputs.deviceOutput ?? inputs.configDefault ?? inputs.envDefault;
+  if (inputs.forceShadow)
+    return { mode: "shadow", requested, reason: "force_shadow" };
+  if (requested === "shadow")
+    return { mode: "shadow", requested, reason: "config" };
+  if (inputs.transition && inputs.owner === "v1")
+    return { mode: "shadow", requested, reason: "v1_owner" };
+  if (inputs.transition && inputs.owner !== "free")
+    return { mode: "shadow", requested, reason: "ownership_unknown" };
+  return { mode: "drive", requested, reason: null };
 }
 
 /**

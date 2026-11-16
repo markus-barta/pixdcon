@@ -20,6 +20,10 @@
  * exact contract with the display stays the JSON payload, which the golden
  * tests compare as well.
  *
+ * Reaches its users as `Factories.rasterizeAwtrixApp` (types.js) through
+ * main.js: the shadow driver, the dev runner and the test harness (which
+ * hand it to the fake AWTRIX with setRaster). None of them imports this file.
+ *
  * Owner: fixtures + edge lane worker.
  */
 

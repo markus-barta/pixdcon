@@ -14,6 +14,12 @@
  *   statusBaseTopic   = baseTopic         controller health, state, config
  *   settingsBaseTopic pixdcon             per-setting overlays (outside the base in v1, A-083)
  *
+ * The namespace is built once per process, by main.js, from the config that
+ * was loaded just before. It never changes while the process runs: the last
+ * will is registered with the broker at connect time, and every module holds
+ * these strings. A change of `mqtt.*` in config.json therefore needs a
+ * restart, and the controller status says so until then.
+ *
  * Owner: core/state worker.
  */
 
@@ -73,6 +79,23 @@ export function createTopics(config = {}) {
     configEffective: `${status}/config/effective`,
     /** @param {string} device */
     telemetry: (device) => `${base}/${device}/telemetry`,
+    /**
+     * New in v2, retained, "online" or "offline": the measured availability of
+     * one driven display (C-121, C-137, C-138). Published by the instance that
+     * drives the device, next to its telemetry.
+     * @param {string} device
+     */
+    availability: (device) => `${base}/${device}/availability`,
+
+    // --- read during the switch-over from v1 ---
+    /**
+     * v1's own retained list of the devices it runs. Always under `base`,
+     * whatever `statusBase` is: while the two differ (the transition), v1 is
+     * the publisher here and state/v1-ownership.js is the reader.
+     */
+    v1ConfigEffective: `${base}/config/effective`,
+    /** True while v1 still publishes the controller topics under `base`: the interlock against double driving is on. */
+    transition: status !== base,
 
     // --- Home Assistant discovery (retained) ---
     /** @param {string} device @param {string} field */
@@ -83,7 +106,7 @@ export function createTopics(config = {}) {
       `${discovery}/binary_sensor/pixdcon_${device}_${field}/config`,
 
     // --- new in v2, not retained ---
-    /** Marker to find the end of the retained replay after a subscribe. @param {string} nonce */
+    /** Marker of the settle hint: a round trip after the subscribes (mqtt-gateway.js settle()). @param {string} nonce */
     sync: (nonce) => `${status}/_sync/${nonce}`,
 
     /**

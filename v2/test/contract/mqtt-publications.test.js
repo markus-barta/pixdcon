@@ -14,7 +14,19 @@ test.todo(
 );
 test.todo("last will: the health topic says offline when the process dies");
 test.todo(
-  "Home Assistant discovery: topics, unique_id, object_id and state_topic equal v1 for Ulanzi (10) and Pixoo (2)",
+  "Home Assistant discovery identity: topic, unique_id, object_id, state_topic, value_template and the device block equal v1 for Ulanzi (10) and Pixoo (2)",
+);
+test.todo(
+  "Home Assistant discovery availability: Ulanzi sensors and Pixoo brightness name the controller health and the device's availability topic, mode all; Pixoo entities expire after three telemetry intervals",
+);
+test.todo(
+  "per-device availability: an unplugged Ulanzi turns offline on its own availability topic after 2 min while the other display stays online; back online with the first good frame",
+);
+test.todo(
+  "per-device availability: nothing is published for a device in shadow or held back by the v1 interlock",
+);
+test.todo(
+  "config/effective: the running config in v1's shape includes a blob-only device and a blob-patched key, and lists only driven, enabled devices",
 );
 test.todo(
   "telemetry: Ulanzi publishes only good reads, Pixoo publishes reachable false; nothing for a shadow device",
