@@ -237,13 +237,12 @@ render() returns null     # scene is done → advance to next scene
   malformed, `/api/scene` returns `persisted: false`, keeps the file untouched,
   and updates the live scene and in-memory base so later overlay reloads retain
   that choice (until restart or a newer scene command).
-  Writes resolve config symlinks and stage a sibling temp file beside the real
-  target, restoring its owner, group and exact mode before rename. Symlinks stay
-  intact; failure to preserve metadata aborts the replacement.
-  A single-file Docker bind mount rejects rename with `EBUSY`; only that error
-  falls back to an in-place write of the validated content. This fallback is
-  serialized but is not crash-atomic. Mount the containing directory to allow
-  atomic replacements. The config watcher re-arms after replacement.
+  All config writes validate before truncating and writing the existing file
+  in place, preserving the inode watched by `ConfigWatcher` and used by the
+  production single-file Docker bind mount. Symlinks follow their target;
+  existing ownership and permissions stay intact without chown or rename.
+  The lifecycle queue serializes writes and reloads, but writes are not
+  crash-atomic: an interrupted write can leave incomplete JSON on disk.
 - Offline scene choices remove local overlay fields immediately. Granular
   retained clears queue in memory, use QoS 1, retry each second while connected,
   and survive reconnect until acknowledged. Late retained scene packets are

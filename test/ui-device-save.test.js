@@ -335,21 +335,24 @@ test("invalid or missing-file device saves cannot persist the effective snapshot
   assert.deepEqual(await readdir(root), ["config.json"]);
 });
 
-test("file bind mounts fall back on EBUSY and clean the staged file", async (t) => {
+test("device patches and scene choices preserve the watched inode without staging files", async (t) => {
   const { file, root, configPath, server } = await fixture(t);
   const before = await stat(configPath);
-  t.mock.method(fs, "rename", async () => { throw Object.assign(new Error("mount point busy"), { code: "EBUSY" }); });
-  syncBuiltinESMExports();
-  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  const res = await request(server, "/api/device/save", { deviceName: "panel-a", patch: { displayName: "My Panel" } });
-  assert.equal(res.status, 200);
+  for (const [route, body] of [
+    ["/api/device/save", { deviceName: "panel-a", patch: { displayName: "My Panel" } }],
+    ["/api/scene", { deviceName: "panel-a", scene: "funkeykid" }],
+  ]) {
+    assert.equal((await request(server, route, body)).status, 200);
+    const after = await stat(configPath);
+    assert.deepEqual([after.ino, after.uid, after.gid, after.mode], [before.ino, before.uid, before.gid, before.mode]);
+    assert.deepEqual(await readdir(root), ["config.json"]);
+  }
   file.devices[0].displayName = "My Panel";
+  file.devices[0].scene = "funkeykid";
   assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), file);
-  assert.equal((await stat(configPath)).ino, before.ino);
-  assert.deepEqual(await readdir(root), ["config.json"]);
 });
 
-test("atomic saves follow config symlinks and preserve the target's owner, group and exact mode", async (t) => {
+test("in-place saves follow config symlinks and preserve the target's inode, owner, group and mode", async (t) => {
   const { root, configPath, server } = await fixture(t);
   await chmod(configPath, 0o640);
   const originalUmask = process.umask(0o077);
@@ -363,49 +366,30 @@ test("atomic saves follow config symlinks and preserve the target's owner, group
   assert.equal((await lstat(link)).isSymbolicLink(), true);
   assert.equal(JSON.parse(await readFile(configPath, "utf8")).devices[0].displayName, "My Panel");
   const after = await stat(configPath);
-  assert.notEqual(after.ino, before.ino);
+  assert.equal(after.ino, before.ino);
   assert.deepEqual([after.uid, after.gid, after.mode], [before.uid, before.gid, before.mode]);
   assert.deepEqual((await readdir(root)).sort(), ["config-link.json", "config.json"]);
 });
 
-test("atomic saves apply existing ownership even when the writer has a different uid/gid", async (t) => {
-  const { configPath, server } = await fixture(t);
-  const target = await fs.realpath(configPath);
-  const originalStat = fs.stat;
-  const ownership = [];
-  t.mock.method(fs, "stat", async (...args) => {
-    const metadata = await originalStat(...args);
-    if (args[0] === target) { metadata.uid = 1234; metadata.gid = 2345; }
-    return metadata;
-  });
-  t.mock.method(fs, "chown", async (path, uid, gid) => { ownership.push({ path, uid, gid }); });
-  syncBuiltinESMExports();
-  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  const res = await request(server, "/api/device/save", { deviceName: "panel-a", patch: { displayName: "My Panel" } });
-  assert.equal(res.status, 200);
-  assert.equal(ownership.length, 1);
-  assert.ok(ownership[0].path.startsWith(target + "."));
-  assert.deepEqual([ownership[0].uid, ownership[0].gid], [1234, 2345]);
+test("config saves require no write permission on the containing directory", async (t) => {
+  const { root, configPath, server } = await fixture(t);
+  const before = await stat(configPath);
+  await chmod(root, 0o500);
+  try {
+    const res = await request(server, "/api/device/save", { deviceName: "panel-a", patch: { displayName: "My Panel" } });
+    assert.equal(res.status, 200);
+    assert.equal(JSON.parse(await readFile(configPath, "utf8")).devices[0].displayName, "My Panel");
+    assert.equal((await stat(configPath)).ino, before.ino);
+    assert.deepEqual(await readdir(root), ["config.json"]);
+  } finally {
+    await chmod(root, 0o700);
+  }
 });
 
-test("failure to preserve ownership leaves the file and overlay untouched", async (t) => {
+test("a refused config write leaves the file and scene overlay untouched", async (t) => {
   const { root, configPath, server, overlay, published } = await fixture(t);
   const before = await readFile(configPath, "utf8");
-  t.mock.method(fs, "chown", async () => { throw Object.assign(new Error("ownership denied"), { code: "EPERM" }); });
-  syncBuiltinESMExports();
-  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  const res = await request(server, "/api/scene", { deviceName: "panel-a", scene: "funkeykid" });
-  assert.equal(res.status, 500);
-  assert.equal(await readFile(configPath, "utf8"), before);
-  assert.equal(overlay.getOverlay().devicePatches.get("panel-a").scene, "builtin:clock");
-  assert.deepEqual(published, []);
-  assert.deepEqual(await readdir(root), ["config.json"]);
-});
-
-test("a failed atomic replacement leaves the file and scene overlay untouched", async (t) => {
-  const { root, configPath, server, overlay, published } = await fixture(t);
-  const before = await readFile(configPath, "utf8");
-  t.mock.method(fs, "rename", async () => { throw Object.assign(new Error("rename denied"), { code: "EACCES" }); });
+  t.mock.method(fs, "writeFile", async () => { throw Object.assign(new Error("write denied"), { code: "EACCES" }); });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   const res = await request(server, "/api/scene", { deviceName: "panel-a", scene: "funkeykid" });
