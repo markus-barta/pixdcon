@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>pixdcon</title>
+    <link rel="stylesheet" href="/app.css" />
+    <!--
+      pixdcon 2 UI shell (PIXD-83 skeleton). The approved design is
+      PIXD-81 "-v1-approved-2026-11-16" (26 mockups, spec, addendum); build
+      against those bytes. Plain HTML and CSS plus the ES modules under /js,
+      no framework, no build step, nothing loaded from another host.
+    -->
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#/devices">pixdcon</a>
+      <button
+        class="version"
+        id="version"
+        type="button"
+        title="click to copy"
+        hidden
+      ></button>
+      <nav aria-label="Sections">
+        <a href="#/devices" data-nav="devices">Devices</a>
+        <a href="#/overlays" data-nav="overlays"
+          >Overlays <span class="count" id="overlay-count" hidden></span
+        ></a>
+        <a href="#/config" data-nav="config">Config</a>
+        <a href="#/health" data-nav="health">Health</a>
+      </nav>
+      <span class="mqtt" id="mqtt-state">MQTT status unknown</span>
+    </header>
+    <main id="app">
+      <div class="title-line">
+        <h1 id="page-title">Devices</h1>
+        <p class="status" id="page-status">Loading…</p>
+      </div>
+      <div id="page"></div>
+    </main>
+    <script type="module" src="/js/main.js"></script>
+  </body>
+</html>

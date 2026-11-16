@@ -1,0 +1,12 @@
+{
+  "name": "test-pattern--first-frame",
+  "scene": "test-pattern",
+  "deviceType": "ulanzi",
+  "now": "2026-11-16T18:42:07+01:00",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [],
+  "http": [],
+  "frames": 1,
+  "note": "Example scenario (PIXD-83). The two-pixel red dot of the test pattern at its first position, on black."
+}

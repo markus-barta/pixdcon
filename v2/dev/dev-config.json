@@ -1,0 +1,42 @@
+{
+  "devices": [
+    {
+      "name": "pixoo-dev",
+      "displayName": "Pixoo (fake)",
+      "comment": "Fake Pixoo64 started by dev/dev-runner.js",
+      "type": "pixoo",
+      "ip": "__PIXOO__",
+      "scene": "funkeykid",
+      "minFrameMs": 500,
+      "preview": { "showGrid": true, "pollMs": 2000 }
+    },
+    {
+      "name": "ulanzi-dev",
+      "displayName": "Ulanzi (fake)",
+      "comment": "Fake Ulanzi / AWTRIX started by dev/dev-runner.js",
+      "type": "ulanzi",
+      "ip": "__AWTRIX__",
+      "scene": "clock",
+      "minFrameMs": 500
+    }
+  ],
+  "scenes": {
+    "clock": { "path": "__REPO__/scenes/ulanzi/clock.js" },
+    "clock_with_homestats": {
+      "path": "__REPO__/scenes/ulanzi/clock_with_homestats.js"
+    },
+    "test-pattern": { "path": "__REPO__/scenes/ulanzi/test-pattern.js" },
+    "home": { "path": "__REPO__/scenes/pixoo/home.js" },
+    "home2": { "path": "__REPO__/scenes/pixoo/home2.js" },
+    "home3": { "path": "__REPO__/scenes/pixoo/home3.js" },
+    "funkeykid": { "path": "__REPO__/scenes/pixoo/funkeykid.js" },
+    "health": { "path": "__REPO__/scenes/pixoo/health.js" }
+  },
+  "mqtt": {
+    "baseTopic": "home/hsb1/pixdcon",
+    "statusBaseTopic": "home/hsb1/pixdcon",
+    "settingsBaseTopic": "pixdcon",
+    "discoveryPrefix": "homeassistant"
+  },
+  "output": { "default": "drive" }
+}

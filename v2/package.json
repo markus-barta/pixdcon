@@ -1,0 +1,35 @@
+{
+  "name": "pixdcon2",
+  "version": "0.0.0",
+  "private": true,
+  "description": "pixdcon 2.0: controller for Pixoo64 and Ulanzi/AWTRIX pixel displays (rewrite of pixdcon v1, same repo, image pixdcon2)",
+  "type": "module",
+  "main": "src/main.js",
+  "license": "AGPL-3.0",
+  "author": "Markus Barta",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "//": "Developer notes: PAIMOS knowledge 'guideline pixdcon-2-interfaces' (project PIXD). dev = v2 against fake devices and an in-memory MQTT broker, restarted on every change under src/. test = the three approved kinds only (golden frames, API/MQTT contract, fake-device smoke), together under 60 s. dev and test preload dev/net-guard.js: only loopback is reachable, so no real display, broker or host is ever contacted. The release version is ../version.json (inspr-calver-3), not the version field above.",
+    "start": "node src/main.js",
+    "dev": "node dev/dev-runner.js",
+    "dev:once": "node dev/dev-runner.js --once",
+    "test": "node --import ./dev/net-guard.js --test \"test/golden/*.test.js\" \"test/contract/*.test.js\" \"test/smoke/*.test.js\"",
+    "test:golden": "node --import ./dev/net-guard.js --test \"test/golden/*.test.js\"",
+    "test:contract": "node --import ./dev/net-guard.js --test \"test/contract/*.test.js\"",
+    "test:smoke": "node --import ./dev/net-guard.js --test \"test/smoke/*.test.js\"",
+    "golden:update": "UPDATE_GOLDEN=1 node --import ./dev/net-guard.js --test \"test/golden/*.test.js\"",
+    "typecheck": "tsc -p jsconfig.json",
+    "lint": "cd .. && npx --no-install eslint v2"
+  },
+  "dependencies": {
+    "mqtt": "^5.15.0",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "aedes": "^1.2.0",
+    "typescript": "^7.0.2"
+  }
+}

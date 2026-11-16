@@ -1,0 +1,196 @@
+/*
+ * pixdcon 2 UI styles. Tokens, type and spacing are the approved spec
+ * (PIXD-81, pixd-spec-v1-approved-2026-11-16.md, sections 2 to 6). Colour
+ * carries state only: green online, amber stale or warning, red offline or
+ * error, violet "a value from an outside MQTT client is in effect", blue for
+ * your own actions. One background, hairlines between rows, no cards, no
+ * gradients, no glows. Owner: UI worker.
+ */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --raised: #ffffff;
+  --tint: #f1f3f5;
+  --tint-2: #e9ecef;
+  --line: #e3e6ea;
+  --line-strong: #c5cbd3;
+  --ctl-line: #8b949e;
+  --text: #1b1f24;
+  --text-2: #4f5862;
+  --text-3: #68717c;
+  --accent: #1d5fbf;
+  --accent-hover: #174f9f;
+  --accent-text: #ffffff;
+  --accent-tint: #eaf1fb;
+  --ok: #1a7f37;
+  --warn: #8f5d00;
+  --bad: #c42b2b;
+  --bad-tint: #fcecec;
+  --ovr: #6b3fc4;
+  --ovr-tint: #f3effb;
+  --code-bg: #f6f8fa;
+  --pv-line: #000000;
+  --font:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --mono:
+    ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14171a;
+    --surface: #14171a;
+    --raised: #1b1f24;
+    --tint: #1d2126;
+    --tint-2: #252a30;
+    --line: #2a2f36;
+    --line-strong: #3c434c;
+    --ctl-line: #636c76;
+    --text: #e6e9ed;
+    --text-2: #aab2bc;
+    --text-3: #8d96a1;
+    --accent: #79aefa;
+    --accent-hover: #9cc3fc;
+    --accent-text: #0c1522;
+    --accent-tint: #1a2638;
+    --ok: #4cc263;
+    --warn: #dca236;
+    --bad: #ff6b61;
+    --bad-tint: #2e1918;
+    --ovr: #b79cf5;
+    --ovr-tint: #231d33;
+    --code-bg: #101316;
+    --pv-line: #2a2f36;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #14171a;
+  --surface: #14171a;
+  --raised: #1b1f24;
+  --tint: #1d2126;
+  --tint-2: #252a30;
+  --line: #2a2f36;
+  --line-strong: #3c434c;
+  --ctl-line: #636c76;
+  --text: #e6e9ed;
+  --text-2: #aab2bc;
+  --text-3: #8d96a1;
+  --accent: #79aefa;
+  --accent-hover: #9cc3fc;
+  --accent-text: #0c1522;
+  --accent-tint: #1a2638;
+  --ok: #4cc263;
+  --warn: #dca236;
+  --bad: #ff6b61;
+  --bad-tint: #2e1918;
+  --ovr: #b79cf5;
+  --ovr-tint: #231d33;
+  --code-bg: #101316;
+  --pv-line: #2a2f36;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 14px/20px var(--font);
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  height: 52px;
+  padding: 0 32px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar .brand {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.topbar .version {
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: 12.5px/20px var(--mono);
+  cursor: pointer;
+}
+
+.topbar nav {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.topbar nav a {
+  padding: 6px 12px;
+  border-radius: 6px;
+  color: var(--text-2);
+  text-decoration: none;
+}
+
+.topbar nav a[aria-current="page"] {
+  background: var(--tint-2);
+  color: var(--text);
+}
+
+.topbar .mqtt {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+main {
+  max-width: 1376px;
+  margin: 0 auto;
+  padding: 24px 32px 48px;
+}
+
+.title-line {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+
+h1 {
+  margin: 0;
+  font: 600 20px/28px var(--font);
+}
+
+.title-line .status {
+  margin: 0;
+  color: var(--text-2);
+}
+
+@media (max-width: 760px) {
+  .topbar,
+  main {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
