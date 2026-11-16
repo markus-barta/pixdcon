@@ -180,7 +180,7 @@ for (const wildcard of [false, true]) {
     service.connected = true;
     const received = [];
     const subscribe = (owner) => {
-      const callback = (...args) => received.push([owner, args.at(-1)]);
+      const callback = (...args) => received.push([owner, args[wildcard ? 1 : 0]]);
       if (wildcard) service.subscribeWildcard(owner, "home/+", callback);
       else service.subscribe(owner, "home/state", callback);
     };

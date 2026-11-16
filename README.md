@@ -184,7 +184,17 @@ All pixdcon topics are prefixed with `home/hsb1/pixdcon/`:
 | `.../config/effective`        | publish retained   | Merged effective config                                                           |
 | `.../<device>/telemetry`      | publish retained   | Per-type snapshot every 60s. Ulanzi: `/api/stats` payload (uptime, bat_raw, wifi_signal, ram, temp, …). Pixoo: `{reachable, brightness, cur_clock_id, ip_address, ts}`. |
 | `.../<device>/mode`           | subscribe retained | `play` / `pause` / `stop` per device                                              |
-| `.../overlay/device/+/scenes` | subscribe          | Override scenes list per device                                                   |
+| `.../overlay/device/+/scene`  | subscribe retained | Override the scene for one device                                                 |
+
+A UI scene choice persists to `config.json` and clears that device's retained scene
+overlay, including its scene field in a blob overlay. Other devices and overlay
+fields stay intact. While MQTT is offline, the local scene overlay is cleared at
+once and the retained clear waits for reconnect. See `DEVGUIDE.md` for retry and
+restart behavior.
+
+Both device Save buttons merge only edited fields into the latest file config;
+they preserve disabled devices and do not copy overlay values into the file.
+Cards refresh current scenes by device name from `/api/status` after hot reloads.
 
 Scene settings overlay topics per device + scene:
 

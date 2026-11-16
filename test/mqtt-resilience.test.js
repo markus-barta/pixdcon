@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { Duplex, Readable } from "node:stream";
 import net from "node:net";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import mqttPacket from "mqtt-packet";
@@ -26,6 +29,7 @@ async function waitFor(check) {
 function broker(t, { online = true, retained = {}, rejectSubscription = false } = {}) {
   const state = { online, retained, rejectSubscription, streams: [], packets: [] };
   t.mock.method(net, "createConnection", () => {
+    const subscriptions = new Set();
     const parser = mqttPacket.parser();
     const stream = new Duplex({
       read() {},
@@ -45,6 +49,7 @@ function broker(t, { online = true, retained = {}, rejectSubscription = false } 
           stream.destroy(error);
         });
       } else if (packet.cmd === "subscribe") {
+        for (const sub of packet.subscriptions) subscriptions.add(sub.topic);
         send({ cmd: "suback", messageId: packet.messageId,
           granted: packet.subscriptions.map(() => state.rejectSubscription ? 128 : 1) });
         if (!state.rejectSubscription) {
@@ -55,11 +60,23 @@ function broker(t, { online = true, retained = {}, rejectSubscription = false } 
           }
         }
       } else if (packet.cmd === "unsubscribe") {
+        for (const topic of packet.unsubscriptions) subscriptions.delete(topic);
         send({ cmd: "unsuback", messageId: packet.messageId });
+      } else if (packet.cmd === "publish") {
+        if (packet.retain) {
+          if (packet.payload.length) state.retained[packet.topic] = packet.payload.toString();
+          else delete state.retained[packet.topic];
+        }
+        if ([...subscriptions].some((pattern) => state.service._topicMatches(pattern, packet.topic))) {
+          send({ cmd: "publish", topic: packet.topic, payload: packet.payload, qos: 0, retain: false });
+        }
+        if (packet.qos === 1 && packet.topic !== "home/pending") {
+          send({ cmd: "puback", messageId: packet.messageId });
+        }
       } else if (packet.cmd === "disconnect") {
         queueMicrotask(() => stream.destroy());
       }
-      // Deliberately leave QoS publishes unacknowledged for the shutdown test.
+      // Deliberately leave home/pending unacknowledged for the shutdown test.
     });
     state.streams.push(stream);
     return stream;
@@ -69,6 +86,86 @@ function broker(t, { online = true, retained = {}, rejectSubscription = false } 
   t.after(() => service.disconnect());
   return state;
 }
+
+test("offline UI scene choice survives reconnect, clears retained state and preserves fresh blob siblings", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pixd75-mqtt-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = join(root, "config.json");
+  const config = {
+    devices: [
+      { name: "panel", type: "pixoo", ip: "file-ip", scene: "home" },
+      { name: "other", type: "pixoo", ip: "other-ip", scene: "home" },
+    ],
+    scenes: { home: { path: "./home.js" }, funkeykid: { path: "./funkeykid.js" } },
+  };
+  await writeFile(configPath, JSON.stringify(config));
+  const sceneTopic = "base/overlay/device/panel/scene";
+  const otherTopic = "base/overlay/device/other/scene";
+  const blobTopic = "base/overlay/blob";
+  const blob = { devices: [{ name: "panel", scene: "builtin:clock", ip: "blob-ip" },
+    { name: "other", scene: "home", comment: "before disconnect" }], scenes: { home: { path: "./blob-home.js" } } };
+  const state = broker(t, { retained: {
+    [sceneTopic]: "builtin:clock", [otherTopic]: "builtin:clock", [blobTopic]: JSON.stringify(blob),
+  } });
+  const service = state.service;
+  service.baseTopic = "base";
+  await service.connect();
+  const overlay = new ConfigOverlay(service, "base", () => {}, { logger, settleMs: 1, debounceMs: 1 });
+  t.after(() => overlay.unsubscribe());
+  await overlay.subscribe();
+  await waitFor(() => overlay.merge(config).devices[0].scene === "builtin:clock");
+  service.client.options.reconnectPeriod = 60_000;
+  const closed = once(service.client, "close");
+  state.streams.at(-1).destroy();
+  await closed;
+  assert.equal(service.connected, false);
+  let effective = overlay.merge(config);
+  const server = new WebServer({ configPath, configOverlay: overlay, mqttService: service, logger,
+    getEffectiveConfig: () => effective,
+    getRenderLoops: () => effective.devices.map((device) => ({ device, loop: { setScene() {} } })),
+  });
+  const req = Readable.from([Buffer.from(JSON.stringify({ deviceName: "panel", scene: "funkeykid" }))]);
+  req.method = "POST";
+  req.url = "/api/scene";
+  const res = { writeHead(status) { this.status = status; }, end() {} };
+  await server._handle(req, res);
+  assert.equal(res.status, 200);
+  const saved = JSON.parse(await readFile(configPath, "utf8"));
+  effective = overlay.merge(saved);
+  assert.equal(effective.devices[0].scene, "funkeykid");
+  assert.equal(overlay.getOverlay().blob.devices[0].scene, undefined);
+  assert.equal(state.retained[sceneTopic], "builtin:clock"); // offline: clear is pending
+  // Another publisher changes unrelated fields while this daemon is offline.
+  blob.devices[0].ip = "new-blob-ip";
+  blob.devices[1].comment = "changed while offline";
+  state.retained[blobTopic] = JSON.stringify(blob);
+  service.client.reconnect();
+  await waitFor(() => service.connected && !state.retained[sceneTopic] &&
+    !JSON.parse(state.retained[blobTopic]).devices[0].scene && !overlay._pendingSceneClears.size);
+  const retainedBlob = JSON.parse(state.retained[blobTopic]);
+  const expectedBlob = JSON.parse(JSON.stringify(blob));
+  delete expectedBlob.devices[0].scene;
+  assert.deepEqual(retainedBlob, expectedBlob);
+  assert.equal(state.retained[otherTopic], "builtin:clock");
+  assert.equal(overlay.merge(saved).devices[0].scene, "funkeykid");
+  assert.equal(overlay.merge(saved).devices[0].ip, "new-blob-ip");
+  assert.ok(state.packets.some((p) => p.cmd === "publish" && p.topic === sceneTopic && p.retain && p.qos === 1 && p.payload.length === 0));
+  assert.ok(!state.packets.some((p) => p.cmd === "publish" && p.topic === otherTopic));
+  // Once the empty echo has arrived, a newer HA scene written while offline
+  // must survive the next retained replay rather than being cleared again.
+  assert.equal(overlay._clearedDeviceScenes.has("panel"), false);
+  const closedAgain = once(service.client, "close");
+  state.streams.at(-1).destroy();
+  await closedAgain;
+  state.retained[sceneTopic] = "builtin:clock";
+  service.client.reconnect();
+  await waitFor(() => service.connected && overlay.merge(saved).devices[0].scene === "builtin:clock");
+  assert.equal(overlay.merge(saved).devices[0].scene, "builtin:clock");
+  assert.equal(state.retained[sceneTopic], "builtin:clock");
+  // A later live MQTT choice remains supported.
+  service.client.emit("message", sceneTopic, Buffer.from("home"), { retain: false });
+  assert.equal(overlay.merge(saved).devices[0].scene, "home");
+});
 
 async function status(service) {
   const server = new WebServer({ mqttService: service, logger });
@@ -137,7 +234,7 @@ for (const wildcard of [false, true]) {
     // Even subscriptions created before connect() must survive.
     const received = [];
     const subscribe = (owner) => {
-      const callback = (...args) => received.push([owner, args.at(-1)]);
+      const callback = (...args) => received.push([owner, args[wildcard ? 1 : 0]]);
       if (wildcard) service.subscribeWildcard(owner, "home/+", callback);
       else service.subscribe(owner, "home/state", callback);
     };
