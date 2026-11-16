@@ -499,6 +499,13 @@ async function main() {
   // Web UI
   webServer = new WebServer({
     configPath,
+    configOverlay,
+    runConfigUpdate: queueLifecycle,
+    onConfigPersisted: (config) => {
+      // MQTT may echo the scene clear before the file watcher's debounce.
+      // Any intervening overlay reload must already use the saved choice.
+      baseConfig = new ConfigLoader(configPath).parse(JSON.stringify(config));
+    },
     getEffectiveConfig: () => effectiveConfig,
     getSceneMetadata: () => sceneMetadata,
     getSceneSettingsState: () => sceneSettingsService?.getUiState() || {},

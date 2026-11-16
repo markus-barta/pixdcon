@@ -215,6 +215,46 @@ render() returns null     # scene is done → advance to next scene
 - Live overlay topics stay per-device and per-scene: `pixdcon/<device>/<scene>/settings/<key>`
 - Web UI can edit persisted settings, set/clear overlay values, and clone/detach scenes into `generated-scenes/`
 
+### Device saves and scene choices (PIXD-75)
+
+- `POST /api/scene {deviceName, scene}` saves the scene and clears only that
+  device's structural scene overlay: the retained `overlay/device/<name>/scene`
+  topic, the blob device's `scene` (or legacy `scenes`) field, and local overlay
+  state. Scene-setting overlays remain unchanged. One `[Overlay] cleared scene
+  overlay for <device> (UI choice <scene>)` line identifies the operation.
+- Both device Save buttons use `POST /api/device/save {deviceName, patch}`.
+  Allowed patch fields: `displayName`, `comment`, `ip`, `scene`, `enabled`, and
+  `preview` (`showGrid`, `pollMs`). The browser compares edits with its last
+  effective device baseline; unchanged overlay values are omitted. The server
+  merges into the latest raw file, including partial preview fields, validates,
+  then saves. Hidden/disabled devices and unrelated file fields are preserved.
+  A scene patch uses the same overlay clear as `/api/scene`. Devices absent from
+  the file return 404; a missing file is never recreated from effective config.
+- File writes and scene clears share the daemon's lifecycle queue with reloads.
+  The base config updates before clear echoes can trigger an overlay reload.
+  Writes stage a sibling temp file and rename it, preserving file permissions.
+  A single-file Docker bind mount rejects rename with `EBUSY`; only that error
+  falls back to an in-place write of the validated content. This fallback is
+  serialized but is not crash-atomic. Mount the containing directory to allow
+  atomic replacements. The config watcher re-arms after replacement.
+- Offline scene choices remove local overlay fields immediately. Granular
+  retained clears queue in memory, use QoS 1, retry each second while connected,
+  and survive reconnect until acknowledged. Late retained scene packets remain
+  suppressed for devices chosen in this process. A later live MQTT scene
+  command can intentionally establish a new overlay. On reconnect a blob is
+  read from the fresh retained replay, stripped of only those scene fields,
+  then republished; an offline whole-blob snapshot is never replayed. Blob
+  writes use QoS 0 with local send-error retries, so mqtt.js cannot resend an
+  old whole blob after reconnect. Pending clears and suppression are not
+  durable across daemon restarts: restarting before the broker clears finish
+  can expose the old retained overlay again. The file choice remains saved.
+- `GET /api/status` includes `deviceScenes`, keyed by device name. One-second
+  status polling updates each card's scene and its Alpine `x-model` binding;
+  responses predating a UI choice and missing devices during reload are
+  ignored for scene updates. Array order never identifies a device.
+- FunKeyKid renders its color-cycling `fun` / `key` / `kid` start screen without
+  receiving any MQTT messages.
+
 **Example cadences:**
 | Scene | Return value | Effect |
 |-------|-------------|--------|
@@ -562,7 +602,7 @@ All pixdcon topics are under `home/hsb1/pixdcon/`:
 | `…/state`                   | publish (retained)   | Running state + per-device frame counts |
 | `…/config/effective`        | publish (retained)   | Merged effective config                 |
 | `…/<device>/mode`           | subscribe (retained) | `play` / `pause` / `stop` per device    |
-| `…/overlay/device/+/scenes` | subscribe            | Override scenes list per device         |
+| `…/overlay/device/+/scene`  | subscribe            | Override the scene for one device       |
 | `…/overlay/device/+/ip`     | subscribe            | Override device IP                      |
 | `…/overlay/blob`            | subscribe            | Full/partial config JSON overlay        |
 

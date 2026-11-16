@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { Readable } from "node:stream";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
@@ -12,6 +14,7 @@ import { ConfigLoader } from "../lib/config-loader.js";
 import { ConfigOverlay } from "../lib/config-overlay.js";
 import { RenderLoop } from "../src/render-loop.js";
 import { SceneSettingsService } from "../lib/scene-settings-service.js";
+import { WebServer } from "../lib/web-server.js";
 
 const { createContext, SourceTextModule, SyntheticModule } = vm;
 
@@ -33,7 +36,7 @@ async function harness(options = {}) {
   const events = [];
   const exited = deferred();
   const state = { events, exited, inFrame: false, initializations: 0 };
-  const config = {
+  const config = options.config || {
     devices: [{ name: "panel", type: "pixoo", ip: "one", scene: options.scene || "clock" }],
     scenes: { clock: { path: "./clock.js" } },
   };
@@ -51,7 +54,7 @@ async function harness(options = {}) {
     async load() { return this.parse(JSON.stringify(config)); }
   }
   class FakeMqtt {
-    constructor() { this.connected = true; this.baseTopic = "base"; state.mqtt = this; }
+    constructor() { this.connected = true; this.baseTopic = "base"; this.client = new EventEmitter(); state.mqtt = this; }
     async connect() { if (options.mqttFails) throw new Error("offline"); }
     async disconnect() { events.push("disconnect"); }
     startPeriodicPublish() {}
@@ -62,9 +65,19 @@ async function harness(options = {}) {
     subscribeDevice() {}
     unsubscribeDevice() {}
     recordError() {}
-    subscribeWildcard(namespace, _topic, callback) {
+    publish(topic, payload, _retain, onComplete) {
+      events.push(`publish:${topic}:${payload}`);
+      if (topic === "overlay/device/panel/scene") state.sceneOverlayMessage?.(`base/${topic}`, payload, { retain: false });
+      onComplete?.();
+      return true;
+    }
+    subscribeWildcard(namespace, topic, callback) {
       if (namespace === "_scene_settings_service") {
         callback("pixdcon/panel/clock/settings/speed", "42");
+      }
+      if (namespace === "_config_overlay" && topic.endsWith("/device/+/scene")) {
+        state.sceneOverlayMessage = callback;
+        if (options.overlayScene) callback("base/overlay/device/panel/scene", options.overlayScene, { retain: true });
       }
     }
     unsubscribeWildcard() {}
@@ -98,6 +111,7 @@ async function harness(options = {}) {
       if (this.cache.has(key)) return this.cache.get(key);
       const scene = {
         async render() {
+          events.push(`render:${name}:${device}`);
           state.inFrame = true;
           if (options.frameGate) await options.frameGate.promise;
           state.inFrame = false;
@@ -184,9 +198,41 @@ if (typeof SourceTextModule !== "function") {
     const { stdout } = await promisify(execFile)(process.execPath, [
       "--experimental-vm-modules", "--test", url.fileURLToPath(import.meta.url),
     ], { timeout: 15_000, env: childEnv });
-    assert.match(stdout, /(?:tests 6|# tests 6)/);
+    assert.match(stdout, /(?:tests 7|# tests 7)/);
   });
 } else {
+  test("UI scene persistence shares the lifecycle queue and precedes the MQTT-clear echo reload", async (t) => {
+    const root = await mkdtemp(path.join(tmpdir(), "pixd75-lifecycle-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const configPath = path.join(root, "config.json");
+    const config = {
+      devices: [{ name: "panel", type: "pixoo", ip: "one", scene: "clock" }],
+      scenes: { clock: { path: "./clock.js" }, funkeykid: { path: "./funkeykid.js" } },
+    };
+    await writeFile(configPath, JSON.stringify(config));
+    const state = await harness({ config, overlayScene: "builtin:clock" });
+    t.after(async () => {
+      state.proc.emit("SIGTERM");
+      await waitFor(() => state.events.includes("exit:0"));
+    });
+    await waitFor(() => state.ready);
+    assert.equal(state.web.getRenderLoops()[0].loop.scene, "builtin:clock");
+    const server = new WebServer({ ...state.web, configPath });
+    const req = Readable.from([Buffer.from(JSON.stringify({ deviceName: "panel", scene: "funkeykid" }))]);
+    req.method = "POST";
+    req.url = "/api/scene";
+    const res = { writeHead(status) { this.status = status; }, end() {} };
+    await server._handle(req, res);
+    assert.equal(res.status, 200);
+    // The MQTT echo debounces at 300 ms; the file watcher would fire at 500.
+    // Verify this earlier reload already sees the new base file scene.
+    await waitFor(() => state.events.filter((e) => e === "init:one").length > 1);
+    assert.equal(state.web.getEffectiveConfig().devices[0].scene, "funkeykid");
+    await state.reload(await readFile(configPath, "utf8"));
+    assert.equal(state.web.getRenderLoops()[0].loop.scene, "funkeykid");
+    await waitFor(() => state.events.includes("render:funkeykid:panel"));
+  });
+
   test("startup applies retained settings after metadata and shutdown destroys scenes", async () => {
     const state = await harness();
     await waitFor(() => state.ready);

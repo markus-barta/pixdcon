@@ -44,7 +44,7 @@ test("every JSON POST route returns 400 for malformed JSON and non-object bodies
   const { configPath, server } = await fixture();
   const original = await readFile(configPath, "utf-8");
   for (const path of [
-    "/api/config/file", "/api/device", "/api/scene-settings/save",
+    "/api/config/file", "/api/device", "/api/device/save", "/api/scene-settings/save",
     "/api/scene-settings/overlay", "/api/scene-settings/overlay/clear",
     "/api/scene/clone", "/api/overlay", "/api/overlay/clear", "/api/scene",
     "/api/mode", "/api/brightness",
@@ -125,7 +125,7 @@ test("invalid config cannot overwrite the working file, but a valid save repairs
   assert.deepEqual(JSON.parse(await readFile(configPath, "utf-8")), config);
 });
 
-test("concurrent device additions use latest persisted state and preserve the watched inode", async () => {
+test("concurrent device additions use latest persisted state and replace the file atomically", async () => {
   const { configPath, server } = await fixture();
   const before = await stat(configPath);
   const responses = await Promise.all(Array.from({ length: 8 }, (_, i) =>
@@ -135,7 +135,8 @@ test("concurrent device additions use latest persisted state and preserve the wa
   const saved = JSON.parse(await readFile(configPath, "utf-8"));
   assert.equal(saved.devices.length, 9);
   assert.equal(new Set(saved.devices.map((d) => d.name)).size, 9);
-  assert.equal((await stat(configPath)).ino, before.ino);
+  assert.notEqual((await stat(configPath)).ino, before.ino);
+  assert.equal((await stat(configPath)).mode, before.mode);
   const collisions = await Promise.all([
     request(server, "/api/device", JSON.stringify({ name: "same", type: "pixoo", ip: "127.0.0.1" })),
     request(server, "/api/device", JSON.stringify({ name: "same", type: "pixoo", ip: "127.0.0.1" })),

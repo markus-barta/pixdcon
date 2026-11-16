@@ -93,6 +93,21 @@ test("home normal-input pixels, brightness and cadence match the original scene"
   }
 });
 
+test("funkeykid renders its start screen without any MQTT input", async () => {
+  const scene = Object.create(kid);
+  const ctx = context();
+  await scene.init(ctx);
+  const device = driver();
+  const labels = [];
+  const drawText = device.drawTextRgbaAligned.bind(device);
+  device.drawTextRgbaAligned = async (text, ...args) => { labels.push(text); await drawText(text, ...args); };
+  assert.equal(await scene.render(device), 100);
+  assert.deepEqual(labels, ["fun", "key", "kid"]);
+  assert.ok(device.buf.some((v) => v > 0));
+  assert.deepEqual(device.brightness, [100]);
+  await scene.destroy(ctx);
+});
+
 test("funkeykid letter, image and normal volume pixels match the original scene", async (t) => {
   clock(t);
   const scene = Object.create(kid);
