@@ -267,83 +267,56 @@
       "test": "test/contract/http-api.test.js: scene copy:"
     },
     {
-      "site": "src/mqtt/status-publisher.js:268",
+      "site": "src/mqtt/status-publisher.js:279",
       "id": "listener:source.on#1",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
-      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "fence": "current payload built at send time; meaningful-content cache updated only after success and invalidated before uncertain sends; availability ledger recorded before publish; stop waits for pending sends",
       "test": "test/contract/mqtt-publications.test.js: status publisher order:",
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:275",
+      "site": "src/mqtt/status-publisher.js:286",
       "id": "timer:this.deps.clock.every#1",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
-      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "fence": "current payload built at send time; meaningful-content cache updated only after success and invalidated before uncertain sends; availability ledger recorded before publish; stop waits for pending sends",
       "test": "test/contract/mqtt-publications.test.js: status publisher order:",
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:411",
+      "site": "src/mqtt/status-publisher.js:424",
       "id": "then:this.#flush().catch#1",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
-      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "fence": "current payload built at send time; meaningful-content cache updated only after success and invalidated before uncertain sends; availability ledger recorded before publish; stop waits for pending sends",
       "test": "test/contract/mqtt-publications.test.js: status publisher order:",
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:414",
+      "site": "src/mqtt/status-publisher.js:427",
       "id": "then:this.#flush().catch().finally#1",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
-      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "fence": "current payload built at send time; meaningful-content cache updated only after success and invalidated before uncertain sends; availability ledger recorded before publish; stop waits for pending sends",
       "test": "test/contract/mqtt-publications.test.js: status publisher order:",
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:451",
+      "site": "src/mqtt/status-publisher.js:525",
+      "id": "work:this.deps.mqtt.publish#1",
+      "input": "current store state, gateway connect, or republish tick",
+      "metadata": "current output and measured health; availability send number",
+      "fence": "current payload built at send time; meaningful-content cache updated only after success and invalidated before uncertain sends; availability ledger recorded before publish; stop waits for pending sends",
+      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
+      "was": "StatusPublisher.start"
+    },
+    {
+      "site": "src/mqtt/status-publisher.js:538",
       "id": "work:mqtt.publish#1",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
-      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
-      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
-      "was": "StatusPublisher.start"
-    },
-    {
-      "site": "src/mqtt/status-publisher.js:458",
-      "id": "work:mqtt.publish#2",
-      "input": "current store state, gateway connect, or republish tick",
-      "metadata": "current output and measured health; availability send number",
-      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
-      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
-      "was": "StatusPublisher.start"
-    },
-    {
-      "site": "src/mqtt/status-publisher.js:465",
-      "id": "work:mqtt.publish#3",
-      "input": "current store state, gateway connect, or republish tick",
-      "metadata": "current output and measured health; availability send number",
-      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
-      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
-      "was": "StatusPublisher.start"
-    },
-    {
-      "site": "src/mqtt/status-publisher.js:477",
-      "id": "work:mqtt.publish#4",
-      "input": "current store state, gateway connect, or republish tick",
-      "metadata": "current output and measured health; availability send number",
-      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
-      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
-      "was": "StatusPublisher.start"
-    },
-    {
-      "site": "src/mqtt/status-publisher.js:490",
-      "id": "work:mqtt.publish#5",
-      "input": "current store state, gateway connect, or republish tick",
-      "metadata": "current output and measured health; availability send number",
-      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "fence": "current payload built at send time; meaningful-content cache updated only after success and invalidated before uncertain sends; availability ledger recorded before publish; stop waits for pending sends",
       "test": "test/contract/mqtt-publications.test.js: status publisher order:",
       "was": "StatusPublisher.start"
     }

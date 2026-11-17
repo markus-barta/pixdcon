@@ -181,7 +181,7 @@ test("health and state payloads keep the v1 fields; the scene of a device is pub
     f.states.get("U").health.lastContactAt,
   );
   const changed = f.states.get("P");
-  changed.effective.scene = "radio";
+  changed.effective.scene = "new-scene";
   changed.effective.frameCount = 103;
   f.state.emit("device", changed);
   await f.publisher.pending;
@@ -190,7 +190,7 @@ test("health and state payloads keep the v1 fields; the scene of a device is pub
   assert.equal(state.running, true);
   assert.equal(
     state.devices.find((/** @type {any} */ d) => d.name === "P").scene,
-    "radio",
+    "new-scene",
     "scene toggle consumer sees the measured scene immediately",
   );
   assert.equal(
@@ -222,7 +222,10 @@ test("health and state payloads keep the v1 fields; the scene of a device is pub
     f.broker
       .published()
       .filter((m) => m.clientId === "status-writer")
-      .every((m) => m.retain && m.qos === 1),
+      .every(
+        (m) =>
+          m.retain && m.qos === (m.topic.endsWith("/availability") ? 1 : 0),
+      ),
   );
 });
 test("last will: the health topic says offline when the process dies", async (t) => {
@@ -381,7 +384,7 @@ test("per-device availability: nothing is published for a device in shadow or he
 test("availability retirement on the wire: a device removed from config.json and a device changed from drive to shadow each get one retained offline while the controller health stays ok; an offline that could not be confirmed is sent again after the reconnect; an online whose acknowledgement was lost with the connection (the broker stored it) is still taken back when the display is no longer driven; a clean stop retires every driven display", async (t) => {
   const f = await publications(t);
   f.gateway.outcome = "offline"; // the broker stores it, but the acknowledgement is lost
-  f.state.emit("device", f.states.get("P"));
+  f.gateway.emit("connect", { connection: 2 });
   await f.publisher.pending;
   assert.equal(f.broker.retained()[f.topics.availability("P")], "online");
   assert.equal(owesOffline(f.publisher.ledger, "P"), true);
@@ -510,6 +513,8 @@ async function publications(t, options = {}) {
   });
   await reader.subscribeAsync("#");
   const gateway = Object.assign(new EventEmitter(), {
+    calls:
+      /** @type {Array<{topic: string, payload: any, options: any}>} */ ([]),
     connected: true,
     outcome: "confirmed",
     hold: /** @type {Promise<void>|null} */ (null),
@@ -519,14 +524,27 @@ async function publications(t, options = {}) {
       /** @type {any} */ payload,
       /** @type {any} */ options,
     ) {
+      gateway.calls.push({ topic, payload, options });
       if (!gateway.connected)
         return { ok: false, outcome: "offline", connection: 1, error: null };
       const outcome = gateway.outcome;
-      await writer.publishAsync(
-        topic,
-        typeof payload === "string" ? payload : JSON.stringify(payload),
-        options,
-      );
+      const wire =
+        typeof payload === "string" ? payload : JSON.stringify(payload);
+      // QoS 0 confirms handoff, not broker delivery. Observe the outside
+      // reader before assertions about retained wire state (no fixed sleep).
+      const observed = new Promise((resolve) => {
+        const listener = (
+          /** @type {string} */ gotTopic,
+          /** @type {Buffer} */ gotPayload,
+        ) => {
+          if (gotTopic !== topic || gotPayload.toString() !== wire) return;
+          reader.off("message", listener);
+          resolve(undefined);
+        };
+        reader.on("message", listener);
+      });
+      await writer.publishAsync(topic, wire, options);
+      await observed;
       if (gateway.hold && topic.endsWith("/availability")) await gateway.hold;
       return {
         ok: outcome === "confirmed",
@@ -638,7 +656,7 @@ test("status publisher: an in-flight online is owed before its acknowledgement; 
         resolve(undefined);
     }),
   );
-  f.state.emit("device", f.states.get("P"));
+  f.gateway.emit("connect", { connection: 2 });
   await observed;
   assert.equal(owesOffline(f.publisher.ledger, "P"), true);
   const u = f.states.get("U");
@@ -696,5 +714,86 @@ test("status publisher: shadow-only output never claims v1 controller topics; a 
   assert.equal(
     isolated.broker.retained()[isolated.topics.availability("S")],
     undefined,
+  );
+});
+
+test("status publisher: 100 frame-only changes publish nothing; scene changes publish state once; connect and 30 s republish once per topic", async (t) => {
+  const f = await publications(t);
+  const sent = () => f.gateway.calls.map((call) => call.topic);
+  f.gateway.calls.length = 0;
+  const view = f.states.get("P");
+  for (let frame = 0; frame < 100; frame++) {
+    view.effective.frameCount++;
+    view.health.lastFrameAt = new Date(f.clock.now() + frame).toISOString();
+    view.health.lastContactAt = view.health.lastFrameAt;
+    view.health.since = view.health.lastFrameAt;
+    f.state.emit("device", view);
+    await f.publisher.pending;
+  }
+  assert.deepEqual(
+    sent(),
+    [],
+    "frame and freshness counters do not flood retained topics",
+  );
+  view.effective.scene = "changed";
+  f.state.emit("device", view);
+  await f.publisher.pending;
+  assert.deepEqual(sent(), [f.topics.state]);
+  f.gateway.calls.length = 0;
+  await f.clock.advance(29999);
+  assert.deepEqual(sent(), []);
+  await f.clock.advance(1);
+  await f.publisher.pending;
+  const batch = [
+    f.topics.health,
+    f.topics.state,
+    f.topics.config,
+    f.topics.configEffective,
+    f.topics.availability("U"),
+    f.topics.availability("P"),
+  ];
+  assert.deepEqual(sent(), batch, "one refresh per topic at 30 s");
+  f.gateway.calls.length = 0;
+  f.gateway.emit("connect", { connection: 2 });
+  await f.publisher.pending;
+  assert.deepEqual(
+    sent(),
+    batch,
+    "reconnect republishes unchanged retained values",
+  );
+  f.gateway.calls.length = 0;
+  view.health.state = "offline";
+  f.state.emit("device", view);
+  await f.publisher.pending;
+  assert.deepEqual(sent(), [f.topics.health, f.topics.availability("P")]);
+  f.gateway.calls.length = 0;
+  f.state.emit("device", view);
+  await f.publisher.pending;
+  assert.deepEqual(sent(), []);
+});
+
+test("status publisher: uncertain sends invalidate deduplication; recovery republishes earlier values", async (t) => {
+  const f = await publications(t);
+  const p = f.states.get("P");
+  f.gateway.outcome = "timeout"; // Broker stores the attempt; its acknowledgement is lost.
+  p.effective.scene = "uncertain-scene";
+  p.health.state = "offline";
+  f.state.emit("device", p);
+  await f.publisher.pending;
+  assert.equal(f.broker.retained()[f.topics.availability("P")], "offline");
+  f.gateway.outcome = "confirmed";
+  f.gateway.calls.length = 0;
+  p.effective.scene = "radio";
+  p.health.state = "online";
+  f.state.emit("device", p);
+  await f.publisher.pending;
+  assert.deepEqual(
+    f.gateway.calls.map((call) => call.topic),
+    [f.topics.health, f.topics.state, f.topics.availability("P")],
+  );
+  assert.equal(f.broker.retained()[f.topics.availability("P")], "online");
+  assert.equal(
+    JSON.parse(f.broker.retained()[f.topics.state]).devices[1].scene,
+    "radio",
   );
 });

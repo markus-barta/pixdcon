@@ -66,6 +66,12 @@
  *    drives nothing (edge lane, shadow) must not use v1's status base.
  *  - Nothing is rebuilt here: device entries come from the runtime config,
  *    the v1-shaped running config from the state store.
+ *  - Controller health/state/config publications use QoS 0, as v1 does.
+ *    The gateway's stored last will keeps its QoS 1 contract. Per-device
+ *    availability uses QoS 1: retirement needs broker
+ *    acknowledgements. Retained payloads publish on meaningful change, on
+ *    connect and every 30 s. Frame counters and freshness timestamps do not
+ *    trigger publishes; the periodic refresh carries their latest values.
  *
  * Owner: API + live channel worker. The last will below is finished code, so
  * the gateway (core/state worker) does not depend on this file being built.
@@ -243,6 +249,11 @@ export class StatusPublisher {
     this.running = false;
     this.everDriven = false;
     this.dirty = false;
+    this.force = false;
+    /** @type {Map<string, string>} meaningful payload last successfully sent per controller topic */
+    this.lastSent = new Map();
+    /** @type {Map<string, "online"|"offline">} last confirmed availability per device */
+    this.lastAvailability = new Map();
     this.errorCount = 0;
     /** @type {{message: string, timestamp: string}|null} */
     this.lastError = null;
@@ -259,11 +270,11 @@ export class StatusPublisher {
     if (this.running) return;
     this.#devices(); // Fail synchronously while the runtime is still a skeleton.
     this.running = true;
-    /** @param {import("node:events").EventEmitter} source @param {string} event */
-    const follow = (source, event) => {
+    /** @param {import("node:events").EventEmitter} source @param {string} event @param {boolean} [force] */
+    const follow = (source, event, force = false) => {
       const changed = () => {
         this.#observeErrors();
-        this.#request();
+        this.#request(force);
       };
       source.on(event, changed);
       this.stops.push(() => source.off(event, changed));
@@ -271,13 +282,13 @@ export class StatusPublisher {
     for (const event of ["device", "device-added", "device-removed"])
       follow(this.deps.state, event);
     follow(this.deps.runtime, "changed");
-    follow(this.deps.mqtt, "connect");
+    follow(this.deps.mqtt, "connect", true);
     const timer = this.deps.clock.every(
-      () => this.#request(),
+      () => this.#request(true),
       this.deps.intervalMs ?? 30000,
     );
     this.stops.push(() => timer.cancel());
-    this.#request();
+    this.#request(true);
   }
 
   /** Publish running false and health "offline", retire the availability of every display that may still be "online" on the broker (planAvailability with no device driven), then stop the timers. */
@@ -286,7 +297,7 @@ export class StatusPublisher {
     this.running = false;
     for (const stop of this.stops.splice(0)) stop();
     await this.pending;
-    if (wasRunning) await this.#publish(false);
+    if (wasRunning) await this.#publish(false, true);
   }
 
   /** @returns {V1HealthPayload} */
@@ -403,9 +414,11 @@ export class StatusPublisher {
     }));
   }
 
-  #request() {
+  /** @param {boolean} [force] connect and timer refresh unchanged payloads too */
+  #request(force = false) {
     if (!this.running) return;
     this.dirty = true;
+    this.force ||= force;
     if (this.pending) return;
     this.pending = this.#flush()
       .catch((error) => {
@@ -420,15 +433,18 @@ export class StatusPublisher {
   async #flush() {
     do {
       this.dirty = false;
-      await this.#publish(true);
+      const force = this.force;
+      this.force = false;
+      await this.#publish(true, force);
     } while (this.running && this.dirty);
   }
 
   /** Every batch is built when it is sent, never from the event that woke it.
    * @param {boolean} running
+   * @param {boolean} force
    */
-  async #publish(running) {
-    const { mqtt, topics } = this.deps;
+  async #publish(running, force) {
+    const { topics } = this.deps;
     const devices = this.#devices();
     this.everDriven ||= devices.some((device) => device.driven);
     /** @type {Array<Promise<unknown>>} */
@@ -446,23 +462,22 @@ export class StatusPublisher {
           config.devices ?? []
         ).filter((device) => driven.has(device.name)),
       };
-      const options = { retain: true, qos: /** @type {const} */ (1) };
       writes.push(
-        mqtt.publish(
+        this.#controller(
           topics.health,
           /** @type {Record<string, unknown>} */ (this.buildHealth()),
-          options,
+          force,
         ),
       );
       writes.push(
-        mqtt.publish(
+        this.#controller(
           topics.state,
           /** @type {Record<string, unknown>} */ (this.buildState()),
-          options,
+          force,
         ),
       );
       writes.push(
-        mqtt.publish(
+        this.#controller(
           topics.config,
           {
             configPath: this.deps.config.options.path,
@@ -471,27 +486,64 @@ export class StatusPublisher {
               .length,
             timestamp: new Date(this.deps.clock.now()).toISOString(),
           },
-          options,
+          force,
         ),
       );
-      writes.push(mqtt.publish(topics.configEffective, effective, options));
+      writes.push(this.#controller(topics.configEffective, effective, force));
     }
     for (const item of planAvailability(this.ledger, running ? devices : [])) {
+      if (
+        !force &&
+        !item.retire &&
+        this.lastAvailability.get(item.device) === item.payload
+      )
+        continue;
       const sent = availabilitySent(this.ledger, item.device, item.payload);
-      writes.push(this.#availability(item.device, item.payload, sent));
+      writes.push(
+        this.#availability(item.device, item.payload, sent, item.retire),
+      );
     }
     await Promise.all(writes);
   }
 
-  /** @param {string} device @param {"online"|"offline"} payload @param {number} sent */
-  async #availability(device, payload, sent) {
+  /** @param {string} topic @param {Record<string, unknown>} payload @param {boolean} force */
+  async #controller(topic, payload, force) {
+    const volatile = new Set([
+      "timestamp",
+      "uptime",
+      "frameCount",
+      "lastFrameAt",
+      "since",
+      "lastSeen",
+      "lastContactAt",
+    ]);
+    const value = JSON.stringify(payload, (key, value) =>
+      volatile.has(key) ? undefined : value,
+    );
+    if (!force && this.lastSent.get(topic) === value) return;
+    this.lastSent.delete(topic); // A failed send may still have reached the broker.
+    const result = await this.deps.mqtt.publish(topic, payload, {
+      retain: true,
+      qos: 0,
+    });
+    if (result.outcome === "sent" || result.outcome === "confirmed")
+      this.lastSent.set(topic, value);
+  }
+
+  /** @param {string} device @param {"online"|"offline"} payload @param {number} sent @param {boolean} retire */
+  async #availability(device, payload, sent, retire) {
     const { mqtt, topics } = this.deps;
+    this.lastAvailability.delete(device);
     try {
       const result = await mqtt.publish(topics.availability(device), payload, {
         retain: true,
         qos: 1,
       });
       availabilityOutcome(this.ledger, device, payload, sent, result.outcome);
+      if (result.outcome === "confirmed") {
+        if (retire) this.lastAvailability.delete(device);
+        else this.lastAvailability.set(device, payload);
+      }
     } catch (error) {
       availabilityOutcome(this.ledger, device, payload, sent, "error");
       throw error;
