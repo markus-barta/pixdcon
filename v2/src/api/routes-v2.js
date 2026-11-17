@@ -30,6 +30,7 @@ import {
   keys,
   newDevice,
   object,
+  requireDrive,
   text,
 } from "./commands.js";
 import { copyScene } from "./scene-copy.js";
@@ -492,6 +493,7 @@ export function registerV2Routes(server, deps) {
       return { ended: deps.settings.endPreview(ctx.params.session).length };
     },
     "DELETE /api/v2/devices/:name/settings/:scene/overlays": async (ctx) => {
+      requireDrive(deps, ctx.params.name);
       deps.settings.state(ctx.params.name, ctx.params.scene);
       const result = await deps.overlays.clearSettings(
         ctx.params.name,

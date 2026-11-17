@@ -1,4 +1,6 @@
-/** Scene copies: preserve module imports and linked resources; import before registration. */
+/** Scene copies: validate both keys before access; stamp every file and isolate
+ * declared stateFields under .state; preserve imports/assets; import before registration.
+ */
 import {
   copyFile,
   stat,
@@ -15,17 +17,14 @@ import { pathToFileURL } from "node:url";
 import { HttpError } from "../core/errors.js";
 import { deviceCommand, invalid, keys, text } from "./commands.js";
 
-/** @param {unknown} value @returns {string} */
-function sceneKey(value) {
-  const key = text(value, "targetKey");
+/** @param {unknown} value @param {string} [field] @returns {string} */
+function sceneKey(value, field = "targetKey") {
+  const key = text(value, field);
   if (
     !/^[a-z0-9_-]+$/i.test(key) ||
     ["__proto__", "constructor", "prototype"].includes(key)
   )
-    invalid(
-      "targetKey",
-      "Scene keys need letters, digits, underscores or hyphens",
-    );
+    invalid(field, "Scene keys need letters, digits, underscores or hyphens");
   return key;
 }
 
@@ -34,6 +33,7 @@ function sceneKey(value) {
  */
 export function copyScene(deps, key, body, options = {}) {
   return deviceCommand(deps, "@scene-copy", async () => {
+    sceneKey(key, "scene");
     keys(body, ["targetKey", "name", "replace"]);
     if ("replace" in body && typeof body.replace !== "boolean")
       invalid("replace", "replace must be boolean");
@@ -57,7 +57,7 @@ export function copyScene(deps, key, body, options = {}) {
     const base = deps.config.baseDir();
     const generated = join(base, "generated-scenes", basename(dirname(file)));
     const stamp = `${new Date(deps.clock.now()).toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
-    const path = `./generated-scenes/${basename(dirname(file))}/${target}${body.replace ? `-${stamp}` : ""}.js`;
+    const path = `./generated-scenes/${basename(dirname(file))}/${target}-${stamp}.js`;
     const destination = resolve(base, path);
     const backups = join(base, "generated-scenes", "_backups");
     // The data-directory lib/assets links are a deployment prerequisite
@@ -73,6 +73,15 @@ export function copyScene(deps, key, body, options = {}) {
       content += `\n${binding}.name = ${JSON.stringify(target)};\n`;
     if (body.name)
       content += `\n${binding}.pretty_name = ${JSON.stringify(body.name)};\n`;
+    // Declared state paths are instance overrides (the adapter uses the same
+    // contract in shadow). A copy starts empty, with no source-history fallback.
+    if (source.resources.stateFields.length) {
+      content += `\nimport { fileURLToPath as ${binding}Path } from "node:url";\n`;
+      for (const [index, field] of source.resources.stateFields.entries()) {
+        const history = `./.state/${target}-${stamp}-${index}.json`;
+        content += `${binding}[${JSON.stringify(field)}] = ${binding}Path(new URL(${JSON.stringify(history)}, import.meta.url));\n`;
+      }
+    }
     content += `\nexport default ${binding};\n`;
     await mkdir(generated, { recursive: true });
     await mkdir(backups, { recursive: true });

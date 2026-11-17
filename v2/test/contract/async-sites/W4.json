@@ -232,7 +232,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/routes-v1.js:548",
+      "site": "src/api/routes-v1.js:552",
       "id": "route:server.route#1",
       "input": "HTTP requests: questions and commands of pages and of outside callers",
       "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
@@ -241,7 +241,7 @@
       "was": "${method} ${path}"
     },
     {
-      "site": "src/api/routes-v2.js:535",
+      "site": "src/api/routes-v2.js:537",
       "id": "work:deps.config.reload#1",
       "input": "HTTP request",
       "metadata": "device identity, session and draft; position header",
@@ -250,7 +250,7 @@
       "was": "${method} ${path}"
     },
     {
-      "site": "src/api/routes-v2.js:563",
+      "site": "src/api/routes-v2.js:565",
       "id": "route:server.route#1",
       "input": "HTTP requests: questions and commands of pages and of outside callers",
       "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
@@ -259,7 +259,7 @@
       "was": "${method} ${path}"
     },
     {
-      "site": "src/api/scene-copy.js:124",
+      "site": "src/api/scene-copy.js:133",
       "id": "import:import#1",
       "input": "import of the requested copied scene",
       "metadata": "request and per-device lane identity",

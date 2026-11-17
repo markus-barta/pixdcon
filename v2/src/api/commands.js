@@ -55,6 +55,18 @@ export function invalid(field, message) {
   throw new HttpError(400, "invalid_field", message, { field });
 }
 
+/** Resolve the store's authoritative output policy before a broker write.
+ * @param {import("./routes-v1.js").ApiDeps} deps @param {string} name
+ */
+export function requireDrive(deps, name) {
+  if (deps.state.view(name).desired.output === "shadow")
+    throw new HttpError(
+      409,
+      "shadow_output",
+      "This device is in shadow output",
+    );
+}
+
 /** @param {Record<string, unknown>} body @param {string[]} allowed */
 export function keys(body, allowed) {
   for (const key of Object.keys(body))

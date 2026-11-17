@@ -26,6 +26,7 @@ import {
   invalid,
   newDevice,
   object,
+  requireDrive,
   text,
 } from "./commands.js";
 import { copyScene } from "./scene-copy.js";
@@ -115,7 +116,8 @@ export const V1_ROUTES = Object.freeze([
   {
     method: "POST",
     path: "/api/device/save",
-    summary: "Merge editable device fields into config.json (v1 compatibility)",
+    summary:
+      "Merge editable device fields including scene in one atomic config write (v1 compatibility)",
     body: "{deviceName, patch: {displayName?, comment?, ip?, scene?, enabled?, preview?}}",
     ok: "{ok: true, device: saved device}",
     errors:
@@ -151,7 +153,7 @@ export const V1_ROUTES = Object.freeze([
     body: "{deviceName, sceneName, values}",
     ok: "{ok: true, overlay: {…}}",
     errors:
-      "503 mqtt_offline (fix: v1 answered 500), 404 unknown device or scene",
+      "503 mqtt_offline (fix: v1 answered 500), 404 unknown device or scene, 409 shadow_output",
     rows: "A-138, C-098",
   },
   {
@@ -160,7 +162,7 @@ export const V1_ROUTES = Object.freeze([
     summary: "Clear the setting overlays of one device and scene",
     body: "{deviceName, sceneName}",
     ok: "{ok: true, overlay: {…keys that could not be cleared…}}",
-    errors: "503 mqtt_offline",
+    errors: "503 mqtt_offline, 409 shadow_output",
     rows: "A-139, C-102",
   },
   {
@@ -177,7 +179,7 @@ export const V1_ROUTES = Object.freeze([
     method: "POST",
     path: "/api/overlay",
     summary: "Store a retained scene overlay for a device",
-    body: "{deviceName, scene}",
+    body: "{deviceName, scene?} (omitted, empty or null clears)",
     ok: "{ok: true}",
     errors:
       "400 without deviceName (fix), 404 unknown device (fix), 503 mqtt_offline or publish not confirmed (fix)",
@@ -325,17 +327,17 @@ export function registerV1Routes(server, deps) {
         }
         await deps.config.updateDevice(name, (device) => {
           for (const [key, value] of Object.entries(patch)) {
-            if (key === "scene") continue;
             device[key] =
-              key === "preview"
-                ? {
-                    ...object(device.preview ?? {}, "preview"),
-                    ...object(value, "preview"),
-                  }
-                : value;
+              key === "scene"
+                ? scene
+                : key === "preview"
+                  ? {
+                      ...object(device.preview ?? {}, "preview"),
+                      ...object(value, "preview"),
+                    }
+                  : value;
           }
         });
-        if ("scene" in patch) await deps.state.chooseScene(name, scene);
         return {
           ok: true,
           device: deps.config
@@ -427,6 +429,7 @@ export function registerV1Routes(server, deps) {
       const body = await ctx.body();
       const device = text(body.deviceName, "deviceName"),
         scene = text(body.sceneName, "sceneName");
+      requireDrive(deps, device);
       deps.settings.state(device, scene);
       const result = await deps.overlays.publishSettings(
         device,
@@ -450,6 +453,7 @@ export function registerV1Routes(server, deps) {
       const body = await ctx.body();
       const device = text(body.deviceName, "deviceName"),
         scene = text(body.sceneName, "sceneName");
+      requireDrive(deps, device);
       deps.settings.state(device, scene);
       const result = await deps.overlays.clearSettings(device, scene);
       if (result.failed.length)
@@ -483,7 +487,7 @@ export function registerV1Routes(server, deps) {
       const body = await ctx.body();
       const name = text(body.deviceName, "deviceName");
       deps.state.view(name);
-      if (body.scene !== null && typeof body.scene !== "string")
+      if (body.scene != null && typeof body.scene !== "string")
         invalid("scene", "scene must be a string or null");
       const result = await deps.overlays.publishSceneOverlay(
         name,

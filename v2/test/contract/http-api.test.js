@@ -302,7 +302,12 @@ test("v1 routes: request and answer shapes of all 18 routes match the matrix (A-
   api.deps.config.baseDir = () => stack.dataDir;
   api.deps.scenes.get = (/** @type {any} */ key) =>
     key === "source"
-      ? { key, resources: { assetDirs: [] }, name: key, pretty_name: key }
+      ? {
+          key,
+          resources: { assetDirs: [], stateFields: [] },
+          name: key,
+          pretty_name: key,
+        }
       : undefined;
   api.deps.scenes.fileOf = () => source;
   api.deps.config.update = async (/** @type {any} */ mutate) => {
@@ -313,11 +318,9 @@ test("v1 routes: request and answer shapes of all 18 routes match the matrix (A-
     targetSceneKey: "copy",
     targetPrettyName: "Copy",
   });
-  assert.deepEqual(clone.body, {
-    ok: true,
-    sceneKey: "copy",
-    path: `./generated-scenes/${stack.dataDir.split("/").at(-1)}/copy.js`,
-  });
+  assert.equal(clone.body.ok, true);
+  assert.equal(clone.body.sceneKey, "copy");
+  assert.match(clone.body.path, /\/copy-[\w-]+\.js$/);
   assert.equal(clone.status, 200);
   assert.equal(
     (await readdir(resolve(stack.dataDir, "generated-scenes/_backups"))).length,
@@ -820,6 +823,33 @@ test("scene copy: the folders in the source's resources.assetDirs are linked bes
     "history remains beside the new copy, never linked",
   );
   assert.equal(raw.scenes["home3-copy"].path, result.body.path);
+  assert.equal(typeof scene._boilerStatePath, "string");
+  assert.match(scene._boilerStatePath, /\/\.state\/home3-copy-[\w-]+-0\.json$/);
+  const another = await api.api("/api/v2/scenes/home3/copy", "POST", {
+    targetKey: "another-copy",
+  });
+  assert.equal(another.status, 201);
+  const otherPath = resolve(stack.dataDir, another.body.path);
+  const otherScene = (await import(pathToFileURL(otherPath).href)).default;
+  assert.notEqual(otherScene._boilerStatePath, scene._boilerStatePath);
+  for (const copy of [scene, otherScene]) {
+    copy._boilerSave = Promise.resolve();
+    copy._boilerHistory = { copy: copy.name };
+    copy._boilerRevision = 0;
+    await copy._saveBoilerHistory(true);
+    assert.deepEqual(
+      JSON.parse(await readFile(copy._boilerStatePath, "utf8")),
+      { copy: copy.name },
+    );
+  }
+  assert.match(result.body.path, /\/home3-copy-[\w-]+\.js$/);
+  const legacyPath = resolve(destination, "../home3-copy.js");
+  await writeFile(legacyPath, "v1 clone with overwrite:true");
+  assert.equal(
+    await readFile(destination, "utf8"),
+    content,
+    "v1's ordinary clone filename cannot overwrite the stamped v2 copy",
+  );
   assert.equal(
     (
       await api.api("/api/v2/scenes/home3/copy", "POST", {
@@ -1420,6 +1450,11 @@ test("live channel: a large snapshot drains before the next event; previews thro
   );
   api.deps.previews.emit("frame", { ...frame, seq: 3, receivedAt: "trailing" });
   await api.clock.advance(1000);
+  assert.equal(
+    api.live.seq(),
+    3,
+    "the trailing preview is published when its deadline expires",
+  );
   const trailing = await normal.next();
   assert.equal(trailing.data.frameSeq, 3);
   assert.equal(trailing.data.receivedAt, "trailing");
@@ -1484,4 +1519,154 @@ test("v1 compatibility edges: missing scene clears; settings replace valid schem
     assert.equal(response.status, 400);
     assert.equal(response.body.code, "invalid_mode");
   }
+});
+
+test("v1 clone: unsafe source keys are rejected before registry or filesystem access", async (t) => {
+  const api = await recordedApi(t);
+  let accesses = 0;
+  api.deps.scenes.get = api.deps.scenes.fileOf = () => {
+    accesses++;
+    throw new Error("source access before validation");
+  };
+  for (const sceneName of [
+    "../escape",
+    "folder/../../escape",
+    "..",
+    "__proto__",
+    "constructor",
+  ]) {
+    const result = await api.api("/api/scene/clone", "POST", {
+      sceneName,
+      targetSceneKey: "copy",
+    });
+    assert.equal(result.status, 400, sceneName);
+    assert.equal(result.body.code, "invalid_field");
+  }
+  assert.equal(accesses, 0);
+});
+
+test("settings overlay routes: shadow devices return 409 before publishing or clearing", async (t) => {
+  const api = await recordedApi(t);
+  Object.assign(api.device.desired, { output: "shadow" });
+  api.deps.settings.state = () => ({});
+  let calls = 0;
+  api.deps.overlays.publishSettings = api.deps.overlays.clearSettings = () => {
+    calls++;
+    return { failed: [], rejected: [] };
+  };
+  for (const [method, path, body] of [
+    ["DELETE", "/api/v2/devices/pixoo-189/settings/clock/overlays", undefined],
+    [
+      "POST",
+      "/api/scene-settings/overlay/clear",
+      { deviceName: "pixoo-189", sceneName: "clock" },
+    ],
+    [
+      "POST",
+      "/api/scene-settings/overlay",
+      { deviceName: "pixoo-189", sceneName: "clock", values: {} },
+    ],
+  ]) {
+    const result = await api.api(String(path), String(method), body);
+    assert.equal(result.status, 409, String(path));
+    assert.equal(result.body.code, "shadow_output");
+  }
+  assert.equal(calls, 0);
+});
+
+test("v1 overlay: omitted scene publishes the empty retained overlay via the clear command", async (t) => {
+  const api = await recordedApi(t);
+  const calls = /** @type {unknown[]} */ ([]);
+  api.deps.overlays.publishSceneOverlay = async (
+    /** @type {string} */ name,
+    /** @type {string|null} */ scene,
+  ) => {
+    calls.push([name, scene]);
+    return { confirmed: true };
+  };
+  for (const scene of [undefined, null, ""]) {
+    const result = await api.api("/api/overlay", "POST", {
+      deviceName: "pixoo-189",
+      ...(scene === undefined ? {} : { scene }),
+    });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, { ok: true });
+  }
+  assert.deepEqual(
+    calls,
+    Array.from({ length: 3 }, () => ["pixoo-189", null]),
+  );
+  assert.equal(
+    (
+      await api.api("/api/overlay", "POST", {
+        deviceName: "pixoo-189",
+        scene: 42,
+      })
+    ).status,
+    400,
+  );
+});
+
+test("v1 device save: scene and editable fields commit in one atomic store write", async (t) => {
+  const api = await recordedApi(t);
+  let saved = {
+    name: "pixoo-189",
+    ip: "127.0.0.1",
+    enabled: true,
+    scene: "clock",
+    preview: { pollMs: 1000, showGrid: true },
+  };
+  let writes = 0;
+  const sceneCommands = /** @type {unknown[]} */ ([]);
+  api.deps.config.get = () => ({ devices: [saved] });
+  api.deps.config.updateDevice = async (
+    /** @type {string} */ name,
+    /** @type {(device: any) => void} */ mutate,
+  ) => {
+    assert.equal(name, saved.name);
+    const next = structuredClone(saved);
+    mutate(next);
+    writes++;
+    saved = next;
+  };
+  api.deps.scenes.check = () => null;
+  api.deps.state.chooseScene = async (
+    /** @type {string} */ _name,
+    /** @type {string} */ scene,
+  ) => {
+    sceneCommands.push(scene);
+  };
+  const patch = {
+    ip: "127.0.0.2",
+    enabled: false,
+    scene: "radio",
+    preview: { pollMs: 2000 },
+  };
+  const result = await api.api("/api/device/save", "POST", {
+    deviceName: saved.name,
+    patch,
+  });
+  assert.equal(result.status, 200);
+  assert.equal(writes, 1);
+  assert.deepEqual(
+    sceneCommands,
+    [],
+    "the route must not make a second scene persistence write",
+  );
+  assert.equal(saved.scene, "radio");
+  assert.deepEqual(result.body, {
+    ok: true,
+    device: { ...saved, ...patch, preview: { pollMs: 2000, showGrid: true } },
+  });
+  api.deps.scenes.check = () => "unknown scene";
+  const rejected = await api.api("/api/device/save", "POST", {
+    deviceName: saved.name,
+    patch: { scene: "missing" },
+  });
+  assert.equal(rejected.status, 400);
+  assert.equal(
+    writes,
+    1,
+    "validation failure changes no part of the saved device",
+  );
 });
