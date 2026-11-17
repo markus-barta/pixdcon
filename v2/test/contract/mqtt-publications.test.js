@@ -12,18 +12,44 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { expireAfterSeconds } from "../../src/mqtt/ha-discovery.js";
-import { planAvailability } from "../../src/mqtt/status-publisher.js";
+import {
+  availabilityOutcome,
+  availabilitySent,
+  createAvailabilityLedger,
+  owesOffline,
+  planAvailability,
+} from "../../src/mqtt/status-publisher.js";
+
+/**
+ * A ledger in which these payloads were published and confirmed, in order.
+ *
+ * @param {Array<[string, "online"|"offline"]>} published
+ */
+function ledgerOf(published) {
+  const ledger = createAvailabilityLedger();
+  for (const [device, payload] of published)
+    availabilityOutcome(
+      ledger,
+      device,
+      payload,
+      availabilitySent(ledger, device, payload),
+      "confirmed",
+    );
+  return ledger;
+}
 
 test("availability is retired: a device that left the config, was disabled or went from drive to shadow gets one more offline while the controller stays online", () => {
-  const published = new Map([
-    ["ulanzi-a", /** @type {const} */ ("online")],
-    ["ulanzi-b", /** @type {const} */ ("online")],
-    ["pixoo-c", /** @type {const} */ ("online")],
-    ["pixoo-d", /** @type {const} */ ("offline")],
-    ["gone", /** @type {const} */ ("online")],
-    ["gone-offline", /** @type {const} */ ("offline")],
+  const ledger = ledgerOf([
+    ["ulanzi-a", "online"],
+    ["ulanzi-b", "online"],
+    ["pixoo-c", "online"],
+    ["pixoo-d", "online"],
+    ["pixoo-d", "offline"],
+    ["gone", "online"],
+    ["gone-offline", "online"],
+    ["gone-offline", "offline"],
   ]);
-  const plan = planAvailability(published, [
+  const plan = planAvailability(ledger, [
     { name: "ulanzi-a", driven: true, health: "online" },
     { name: "ulanzi-b", driven: false, health: "shadow" }, // drive → shadow, e.g. v1 took it back
     { name: "pixoo-c", driven: false, health: null }, // disabled
@@ -41,7 +67,7 @@ test("availability is retired: a device that left the config, was disabled or we
   ]);
   // Nothing for a device this instance never said "online" for, and
   // nothing twice: once the offline is confirmed, the device is forgotten.
-  const after = new Map([["ulanzi-a", /** @type {const} */ ("online")]]);
+  const after = ledgerOf([["ulanzi-a", "online"]]);
   assert.deepEqual(
     planAvailability(after, [
       { name: "ulanzi-a", driven: true, health: "stale" },
@@ -53,9 +79,73 @@ test("availability is retired: a device that left the config, was disabled or we
   // A clean stop: nothing is driven any more, so everything that was said
   // to be online is taken back.
   assert.deepEqual(
-    planAvailability({ "ulanzi-a": "online", "pixoo-d": "offline" }, []),
+    planAvailability(
+      ledgerOf([
+        ["ulanzi-a", "online"],
+        ["pixoo-d", "online"],
+        ["pixoo-d", "offline"],
+      ]),
+      [],
+    ),
     [{ device: "ulanzi-a", payload: "offline", retire: true }],
   );
+});
+
+test("N6: an online whose acknowledgement was lost with the connection is still owed an offline; the debt ends only when the broker confirmed an offline that was sent after it", () => {
+  const ledger = createAvailabilityLedger();
+  const driven = [
+    { name: "D", driven: true, health: /** @type {const} */ ("online") },
+  ];
+  const shadow = [
+    { name: "D", driven: false, health: /** @type {const} */ ("shadow") },
+  ];
+  assert.deepEqual(planAvailability(ledger, driven), [
+    { device: "D", payload: "online", retire: false },
+  ]);
+
+  // The online is handed to the gateway. The broker stores it; the
+  // connection ends before its acknowledgement arrives.
+  const first = availabilitySent(ledger, "D", "online");
+  assert.equal(
+    owesOffline(ledger, "D"),
+    true,
+    "owed from the moment it was handed over, not from the acknowledgement",
+  );
+  availabilityOutcome(ledger, "D", "online", first, "offline");
+  assert.equal(owesOffline(ledger, "D"), true);
+
+  // D goes into shadow, or leaves the config, while the broker is away.
+  const retire = [{ device: "D", payload: "offline", retire: true }];
+  assert.deepEqual(planAvailability(ledger, shadow), retire);
+  assert.deepEqual(planAvailability(ledger, []), retire);
+
+  // After the reconnect the offline is sent. Whatever does not confirm it
+  // leaves the debt: a timeout, an error, another lost acknowledgement.
+  for (const outcome of /** @type {const} */ ([
+    "timeout",
+    "error",
+    "offline",
+    "sent",
+  ])) {
+    const attempt = availabilitySent(ledger, "D", "offline");
+    availabilityOutcome(ledger, "D", "offline", attempt, outcome);
+    assert.deepEqual(planAvailability(ledger, shadow), retire, outcome);
+  }
+
+  // An offline that was sent before a newer online does not take that back.
+  const early = availabilitySent(ledger, "D", "offline");
+  const again = availabilitySent(ledger, "D", "online");
+  availabilityOutcome(ledger, "D", "offline", early, "confirmed");
+  availabilityOutcome(ledger, "D", "online", again, "confirmed");
+  assert.deepEqual(planAvailability(ledger, shadow), retire);
+
+  // The broker confirms an offline sent after it: paid, and forgotten.
+  const last = availabilitySent(ledger, "D", "offline");
+  availabilityOutcome(ledger, "D", "offline", last, "confirmed");
+  assert.equal(owesOffline(ledger, "D"), false);
+  assert.deepEqual(planAvailability(ledger, shadow), []);
+  assert.deepEqual(planAvailability(ledger, []), []);
+  assert.equal(ledger.devices.size, 0);
 });
 
 test("discovery expiry: every entity loses its state three telemetry intervals after the last telemetry, at least 30 s", () => {
@@ -82,7 +172,7 @@ test.todo(
   "per-device availability: nothing is published for a device in shadow or held back by the v1 interlock, except the one offline that retires a display this instance stopped driving",
 );
 test.todo(
-  "availability retirement on the wire: a device removed from config.json and a device changed from drive to shadow each get one retained offline while the controller health stays ok; an offline that could not be confirmed is sent again after the reconnect; a clean stop retires every driven display",
+  "availability retirement on the wire: a device removed from config.json and a device changed from drive to shadow each get one retained offline while the controller health stays ok; an offline that could not be confirmed is sent again after the reconnect; an online whose acknowledgement was lost with the connection (the broker stored it) is still taken back when the display is no longer driven; a clean stop retires every driven display",
 );
 test.todo(
   "status publisher order: the 30 s republish and the publish on connect are built from the state of that moment; a state event of a device that was removed publishes nothing but its retirement",

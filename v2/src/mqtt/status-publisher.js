@@ -40,6 +40,14 @@
  *    after a reconnect it is sent again. On a clean stop every display this
  *    instance drives is retired the same way. planAvailability() below is
  *    the rule, finished code.
+ *    What is owed is counted from the moment an "online" is handed to the
+ *    gateway, not from its acknowledgement: the broker may have stored it
+ *    although the acknowledgement was lost with the connection, and an
+ *    "online" nobody remembers is exactly what must not stay. The ledger
+ *    below (createAvailabilityLedger, availabilitySent, availabilityOutcome)
+ *    keeps that: a device owes an "offline" from the first "online" that
+ *    may have reached the broker until the broker confirmed an "offline"
+ *    that was sent after it. No timer and no reconnect ends the debt.
  *    What this cannot cover is a process that dies, or a device that is
  *    removed while the process is down: then the last will takes the
  *    controller health down, and after the next start the discovery
@@ -95,16 +103,87 @@ import { todo } from "../core/todo.js";
  */
 
 /**
- * What to publish on the per-device availability topics, as a pure function
- * of what this instance last published and what it drives now.
+ * What the broker may hold on the availability topics, per device. Every
+ * availability publish gets a number in the order it is handed to the
+ * gateway; on one connection that is the order in which the broker stores
+ * them, and a publish of a connection that ended is never sent again.
  *
- * @param {Map<string, "online"|"offline">|Record<string, "online"|"offline">} published the last payload the broker confirmed per device, in this process
- * @param {Array<{name: string, driven: boolean, health: import("../types.js").HealthState|null}>} devices the devices of the effective config; driven = enabled and output drive; a device that left the config is simply not in the list
- * @returns {Array<{device: string, payload: "online"|"offline", retire: boolean}>} in the order of `devices`, then retirements of devices that left. retire = the device is no longer driven: after the broker confirmed this "offline" the device is forgotten
+ * @typedef {object} AvailabilityLedger
+ * @property {number} sent number of the last availability publish, of any device
+ * @property {Map<string, {online: number, offlineConfirmed: number}>} devices per device: the number of the last "online" that was handed to the gateway (0 = never), and the number of the newest "offline" the broker confirmed (0 = none). The broker may hold "online" exactly while online > offlineConfirmed
  */
-export function planAvailability(published, devices) {
-  const last =
-    published instanceof Map ? published : new Map(Object.entries(published));
+
+/** @returns {AvailabilityLedger} */
+export function createAvailabilityLedger() {
+  return { sent: 0, devices: new Map() };
+}
+
+/**
+ * An availability publish is handed to the gateway. Call this before the
+ * publish is awaited: from here on the broker may hold the payload, whatever
+ * becomes of the acknowledgement.
+ *
+ * @param {AvailabilityLedger} ledger changed in place
+ * @param {string} device
+ * @param {"online"|"offline"} payload
+ * @returns {number} the number of this publish; hand it back with its outcome
+ */
+export function availabilitySent(ledger, device, payload) {
+  const number = ++ledger.sent;
+  if (payload === "online") {
+    const entry = ledger.devices.get(device) ?? {
+      online: 0,
+      offlineConfirmed: 0,
+    };
+    entry.online = number;
+    ledger.devices.set(device, entry);
+  }
+  return number;
+}
+
+/**
+ * The outcome of an availability publish (mqtt-gateway.js PublishResult).
+ * Only one outcome changes anything: the broker confirmed an "offline". Then
+ * every "online" that was sent before it is taken back; when none was sent
+ * after it, the device owes nothing and is forgotten. A lost acknowledgement,
+ * a timeout, an error and the end of the connection leave the debt as it is.
+ *
+ * @param {AvailabilityLedger} ledger changed in place
+ * @param {string} device
+ * @param {"online"|"offline"} payload what was published
+ * @param {number} number what availabilitySent returned for it
+ * @param {import("./mqtt-gateway.js").PublishResult["outcome"]} outcome
+ */
+export function availabilityOutcome(ledger, device, payload, number, outcome) {
+  if (payload !== "offline" || outcome !== "confirmed") return;
+  const entry = ledger.devices.get(device);
+  if (!entry) return;
+  entry.offlineConfirmed = Math.max(entry.offlineConfirmed, number);
+  if (entry.online < entry.offlineConfirmed) ledger.devices.delete(device);
+}
+
+/**
+ * Does the broker possibly hold "online" for this device: an "online" was
+ * handed to the gateway, and no "offline" sent after it has been confirmed?
+ *
+ * @param {AvailabilityLedger} ledger
+ * @param {string} device
+ * @returns {boolean}
+ */
+export function owesOffline(ledger, device) {
+  const entry = ledger.devices.get(device);
+  return entry !== undefined && entry.online > entry.offlineConfirmed;
+}
+
+/**
+ * What to publish on the per-device availability topics, as a pure function
+ * of what the broker may hold and what this instance drives now.
+ *
+ * @param {AvailabilityLedger} ledger what the broker may hold (see above)
+ * @param {Array<{name: string, driven: boolean, health: import("../types.js").HealthState|null}>} devices the devices of the effective config; driven = enabled and output drive; a device that left the config is simply not in the list
+ * @returns {Array<{device: string, payload: "online"|"offline", retire: boolean}>} in the order of `devices`, then retirements of devices that left. retire = the device is no longer driven and may still be "online" on the broker: this "offline" is owed, and repeated with every plan, until the broker confirmed it
+ */
+export function planAvailability(ledger, devices) {
   /** @type {Array<{device: string, payload: "online"|"offline", retire: boolean}>} */
   const plan = [];
   const listed = new Set();
@@ -116,12 +195,12 @@ export function planAvailability(published, devices) {
         payload: device.health === "offline" ? "offline" : "online",
         retire: false,
       });
-    } else if (last.get(device.name) === "online") {
+    } else if (owesOffline(ledger, device.name)) {
       plan.push({ device: device.name, payload: "offline", retire: true });
     }
   }
-  for (const [device, payload] of last) {
-    if (!listed.has(device) && payload === "online")
+  for (const device of ledger.devices.keys()) {
+    if (!listed.has(device) && owesOffline(ledger, device))
       plan.push({ device, payload: "offline", retire: true });
   }
   return plan;
@@ -168,7 +247,7 @@ export class StatusPublisher {
     return todo("StatusPublisher.start");
   }
 
-  /** Publish running false and health "offline", retire the availability of every display this instance drives ("offline"), then stop the timers. */
+  /** Publish running false and health "offline", retire the availability of every display that may still be "online" on the broker (planAvailability with no device driven), then stop the timers. */
   async stop() {
     return todo("StatusPublisher.stop");
   }
@@ -188,7 +267,7 @@ export class StatusPublisher {
    * of planAvailability() for it.
    *
    * @param {string} device
-   * @returns {"online"|"offline"|null} null: nothing to publish. That is a device this instance does not drive and has no "online" to take back for
+   * @returns {"online"|"offline"|null} null: nothing to publish. That is a device this instance does not drive and owes no "offline" for (owesOffline)
    */
   buildAvailability(device) {
     return todo("StatusPublisher.buildAvailability", device);

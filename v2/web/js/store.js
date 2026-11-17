@@ -24,7 +24,17 @@
  *     one, an event of a stream that was replaced, and an event or view of
  *     another epoch.
  *   - a device that was removed comes back only through something newer
- *     than its removal.
+ *     than its removal. The position of the removal is kept for the rest of
+ *     the epoch (`forgetDevice`), so the late answer of a write to the old
+ *     device is not taken for the device of the same name that came back,
+ *     although that one counts its revs from 1 again.
+ *   - every copy has a position. A snapshot is a copy of every resource at
+ *     its seq: an answer that was asked for before it and stands before it
+ *     changes nothing afterwards, and where the page already holds a newer
+ *     copy (the answer of a request that stood after the snapshot), the
+ *     page keeps it (`decideSnapshot` answers `keep` and `gone`). An event
+ *     always moves the page's position, and brings its content only when
+ *     the page does not hold a newer copy of that resource.
  *
  * Views subscribe to a slice and re-render only their reserved slots; nothing
  * inserts or removes rows while they are on screen (approved spec section 8).
@@ -61,6 +71,11 @@ export function fence() {
 }
 
 /**
+ * Apply a snapshot: ask `decideSnapshot` with the snapshot's epoch, seq and
+ * the names of its devices. On "apply": take every whole resource that is
+ * not in `keep`, put every device view through `decideView` with the
+ * snapshot's seq, and remove the devices in `gone`.
+ *
  * @param {any} snapshot Snapshot from GET /api/v2/bootstrap or the first live event
  * @param {{generation: number}} source the stream or bootstrap request it came from (ordering.js openSource)
  * @returns {import("./ordering.js").Decision} decideSnapshot's answer; "apply" with reason "new_epoch" reset the store
@@ -70,6 +85,11 @@ export function applySnapshot(snapshot, source) {
 }
 
 /**
+ * Apply a live event. `decideEvent` first (it moves the page's position
+ * also when it answers "drop" with reason "newer_copy"); an event that
+ * carries a view then goes through `decideView` with the event's seq, and
+ * "device-removed" calls `forgetDevice` with it.
+ *
  * @param {import("./live.js").LiveEnvelope} event
  * @returns {import("./ordering.js").Decision} decideEvent's answer, and for an event that carries a view, decideView's
  */

@@ -2,7 +2,7 @@
   "owner": "W1",
   "rows": [
     {
-      "site": "src/main.js:194",
+      "site": "src/main.js:205",
       "id": "work:config.load#1",
       "input": "config.json as read when the process starts",
       "metadata": "config revision 1; nothing is built from its content before the read resolved",
@@ -10,23 +10,23 @@
       "test": "test/contract/composition.test.js: namespace: an invalid config.json at start leaves MQTT off for the run"
     },
     {
-      "site": "src/main.js:402",
+      "site": "src/main.js:415",
       "id": "work:scenes.refresh#1",
       "input": "a changed scene file: its metadata is read again, then the instances of its scenes are replaced",
-      "metadata": "position in the registry lane; the keys of the file are read inside the piece",
-      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for",
+      "metadata": "position in the registry lane; the keys of the file are read inside the piece; the lane's signal, handed to the registry call",
+      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for. At shutdown the lane is closed and its signal aborted: the registry commits nothing of an import that comes back after that",
       "test": "test/contract/ordering.test.js: F9: a scene map change that arrives during the first load"
     },
     {
-      "site": "src/main.js:403",
+      "site": "src/main.js:420",
       "id": "work:sceneRuntime.invalidate#1",
       "input": "a changed scene file: its metadata is read again, then the instances of its scenes are replaced",
       "metadata": "position in the registry lane; the keys of the file are read inside the piece",
-      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for",
-      "test": "test/contract/ordering.test.js: F9: a scene map change that arrives during the first load"
+      "fence": "createLane runThen (core/ordering.js): the second step of a piece; it is not called when the lane was closed while the import ran",
+      "test": "test/contract/ordering.test.js: N7: closing the lane aborts its signal"
     },
     {
-      "site": "src/main.js:531",
+      "site": "src/main.js:548",
       "id": "route:server.route#1",
       "input": "an HTTP request for the controller health (GET /api/health)",
       "metadata": "none: a question",
@@ -35,7 +35,7 @@
       "why": "answers from the state of that moment and changes nothing; the answer carries X-Pixdcon-Position"
     },
     {
-      "site": "src/main.js:574",
+      "site": "src/main.js:591",
       "id": "work:live.publish#1",
       "input": "nothing arrives here: the controller status goes out to the pages",
       "metadata": "none",
@@ -44,23 +44,23 @@
       "why": "not an input: LiveChannel.publish is a synchronous fan-out and returns its seq"
     },
     {
-      "site": "src/main.js:593",
+      "site": "src/main.js:612",
       "id": "work:scenes.sync#1",
       "input": "a change of the effective scene map: keys added, removed or pointed to another file",
-      "metadata": "position in the registry lane; the registry reads the effective map when the piece runs",
-      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for",
+      "metadata": "position in the registry lane; the registry reads the effective map when the piece runs; the lane's signal, handed to the registry call",
+      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for. At shutdown the lane is closed and its signal aborted: the registry commits nothing of an import that comes back after that",
       "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
-      "site": "src/main.js:598",
+      "site": "src/main.js:621",
       "id": "work:sceneRuntime.invalidate#2",
       "input": "a change of the effective scene map: keys added, removed or pointed to another file",
       "metadata": "position in the registry lane; the registry reads the effective map when the piece runs",
-      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for",
-      "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
+      "fence": "createLane runThen (core/ordering.js): the second step of a piece; it is not called when the lane was closed while the import ran",
+      "test": "test/contract/ordering.test.js: N7: closing the lane aborts its signal"
     },
     {
-      "site": "src/main.js:652",
+      "site": "src/main.js:675",
       "id": "listener:runtime.on(\"changed\")#1",
       "input": "the runtime config's changed event, with its diff",
       "metadata": "effective rev; only a diff that names scenes leads to work",
@@ -68,15 +68,15 @@
       "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
-      "site": "src/main.js:657",
+      "site": "src/main.js:681",
       "id": "work:scenes.load#1",
       "input": "the first load of every registered scene",
-      "metadata": "position 1 in the registry lane",
-      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for; the lane is drained before settings, state and scheduler start",
+      "metadata": "position 1 in the registry lane; the lane's signal, handed to the registry call",
+      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for; the lane is drained before settings, state and scheduler start. At shutdown the lane is closed and its signal aborted: the registry commits nothing of an import that comes back after that",
       "test": "test/contract/ordering.test.js: F9: a scene map change that arrives during the first load"
     },
     {
-      "site": "src/main.js:672",
+      "site": "src/main.js:697",
       "id": "timer:clock.every#1",
       "input": "the 1 s tick of the controller status",
       "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
@@ -84,15 +84,15 @@
       "test": "test/contract/composition.test.js: controller health: the measured status and its reasons are in the snapshot"
     },
     {
-      "site": "src/main.js:699",
+      "site": "src/main.js:727",
       "id": "timer:clock.sleep#1",
       "input": "the 2 s limit for scene work that still runs at shutdown",
       "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
-      "fence": "conservative side: shutdown goes on; the lane is closed, so nothing new starts",
-      "test": "test/contract/ordering.test.js: F9: at shutdown the lane is closed"
+      "fence": "conservative side: shutdown goes on. The wait is not the fence: the lane is closed before it, which aborts the signal of the piece that runs",
+      "test": "test/contract/composition.test.js: N7 shutdown: a scene import that is still running"
     },
     {
-      "site": "src/main.js:730",
+      "site": "src/main.js:758",
       "id": "timer:setTimeout#1",
       "input": "the 8 s limit for the whole shutdown",
       "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
@@ -100,7 +100,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:744",
+      "site": "src/main.js:772",
       "id": "listener:process.on(\"SIGINT\")#1",
       "input": "SIGINT of the process",
       "metadata": "none; the first one wins",
@@ -108,7 +108,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:745",
+      "site": "src/main.js:773",
       "id": "listener:process.on(\"SIGTERM\")#1",
       "input": "SIGTERM of the process",
       "metadata": "none; the first one wins",
@@ -116,7 +116,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:746",
+      "site": "src/main.js:774",
       "id": "listener:process.on(\"uncaughtException\")#1",
       "input": "uncaughtException of the process",
       "metadata": "none; the first one wins",
@@ -124,7 +124,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:750",
+      "site": "src/main.js:778",
       "id": "listener:process.on(\"unhandledRejection\")#1",
       "input": "unhandledRejection of the process",
       "metadata": "none; the first one wins",
@@ -184,6 +184,14 @@
       "fence": "none",
       "test": "test/smoke/smoke.test.js: manual clock: 30 s and 2 min pass in no time",
       "why": "the clock itself: system and manual clock hand sleep() and every() to the modules; each use of them is a site of its own"
+    },
+    {
+      "site": "src/core/ordering.js:262",
+      "id": "then:tail.then#1",
+      "input": "the turn of a piece of work in a lane: the piece that was asked for before it has finished",
+      "metadata": "position in the lane, handed to the piece; whether the lane was closed is asked at that moment, not when the piece was queued",
+      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for; a piece whose turn comes after close() is skipped",
+      "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
       "site": "src/state/v1-ownership.js:202",
@@ -306,7 +314,7 @@
       "test": "test/contract/wire.test.js: gateway instance tokens:"
     },
     {
-      "site": "src/overlay/overlay-service.js:240",
+      "site": "src/overlay/overlay-service.js:271",
       "id": "contract:OverlayService.start",
       "input": "every message of the overlay, setting and control topics; the gateway's connect, disconnect and settled events; the 1 s retry tick; the 300 ms debounce of the changed event",
       "metadata": "connection number and retain flag of a message; own writes by number and choice generation",
@@ -314,7 +322,7 @@
       "test": "test/contract/overlay-rules.test.js: overlay service and scene layers:"
     },
     {
-      "site": "src/overlay/overlay-service.js:349",
+      "site": "src/overlay/overlay-service.js:381",
       "id": "contract:OverlayService.applySupersede",
       "input": "the outcomes of the clear and of the blob rewrite a choice publishes",
       "metadata": "own-write number, choice generation, connection",
@@ -322,7 +330,7 @@
       "test": "test/contract/ordering.test.js: scene layers: the acknowledgement of an older choice's clear"
     },
     {
-      "site": "src/overlay/overlay-service.js:360",
+      "site": "src/overlay/overlay-service.js:392",
       "id": "contract:OverlayService.clear",
       "input": "an own write on an overlay topic, its acknowledgement and its echo",
       "metadata": "the payload, remembered per topic until its echo; the connection",
@@ -330,7 +338,7 @@
       "test": "test/contract/overlay-rules.test.js: explicit clears and the v1 overlay route:"
     },
     {
-      "site": "src/overlay/overlay-service.js:374",
+      "site": "src/overlay/overlay-service.js:406",
       "id": "contract:OverlayService.clearSettings",
       "input": "an own write on an overlay topic, its acknowledgement and its echo",
       "metadata": "the payload, remembered per topic until its echo; the connection",
@@ -338,7 +346,7 @@
       "test": "test/contract/overlay-rules.test.js: explicit clears and the v1 overlay route:"
     },
     {
-      "site": "src/overlay/overlay-service.js:388",
+      "site": "src/overlay/overlay-service.js:420",
       "id": "contract:OverlayService.publishSettings",
       "input": "an own write on an overlay topic, its acknowledgement and its echo",
       "metadata": "the payload, remembered per topic until its echo; the connection",
@@ -346,7 +354,7 @@
       "test": "test/contract/overlay-rules.test.js: explicit clears and the v1 overlay route:"
     },
     {
-      "site": "src/overlay/overlay-service.js:403",
+      "site": "src/overlay/overlay-service.js:435",
       "id": "contract:OverlayService.publishSceneOverlay",
       "input": "an own write on an overlay topic, its acknowledgement and its echo",
       "metadata": "the payload, remembered per topic until its echo; the connection",
@@ -354,7 +362,7 @@
       "test": "test/contract/overlay-rules.test.js: explicit clears and the v1 overlay route:"
     },
     {
-      "site": "src/overlay/overlay-service.js:415",
+      "site": "src/overlay/overlay-service.js:447",
       "id": "contract:OverlayService.publishControl",
       "input": "an own mode or brightness write, its acknowledgement and its echo",
       "metadata": "the payload, remembered per topic until its echo; the connection",

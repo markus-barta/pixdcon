@@ -219,10 +219,25 @@ export function whileCurrent(isCurrent, target, methods) {
  *   run(name, task)  queue a task; resolves with {ran: true, value}, or with
  *                    {ran: false} when the lane was closed before its turn.
  *                    A task that throws is reported to onError and the lane
- *                    goes on.
+ *                    goes on. The task gets its position and the lane's
+ *                    signal.
  *   drain()          resolves when everything queued so far has finished
- *   close()          tasks that have not started are skipped; the running
- *                    one finishes
+ *   close()          tasks that have not started are skipped, and the
+ *                    lane's signal is aborted. The task that is running
+ *                    cannot be stopped from outside: it is told. Closing a
+ *                    lane is the fence for it: after every await a task
+ *                    asks the signal before it commits a result or starts
+ *                    its next step, and hands the signal to whatever it
+ *                    awaits, so that work which finishes after the close
+ *                    changes nothing. Waiting for the lane (drain) is
+ *                    politeness, never the fence: a wait can run out.
+ *   runThen(name, work, then)
+ *                    the usual shape of such a task, as one call: `work`
+ *                    takes time and gets the signal (a scene import);
+ *                    `then` acts on its result (replace the instances).
+ *                    `then` is not called when the lane was closed while
+ *                    `work` ran.
+ *   signal           aborted by close()
  *
  * @param {{onError?: (name: string, error: unknown) => void}} [options]
  */
@@ -232,12 +247,13 @@ export function createLane(options = {}) {
   let closed = false;
   let pending = 0;
   let position = 0;
+  const closing = new AbortController();
 
   return {
     /**
      * @template V
      * @param {string} name
-     * @param {(position: number) => V|Promise<V>} task gets its position in the lane, starting at 1
+     * @param {(position: number, signal: AbortSignal) => V|Promise<V>} task gets its position in the lane, starting at 1, and the lane's signal: aborted when the lane was closed while the task ran
      * @returns {Promise<{ran: true, value: V}|{ran: false}>}
      */
     run(name, task) {
@@ -246,7 +262,10 @@ export function createLane(options = {}) {
       const result = tail.then(async () => {
         try {
           if (closed) return /** @type {const} */ ({ ran: false });
-          return /** @type {const} */ ({ ran: true, value: await task(mine) });
+          return /** @type {const} */ ({
+            ran: true,
+            value: await task(mine, closing.signal),
+          });
         } catch (error) {
           options.onError?.(name, error);
           return /** @type {const} */ ({ ran: false });
@@ -257,6 +276,24 @@ export function createLane(options = {}) {
       tail = result;
       return result;
     },
+    /**
+     * Work whose result is followed by a second step. The second step does
+     * not happen when the lane was closed while the work ran.
+     *
+     * @template V
+     * @template W
+     * @param {string} name
+     * @param {(signal: AbortSignal, position: number) => V|Promise<V>} work hand the signal on to whatever is awaited: what comes back after the close must not be committed
+     * @param {(result: V) => W|Promise<W>} then
+     * @returns {Promise<{ran: true, value: W|undefined}|{ran: false}>} value undefined: the lane was closed while the work ran
+     */
+    runThen(name, work, then) {
+      return this.run(name, async (mine, signal) => {
+        const result = await work(signal, mine);
+        if (signal.aborted) return undefined;
+        return then(result);
+      });
+    },
     /** @returns {Promise<void>} */
     async drain() {
       // New work may be queued while waiting: wait until the lane is empty.
@@ -264,7 +301,10 @@ export function createLane(options = {}) {
     },
     close() {
       closed = true;
+      closing.abort();
     },
+    /** Aborted by close(). */
+    signal: closing.signal,
     /** @returns {number} tasks queued or running */
     pending: () => pending,
     /** @returns {boolean} */

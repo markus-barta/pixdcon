@@ -20,7 +20,8 @@
     "test/contract/scene-world.js",
     "test/contract/async-sites.test.js",
     "test/contract/owners.json",
-    "test/contract/async-sites/W1.json"
+    "test/contract/async-sites/W1.json",
+    "test/contract/async-sites/promised.json"
   ],
   "W2": [
     "web/",

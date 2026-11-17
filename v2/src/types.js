@@ -73,7 +73,7 @@
  *  - a newer choice replaces it; the device leaves the effective config; an authoritative output change puts the device into drive after a choice made in shadow
  *
  * @typedef {object} SceneSuppression
- * @property {number} generation choice generation of the device, rising with every UI choice; an acknowledgement ends only the suppression of its own generation
+ * @property {number} generation choice generation of the device, rising with every UI choice and never handed out twice in one run of the process, also when the device leaves the config and comes back; an acknowledgement ends only the suppression of its own generation
  * @property {IsoTime} at time of the choice
  * @property {string|null} value the stored value the choice replaced (granular: the payload; blob: the device's scene in the blob). null = not known at the time of the choice: anything stored in this layer is stale
  * @property {string[]} alsoStale other values of this layer that are pixdcon's own doing and never a new command: what a blob rewrite of pixdcon still carries for this device when the choice is made, be it on its way to the broker or already known to sit in the store as an older write. Such a rewrite can reach the broker after a newer blob and put its old value back; a delivery of that value is then recognised, also after a restart. Empty for the granular layer.
@@ -307,7 +307,8 @@
  * @property {string|null} problem why it is not valid or not in effect, e.g. "unknown device", "unknown scene", "no schema for this key yet"
  * @property {IsoTime} receivedAt when this process received it
  * @property {"replay"|"live"} origin how this value arrived, from the retain flag as delivered and nothing else: replay = a copy from the broker's retained store (stored at an unknown earlier time); live = published while pixdcon was subscribed
- * @property {number} connection gateway connection on which it arrived. Lower than the current connection number: the value was delivered before the last reconnect and has not been delivered again. It stays in effect; nothing is removed because the settle hint passed or because nothing arrived
+ * @property {number} connection gateway connection on which it arrived. Lower than the current connection number: the value was delivered before the last reconnect and has not been delivered again. Nothing is removed because the settle hint passed or because nothing arrived
+ * @property {boolean} confirmed true: the connection that delivered it is the current one, or the last one while the broker is away. false: a newer connection exists and has not delivered it. For a scene overlay (device-scene, and the scenes inside the blob) that means it is listed and decides nothing until it is delivered again; every other kind stays in effect (overlay-service.js M4, C1)
  * @property {boolean} inEffect true while it decides what a display shows
  * @property {{generation: number, at: IsoTime}|null} supersededBy the UI choice that replaced it, while its clear is on its way. For the blob record: null; the per-device answer is `OverlayService.suppressions(device)`.
  * @property {{pending: boolean, requestedAt: IsoTime|null, attempts: number}} clear

@@ -32,16 +32,27 @@
  *      when the subscribe was handled; a live message is newer by definition.
  *  M3  An unchanged value is not a change: no event, no restart (A-079).
  *  M4  A new connection replaces a record only by what it delivers. Until
- *      then the record stays as it was, in effect; its `connection` is lower
- *      than the current one, which is how the Overlays page can tell. No
- *      record is removed because the settle hint passed or because nothing
- *      arrived: MQTT has no message for "this topic is empty", so the
- *      absence of a replay proves nothing, and a record that goes missing on
- *      a guess can release what it held back (a device switched off by an
- *      overlay would start driving). What v2 cannot know is a retained topic
- *      that was deleted while pixdcon was disconnected (A-182): that record
- *      stays until the topic gets a message, the user clears it, or the
- *      process restarts.
+ *      then the record stays as it was; its `connection` is lower than the
+ *      current one and `confirmed` is false, which is how the Overlays page
+ *      can tell. No record is removed because the settle hint passed or
+ *      because nothing arrived: MQTT has no message for "this topic is
+ *      empty", so the absence of a replay proves nothing, and a record that
+ *      goes missing on a guess can release what it held back (a device
+ *      switched off by an overlay would start driving). What v2 cannot know
+ *      is a retained topic that was deleted while pixdcon was disconnected
+ *      (A-182). What follows from that is decided by what the record does:
+ *        - a scene overlay (the granular topic, the device's scene in the
+ *          blob) gives a command that overrides the user's choice. It is in
+ *          effect only on the connection that delivered it (rule C1 below):
+ *          after a reconnect it is listed, decides nothing, and wins again
+ *          when the new connection delivers it. A scene overlay that was
+ *          cleared while pixdcon was away therefore stops at the reconnect.
+ *        - every other record (ip, enabled, scene path, a setting value,
+ *          mode, brightness) stays in effect until the topic gets a
+ *          message, the user clears it, or the process restarts. Dropping
+ *          one of these on a guess would release a device, point it at
+ *          another address, change a scene's inputs or un-pause a display.
+ *      Suppressions are untouched by a reconnect either way.
  *  M5  A value that is not usable is kept, marked invalid with the reason,
  *      and never blocks config.json changes (A-077, A-BUG-06, B-C10). A
  *      setting overlay whose scene or key has no schema yet is held: kept
@@ -49,6 +60,12 @@
  *  M6  An overlay never widens what config.json and the environment allow:
  *      it cannot set `output`, and it can set `enabled` only to false
  *      (state/runtime-config.js overlayDevicePatch).
+ *  C1  A scene overlay decides only when the current connection delivered
+ *      it, or the last one while the broker is away (scene-layers.js C1,
+ *      sceneInputs `confirmed`). At a connect the service announces the
+ *      devices whose records now wait ("changed"); the state store computes
+ *      again, and the 300 ms debounce of that event means that a replay
+ *      which arrives at once changes nothing on the display.
  *
  * A UI CHOICE AND THE STORED SCENE OVERLAYS (PIXD-75, and why v1's fix is
  * not enough). There are two scene layers per device: the granular topic and
@@ -83,9 +100,12 @@
  *           connection (then M2 takes over) or the connection ended (the
  *           store was clean after that write, so whatever a later
  *           connection replays was stored afterwards).
- *        d. blob only: a delivered blob has no scene for the device.
+ *        d. blob only: a delivered blob has no scene for the device, and no
+ *           rewrite of pixdcon is on its way (O3).
  *        e. a newer choice replaces it. Its outstanding acknowledgement then
- *           matches no suppression and is ignored.
+ *           matches no suppression and is ignored: generations of a device
+ *           only rise in one run of the process, also across a removal and
+ *           a return of the device (G1).
  *        f. an authoritative output change (config.json, the environment,
  *           v1's device list) puts the device into drive after a choice made
  *           in shadow, or the device leaves the effective config.
@@ -141,21 +161,32 @@
  *      What a rewrite strips stays stripped: a later rewrite never puts a
  *      scene back that an earlier one removed or is removing, also when the
  *      device has gone into shadow meanwhile.
- *  B2  Own writes are correlated: the exact payload is remembered until its
- *      echo arrived or the connection ended. An own echo says what the
- *      store holds and is never a command. When it is the blob as it should
- *      be, it is applied. When it is an older own write that came back after
- *      a newer blob was applied, it is dropped, and the blob is published
- *      again as it should be. Such an older write still carries the old
- *      scenes of other devices; a choice made for one of them meanwhile
- *      records those values (`alsoStale`), so they are recognised as
- *      pixdcon's own doing when they are delivered, also after a restart.
+ *  B2  Own writes are correlated by their bytes, and their bytes are their
+ *      own: every rewrite carries a mark (the top-level key `_pixdcon`, 16
+ *      hex characters derived from a secret of the process; v1 ignores the
+ *      key) that nobody else can know before the broker has stored the
+ *      write. Rewrites come back in the order they were sent, so only the
+ *      oldest one on its way is ever taken for an echo (O1). An own echo
+ *      says what the store holds and is never a command. When it is the
+ *      blob as it should be, it is applied. When it is an older own write
+ *      that came back after a newer blob was applied, it is dropped, and
+ *      the blob is published again as it should be. Such an older write
+ *      still carries the old scenes of other devices; a choice made for one
+ *      of them meanwhile records those values (`alsoStale`), so they are
+ *      recognised as pixdcon's own doing when they are delivered, also after
+ *      a restart. A blob with the bytes of any other own rewrite, on its
+ *      way, echoed already or of an earlier connection, is that rewrite
+ *      come back, whoever published it: never a command (O2). An echo
+ *      confirms the generations its own write carries, and nothing else
+ *      while a later rewrite is on its way (O3). The service makes the
+ *      secret at start (16 random bytes) and hands it to createLayers.
  *  B3  At a disconnect no rewrite is kept to be sent again. After the next
  *      connect the rewrite is built again from the blob the broker replays,
  *      so fields that another publisher changed meanwhile are kept. The
- *      payloads of the rewrites that may have reached the store are
- *      remembered for one purpose: when the next connection replays exactly
- *      one of them, it is pixdcon's own, older write and not a command.
+ *      payloads of the rewrites of the connection that ended are remembered
+ *      for one purpose: when a later connection delivers exactly one of
+ *      them, as a replay or as a live message the broker got to late, it is
+ *      pixdcon's own, older write and not a command.
  *  B4  An outside blob that arrives while an own rewrite is on its way was
  *      processed before that rewrite. Its content becomes the blob as it
  *      should be; the scenes of superseded devices stay hidden; and when the
@@ -265,7 +296,8 @@ export class OverlayService extends EventEmitter {
   /**
    * Scene inputs for the precedence of one device: what each layer holds
    * and whether it is in effect (scene-layers.js sceneInputs, with the
-   * record's id and receipt time).
+   * record's id and receipt time). In effect means: delivered on the
+   * current connection (C1) and not replaced by a choice (S2).
    *
    * @param {string} device
    * @returns {{granular: import("../state/precedence.js").LayerScene|null, blob: import("../state/precedence.js").LayerScene|null}}

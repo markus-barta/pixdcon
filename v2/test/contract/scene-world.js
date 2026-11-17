@@ -23,7 +23,9 @@ export const T0 = "2026-11-16T17:42:07.000Z";
  * @param {{outputs: Record<string, "drive"|"shadow">, choices?: Record<string, string|null>}} options
  */
 export function world(options) {
-  let state = createLayers({ outputs: options.outputs });
+  /** Runs of the process: each has its own secret for the write marks. */
+  let runs = 1;
+  let state = createLayers({ outputs: options.outputs, secret: "run 1" });
   /** config.json: the saved choice per device and the saved suppressions. @type {Map<string, string|null>} */
   const choices = new Map(Object.entries(options.choices ?? {}));
   /** @type {Map<string, import("../../src/types.js").SceneSuppression>} */
@@ -106,9 +108,37 @@ export function world(options) {
       }
       return { plan, ...feed({ type: "choice", plan }) };
     },
+    /**
+     * The device leaves the effective config: its entry is deleted from
+     * config.json, and with it the saved choice and the saved suppressions.
+     *
+     * @param {string} device
+     */
+    remove(device) {
+      const result = feed({ type: "removed", device });
+      choices.delete(device);
+      saved.delete(`${device}/granular`);
+      saved.delete(`${device}/blob`);
+      return result;
+    },
+    /**
+     * A device enters the effective config (again), with its resolved output
+     * and, if the new entry has one, a saved scene.
+     *
+     * @param {string} device
+     * @param {"drive"|"shadow"} output
+     * @param {string|null} [scene]
+     */
+    add(device, output, scene = null) {
+      if (scene === null) choices.delete(device);
+      else choices.set(device, scene);
+      return feed({ type: "output", device, output });
+    },
     /** A new process: nothing but config.json survives. */
     restart() {
+      runs += 1;
       state = createLayers({
+        secret: `run ${runs}`,
         outputs: Object.fromEntries(state.outputs),
         saved: [...saved].map(([key, suppression]) => {
           const [device, layer] = key.split("/");

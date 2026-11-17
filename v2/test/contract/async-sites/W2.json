@@ -35,7 +35,7 @@
       "test": "test/contract/client.test.js: client live:"
     },
     {
-      "site": "web/js/store.js:69",
+      "site": "web/js/store.js:84",
       "id": "contract:store.applySnapshot",
       "input": "a snapshot: the bootstrap answer, or the first event of a stream",
       "metadata": "epoch, seq, generation of its source",
@@ -43,7 +43,7 @@
       "test": "test/contract/ordering.test.js: F5: a snapshot that a newer source has overtaken"
     },
     {
-      "site": "web/js/store.js:77",
+      "site": "web/js/store.js:97",
       "id": "contract:store.applyEvent",
       "input": "a live event",
       "metadata": "epoch, seq, stream generation; a view inside carries its own epoch and rev",
@@ -51,7 +51,7 @@
       "test": "test/contract/ordering.test.js: F5: an event is applied only on the newest stream"
     },
     {
-      "site": "web/js/store.js:89",
+      "site": "web/js/store.js:109",
       "id": "contract:store.applyAnswer",
       "input": "the answer of a request",
       "metadata": "request generation, epoch and seq; rev for a view",

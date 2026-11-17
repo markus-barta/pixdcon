@@ -34,3 +34,9 @@ test.todo(
 test.todo(
   "client settings form: every edit raises the draft; a preview answer for an older draft than the one on screen is not shown",
 );
+test.todo(
+  "client store, snapshot (N4): a snapshot is applied part by part: every resource that decideSnapshot does not name in keep, every device view through decideView with the snapshot's seq, and the devices in gone are removed; a late answer that stands before the snapshot changes nothing on screen",
+);
+test.todo(
+  "client store, removal (N4): device-removed calls forgetDevice with the event's seq and drops the device's settings states; the late answer of a write to the old device does not bring it back after a device of the same name was added again",
+);

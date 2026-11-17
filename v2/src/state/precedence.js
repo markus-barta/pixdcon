@@ -27,6 +27,13 @@
  * replayed value? Nothing here looks at arrival order or at a boundary in
  * time, and the settle hint is not an input.
  *
+ * DELIVERED is the second condition, and it is about the connection: a
+ * layer's value is in effect only while the connection that delivered it is
+ * the current one (overlay-service.js C1). After a reconnect it waits,
+ * listed and without a say, until the new connection delivers it. A scene
+ * overlay that was cleared while pixdcon was away therefore does not go on
+ * overriding the choice (A-182).
+ *
  * The two layers are independent: a new granular command ends the granular
  * suppression and leaves the blob suppression in place, so when that granular
  * overlay is cleared later, the choice shows and not the stale blob scene.
@@ -64,7 +71,7 @@ import { todo } from "../core/todo.js";
  *
  * @typedef {object} LayerScene
  * @property {string} scene the value stored in the layer
- * @property {boolean} inEffect false: a suppression of this layer exists, the value is replaced by the user's choice
+ * @property {boolean} inEffect false: the value decides nothing. Either a suppression of this layer exists (the user's choice replaced it), or a newer connection exists that has not delivered the value (overlay-service.js C1). The record is listed either way
  * @property {IsoTime} since when this process received the value
  * @property {string} overlayId id of the overlay record
  */

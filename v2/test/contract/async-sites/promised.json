@@ -1,0 +1,370 @@
+{
+  "//": "Skeleton markers that have a row in the inventory: bodies that were said to consume asynchronous input. Written by `node dev/async-sites.js --promise`, which adds and never removes. When such a marker is replaced by a body, its owner's W<n>.json needs a row with \"was\": \"<name>\" for a site in the same file, or an entry in \"resolved\" that says why the body consumes none after all (dev/async-sites.js NO SHRINKING; test/contract/async-sites.test.js). Owner: core/state worker.",
+  "promised": [
+    {
+      "name": "ConfigStore.load",
+      "file": "src/config/config-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "ConfigStore.updateDevice",
+      "file": "src/config/config-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "ConfigStore.addDevice",
+      "file": "src/config/config-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "ConfigStore.adoptDevice",
+      "file": "src/config/config-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "ConfigStore.update",
+      "file": "src/config/config-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "ConfigStore.replaceRaw",
+      "file": "src/config/config-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "ConfigStore.reload",
+      "file": "src/config/config-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "ConfigStore.start",
+      "file": "src/config/config-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "MqttGateway.start",
+      "file": "src/mqtt/mqtt-gateway.js",
+      "owner": "W1"
+    },
+    {
+      "name": "MqttGateway.stop",
+      "file": "src/mqtt/mqtt-gateway.js",
+      "owner": "W1"
+    },
+    {
+      "name": "MqttGateway.subscribe",
+      "file": "src/mqtt/mqtt-gateway.js",
+      "owner": "W1"
+    },
+    {
+      "name": "MqttGateway.publish",
+      "file": "src/mqtt/mqtt-gateway.js",
+      "owner": "W1"
+    },
+    {
+      "name": "MqttGateway.settle",
+      "file": "src/mqtt/mqtt-gateway.js",
+      "owner": "W1"
+    },
+    {
+      "name": "MqttGateway.sceneContext",
+      "file": "src/mqtt/mqtt-gateway.js",
+      "owner": "W1"
+    },
+    {
+      "name": "OverlayService.start",
+      "file": "src/overlay/overlay-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "OverlayService.applySupersede",
+      "file": "src/overlay/overlay-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "OverlayService.clear",
+      "file": "src/overlay/overlay-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "OverlayService.clearSettings",
+      "file": "src/overlay/overlay-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "OverlayService.publishSettings",
+      "file": "src/overlay/overlay-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "OverlayService.publishSceneOverlay",
+      "file": "src/overlay/overlay-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "OverlayService.publishControl",
+      "file": "src/overlay/overlay-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "SettingsService.start",
+      "file": "src/scenes/settings-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "SettingsService.save",
+      "file": "src/scenes/settings-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "SettingsService.preview",
+      "file": "src/scenes/settings-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "SettingsService.endPreview",
+      "file": "src/scenes/settings-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "SettingsService.sessionConnection",
+      "file": "src/scenes/settings-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "SettingsService.runtimeContext",
+      "file": "src/scenes/settings-service.js",
+      "owner": "W1"
+    },
+    {
+      "name": "RuntimeConfig.start",
+      "file": "src/state/runtime-config.js",
+      "owner": "W1"
+    },
+    {
+      "name": "StateStore.start",
+      "file": "src/state/state-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "StateStore.chooseScene",
+      "file": "src/state/state-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "StateStore.adoptDevice",
+      "file": "src/state/state-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "StateStore.clearSceneOverlay",
+      "file": "src/state/state-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "StateStore.setMode",
+      "file": "src/state/state-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "StateStore.setBrightness",
+      "file": "src/state/state-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "StateStore.retry",
+      "file": "src/state/state-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "StateStore.reportEffective",
+      "file": "src/state/state-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "StateStore.reportHealth",
+      "file": "src/state/state-store.js",
+      "owner": "W1"
+    },
+    {
+      "name": "api.request",
+      "file": "web/js/api.js",
+      "owner": "W2"
+    },
+    {
+      "name": "components/settings-form.createSettingsForm",
+      "file": "web/js/components/settings-form.js",
+      "owner": "W2"
+    },
+    {
+      "name": "live.connectLive",
+      "file": "web/js/live.js",
+      "owner": "W2"
+    },
+    {
+      "name": "store.applySnapshot",
+      "file": "web/js/store.js",
+      "owner": "W2"
+    },
+    {
+      "name": "store.applyEvent",
+      "file": "web/js/store.js",
+      "owner": "W2"
+    },
+    {
+      "name": "store.applyAnswer",
+      "file": "web/js/store.js",
+      "owner": "W2"
+    },
+    {
+      "name": "createAwtrixDriver",
+      "file": "src/drivers/awtrix-driver.js",
+      "owner": "W3"
+    },
+    {
+      "name": "createPixooDriver",
+      "file": "src/drivers/pixoo-driver.js",
+      "owner": "W3"
+    },
+    {
+      "name": "HealthModel.start",
+      "file": "src/health/health-model.js",
+      "owner": "W3"
+    },
+    {
+      "name": "HealthModel.frameOk",
+      "file": "src/health/health-model.js",
+      "owner": "W3"
+    },
+    {
+      "name": "HealthModel.contactOk",
+      "file": "src/health/health-model.js",
+      "owner": "W3"
+    },
+    {
+      "name": "HealthModel.renderFailed",
+      "file": "src/health/health-model.js",
+      "owner": "W3"
+    },
+    {
+      "name": "HealthModel.expect",
+      "file": "src/health/health-model.js",
+      "owner": "W3"
+    },
+    {
+      "name": "HealthModel.powerCycles",
+      "file": "src/health/health-model.js",
+      "owner": "W3"
+    },
+    {
+      "name": "TelemetryCollector.start",
+      "file": "src/health/telemetry.js",
+      "owner": "W3"
+    },
+    {
+      "name": "PreviewStore.put",
+      "file": "src/render/preview-store.js",
+      "owner": "W3"
+    },
+    {
+      "name": "PreviewStore.feedFromDevice",
+      "file": "src/render/preview-store.js",
+      "owner": "W3"
+    },
+    {
+      "name": "RenderLoop.start",
+      "file": "src/render/render-loop.js",
+      "owner": "W3"
+    },
+    {
+      "name": "RenderLoop.apply",
+      "file": "src/render/render-loop.js",
+      "owner": "W3"
+    },
+    {
+      "name": "RenderLoop.retryNow",
+      "file": "src/render/render-loop.js",
+      "owner": "W3"
+    },
+    {
+      "name": "RenderLoop.reloadScene",
+      "file": "src/render/render-loop.js",
+      "owner": "W3"
+    },
+    {
+      "name": "Scheduler.start",
+      "file": "src/render/scheduler.js",
+      "owner": "W3"
+    },
+    {
+      "name": "LiveChannel.handle",
+      "file": "src/api/live-channel.js",
+      "owner": "W4"
+    },
+    {
+      "name": "wireLiveChannel",
+      "file": "src/api/live-channel.js",
+      "owner": "W4"
+    },
+    {
+      "name": "${method} ${path}",
+      "file": "src/api/routes-v1.js",
+      "owner": "W4"
+    },
+    {
+      "name": "${method} ${path}",
+      "file": "src/api/routes-v2.js",
+      "owner": "W4"
+    },
+    {
+      "name": "StatusPublisher.start",
+      "file": "src/mqtt/status-publisher.js",
+      "owner": "W4"
+    },
+    {
+      "name": "SceneRegistry.load",
+      "file": "src/scenes/scene-registry.js",
+      "owner": "W5"
+    },
+    {
+      "name": "SceneRegistry.refresh",
+      "file": "src/scenes/scene-registry.js",
+      "owner": "W5"
+    },
+    {
+      "name": "SceneRegistry.sync",
+      "file": "src/scenes/scene-registry.js",
+      "owner": "W5"
+    },
+    {
+      "name": "SceneRuntime.acquire",
+      "file": "src/scenes/scene-runtime.js",
+      "owner": "W5"
+    },
+    {
+      "name": "SceneRuntime.invalidate",
+      "file": "src/scenes/scene-runtime.js",
+      "owner": "W5"
+    },
+    {
+      "name": "SceneRuntime.release",
+      "file": "src/scenes/scene-runtime.js",
+      "owner": "W5"
+    },
+    {
+      "name": "SceneRuntime.releaseAll",
+      "file": "src/scenes/scene-runtime.js",
+      "owner": "W5"
+    },
+    {
+      "name": "ScenesWatcher.start",
+      "file": "src/scenes/scenes-watcher.js",
+      "owner": "W5"
+    },
+    {
+      "name": "createV1Instance",
+      "file": "src/scenes/v1-scene-adapter.js",
+      "owner": "W5"
+    }
+  ]
+}

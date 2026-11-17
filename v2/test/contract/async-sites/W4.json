@@ -2,6 +2,15 @@
   "owner": "W4",
   "rows": [
     {
+      "site": "src/api/http-server.js:147",
+      "id": "then:this.#handle().catch#1",
+      "input": "a request handler that failed after its answer had started",
+      "metadata": "none",
+      "fence": "none",
+      "test": "test/contract/http-api.test.js: HTTP: the error envelope, 404, 405, 415 and the skeleton's 501",
+      "why": "the failure of the request that is being answered: it is logged and the half-sent response is closed; no state of pixdcon changes"
+    },
+    {
       "site": "src/api/http-server.js:155",
       "id": "listener:server.on(\"connection\")#1",
       "input": "a TCP connection opened",
@@ -27,6 +36,15 @@
       "fence": "none",
       "test": "test/smoke/smoke.test.js: harness: a stack that fails on the way up stops what it had started",
       "why": "start() rejects with the error; nothing is tried again by itself in the skeleton (the retry of A-117 is a phase-3 item and will be a timer site)"
+    },
+    {
+      "site": "src/api/http-server.js:344",
+      "id": "iterate:for await#1",
+      "input": "the body of a write request, chunk by chunk",
+      "metadata": "none of its own: the chunks belong to the request that is being read",
+      "fence": "none",
+      "test": "test/contract/http-api.test.js: HTTP: a write without Content-Type: application/json is refused",
+      "why": "read inside the request that asked for it, up to 1 MiB; the request as a whole is the input, and it is fenced where its route runs (the route rows of routes-v1.js and routes-v2.js)"
     },
     {
       "site": "src/api/routes-v1.js:223",
@@ -77,7 +95,7 @@
       "test": "test/contract/http-api.test.js: live channel: snapshot first, events in seq order"
     },
     {
-      "site": "src/mqtt/status-publisher.js:168",
+      "site": "src/mqtt/status-publisher.js:247",
       "id": "contract:StatusPublisher.start",
       "input": "state and health changes, runtime changes, the gateway's connect, the 30 s timer",
       "metadata": "none of its own: every publish is built from the state of the moment it is sent",

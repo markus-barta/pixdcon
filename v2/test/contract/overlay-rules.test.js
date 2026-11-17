@@ -120,7 +120,7 @@ test.todo(
   "overlay service and scene layers: the service feeds every gateway message, connect, disconnect, settle hint and publish outcome to the reducer and carries out exactly the effects it answers with, against the in-memory broker with holdRetained",
 );
 test.todo(
-  "mirror after a reconnect (M4): a record that the new connection has not delivered stays in effect and shows the older connection number; the settle hint removes nothing; a clear from outside removes it",
+  "mirror after a reconnect (M4): a record that the new connection has not delivered stays listed, with the older connection number and confirmed false; the settle hint removes nothing; a clear from outside removes it; what the record decides meanwhile is rule 19 for a scene overlay and rule 20 for every other kind",
 );
 test.todo(
   "own control writes: a mode or brightness change from the UI that echoes back after a newer one does not undo it; a control that was certainly not sent goes back to what the broker holds",
@@ -130,4 +130,21 @@ test.todo(
 );
 test.todo(
   "explicit clears and the v1 overlay route: an own write through clear, clearSettings, publishSettings, publishSceneOverlay or publishControl is remembered until its echo; what arrives on its topic before that is older",
+);
+
+// --- Cross-read round 3 (knowledge entry, section "Cross-read round 3"; the pure rules are run in ordering.test.js) ---
+test.todo(
+  "overlay rule 19 (N3, A-182): a retained scene overlay that is cleared while pixdcon is disconnected stops deciding after the reconnect: the display shows the choice, the Overlays page lists the record as not confirmed, nothing is published; with the overlay still stored and its replay held back (holdRetained) the display returns to it when the replay is delivered",
+);
+test.todo(
+  "overlay rule 20 (N3): an enabled overlay, an ip overlay, a setting overlay and a retained control that are not delivered again after a reconnect stay in effect, listed as not confirmed; a suppression is saved before and after the reconnect",
+);
+test.todo(
+  "overlay rule 21 (N1): remove a device in the raw config and add it again while the clear of its last choice is on its way, then choose again: the new choice sends its own clear with a higher generation, and the late acknowledgement of the old clear leaves its suppression in config.json",
+);
+test.todo(
+  "overlay rule 22 (N2): every blob rewrite on the wire carries the _pixdcon mark, two rewrites never share one, and pixdcon v1's merge ignores the key; an outside client that publishes the document of a rewrite that is on its way, and one that publishes the bytes of an earlier rewrite, end no suppression",
+);
+test.todo(
+  "overlay service start: the secret for the write marks is made once per run and never leaves the process; the reducer's own, sent and outstanding lists are fed from the gateway's publish outcomes in the order they resolve",
 );

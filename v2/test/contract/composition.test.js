@@ -11,6 +11,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { manualClock } from "../../src/core/clock.js";
 import { StatusPublisher } from "../../src/mqtt/status-publisher.js";
 import { createTopics } from "../../src/mqtt/topics.js";
 import { resolveOutput } from "../../src/state/precedence.js";
@@ -137,6 +138,72 @@ test("composition: the namespace of a run is reported, and an unbuilt health mod
   // Scene work has one lane, and the start drained it.
   assert.equal(stack.app.modules.registryLane.pending(), 0);
   assert.equal(stack.app.modules.registryLane.closed(), false);
+});
+
+test("N7 shutdown: a scene import that is still running when the wait for the registry lane runs out is fenced, not only waited for. It gets the lane's signal, scenes are released, stop returns; when the import comes back it invalidates nothing", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, { mqtt: false, clock });
+  const { scenes, sceneRuntime, runtime, registryLane } = stack.app.modules;
+  /** @type {string[]} */
+  const log = [];
+  /** @type {AbortSignal|undefined} */
+  let given;
+  let finishImport = () => {};
+  const imported = new Promise((resolve) => {
+    finishImport = () => resolve(undefined);
+  });
+  // The registry and the scene runtime are skeletons: stand-ins that
+  // record. The registry's stand-in does what the contract asks of the real
+  // one: it commits nothing once its signal is aborted.
+  scenes.sync = async (_change, options) => {
+    given = options?.signal;
+    log.push("import started");
+    await imported;
+    log.push(
+      given?.aborted ? "import back: not committed" : "import back: committed",
+    );
+    return { keys: given?.aborted ? [] : ["clock"] };
+  };
+  sceneRuntime.invalidate = async (keys) => {
+    log.push(`invalidate ${keys}`);
+    return { devices: [] };
+  };
+  sceneRuntime.releaseAll = /** @type {any} */ (
+    async () => {
+      log.push("scenes released");
+    }
+  );
+
+  // The effective scene map changes; the import it starts does not end.
+  runtime.emit("changed", {
+    diff: { scenesAdded: ["clock"], scenesRemoved: [], scenesChanged: [] },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(log, ["import started"]);
+  assert.equal(given?.aborted, false, "the piece got the lane's signal");
+
+  // Shutdown. The wait for the lane is 2 s on the clock.
+  const stopped = stack.app.stop().then(() => log.push("stop returned"));
+  for (let step = 0; step < 30; step++) await clock.advance(100);
+  await stopped;
+  assert.deepEqual(log, ["import started", "scenes released", "stop returned"]);
+  assert.equal(registryLane.closed(), true);
+  assert.equal(given?.aborted, true, "closing the lane told the import");
+  assert.equal(registryLane.pending(), 1, "it is still running");
+
+  // The import comes back, long after stop returned.
+  finishImport();
+  await registryLane.drain();
+  assert.deepEqual(
+    log,
+    [
+      "import started",
+      "scenes released",
+      "stop returned",
+      "import back: not committed",
+    ],
+    "no invalidate: nothing touches the scenes that were released",
+  );
 });
 
 // --- Phase 3 ---------------------------------------------------------------------------------------

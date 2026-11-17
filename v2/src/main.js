@@ -38,10 +38,10 @@
  *   8. status publisher, live channel wiring, controller health ticker
  *   9. config and scene watchers      last, with the running config as their baseline (A-BUG-35)
  *
- * Shutdown (A-034 to A-037): stop inputs (watchers, HTTP), close and drain
- * the registry lane, stop the scheduler (bounded), release scenes, publish
- * "offline", disconnect MQTT. The whole sequence is limited to 8 s to fit
- * Docker's 10 s grace period.
+ * Shutdown (A-034 to A-037): stop inputs (watchers, HTTP), close the
+ * registry lane and wait for it (bounded), stop the scheduler (bounded),
+ * release scenes, publish "offline", disconnect MQTT. The whole sequence is
+ * limited to 8 s to fit Docker's 10 s grace period.
  *
  * ORDER OF ASYNCHRONOUS WORK (core/ordering.js). Whatever reads scene files
  * takes time and can be asked for again before it has finished: the first
@@ -50,8 +50,19 @@
  * at a time, in the order it was asked for, so an earlier and slower import
  * can never finish after a later one and put its result on top. The lane is
  * drained before the settings service, the state store and the scheduler
- * start, and closed and drained at shutdown before scenes are released.
- * The scene registry and the scene runtime are called from the lane only.
+ * start. The scene registry and the scene runtime are called from the lane
+ * only.
+ *
+ * At shutdown the lane is closed. That skips what has not started and
+ * aborts the lane's signal; it cannot stop an import that is running. So
+ * the signal is the fence, and the wait is not: every piece of scene work
+ * hands the signal to the registry call it awaits (the registry commits
+ * nothing once it is aborted, scene-registry.js) and asks it again before
+ * its next step (createLane's runThen is that shape as one call). Shutdown
+ * then waits for the running piece, at most 2 s,
+ * and goes on to release the scenes. An import that comes back later, after
+ * the wait ran out and even after stop() returned, finds the signal aborted:
+ * it commits nothing and invalidates nothing.
  *
  * Environment:
  *   PIXDCON_CONFIG_PATH       config.json; its directory is the data directory (image default /data/config.json)
@@ -395,13 +406,19 @@ export async function createApp(env = process.env, overrides = {}) {
         [],
       ),
     onChange: async (file) => {
-      await registryLane.run(`scene file changed: ${file}`, async () => {
-        // Read in the lane: the keys of a file are those of the registry as
-        // it is when this piece runs, after everything queued before it.
-        const keys = scenes.keysOfFile(file);
-        await scenes.refresh(keys);
-        await sceneRuntime.invalidate(keys);
-      });
+      await registryLane.runThen(
+        `scene file changed: ${file}`,
+        async (signal) => {
+          // Read in the lane: the keys of a file are those of the registry
+          // as it is when this piece runs, after everything queued before it.
+          const keys = scenes.keysOfFile(file);
+          await scenes.refresh(keys, { signal });
+          return keys;
+        },
+        // Not reached when the lane was closed while the import ran: then
+        // the registry committed nothing, and no instance is touched.
+        (keys) => sceneRuntime.invalidate(keys),
+      );
     },
     logger,
   });
@@ -589,14 +606,20 @@ export async function createApp(env = process.env, overrides = {}) {
       diff.scenesChanged.length === 0
     )
       return;
-    void registryLane.run("scene map changed", async () => {
-      const { keys } = await scenes.sync({
-        added: diff.scenesAdded,
-        removed: diff.scenesRemoved,
-        changed: diff.scenesChanged,
-      });
-      await sceneRuntime.invalidate(keys);
-    });
+    void registryLane.runThen(
+      "scene map changed",
+      (signal) =>
+        scenes.sync(
+          {
+            added: diff.scenesAdded,
+            removed: diff.scenesRemoved,
+            changed: diff.scenesChanged,
+          },
+          { signal },
+        ),
+      // As above: after the close nothing is committed and nothing follows.
+      ({ keys }) => sceneRuntime.invalidate(keys),
+    );
   };
 
   return {
@@ -654,7 +677,9 @@ export async function createApp(env = process.env, overrides = {}) {
       // The first load is the first piece in the lane. A scene map change
       // that arrives while it runs queues behind it; the drain waits for
       // both, so everything below starts from a registry that is complete.
-      void registryLane.run("first load", () => scenes.load());
+      void registryLane.run("first load", (_position, signal) =>
+        scenes.load({ signal }),
+      );
       await registryLane.drain();
       await runStep("settings.start", () => settings.start(), logger);
       await runStep("state.start", () => state.start(), logger);
@@ -690,8 +715,11 @@ export async function createApp(env = process.env, overrides = {}) {
       await runStep("config.stop", () => config.stop(), logger);
       await runStep("live.stop", () => live.stop(), logger);
       await server.stop();
-      // No new scene work starts; what is running finishes before the
-      // instances it may still touch are released.
+      // No new scene work starts, and the piece that is running is told:
+      // the lane's signal is aborted, so whatever it still awaits commits
+      // nothing and is followed by nothing (see the header). The wait below
+      // lets a short import end before the scenes are released; it is not
+      // what keeps a long one from touching them.
       registryLane.close();
       const drainLimit = new AbortController();
       await Promise.race([
