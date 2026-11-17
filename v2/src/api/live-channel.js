@@ -230,10 +230,13 @@ export class LiveChannel {
       this.#cutOff(res);
       return false;
     }
-    if (!drained && !client.deadline)
-      client.deadline = this.deps.clock.every(() => {
-        if (this.clients.get(res) === client) this.#cutOff(res);
+    if (!drained && !client.deadline) {
+      const deadline = this.deps.clock.every(() => {
+        if (this.clients.get(res) === client && client.deadline === deadline)
+          this.#cutOff(res);
       }, 10000);
+      client.deadline = deadline;
+    }
     return true;
   }
 

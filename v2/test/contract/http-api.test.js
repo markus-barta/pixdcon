@@ -531,6 +531,15 @@ test("live channel: replay above high-water mark recovers in one attempt and dra
       comment: "x".repeat(8192),
     });
   const res = bufferedResponse();
+  let staleDeadline = () => {};
+  const every = api.clock.every;
+  api.live.deps.clock = {
+    ...api.clock,
+    every(fn, ms) {
+      if (ms === 10000) staleDeadline = fn;
+      return every(fn, ms);
+    },
+  };
   api.live.handle(
     /** @type {any} */ ({
       res,
@@ -543,6 +552,12 @@ test("live channel: replay above high-water mark recovers in one attempt and dra
   assert.equal(res.writes.length, 20);
   assert.match(res.writes[19], /id: abcd1234-20/);
   res.drain();
+  staleDeadline();
+  assert.equal(
+    res.destroyed,
+    false,
+    "a canceled deadline cannot close a drained stream",
+  );
   await api.clock.advance(10000);
   assert.equal(res.destroyed, false, "drain cancels the stuck-reader deadline");
 });

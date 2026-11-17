@@ -250,9 +250,9 @@ export class StatusPublisher {
     this.everDriven = false;
     this.dirty = false;
     this.force = false;
-    /** @type {Map<string, string>} meaningful payload last successfully sent per controller topic */
+    /** @type {Map<string, string>} meaningful payload last handed to the gateway per controller topic */
     this.lastSent = new Map();
-    /** @type {Map<string, "online"|"offline">} last confirmed availability per device */
+    /** @type {Map<string, "online"|"offline">} last availability handed to the gateway per device */
     this.lastAvailability = new Map();
     this.errorCount = 0;
     /** @type {{message: string, timestamp: string}|null} */
@@ -446,6 +446,12 @@ export class StatusPublisher {
   async #publish(running, force) {
     const { topics } = this.deps;
     const devices = this.#devices();
+    const driven = new Set(
+      devices.filter((device) => device.driven).map((device) => device.name),
+    );
+    for (const name of this.lastAvailability.keys()) {
+      if (!driven.has(name)) this.lastAvailability.delete(name);
+    }
     this.everDriven ||= devices.some((device) => device.driven);
     /** @type {Array<Promise<unknown>>} */
     const writes = [];
@@ -453,9 +459,6 @@ export class StatusPublisher {
     // it still removes the departed devices from its owned controller lists.
     if (topics.statusBase !== topics.base || this.everDriven) {
       const config = this.deps.state.runningConfigV1();
-      const driven = new Set(
-        devices.filter((device) => device.driven).map((device) => device.name),
-      );
       const effective = {
         ...config,
         devices: /** @type {Array<{name: string}>} */ (
@@ -518,32 +521,32 @@ export class StatusPublisher {
       "lastContactAt",
     ]);
     const value = JSON.stringify(payload, (key, value) =>
-      volatile.has(key) ? undefined : value,
+      topic !== this.deps.topics.configEffective && volatile.has(key)
+        ? undefined
+        : value,
     );
     if (!force && this.lastSent.get(topic) === value) return;
-    this.lastSent.delete(topic); // A failed send may still have reached the broker.
-    const result = await this.deps.mqtt.publish(topic, payload, {
+    // Even an uncertain send may be stored. Retry unchanged content on connect
+    // or the timer; a newer value always replaces this attempted value.
+    this.lastSent.set(topic, value);
+    await this.deps.mqtt.publish(topic, payload, {
       retain: true,
       qos: 0,
     });
-    if (result.outcome === "sent" || result.outcome === "confirmed")
-      this.lastSent.set(topic, value);
   }
 
   /** @param {string} device @param {"online"|"offline"} payload @param {number} sent @param {boolean} retire */
   async #availability(device, payload, sent, retire) {
     const { mqtt, topics } = this.deps;
-    this.lastAvailability.delete(device);
+    this.lastAvailability.set(device, payload);
     try {
       const result = await mqtt.publish(topics.availability(device), payload, {
         retain: true,
         qos: 1,
       });
       availabilityOutcome(this.ledger, device, payload, sent, result.outcome);
-      if (result.outcome === "confirmed") {
-        if (retire) this.lastAvailability.delete(device);
-        else this.lastAvailability.set(device, payload);
-      }
+      if (retire && result.outcome === "confirmed")
+        this.lastAvailability.delete(device);
     } catch (error) {
       availabilityOutcome(this.ledger, device, payload, sent, "error");
       throw error;

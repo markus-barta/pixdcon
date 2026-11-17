@@ -772,7 +772,7 @@ test("status publisher: 100 frame-only changes publish nothing; scene changes pu
   assert.deepEqual(sent(), []);
 });
 
-test("status publisher: uncertain sends invalidate deduplication; recovery republishes earlier values", async (t) => {
+test("status publisher: recovery after uncertain sends republishes earlier values", async (t) => {
   const f = await publications(t);
   const p = f.states.get("P");
   f.gateway.outcome = "timeout"; // Broker stores the attempt; its acknowledgement is lost.
@@ -795,5 +795,44 @@ test("status publisher: uncertain sends invalidate deduplication; recovery repub
   assert.equal(
     JSON.parse(f.broker.retained()[f.topics.state]).devices[1].scene,
     "radio",
+  );
+});
+
+test("status publisher: uncertain refreshes do not turn frame events into publish retries", async (t) => {
+  const f = await publications(t);
+  f.gateway.outcome = "timeout";
+  f.gateway.emit("connect", { connection: 2 });
+  await f.publisher.pending;
+  f.gateway.calls.length = 0;
+  for (let frame = 0; frame < 100; frame++) {
+    f.states.get("P").effective.frameCount++;
+    f.state.emit("device", f.states.get("P"));
+    await f.publisher.pending;
+  }
+  assert.deepEqual(f.gateway.calls, []);
+  f.gateway.outcome = "confirmed";
+  await f.clock.advance(30000);
+  await f.publisher.pending;
+  assert.equal(
+    f.gateway.calls.length,
+    6,
+    "the next periodic refresh retries each topic once",
+  );
+});
+
+test("status publisher: effective config fields named since or timestamp are real config changes", async (t) => {
+  const f = await publications(t);
+  const config = f.state.runningConfigV1();
+  Object.assign(config, { custom: { since: 1, timestamp: "first" } });
+  f.state.runningConfigV1 = () => config;
+  f.runtime.emit("changed");
+  await f.publisher.pending;
+  f.gateway.calls.length = 0;
+  Object.assign(config, { custom: { since: 2, timestamp: "second" } });
+  f.runtime.emit("changed");
+  await f.publisher.pending;
+  assert.deepEqual(
+    f.gateway.calls.map((call) => call.topic),
+    [f.topics.configEffective],
   );
 });
