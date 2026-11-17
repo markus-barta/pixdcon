@@ -2,90 +2,427 @@
   "owner": "W2",
   "rows": [
     {
-      "site": "web/js/main.js:20",
+      "site": "web/js/api.js:114",
       "id": "fetch:fetch#1",
-      "input": "the answer of GET /api/health when the page loads",
-      "metadata": "none yet",
+      "input": "the answer of a request: status and JSON body",
+      "metadata": "generation of the request for its resource (beginRequest, or openSource for the bootstrap), taken before it is sent; epoch and seq of X-Pixdcon-Position",
+      "fence": "ordering.js beginRequest and openSource before the request is sent; the caller hands the Answer to store.applyAnswer, which decides with decideView, decideAnswer or decideSnapshot; an answer without a readable header has epoch null and is not applied",
+      "test": "test/contract/client.test.js: client api:",
+      "was": "api.request"
+    },
+    {
+      "site": "web/js/api.js:188",
+      "id": "fetch:fetch#2",
+      "input": "the last frame of one display as bytes (GET /api/v2/devices/<name>/preview)",
+      "metadata": "generation of the request for \"frame:<device>\", taken before it is sent; the page epoch and the incarnation of the device when it was sent",
+      "fence": "store.js decideFrameAnswer: it fills an empty slot only, for the newest request of that device, in the same epoch and life of the device; the stream's frames are never replaced by it",
+      "test": "test/contract/client.test.js: client previews:"
+    },
+    {
+      "site": "web/js/components/enlarged-preview.js:167",
+      "id": "listener:document.addEventListener(\"keydown\")#1",
+      "input": "Esc and the arrow keys in the enlarged view",
+      "metadata": "a command of the user (a click, a key, a form)",
       "fence": "none",
-      "test": "test/contract/client.test.js: client boot:",
-      "why": "skeleton only: it writes one line of text. Phase 3 replaces it by the bootstrap through api.js and the store's fence"
+      "why": "they close the view or step to another display; nothing is sent",
+      "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/api.js:60",
-      "id": "contract:api.request",
-      "input": "the answer of a request",
-      "metadata": "generation of the request for its resource; epoch and seq of X-Pixdcon-Position",
-      "fence": "ordering.js beginRequest and openSource before the request is sent; the store decides with decideView, decideAnswer or decideSnapshot",
-      "test": "test/contract/client.test.js: client api:"
+      "site": "web/js/components/enlarged-preview.js:168",
+      "id": "listener:zoom.addEventListener(\"click\")#1",
+      "input": "Previous, Next, Close, a click beside the image",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "they step or close the view; nothing is sent",
+      "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/components/settings-form.js:39",
-      "id": "contract:components/settings-form.createSettingsForm",
-      "input": "the answers of the form's preview and save requests",
-      "metadata": "draft number of the form; rev of the SettingsState in the answer",
-      "fence": "ordering.js decideView; an answer for an older draft than the one on screen is not shown",
+      "site": "web/js/components/enlarged-preview.js:169",
+      "id": "listener:zoom.addEventListener(\"dblclick\")#1",
+      "input": "a double click on the image",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "it closes the view, as in v1; nothing is sent",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/components/enlarged-preview.js:170",
+      "id": "listener:window.addEventListener(\"resize\")#1",
+      "input": "the window resized",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "the preview is drawn again at the largest whole-number scale that fits; nothing is sent or applied",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/components/enlarged-preview.js:171",
+      "id": "subscribe:subscribe#1",
+      "input": "the store's state, for the enlarged view",
+      "metadata": "none: the store calls it after a change it applied",
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/components/recovery-dialog.js:157",
+      "id": "listener:document.addEventListener(\"keydown\")#1",
+      "input": "Esc and Tab while the recovery dialog is open",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "Esc closes the dialog, Tab keeps the focus inside; nothing is sent",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/components/recovery-dialog.js:158",
+      "id": "listener:scrim.addEventListener(\"click\")#1",
+      "input": "Retry now, Close, Copy command, a click outside the dialog",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/components/settings-form.js:616",
+      "id": "listener:host.addEventListener(\"input\")#1",
+      "input": "a setting value typed",
+      "metadata": "a command of the user (a click, a key, a form); the form's draft number rises with every edit (view/drafts.js)",
+      "fence": "the preview carries the newest draft and every edit that parses, one request at a time per form (the newest edits are sent again when it is answered); the answer goes through store.applyAnswer (decideView); the fields show the form's own edits until they are saved or reverted",
+      "test": "test/contract/client.test.js: client settings form:",
+      "was": "components/settings-form.createSettingsForm"
+    },
+    {
+      "site": "web/js/components/settings-form.js:617",
+      "id": "listener:host.addEventListener(\"change\")#1",
+      "input": "a checkbox, choice or colour changed",
+      "metadata": "a command of the user (a click, a key, a form); the form's draft number rises with every edit",
+      "fence": "as for a typed value: newest draft, one preview request at a time, the answer through decideView",
+      "test": "test/contract/client.test.js: client settings form:",
+      "was": "components/settings-form.createSettingsForm"
+    },
+    {
+      "site": "web/js/components/settings-form.js:618",
+      "id": "listener:host.addEventListener(\"click\")#1",
+      "input": "Save, Revert, Clear N overlays, Reset to default, Retry",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position); Save names the draft it commits, and what was typed after the click stays as a newer preview",
+      "test": "test/contract/client.test.js: client settings form:",
+      "was": "components/settings-form.createSettingsForm"
+    },
+    {
+      "site": "web/js/live.js:139",
+      "id": "timer:setTimeout#1",
+      "input": "the 5 s reconnect timer",
+      "metadata": "none: a hint (rule 3.0)",
+      "fence": "a timer says when to look: it opens a new EventSource with a new stream generation (openSource); it changes only the connection state that is shown, never a value",
+      "test": "test/contract/client.test.js: client timers:",
+      "was": "live.connectLive"
+    },
+    {
+      "site": "web/js/live.js:146",
+      "id": "timer:setTimeout#2",
+      "input": "the 20 s silence timer of the current stream",
+      "metadata": "generation of the stream it was armed for",
+      "fence": "a hint: it declares only that stream lost (the connection state that is shown; the values stay, marked with their time) and arms the reconnect",
+      "test": "test/contract/client.test.js: client timers:",
+      "was": "live.connectLive"
+    },
+    {
+      "site": "web/js/live.js:159",
+      "id": "stream:new EventSource#1",
+      "input": "the live stream, GET /api/v2/events (server-sent events)",
+      "metadata": "a new stream generation for every connect and reconnect (openSource); epoch and seq from every event id",
+      "fence": "ordering.js openSource for every new stream; store.applyEvent decides every event with decideEvent, then decideSnapshot, decideView or forgetDevice",
+      "test": "test/contract/client.test.js: client live:",
+      "was": "live.connectLive"
+    },
+    {
+      "site": "web/js/live.js:161",
+      "id": "listener:stream.onopen=#1",
+      "input": "the stream opened",
+      "metadata": "generation of the stream",
+      "fence": "a hint: only the connection state that is shown; ignored for a stream that was replaced",
+      "test": "test/contract/client.test.js: client timers:",
+      "was": "live.connectLive"
+    },
+    {
+      "site": "web/js/live.js:166",
+      "id": "listener:stream.onerror=#1",
+      "input": "the stream failed or was closed by the server",
+      "metadata": "generation of the stream",
+      "fence": "a hint: the stream is closed (the browser's own retry is not left running) and declared lost; a new one opens after 5 s; ignored for a stream that was replaced",
+      "test": "test/contract/client.test.js: client live:",
+      "was": "live.connectLive"
+    },
+    {
+      "site": "web/js/live.js:173",
+      "id": "listener:stream.addEventListener#1",
+      "input": "every live event: snapshot, device, device-removed, preview, overlays, settings, scenes, config, mqtt, controller, log, ping",
+      "metadata": "epoch and seq from the event id (never from the payload); generation of the stream it arrived on",
+      "fence": "not handed on from a replaced stream or with an unreadable id or body; store.applyEvent: decideEvent first, then decideSnapshot, decideView or forgetDevice",
+      "test": "test/contract/client.test.js: client live:",
+      "was": "live.connectLive"
+    },
+    {
+      "site": "web/js/main.js:63",
+      "id": "subscribe:subscribe#1",
+      "input": "the store's state, for the top bar (version, overlay count, MQTT state, Restart needed)",
+      "metadata": "none: the store calls it after a change it applied",
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/main.js:90",
+      "id": "listener:versionButton.addEventListener(\"click\")#1",
+      "input": "a click on the version in the top bar",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "it copies the canonical version to the clipboard; nothing arrives and nothing is applied",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/main.js:116",
+      "id": "timer:setInterval#1",
+      "input": "the 1 s clock of the page",
+      "metadata": "none: a hint (rule 3.0)",
+      "fence": "a timer says when to look: store.tick moves only the clock that ages (\"frame 2 s ago\") are computed against; no value is replaced by it",
+      "test": "test/contract/client.test.js: client timers:"
+    },
+    {
+      "site": "web/js/main.js:124",
+      "id": "subscribe:subscribe#2",
+      "input": "the devices the store holds, to ask once per device life for its last frame",
+      "metadata": "epoch, device name and incarnation",
+      "fence": "the request takes its generation first (api.js requestFrame); the answer goes through store.js decideFrameAnswer",
+      "test": "test/contract/client.test.js: client previews:"
+    },
+    {
+      "site": "web/js/main.js:156",
+      "id": "listener:window.addEventListener(\"pagehide\")#1",
+      "input": "the page is left",
+      "metadata": "the page's session id",
+      "fence": "none",
+      "why": "it sends the end of this page's settings previews with navigator.sendBeacon; no answer comes back, and the server also ends them 5 s after the page's last stream closed (preview rule 2)",
       "test": "test/contract/client.test.js: client settings form:"
     },
     {
-      "site": "web/js/live.js:60",
-      "id": "contract:live.connectLive",
-      "input": "the events of the live stream, its open and its error, the 5 s reconnect timer, the 20 s silence timer",
-      "metadata": "epoch and seq from the event id; generation of the stream",
-      "fence": "ordering.js openSource for every new stream; the store applies an event only through decideEvent; the two timers change only the connection state that is shown",
-      "test": "test/contract/client.test.js: client live:"
+      "site": "web/js/pages/config-raw.js:243",
+      "id": "listener:root.addEventListener(\"click\")#1",
+      "input": "Save and Reload from disk of the raw editor",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time (raw-save, raw-reload); the config state in the answer goes through store.applyAnswer (decideAnswer)",
+      "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/store.js:96",
-      "id": "contract:store.applySnapshot",
-      "input": "a snapshot: the bootstrap answer, or the first event of a stream",
-      "metadata": "epoch, seq, generation of its source",
-      "fence": "ordering.js decideSnapshot",
-      "test": "test/contract/ordering.test.js: F5: a snapshot that a newer source has overtaken"
+      "site": "web/js/pages/config-raw.js:244",
+      "id": "listener:root.addEventListener(\"input\")#1",
+      "input": "typing in the raw editor",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "the text is checked as JSON in the page and the gutter redrawn; nothing is sent",
+      "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/store.js:111",
-      "id": "contract:store.applyEvent",
-      "input": "a live event",
-      "metadata": "epoch, seq, stream generation; a view inside carries its own epoch and rev",
-      "fence": "ordering.js decideEvent, then decideView for a view",
-      "test": "test/contract/ordering.test.js: F5: an event is applied only on the newest stream"
+      "site": "web/js/pages/config-raw.js:245",
+      "id": "listener:root.addEventListener(\"scroll\")#1",
+      "input": "the raw editor scrolled",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "the gutter follows the text; nothing is sent or applied",
+      "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/store.js:123",
-      "id": "contract:store.applyAnswer",
-      "input": "the answer of a request",
-      "metadata": "request generation, epoch and seq; rev for a view",
-      "fence": "ordering.js decideView or decideAnswer",
-      "test": "test/contract/ordering.test.js: F5: views and answers"
+      "site": "web/js/pages/config-raw.js:246",
+      "id": "subscribe:subscribe#1",
+      "input": "the store's state, for the Raw config.json page",
+      "metadata": "none: the store calls it after a change it applied",
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/pages/config.js:321",
+      "id": "listener:root.addEventListener(\"click\")#1",
+      "input": "Edit, Cancel, Save of a device row, Add to config.json, the theme of this browser",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position); the theme is stored in this browser only",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/config.js:322",
+      "id": "listener:root.addEventListener(\"input\")#1",
+      "input": "typing in the Add device form",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "it only enables the Add device button; nothing is sent",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/config.js:323",
+      "id": "listener:root.addEventListener(\"submit\")#1",
+      "input": "Add device",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/config.js:324",
+      "id": "subscribe:subscribe#1",
+      "input": "the store's state, for the Config page",
+      "metadata": "none: the store calls it after a change it applied",
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/pages/device.js:646",
+      "id": "listener:root.addEventListener(\"click\")#1",
+      "input": "scene options, Mode, Brightness Auto/Override, Return to …, Recovery steps, Add to config.json",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position); the busy label stands in the control's reserved place, a failure beside it",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/device.js:647",
+      "id": "listener:root.addEventListener(\"input\")#1",
+      "input": "the brightness slider moving",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "it shows the level beside the slider; nothing is sent until the slider is let go (change)",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/device.js:648",
+      "id": "listener:root.addEventListener(\"change\")#1",
+      "input": "the brightness slider let go",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/device.js:649",
+      "id": "listener:root.addEventListener(\"submit\")#1",
+      "input": "Create copy (Separate copy of this scene)",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time (copy:<scene>); the answer is said beside the button; the new scene arrives with the scenes event through decideEvent",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/device.js:650",
+      "id": "listener:root.addEventListener(\"keydown\")#1",
+      "input": "arrow keys in the scene radio group",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/device.js:651",
+      "id": "subscribe:subscribe#1",
+      "input": "the store's state, for the Device page",
+      "metadata": "none: the store calls it after a change it applied",
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/pages/devices.js:416",
+      "id": "listener:root.addEventListener(\"change\")#1",
+      "input": "a scene chosen in a row's select",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position); the row shows \"Switching to …\" in its reserved line and a failure in its second line",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/devices.js:417",
+      "id": "listener:root.addEventListener(\"click\")#1",
+      "input": "Restore in a row",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/devices.js:418",
+      "id": "listener:root.addEventListener(\"input\")#1",
+      "input": "typing in the empty state's Add device form",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "it only enables the Add device button; nothing is sent",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/devices.js:419",
+      "id": "listener:root.addEventListener(\"submit\")#1",
+      "input": "Add device in the empty state",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/devices.js:420",
+      "id": "subscribe:subscribe#1",
+      "input": "the store's state, for the Devices page",
+      "metadata": "none: the store calls it after a change it applied",
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/pages/health.js:227",
+      "id": "listener:root.addEventListener(\"click\")#1",
+      "input": "the log filter, Copy, the version display",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "they change what the page shows from the store, or copy to the clipboard; nothing is sent",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/health.js:228",
+      "id": "listener:root.addEventListener(\"scroll\")#1",
+      "input": "the log pane scrolled",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "the pane follows the newest line only while it is at the bottom; nothing is sent or applied",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/health.js:229",
+      "id": "subscribe:subscribe#1",
+      "input": "the store's state, for the Health page",
+      "metadata": "none: the store calls it after a change it applied",
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/pages/overlays.js:182",
+      "id": "listener:root.addEventListener(\"click\")#1",
+      "input": "Clear on an overlay row",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "api.js: one request at a time per row (overlay:<id>); the answer's overlay list goes through store.applyAnswer (decideAnswer: generation, position)",
+      "test": "test/contract/client.test.js: client controls:"
+    },
+    {
+      "site": "web/js/pages/overlays.js:183",
+      "id": "subscribe:subscribe#1",
+      "input": "the store's state, for the Overlays page",
+      "metadata": "none: the store calls it after a change it applied",
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/router.js:147",
+      "id": "listener:window.addEventListener(\"hashchange\")#1",
+      "input": "a route change (the address)",
+      "metadata": "a command of the user (a click, a key, a form)",
+      "fence": "none",
+      "why": "it mounts the page of the address; the page renders what the store holds, and the store holds only what its fence applied",
+      "test": "test/contract/client.test.js: client store:"
+    },
+    {
+      "site": "web/js/store.js:673",
+      "id": "subscribe:main.subscribe#1",
+      "input": "a page's subscription, passed on to the default store",
+      "metadata": "none: the store calls it after a change it applied",
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
+      "test": "test/contract/client.test.js: client store:"
     }
   ],
-  "none": [
-    "api.isBusy",
-    "api.onBusy",
-    "components/enlarged-preview.openEnlargedPreview",
-    "components/pixel-preview.createPixelPreview",
-    "components/recovery-dialog.openRecoveryDialog",
-    "format.clock",
-    "format.ago",
-    "format.percent",
-    "format.grouped",
-    "theme.currentTheme",
-    "theme.setTheme",
-    "pages/config-raw.mount",
-    "pages/config-raw.unmount",
-    "pages/config.mount",
-    "pages/config.unmount",
-    "pages/device.mount",
-    "pages/device.unmount",
-    "pages/devices.mount",
-    "pages/devices.unmount",
-    "pages/health.mount",
-    "pages/health.unmount",
-    "pages/overlays.mount",
-    "pages/overlays.unmount",
-    "router.startRouter",
-    "store.getState",
-    "store.fence",
-    "store.subscribe"
-  ]
+  "none": [],
+  "resolved": {
+    "store.applySnapshot": "The body is synchronous and pure: it receives nothing asynchronous itself. It is the caller of the fence (decideSnapshot, then decideView for every view with snapshot: true); the sites that deliver to it have their own rows: live.js stream.addEventListener (the first event of a stream) and api.js fetch#1 (the bootstrap answer).",
+    "store.applyEvent": "The body is synchronous and pure: it receives nothing asynchronous itself. It is the caller of the fence (decideEvent, then decideView, decideSnapshot or forgetDevice); the site that delivers to it has its own row: live.js stream.addEventListener.",
+    "store.applyAnswer": "The body is synchronous and pure: it receives nothing asynchronous itself. It is the caller of the fence (decideView for a view, decideAnswer for a whole resource, decideSnapshot for the bootstrap); the site that delivers to it has its own row: api.js fetch#1."
+  }
 }
