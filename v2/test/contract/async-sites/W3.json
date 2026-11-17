@@ -82,7 +82,7 @@
       "test": "test/smoke/drivers-render.test.js: previews in order:"
     },
     {
-      "site": "src/render/render-loop.js:154",
+      "site": "src/render/render-loop.js:155",
       "id": "timer:this.deps.clock.sleep#1",
       "input": "pacing, stop deadline or plug wait",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -90,7 +90,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends"
     },
     {
-      "site": "src/render/render-loop.js:268",
+      "site": "src/render/render-loop.js:273",
       "id": "timer:this.deps.clock.sleep#2",
       "input": "pacing, stop deadline or plug wait",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -98,7 +98,7 @@
       "test": "test/smoke/drivers-render.test.js: backoff 1, 2, 4"
     },
     {
-      "site": "src/render/render-loop.js:300",
+      "site": "src/render/render-loop.js:306",
       "id": "work:mqtt.publish#1",
       "input": "plug publish outcome",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -106,7 +106,7 @@
       "test": "test/smoke/drivers-render.test.js: 10 failed renders with a plug configured:"
     },
     {
-      "site": "src/render/render-loop.js:307",
+      "site": "src/render/render-loop.js:313",
       "id": "work:mqtt.publish#2",
       "input": "plug publish outcome",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -114,7 +114,7 @@
       "test": "test/smoke/drivers-render.test.js: 10 failed renders with a plug configured:"
     },
     {
-      "site": "src/render/render-loop.js:374",
+      "site": "src/render/render-loop.js:380",
       "id": "work:this.deps.scenes.acquire#1",
       "input": "scene instance acquired asynchronously",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",

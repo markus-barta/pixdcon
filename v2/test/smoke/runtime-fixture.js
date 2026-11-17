@@ -116,7 +116,7 @@ export async function rig(t, options = {}) {
   const reports = [];
   /** @type {any[]} */
   const healthReports = [];
-  let effective = { devices, rev: 1, scenes: {} };
+  let effective = { devices, rev: 1, scenes: {}, health: healthConfig };
   const runtime = Object.assign(new EventEmitter(), { get: () => effective, device: (/** @type {string} */ name) => effective.devices.find((/** @type {any} */ d) => d.name === name) });
   const scheduler = new Scheduler(/** @type {any} */ ({ state, runtime, factories, scenes, health, previews, mqtt, telemetry: options.telemetry ?? null, clock, logger }));
   health.start(); t.after(() => health.stop());

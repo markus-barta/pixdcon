@@ -95,6 +95,7 @@ export const LOOP_DEFAULTS = Object.freeze({
  * @property {(patch: Partial<EffectiveState>) => void} report to the state store
  * @property {import("../types.js").Clock} clock
  * @property {import("../types.js").Logger} logger
+ * @property {() => number} [probeIntervalMs] effective health config; default 10000
  */
 
 export class RenderLoop {
@@ -248,6 +249,10 @@ export class RenderLoop {
   /** @param {number} native */
   percent(native) { return this.deps.device.type === "pixoo" ? Math.max(1, Math.min(100, Math.round(native))) : Math.round(Math.max(0, Math.min(255, native)) / 255 * 100); }
   iso() { return new Date(this.deps.clock.now()).toISOString(); }
+  probeInterval() {
+    const ms = this.deps.probeIntervalMs?.() ?? LOOP_DEFAULTS.probeIntervalMs;
+    return Number.isFinite(ms) && ms > 0 ? ms : LOOP_DEFAULTS.probeIntervalMs;
+  }
 
   async applyBrightness() {
     const native = this.target.brightnessOverride ?? this.lastSceneBrightness;
@@ -287,9 +292,10 @@ export class RenderLoop {
   async waitWithProbes(ms, recover = true) {
     const end = this.deps.clock.now() + ms;
     while (this.running && this.deps.clock.now() < end) {
-      const interval = Math.min(LOOP_DEFAULTS.probeIntervalMs, end - this.deps.clock.now());
+      const probeMs = this.probeInterval();
+      const interval = Math.min(probeMs, end - this.deps.clock.now());
       if (!await this.sleep(interval)) return;
-      if (interval === LOOP_DEFAULTS.probeIntervalMs && await this.probe() && recover) return;
+      if (interval === probeMs && await this.probe() && recover) return;
     }
   }
 
@@ -388,7 +394,7 @@ export class RenderLoop {
             await this.sleep(Math.max(1, wait));
             continue;
           }
-          if (await this.sleep(LOOP_DEFAULTS.probeIntervalMs)) await this.probe();
+          if (await this.sleep(this.probeInterval())) await this.probe();
         } catch (error) {
           if (!this.running) break;
           if (version !== this.version || this.retry) continue;

@@ -610,3 +610,21 @@ test("AWTRIX startup creates its custom app before selecting it and a failed swi
   assert.deepEqual(r.awtrix.state().apps["pixdcon_u"], { text: "3", color: "#00FF00" });
   assert.equal(r.scheduler.loop("u")?.driver.ready, false);
 });
+
+test("quiet probes and recovery waits read the effective health probe interval", async (t) => {
+  const r = loopRig(t, { target: { scene: null } });
+  let interval = 2500;
+  r.loop.deps.probeIntervalMs = () => interval;
+  await flush(); await r.clock.advance(2499); assert.equal(r.calls.filter((c) => c.op === "probe").length, 0);
+  await r.clock.advance(1); assert.equal(r.calls.filter((c) => c.op === "probe").length, 1);
+  interval = 1500;
+  await r.clock.advance(2500); // the already-armed sleep completes; the next one reads the new value
+  const before = r.calls.filter((c) => c.op === "probe").length;
+  await r.clock.advance(1499); assert.equal(r.calls.filter((c) => c.op === "probe").length, before);
+  await r.clock.advance(1); assert.equal(r.calls.filter((c) => c.op === "probe").length, before + 1);
+  const error = new DeviceError("offline");
+  const recovery = loopRig(t, { deviceError: error, probeError: error });
+  recovery.loop.deps.probeIntervalMs = () => 2500;
+  await flush(); const start = recovery.clock.now(); await recovery.clock.advance(5500);
+  assert.equal((recovery.calls.find((c) => c.op === "probe")?.at ?? 0) - start, 5500);
+});

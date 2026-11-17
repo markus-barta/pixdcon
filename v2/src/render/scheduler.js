@@ -259,7 +259,7 @@ export class Scheduler {
     const report = whileCurrent(current, { report: (/** @type {Partial<import('../types.js').EffectiveState>} */ patch) => { this.deps.state.reportEffective(name, patch, token); } }, ["report"]).report;
     const desired = this.deps.state.get(name)?.desired;
     const target = desired ? this.targetOf(desired, device.type) : { scene: device.savedScene, mode: /** @type {const} */ ("play"), brightnessOverride: null };
-    const loop = new RenderLoop({ device: { ...device, output: device.output.mode }, driver: driverView, createSurface: this.deps.factories.createSurface, scenes: this.deps.scenes, health, previews, report, mqtt: this.deps.mqtt, clock: this.deps.clock, logger: this.deps.logger }, target);
+    const loop = new RenderLoop({ device: { ...device, output: device.output.mode }, driver: driverView, createSurface: this.deps.factories.createSurface, scenes: this.deps.scenes, health, previews, report, mqtt: this.deps.mqtt, clock: this.deps.clock, logger: this.deps.logger, probeIntervalMs: () => this.deps.runtime.get().health.probeIntervalMs }, target);
     const record = { device, token, driver, loop, stopFeed: () => {} };
     this.runtimes.set(name, record);
     this.retryAfter.delete(name);
