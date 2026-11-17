@@ -1,10 +1,10 @@
 /**
  * Test kind 1 of 3: fixed screen images per scene (golden frames).
  *
- * What exists now proves the harness: the comparison is exact, the stored
- * frames are readable, and every shared v1 scene loads inside v2's process.
- * Phase 3 (fixtures + edge lane worker) adds one scenario file per case under
- * fixtures/ and its frame under frames/, and replaces the todo entries below.
+ * Every scenario runs through v1's drawing engine and v2's scene runtime,
+ * adapter and surface. Both must match byte for byte before the reference
+ * PNG (and AWTRIX JSON) is compared. Fixtures include independent device glow,
+ * boiler history, sensor state, HTTP answers and canned ping results.
  *
  * How a scenario runs (test/helpers/golden.js GoldenScenario): the clock and
  * the timers are frozen at `now` in `timeZone`, the scene is loaded through
@@ -30,6 +30,9 @@ import {
   decodePng,
   encodePng,
   expectFrame,
+  expectPayload,
+  renderScenario,
+  installGoldenPingPeer,
   loadScenario,
 } from "../helpers/golden.js";
 import { requireNetGuard } from "../helpers/harness.js";
@@ -70,7 +73,9 @@ test("harness: the stored golden frame matches, and one changed pixel is caught"
   );
 });
 
-test("harness: every shared v1 scene loads in v2's process", async () => {
+test("harness: every shared v1 scene loads in v2's process", async (t) => {
+  const hook = await installGoldenPingPeer();
+  t.after(() => hook.deregister());
   // lib/pixoo-image.js imports `sharp`; in a checkout only v2/node_modules has it.
   installSharedResolution();
   const { scenesDir } = sharedPaths();
@@ -116,28 +121,87 @@ test("fixtures: every scenario file names its scene, device type, time and time 
 
 // --- Phase 3: one golden frame per line. Names are the scenario and frame file names. -------------
 // Ulanzi (payload + 32×8 picture)
-test.todo("clock--default-with-seconds");
-test.todo("clock--no-seconds-custom-colour");
-test.todo("test-pattern--first-frame");
-test.todo("test-pattern--frame-17");
-test.todo("clock_with_homestats--day-all-closed-battery-charging");
-test.todo("clock_with_homestats--night-door-open-lock-unknown");
-test.todo("clock_with_homestats--debug-battery-override");
+test("clock--default-with-seconds", async (t) => { await goldenCase(t, "clock--default-with-seconds"); });
+test("clock--no-seconds-custom-colour", async (t) => { await goldenCase(t, "clock--no-seconds-custom-colour"); });
+test("test-pattern--first-frame", async (t) => { await goldenCase(t, "test-pattern--first-frame"); });
+test("test-pattern--frame-17", async (t) => { await goldenCase(t, "test-pattern--frame-17"); });
+test("clock_with_homestats--day-all-closed-battery-charging", async (t) => { await goldenCase(t, "clock_with_homestats--day-all-closed-battery-charging"); });
+test("clock_with_homestats--night-door-open-lock-unknown", async (t) => { await goldenCase(t, "clock_with_homestats--night-door-open-lock-unknown"); });
+test("clock_with_homestats--debug-battery-override", async (t) => { await goldenCase(t, "clock_with_homestats--debug-battery-override"); });
 // Pixoo64 (64×64 picture)
-test.todo("funkeykid--title-before-first-key");
-test.todo("funkeykid--letter-a-with-picture");
-test.todo("funkeykid--idle-picture-only");
-test.todo("funkeykid--volume-bar-70-percent");
-test.todo("health--home-tab-all-green");
+test("funkeykid--title-before-first-key", async (t) => { await goldenCase(t, "funkeykid--title-before-first-key"); });
+test("funkeykid--letter-a-with-picture", async (t) => { await goldenCase(t, "funkeykid--letter-a-with-picture"); });
+test("funkeykid--idle-picture-only", async (t) => { await goldenCase(t, "funkeykid--idle-picture-only"); });
+test("funkeykid--volume-bar-70-percent", async (t) => { await goldenCase(t, "funkeykid--volume-bar-70-percent"); });
+test("health--home-tab-all-green", async (t) => { await goldenCase(t, "health--home-tab-all-green"); });
 // Two instances of health, frames rendered in turn: the glow of the second
 // starts where a fresh instance starts, not where the first one is (B-005).
-test.todo("health--second-device-starts-its-own-glow");
-test.todo("health--wlan-tab-one-device-offline");
-test.todo("health--heizung-tab-chain-mismatch");
-test.todo("home--day-all-fresh-uv-chart");
-test.todo("home--night-everything-stale");
-test.todo("home2--boiler-heating-with-history");
-test.todo("home2--lock-disconnected-amber-dot");
-test.todo("home3--noon-car-home-charging");
-test.todo("home3--night-car-away-battery-discharging");
-test.todo("home3--no-data-after-start");
+test("health--second-device-starts-its-own-glow", async (t) => { await goldenCase(t, "health--second-device-starts-its-own-glow"); });
+test("health--wlan-tab-one-device-offline", async (t) => { await goldenCase(t, "health--wlan-tab-one-device-offline"); });
+test("health--heizung-tab-chain-mismatch", async (t) => { await goldenCase(t, "health--heizung-tab-chain-mismatch"); });
+test("home--day-all-fresh-uv-chart", async (t) => { await goldenCase(t, "home--day-all-fresh-uv-chart"); });
+test("home--night-everything-stale", async (t) => { await goldenCase(t, "home--night-everything-stale"); });
+test("home2--boiler-heating-with-history", async (t) => { await goldenCase(t, "home2--boiler-heating-with-history"); });
+test("home2--lock-disconnected-amber-dot", async (t) => { await goldenCase(t, "home2--lock-disconnected-amber-dot"); });
+test("home3--noon-car-home-charging", async (t) => { await goldenCase(t, "home3--noon-car-home-charging"); });
+test("home3--night-car-away-battery-discharging", async (t) => { await goldenCase(t, "home3--night-car-away-battery-discharging"); });
+test("home3--no-data-after-start", async (t) => { await goldenCase(t, "home3--no-data-after-start"); });
+
+/** @param {import('node:test').TestContext} t @param {string} name */
+async function goldenCase(t, name) {
+  const scenario = await loadScenario(`${name}.json`);
+  const expected = await renderScenario(t, scenario, { reference: true });
+  const actual = await renderScenario(t, scenario, name.includes('second-device') ? { priorDeviceFrames: 7 } : {});
+  assert.deepEqual(actual.frame, expected.frame, `${name}: v2 pixels equal the unchanged v1 drawing engine`);
+  assert.deepEqual(actual.payload, expected.payload, `${name}: AWTRIX wire payload equals v1`);
+  assert.deepEqual(actual.brightness, expected.brightness, `${name}: scene brightness requests`);
+  await expectFrame(name, expected.frame);
+  if (scenario.deviceType === 'ulanzi') await expectPayload(name, expected.payload);
+}
+
+test("surface--v1-lines-alpha-and-aligned-text", async () => {
+  const { loadV1ReferenceDrivers, loadV1Font } = await import('../../src/scenes/v1-shared.js');
+  const { createPixooSurface } = await import('../../src/scenes/v1-device-facade.js');
+  const { sinkDriver } = await import('../helpers/scene-context.js');
+  const { PixooDriver } = await loadV1ReferenceDrivers();
+  const reference = new PixooDriver('127.0.0.1');
+  const actual = createPixooSurface({ name: 'drawing-card', address: '127.0.0.1' }, {
+    driver: sinkDriver(), async show() {}, async requestBrightness() { return true; },
+  }, await loadV1Font());
+  /** @param {any} surface */
+  const draw = async (surface) => {
+    await surface.drawRectangleRgba([-4, 3], [37, 25], [32, 64, 128]);
+    for (const [x, y] of [[-4, 0], [68, 1], [64, 63], [-2, 60], [18, 65], [33, -2], [32, 32]]) {
+      await surface.drawLineRgba([32, 32], [x, y], [240, 128, 32, 128]);
+      await surface.drawLineRgba([x, y], [31, 31], [0, 200, 255, 100]);
+    }
+    await surface.drawRectangleRgba([44, 0], [24, 7], [0, 255, 128, 160]);
+    await surface.drawTextRgbaAligned('ÄÖÜ 12:34', [32, 40], [255, 255, 255], 'center');
+    await surface.drawTextRgbaAligned('odd', [32, 48], [255, 64, 64, 150], 'center');
+    await surface.drawTextRgbaAligned('right', [63, 57], [128, 255, 64], 'right');
+  };
+  await draw(reference);
+  await draw(actual);
+  assert.deepEqual(actual.buf, reference.buf);
+  await expectFrame('surface--v1-lines-alpha-and-aligned-text', { width: 64, height: 64, rgb: reference.buf });
+});
+
+test("raster--awtrix-drawing-commands-and-unsupported-fields", async () => {
+  const { rasterizeAwtrixApp } = await import('../../src/drivers/awtrix-raster.js');
+  const app = { draw: [
+    { df: [-2, -2, 5, 5, '#102030'] },
+    { dr: [5, 1, 4, 6, [255, 0, 0]] },
+    { dl: [-1e12, 7, 1e12, 7, '#00FF00'] },
+    { dp: [31, 0, [0, 0, 255]] },
+    { dt: [11, 1, 'A:9', '#FF8800'] },
+    { dc: [0, 0, 1, '#FFFFFF'] },
+  ], icon: 'unsupported' };
+  const saved = structuredClone(app);
+  const { frame, unsupported } = rasterizeAwtrixApp(app);
+  assert.deepEqual(unsupported, ['draw.dc', 'icon']);
+  assert.deepEqual(app, saved, 'drawing never rewrites the wire payload');
+  assert.deepEqual([...frame.rgb.slice(0, 3)], [16, 32, 48]);
+  assert.deepEqual([...frame.rgb.slice(31 * 3, 32 * 3)], [0, 0, 255]);
+  assert.deepEqual([...frame.rgb.slice(7 * 32 * 3, 7 * 32 * 3 + 3)], [0, 255, 0]);
+  await expectFrame('raster--awtrix-drawing-commands-and-unsupported-fields', frame);
+});

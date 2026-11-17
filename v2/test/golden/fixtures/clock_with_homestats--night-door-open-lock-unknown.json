@@ -1,0 +1,19 @@
+{
+  "name": "clock_with_homestats--night-door-open-lock-unknown",
+  "scene": "clock_with_homestats",
+  "deviceType": "ulanzi",
+  "now": "2026-11-16T23:42:07+01:00",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "z2m/wz/contact/te-door",
+      "payload": {
+        "contact": false
+      }
+    }
+  ],
+  "http": [],
+  "frames": 1,
+  "note": "night door open lock unknown; v1 reference drawing, frozen inputs."
+}

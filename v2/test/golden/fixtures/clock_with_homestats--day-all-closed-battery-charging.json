@@ -1,0 +1,73 @@
+{
+  "name": "clock_with_homestats--day-all-closed-battery-charging",
+  "scene": "clock_with_homestats",
+  "deviceType": "ulanzi",
+  "now": "2026-11-16T12:42:07+01:00",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "nuki/463F8F47/state",
+      "payload": "1"
+    },
+    {
+      "topic": "nuki/4A5D18FF/state",
+      "payload": "1"
+    },
+    {
+      "topic": "nuki/463F8F47/connected",
+      "payload": "true"
+    },
+    {
+      "topic": "nuki/4A5D18FF/connected",
+      "payload": "true"
+    },
+    {
+      "topic": "z2m/wz/contact/te-door",
+      "payload": {
+        "contact": true
+      }
+    },
+    {
+      "topic": "z2m/wz/contact/te-door/availability",
+      "payload": {
+        "state": "online"
+      }
+    },
+    {
+      "topic": "z2m/vk/contact/w13",
+      "payload": {
+        "contact": true
+      }
+    },
+    {
+      "topic": "z2m/vk/contact/w13/availability",
+      "payload": {
+        "state": "online"
+      }
+    },
+    {
+      "topic": "z2m/vr/contact/w14",
+      "payload": {
+        "contact": true
+      }
+    },
+    {
+      "topic": "z2m/vr/contact/w14/availability",
+      "payload": {
+        "state": "online"
+      }
+    }
+  ],
+  "http": [
+    {
+      "url": "http://127.0.0.1/api/v2/status",
+      "body": {
+        "USOC": 72,
+        "BatteryCharging": true
+      }
+    }
+  ],
+  "frames": 1,
+  "note": "day all closed battery charging; v1 reference drawing, frozen inputs."
+}

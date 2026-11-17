@@ -25,7 +25,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { createRequire, registerHooks } from "node:module";
+import { createRequire, isBuiltin, registerHooks } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { lstat, mkdir, symlink } from "node:fs/promises";
@@ -93,7 +93,7 @@ export function installSharedResolution(options = {}) {
     resolve(specifier, context, nextResolve) {
       const bare = !/^(\.{0,2}\/|[a-z][a-z0-9+.-]*:)/i.test(specifier);
       const parent = context.parentURL ?? "";
-      if (!bare || ![...sharedPrefixes].some((prefix) => parent.startsWith(prefix))) {
+      if (isBuiltin(specifier) || !bare || ![...sharedPrefixes].some((prefix) => parent.startsWith(prefix))) {
         return nextResolve(specifier, context);
       }
       try {
