@@ -429,6 +429,7 @@ test("instance tokens: a replacement instance and the instance it replaces have 
   assert.deepEqual(await runtime.invalidate(["scene"]), {
     devices: ["device"],
   });
+  await waitFor(() => !runtime.isCurrent(old));
   const replacement = await runtime.acquire("scene", "device");
   assert.notEqual(old.ref.token, replacement.ref.token);
   assert.equal(runtime.isCurrent(old), false);
@@ -446,9 +447,107 @@ test("instance tokens: a replacement instance and the instance it replaces have 
     `export default { init() { throw Error('bad replacement'); }, render() {} };`,
   );
   await runtime.invalidate(["scene"]);
+  await waitFor(() => runtime.pending.size === 0);
   assert.equal(await runtime.acquire("scene", "device"), replacement);
   assert.equal(await replacement.renderFrame({ deviceName: "device" }), 20);
   assert.deepEqual([...contexts.subscriptions.keys()], [replacement.ref.token]);
+});
+
+test("first load supersede: waiting callers follow the pending or already ready replacement and stale init is destroyed", async (t) => {
+  const globals = /** @type {any} */ (globalThis);
+  for (const replacementFirst of [false, true]) {
+    const initial = Promise.withResolvers();
+    const replacement = Promise.withResolvers();
+    const control = { initial, replacement, started: false, destroyed: 0 };
+    globals.__firstLoad = control;
+    const { runtime, contexts, file } = await runtimePeer(`export default {
+      async init(ctx) {
+        ctx.mqtt.subscribe('input', () => {}); ctx.settings.subscribe(() => {});
+        globalThis.__firstLoad.started = true;
+        await globalThis.__firstLoad.initial.promise;
+      }, render() { return 10; }, destroy() { globalThis.__firstLoad.destroyed++; }
+    };`);
+    t.after(async () => {
+      initial.resolve(undefined);
+      replacement.resolve(undefined);
+      await runtime.releaseAll();
+    });
+    const first = runtime.acquire("scene", "device");
+    const second = runtime.acquire("scene", "device");
+    await waitFor(() => control.started);
+    await writeFile(
+      file,
+      `export default {
+      async init(ctx) {
+        ctx.mqtt.subscribe('input', () => {}); ctx.settings.subscribe(() => {});
+        await globalThis.__firstLoad.replacement.promise;
+      }, render() { return 20; }
+    };`,
+    );
+    await runtime.invalidate(["scene"]);
+    if (replacementFirst) {
+      replacement.resolve(undefined);
+      await runtime.acquire("scene", "device");
+      initial.resolve(undefined);
+    } else {
+      initial.resolve(undefined);
+      await waitFor(() => control.destroyed === 1);
+      replacement.resolve(undefined);
+    }
+    const [one, two] = await Promise.all([first, second]);
+    assert.equal(one, two);
+    assert.equal(one, await runtime.acquire("scene", "device"));
+    assert.equal(await one.renderFrame({ deviceName: "device" }), 20);
+    assert.equal(control.destroyed, 1);
+    assert.deepEqual([...contexts.subscriptions.keys()], [one.ref.token]);
+    assert.deepEqual([...contexts.settings.keys()], [one.ref.token]);
+    await runtime.releaseAll();
+  }
+  delete globals.__firstLoad;
+});
+
+test("scene reload scheduling: a hanging replacement init leaves the registry lane free and the last good instance running", async (t) => {
+  const { createLane } = await import("../../src/core/ordering.js");
+  const gate = Promise.withResolvers();
+  const control = { gate, started: false, destroyed: false };
+  const globals = /** @type {any} */ (globalThis);
+  globals.__reloadInit = control;
+  const { runtime, file } = await runtimePeer(
+    `export default { render() { return 10; } };`,
+  );
+  t.after(async () => {
+    gate.resolve(undefined);
+    await runtime.releaseAll();
+    delete globals.__reloadInit;
+  });
+  const old = await runtime.acquire("scene", "device");
+  await writeFile(
+    file,
+    `export default {
+    async init() { globalThis.__reloadInit.started = true; await globalThis.__reloadInit.gate.promise; },
+    render() { return 20; }, destroy() { globalThis.__reloadInit.destroyed = true; }
+  };`,
+  );
+  const lane = createLane();
+  const reloading = lane.run("reload", () => runtime.invalidate(["scene"]));
+  let ran = false;
+  const following = lane.run("next scene change", () => {
+    ran = true;
+  });
+  await waitFor(() => ran && control.started);
+  assert.deepEqual(await reloading, {
+    ran: true,
+    value: { devices: ["device"] },
+  });
+  await following;
+  assert.equal(runtime.isCurrent(old), true);
+  assert.equal(await old.renderFrame({ deviceName: "device" }), 10);
+  // Stop fences the unfinished init; it is destroyed if it eventually returns.
+  const stopping = runtime.releaseAll();
+  gate.resolve(undefined);
+  await stopping;
+  assert.equal(control.destroyed, true);
+  assert.equal(runtime.instances.size, 0);
 });
 // Blocker: scene-registry.js reserved for architect round 4; request w5-to-w1-1.md.
 test.todo(

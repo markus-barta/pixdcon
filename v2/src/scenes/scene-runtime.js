@@ -184,6 +184,8 @@ export class SceneRuntime {
    * The file of these scenes changed: mark them for reload. Devices running
    * them get a replacement instance, initialised beside the running one, and
    * switch to it at their next frame boundary (see "hot reload" above).
+   * Returns after scheduling: mounted scene init must not hold the registry
+   * lane. Until a replacement is ready the last good instance stays current.
    *
    * @param {string[]} scenes
    * @returns {Promise<{devices: string[]}>} devices that run one of them
@@ -194,20 +196,16 @@ export class SceneRuntime {
     for (const scene of changed)
       this.fileTokens.set(scene, (this.fileTokens.get(scene) ?? 0) + 1);
     const devices = new Set();
-    const loads = [];
     for (const entry of this.entries.values()) {
       if (!changed.has(entry.scene)) continue;
       entry.generation++;
       devices.add(entry.device);
-      loads.push(
-        this.load(entry).catch((error) => {
-          this.deps.logger.warn(
-            `Scene ${entry.scene} reload failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }),
-      );
+      void this.load(entry).catch((error) => {
+        this.deps.logger.warn(
+          `Scene ${entry.scene} reload failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
     }
-    await Promise.all(loads);
     return { devices: [...devices] };
   }
 
@@ -224,6 +222,7 @@ export class SceneRuntime {
       !this.closed &&
       this.entries.get(key) === entry &&
       entry.generation === generation;
+    /** @type {Promise<SceneInstance>} */
     const promise = (async () => {
       /** @type {SceneInstance|null} */
       let instance = null;
@@ -275,6 +274,13 @@ export class SceneRuntime {
         return instance;
       } catch (error) {
         this.deps.settings.releaseContext(ref);
+        // A reload during the first init is not a scene failure. Its callers
+        // follow the latest load, even if that load already finished. Stop or
+        // release removes the entry and must still reject the stale caller.
+        if (!this.closed && this.entries.get(key) === entry && !current()) {
+          if (entry.pending) return entry.pending;
+          if (entry.current) return entry.current;
+        }
         if (error instanceof SceneError) throw error;
         throw new SceneError(
           `Scene ${scene} import: ${error instanceof Error ? error.message : String(error)}`,
