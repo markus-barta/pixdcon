@@ -28,6 +28,13 @@ import { registerV2Routes } from "../../src/api/routes-v2.js";
 import { V1_ROUTES, registerV1Routes } from "../../src/api/routes-v1.js";
 import { V2_ROUTES } from "../../src/api/routes-v2.js";
 import { REPO_ROOT, startStack } from "../helpers/harness.js";
+import {
+  createClientFence,
+  decideSnapshot,
+  decideView,
+  openSource,
+  parsePosition,
+} from "../../web/js/ordering.js";
 
 test("HTTP: every documented route is declared exactly once", async (t) => {
   const stack = await startStack(t, { mqtt: false });
@@ -464,15 +471,7 @@ test("live channel: snapshot first, events in seq order, replay with since, ping
   assert.equal((await first.next()).type, "ping");
   const expired = await stream(t, `${api.base}/api/v2/events?since=abcd1234-0`);
   assert.equal((await expired.next()).type, "snapshot");
-  const slow = Object.assign(new EventEmitter(), {
-    writeHead() {},
-    flushHeaders() {},
-    write: () => false,
-    destroyed: false,
-    destroy() {
-      this.destroyed = true;
-    },
-  });
+  const slow = bufferedResponse();
   api.live.handle(
     /** @type {any} */ ({
       res: slow,
@@ -482,22 +481,180 @@ test("live channel: snapshot first, events in seq order, replay with since, ping
   );
   assert.equal(slow.destroyed, false, "one buffered write is allowed");
   api.live.publish("ping", { at: "now" });
+  assert.equal(
+    slow.destroyed,
+    false,
+    "backpressure alone is not a stuck reader",
+  );
+  await api.clock.advance(10000);
   assert.equal(slow.destroyed, true);
+});
+
+/** A writable with a small highWaterMark: false means buffered, not lost. */
+function bufferedResponse() {
+  const emitter = new EventEmitter();
+  return Object.assign(emitter, {
+    writableLength: 0,
+    highWaterMark: 256,
+    writes: /** @type {string[]} */ ([]),
+    writeHead() {},
+    flushHeaders() {},
+    write(/** @type {string} */ wire) {
+      this.writes.push(wire);
+      this.writableLength += Buffer.byteLength(wire);
+      return this.writableLength < this.highWaterMark;
+    },
+    drain() {
+      this.writableLength = 0;
+      emitter.emit("drain");
+    },
+    destroyed: false,
+    destroy() {
+      this.destroyed = true;
+      emitter.emit("close");
+    },
+    end() {
+      emitter.emit("close");
+    },
+  });
+}
+
+test("live channel: replay above high-water mark recovers in one attempt and drains", async (t) => {
+  const api = await recordedApi(t);
+  for (let rev = 8; rev < 28; rev++)
+    api.live.publish("device", {
+      ...api.device,
+      rev,
+      comment: "x".repeat(8192),
+    });
+  const res = bufferedResponse();
+  api.live.handle(
+    /** @type {any} */ ({
+      res,
+      req: { headers: {} },
+      query: new URLSearchParams("since=abcd1234-0"),
+    }),
+  );
+  assert.ok(res.writableLength > res.highWaterMark);
+  assert.equal(res.destroyed, false);
+  assert.equal(res.writes.length, 20);
+  assert.match(res.writes[19], /id: abcd1234-20/);
+  res.drain();
+  await api.clock.advance(10000);
+  assert.equal(res.destroyed, false, "drain cancels the stuck-reader deadline");
+});
+
+test("live channel: replay byte budget falls back to snapshot; previews stay out of replay", async (t) => {
+  const api = await recordedApi(t);
+  for (let rev = 8; rev < 48; rev++)
+    api.live.publish("device", {
+      ...api.device,
+      rev,
+      comment: "x".repeat(65536),
+    });
+  const replay = await stream(t, `${api.base}/api/v2/events?since=abcd1234-0`);
+  assert.equal((await replay.next()).type, "snapshot");
+  const since = api.live.seq();
+  for (let seq = 0; seq < 600; seq++)
+    api.live.publish("preview", { frameSeq: seq });
+  api.live.publish("device", { ...api.device, rev: 48 });
+  const next = await stream(
+    t,
+    `${api.base}/api/v2/events?since=abcd1234-${since}`,
+  );
+  assert.equal(
+    (await next.next()).type,
+    "device",
+    "preview bursts do not evict state or replay old frames",
+  );
+});
+
+test("live channel: stuck and over-budget readers are cut off; next connection gets snapshot", async (t) => {
+  const api = await recordedApi(t);
+  const slow = bufferedResponse();
+  api.live.handle(
+    /** @type {any} */ ({
+      res: slow,
+      req: { headers: {} },
+      query: new URLSearchParams("session=page"),
+    }),
+  );
+  const cursor = api.live.seq();
+  await api.clock.advance(10000);
+  assert.equal(slow.destroyed, true, "even a quiet stuck stream times out");
+  const next = await stream(
+    t,
+    `${api.base}/api/v2/events?session=page&since=abcd1234-${cursor}`,
+  );
+  assert.equal((await next.next()).type, "snapshot");
+  const full = bufferedResponse();
+  api.live.handle(
+    /** @type {any} */ ({
+      res: full,
+      req: { headers: {} },
+      query: new URLSearchParams(),
+    }),
+  );
+  api.live.publish("device", {
+    ...api.device,
+    comment: "x".repeat(2 * 1024 * 1024),
+  });
+  assert.equal(
+    full.destroyed,
+    true,
+    "byte budget closes a growing buffer before its deadline",
+  );
+  const recovered = await stream(
+    t,
+    `${api.base}/api/v2/events?since=abcd1234-${api.live.seq()}`,
+  );
+  assert.equal((await recovered.next()).type, "snapshot");
 });
 test("live channel: an event carries the device rev; an older answer never overwrites a newer state", async (t) => {
   const api = await recordedApi(t);
-  const older = /** @type {any} */ (
-    await (await fetch(`${api.base}/api/v2/devices/pixoo-189`)).json()
-  );
+  const entered = deferred(),
+    release = deferred();
+  const oldView = structuredClone(api.device);
+  api.deps.state.view = () => {
+    entered.resolve();
+    return release.promise.then(() => oldView);
+  };
+  const answer = api.api("/api/v2/devices/pixoo-189");
+  await entered.promise;
   const events = await stream(t, `${api.base}/api/v2/events`);
-  await events.next();
-  api.deps.state.emit("device", { ...api.device, rev: 8 });
+  const snapshot = await events.next();
+  const fence = createClientFence();
+  const source = openSource(fence, "stream");
+  decideSnapshot(fence, snapshot.data, { generation: source });
+  let shown = oldView;
+  api.deps.state.emit("device", { ...api.device, rev: 8, comment: "newer" });
   const event = await events.next();
-  assert.equal(event.data.epoch, api.device.epoch);
-  assert.equal(event.data.rev, 8);
-  assert.ok(
-    older.rev < event.data.rev,
-    "wire carries revisions for the client's ordering fence",
+  const key = `device:${api.device.name}`;
+  const eventPosition = parsePosition(event.id);
+  assert.ok(eventPosition);
+  const applyEvent = decideView(fence, {
+    ...event.data,
+    key,
+    seq: eventPosition.seq,
+  });
+  assert.equal(applyEvent.action, "apply");
+  if (applyEvent.action === "apply") shown = event.data;
+  release.resolve();
+  const older = await answer;
+  const answerPosition = parsePosition(older.headers.get("x-pixdcon-position"));
+  assert.ok(answerPosition);
+  const applyAnswer = decideView(fence, {
+    ...older.body,
+    key,
+    seq: answerPosition.seq,
+  });
+  assert.deepEqual(applyAnswer, { action: "drop", reason: "not_newer" });
+  if (applyAnswer.action === "apply") shown = older.body;
+  assert.equal(shown.rev, 8);
+  assert.equal(
+    shown.comment,
+    "newer",
+    "late HTTP answer cannot replace the newer event already shown",
   );
 });
 test("boot epoch: every view, snapshot and event id carries the epoch; after a restart a cursor of the old epoch gets a snapshot, not a replay", async (t) => {
@@ -1259,11 +1416,19 @@ test("live channel: a large snapshot drains before the next event; previews thro
   assert.equal(
     api.live.seq(),
     2,
-    "one log and one frame; second frame was skipped",
+    "one log and one frame; second frame waits for the throttle",
   );
+  api.deps.previews.emit("frame", { ...frame, seq: 3, receivedAt: "trailing" });
   await api.clock.advance(1000);
-  api.deps.previews.emit("frame", { ...frame, seq: 3, receivedAt: "later" });
-  assert.equal((await normal.next()).data.receivedAt, "later");
+  const trailing = await normal.next();
+  assert.equal(trailing.data.frameSeq, 3);
+  assert.equal(trailing.data.receivedAt, "trailing");
+  await api.clock.advance(1000);
+  assert.equal(
+    api.live.seq(),
+    3,
+    "a quiet burst sends its last frame exactly once",
+  );
 });
 
 test("v1 compatibility edges: missing scene clears; settings replace valid schema keys; mode arrays are refused", async (t) => {

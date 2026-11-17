@@ -70,7 +70,16 @@
       "why": "read inside the request that asked for it, up to 1 MiB; the request as a whole is the input, and it is fenced where its route runs (the route rows of routes-v1.js and routes-v2.js)"
     },
     {
-      "site": "src/api/live-channel.js:131",
+      "site": "src/api/live-channel.js:147",
+      "id": "listener:res.on(\"drain\")#1",
+      "input": "response drain or slow-reader deadline",
+      "metadata": "the response and its live client entry",
+      "fence": "drain cancels the response deadline; only a live client may be cut off; cutoff invalidates replay through current position",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:148",
       "id": "listener:res.on(\"close\")#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -79,7 +88,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:143",
+      "site": "src/api/live-channel.js:160",
       "id": "timer:this.deps.clock.every#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -88,7 +97,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:144",
+      "site": "src/api/live-channel.js:161",
       "id": "work:this.publish#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -97,16 +106,16 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:207",
-      "id": "listener:res.once(\"drain\")#1",
-      "input": "the response buffer drained",
-      "metadata": "the response of this stream",
-      "fence": "only the still-current response may resume; a second event before drain closes it",
-      "test": "test/contract/http-api.test.js: live channel: a large snapshot",
+      "site": "src/api/live-channel.js:234",
+      "id": "timer:this.deps.clock.every#2",
+      "input": "response drain or slow-reader deadline",
+      "metadata": "the response and its live client entry",
+      "fence": "drain cancels the response deadline; only a live client may be cut off; cutoff invalidates replay through current position",
+      "test": "test/contract/http-api.test.js: live channel:",
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:264",
+      "site": "src/api/live-channel.js:300",
       "id": "listener:source.on#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -115,7 +124,7 @@
       "was": "wireLiveChannel"
     },
     {
-      "site": "src/api/live-channel.js:267",
+      "site": "src/api/live-channel.js:303",
       "id": "work:channel.publish#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -124,7 +133,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:268",
+      "site": "src/api/live-channel.js:304",
       "id": "work:channel.publish#2",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -133,7 +142,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:270",
+      "site": "src/api/live-channel.js:306",
       "id": "work:channel.publish#3",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -142,7 +151,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:278",
+      "site": "src/api/live-channel.js:315",
       "id": "work:channel.publish#4",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -151,7 +160,25 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:289",
+      "site": "src/api/live-channel.js:339",
+      "id": "timer:deps.clock.sleep#1",
+      "input": "trailing preview throttle deadline",
+      "metadata": "device identity and latest pending frame entry",
+      "fence": "only the current pending entry may publish; unwiring aborts the deadline and drops it",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "wireLiveChannel"
+    },
+    {
+      "site": "src/api/live-channel.js:339",
+      "id": "then:deps.clock.sleep().then#1",
+      "input": "trailing preview throttle deadline",
+      "metadata": "device identity and latest pending frame entry",
+      "fence": "only the current pending entry may publish; unwiring aborts the deadline and drops it",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "wireLiveChannel"
+    },
+    {
+      "site": "src/api/live-channel.js:350",
       "id": "work:channel.publish#5",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -160,7 +187,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:292",
+      "site": "src/api/live-channel.js:353",
       "id": "work:channel.publish#6",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -169,7 +196,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:295",
+      "site": "src/api/live-channel.js:356",
       "id": "work:channel.publish#7",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -178,7 +205,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:300",
+      "site": "src/api/live-channel.js:361",
       "id": "work:channel.publish#8",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -187,7 +214,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:304",
+      "site": "src/api/live-channel.js:365",
       "id": "work:channel.publish#9",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -196,7 +223,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:305",
+      "site": "src/api/live-channel.js:366",
       "id": "work:channel.publish#10",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
