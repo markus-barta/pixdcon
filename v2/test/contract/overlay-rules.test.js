@@ -704,7 +704,7 @@ test("held setting overlay: a setting overlay whose scene has no schema yet is k
   assert.equal(world.overlays.get("setting:" + D + ":A:n")?.valid, true);
 });
 // Blocker: the frozen LayersInput has no explicit scene/blob own-write
-// input. Mirror writes are fenced; arbitrary scene writes/whole-blob clears
+// input (PIXD-95). Mirror writes are fenced; arbitrary scene writes/whole-blob clears
 // still need that core decision (w1-to-coordinator-1.md). Do not invent one
 // in the shell or silently treat their echoes as outside commands.
 test.todo(
@@ -1084,7 +1084,7 @@ async function serviceWorld(t, options = {}) {
         { clock, logger: stack.app.logger },
       );
       const restarted = app;
-      t.after(() => stopApp(restarted, clock));
+      stack.cleanup.add("pixdcon2 restart", () => stopApp(restarted, clock));
       await app.start();
       registryPeer(app);
       return app;

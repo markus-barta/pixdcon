@@ -37,6 +37,16 @@ export function requireNetGuard() {
   );
 }
 
+/** Observe loopback I/O without advancing the app's injected clock.
+ * @param {() => unknown} predicate @param {string} [message] */
+export async function waitFor(predicate, message = "integration condition") {
+  const deadline = Date.now() + 2000;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, message);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 /** Finish shutdown on the same clock that owns its deadlines and driver waits.
  * @param {Awaited<ReturnType<typeof createApp>>} app
  * @param {import("../../src/types.js").Clock & {advance?: (ms: number) => Promise<void>}} [clock]
@@ -93,6 +103,14 @@ export function testConfig(addresses, adjust) {
 }
 
 const CLEANUP_STEP_LIMIT_MS = 5000;
+
+/** @typedef {object} StackSetup
+ * @property {Record<string, any>} config
+ * @property {string} dataDir
+ * @property {Awaited<ReturnType<typeof startMemoryBroker>>} broker
+ * @property {Awaited<ReturnType<typeof startFakePixoo>>} pixoo
+ * @property {Awaited<ReturnType<typeof startFakeAwtrix>>} awtrix
+ */
 
 /**
  * A list of stop steps that is run once, in reverse order.
@@ -153,7 +171,7 @@ export function cleanupStack() {
  * and at once when the start itself fails.
  *
  * @param {import("node:test").TestContext} t
- * @param {{clock?: import("../../src/types.js").Clock, config?: (config: Record<string, any>) => void, configText?: string, env?: Record<string, string>, mqtt?: boolean, brokerPort?: number}} [options] configText: write this instead of a generated config.json; brokerPort: bind the broker there instead of a free port
+ * @param {{clock?: import("../../src/types.js").Clock, config?: (config: Record<string, any>) => void, prepare?: (context: StackSetup) => Promise<void>, configText?: string, env?: Record<string, string>, mqtt?: boolean, brokerPort?: number}} [options] prepare: seed scene files or retained messages before app construction; configText: write this instead of a generated config.json; brokerPort: bind the broker there instead of a free port
  */
 export async function startStack(t, options = {}) {
   requireNetGuard();
@@ -177,10 +195,14 @@ export async function startStack(t, options = {}) {
       rm(dataDir, { recursive: true, force: true }),
     );
     const configPath = join(dataDir, "config.json");
+    const config = testConfig(
+      { pixoo: pixoo.address, awtrix: awtrix.address },
+      options.config,
+    );
+    await options.prepare?.({ config, dataDir, broker, pixoo, awtrix });
     await writeFile(
       configPath,
-      options.configText ??
-        `${JSON.stringify(testConfig({ pixoo: pixoo.address, awtrix: awtrix.address }, options.config), null, 2)}\n`,
+      options.configText ?? `${JSON.stringify(config, null, 2)}\n`,
     );
 
     /** @type {string[]} */
@@ -215,6 +237,7 @@ export async function startStack(t, options = {}) {
     const base = `http://127.0.0.1:${port}`;
 
     return stackOf({
+      cleanup,
       app,
       base,
       broker,
