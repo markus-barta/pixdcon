@@ -267,7 +267,11 @@ export function normalizeSettingValue(raw, field) {
     case "int":
     case "float": {
       if (typeof raw !== "number" && typeof raw !== "string") return undefined;
-      if (typeof raw === "string" && !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(raw.trim())) return undefined;
+      if (
+        typeof raw === "string" &&
+        !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(raw.trim())
+      )
+        return undefined;
       const number = Number(raw);
       if (!Number.isFinite(number)) return undefined;
       let value = field.type === "int" ? Math.trunc(number) : number;
@@ -284,7 +288,12 @@ export function normalizeSettingValue(raw, field) {
     }
     case "enum": {
       const value = String(raw).trim();
-      return (field.options ?? []).some((option) => String(typeof option === "object" ? option.value : option) === value) ? value : undefined;
+      return (field.options ?? []).some(
+        (option) =>
+          String(typeof option === "object" ? option.value : option) === value,
+      )
+        ? value
+        : undefined;
     }
     case "time": {
       const value = String(raw).trim();
@@ -293,11 +302,17 @@ export function normalizeSettingValue(raw, field) {
       return hour < 24 && minute < 60 ? value : undefined;
     }
     case "json":
-      try { return typeof raw === "object" && raw !== null ? structuredClone(raw) : JSON.parse(String(raw)); }
-      catch { return undefined; }
+      try {
+        return typeof raw === "object" && raw !== null
+          ? structuredClone(raw)
+          : JSON.parse(String(raw));
+      } catch {
+        return undefined;
+      }
     case "color":
     case "string":
-    default: return String(raw).trim();
+    default:
+      return String(raw).trim();
   }
 }
 
@@ -322,6 +337,9 @@ export function resolveAddress(configIp, blobIp, overlayIp) {
  * @returns {number}
  */
 export function percentToNative(percent, type) {
-  const value = Math.max(1, Math.min(100, Number.isFinite(percent) ? percent : 1));
-  return Math.round(type === "ulanzi" ? value * 255 / 100 : value);
+  const value = Math.max(
+    1,
+    Math.min(100, Number.isFinite(percent) ? percent : 1),
+  );
+  return Math.round(type === "ulanzi" ? (value * 255) / 100 : value);
 }

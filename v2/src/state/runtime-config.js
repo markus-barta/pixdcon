@@ -201,7 +201,9 @@ export function buildEffectiveConfig(
 ) {
   /** @type {ReturnType<typeof buildEffectiveConfig>["rejected"]} */
   const rejected = [];
-  const blobs = new Map(structural.blobDevices.map((entry) => [entry.name, entry]));
+  const blobs = new Map(
+    structural.blobDevices.map((entry) => [entry.name, entry]),
+  );
   const saved = new Map(config.devices.map((entry) => [entry.name, entry]));
   /** @type {EffectiveDevice[]} */
   const devices = [];
@@ -211,8 +213,9 @@ export function buildEffectiveConfig(
     const patch = blob ? overlayDevicePatch(blob).patch : {};
     let device;
     let blobKeys = Object.keys(patch);
-    try { device = validateDevice({ ...base, ...patch, name }); }
-    catch (error) {
+    try {
+      device = validateDevice({ ...base, ...patch, name });
+    } catch (error) {
       rejected.push({ overlay: "blob", name, problem: String(error) });
       if (!base) continue;
       device = base;
@@ -222,42 +225,86 @@ export function buildEffectiveConfig(
     let addressSource = blobKeys.includes("ip") ? "blob" : "config";
     const overlayIp = structural.deviceIps[name];
     if (Object.hasOwn(structural.deviceIps, name)) {
-      try { device = { ...device, ip: address(overlayIp) }; addressSource = "overlay"; }
-      catch (error) { rejected.push({ overlay: "ip", name, problem: String(error) }); }
+      try {
+        device = { ...device, ip: address(overlayIp) };
+        addressSource = "overlay";
+      } catch (error) {
+        rejected.push({ overlay: "ip", name, problem: String(error) });
+      }
     }
     const held = structural.deviceHeld.includes(name);
-    const disabled = Object.hasOwn(structural.deviceEnabled, name) && structural.deviceEnabled[name] === false;
-    const enabled = (base?.enabled ?? true) && device.enabled && !disabled && !held;
+    const disabled =
+      Object.hasOwn(structural.deviceEnabled, name) &&
+      structural.deviceEnabled[name] === false;
+    const enabled =
+      (base?.enabled ?? true) && device.enabled && !disabled && !held;
     devices.push({
-      name, type: device.type, origin: base ? "config" : "blob",
-      address: device.ip, addressSource,
-      enabled, held,
-      enabledSource: disabled || held && !blobKeys.includes("ip") ? "overlay" : blobKeys.includes("enabled") || held ? "blob" : "config",
+      name,
+      type: device.type,
+      origin: base ? "config" : "blob",
+      address: device.ip,
+      addressSource,
+      enabled,
+      held,
+      enabledSource:
+        disabled || (held && !blobKeys.includes("ip"))
+          ? "overlay"
+          : blobKeys.includes("enabled") || held
+            ? "blob"
+            : "config",
       savedScene: base?.scene ?? null,
       output: decide({ name, output: base?.output ?? null }),
-      displayName: device.displayName, comment: device.comment,
-      preview: device.preview, minFrameMs: device.minFrameMs,
-      maxPowerCycles: device.maxPowerCycles, powerCyclePlugin: device.powerCyclePlugin,
-      cleanupLegacyApps: device.cleanupLegacyApps, sceneSettings: device.sceneSettings,
+      displayName: device.displayName,
+      comment: device.comment,
+      preview: device.preview,
+      minFrameMs: device.minFrameMs,
+      maxPowerCycles: device.maxPowerCycles,
+      powerCyclePlugin: device.powerCyclePlugin,
+      cleanupLegacyApps: device.cleanupLegacyApps,
+      sceneSettings: device.sceneSettings,
       blobKeys,
     });
   }
   /** @type {Record<string, EffectiveScene>} */
-  const scenes = Object.fromEntries(Object.entries(config.scenes).map(([key, entry]) => [key, { path: entry.path, source: "config" }]));
-  for (const [entries, source] of /** @type {const} */ ([[structural.blobScenes, "blob"], [structural.scenePaths, "overlay"]])) {
+  const scenes = Object.fromEntries(
+    Object.entries(config.scenes).map(([key, entry]) => [
+      key,
+      { path: entry.path, source: "config" },
+    ]),
+  );
+  for (const [entries, source] of /** @type {const} */ ([
+    [structural.blobScenes, "blob"],
+    [structural.scenePaths, "overlay"],
+  ])) {
     for (const [key, entry] of Object.entries(entries)) {
       const path = typeof entry === "string" ? entry : entry?.path;
       if (!NAME_PATTERN.test(key) || typeof path !== "string" || !path.trim()) {
-        rejected.push({ overlay: source === "blob" ? "blob" : "scene-path", name: key, problem: "Invalid scene path" });
+        rejected.push({
+          overlay: source === "blob" ? "blob" : "scene-path",
+          name: key,
+          problem: "Invalid scene path",
+        });
         continue;
       }
-      Object.defineProperty(scenes, key, { value: { path: path.trim(), source }, enumerable: true, configurable: true, writable: true });
+      Object.defineProperty(scenes, key, {
+        value: { path: path.trim(), source },
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
   }
-  return { effective: {
-    savedAt, devices, scenes, mqtt: { ...mqtt },
-    health: { ...config.health }, telemetryIntervalMs: config.telemetryIntervalMs,
-  }, rejected };
+  return {
+    effective: {
+      savedAt,
+      devices,
+      scenes,
+      mqtt: { ...mqtt },
+      health: { ...config.health },
+      telemetryIntervalMs: config.telemetryIntervalMs,
+    },
+    rejected,
+  };
 }
 
 /**
@@ -362,7 +409,11 @@ export class RuntimeConfig extends EventEmitter {
       if (!this.active) return;
       this.rebuild();
     };
-    for (const source of [this.deps.config, this.deps.overlays, this.deps.ownership]) {
+    for (const source of [
+      this.deps.config,
+      this.deps.overlays,
+      this.deps.ownership,
+    ]) {
       source.on("changed", rebuild);
       this.unwire.push(() => source.off("changed", rebuild));
     }
@@ -425,7 +476,12 @@ export class RuntimeConfig extends EventEmitter {
    */
   outputOf(name) {
     if (!this.active) return "shadow";
-    if (name === null) return this.effective?.devices.some((device) => device.enabled && device.output.mode === "drive") ? "drive" : "shadow";
+    if (name === null)
+      return this.effective?.devices.some(
+        (device) => device.enabled && device.output.mode === "drive",
+      )
+        ? "drive"
+        : "shadow";
     return this.device(name)?.output.mode ?? "shadow";
   }
 
@@ -440,41 +496,94 @@ export class RuntimeConfig extends EventEmitter {
    */
   toV1(sceneOf) {
     return {
-      devices: this.get().devices.filter((device) => device.enabled).map((device) => ({
-        name: device.name, type: device.type, ip: device.address, scene: sceneOf(device.name),
-        displayName: device.displayName, comment: device.comment, preview: device.preview,
-        minFrameMs: device.minFrameMs, maxPowerCycles: device.maxPowerCycles,
-        powerCyclePlugin: device.powerCyclePlugin, cleanupLegacyApps: device.cleanupLegacyApps,
-        sceneSettings: device.sceneSettings,
-      })),
-      scenes: Object.fromEntries(Object.entries(this.scenes()).map(([key, entry]) => [key, { path: entry.path }])),
+      devices: this.get()
+        .devices.filter((device) => device.enabled)
+        .map((device) => ({
+          name: device.name,
+          type: device.type,
+          ip: device.address,
+          scene: sceneOf(device.name),
+          displayName: device.displayName,
+          comment: device.comment,
+          preview: device.preview,
+          minFrameMs: device.minFrameMs,
+          maxPowerCycles: device.maxPowerCycles,
+          powerCyclePlugin: device.powerCyclePlugin,
+          cleanupLegacyApps: device.cleanupLegacyApps,
+          sceneSettings: device.sceneSettings,
+        })),
+      scenes: Object.fromEntries(
+        Object.entries(this.scenes()).map(([key, entry]) => [
+          key,
+          { path: entry.path },
+        ]),
+      ),
     };
   }
 
   rebuild() {
-    const { config, overlays, ownership, mqtt, forceShadow, envDefaultOutput, clock } = this.deps;
+    const {
+      config,
+      overlays,
+      ownership,
+      mqtt,
+      forceShadow,
+      envDefaultOutput,
+      clock,
+    } = this.deps;
     /** @type {import("../types.js").StructuralOverlays} */
     let structural;
-    try { structural = overlays.structural(); }
-    catch (error) {
+    try {
+      structural = overlays.structural();
+    } catch (error) {
       if (!(error instanceof NotImplementedError)) throw error;
-      structural = { blobDevices: [], blobScenes: {}, scenePaths: {}, deviceIps: {}, deviceEnabled: {}, deviceHeld: [] };
+      structural = {
+        blobDevices: [],
+        blobScenes: {},
+        scenePaths: {},
+        deviceIps: {},
+        deviceEnabled: {},
+        deviceHeld: [],
+      };
     }
-    const { effective, rejected } = buildEffectiveConfig(config.get(), structural,
-      (device) => resolveOutput({ forceShadow, deviceOutput: device.output,
-        configDefault: config.get().output.default, envDefault: envDefaultOutput,
-        transition: mqtt.statusBaseTopic !== mqtt.baseTopic, owner: ownership.owner(device.name) }),
-      mqtt, config.file().loadedAt ?? new Date(clock.now()).toISOString());
-    for (const rejection of rejected) this.deps.logger.warn(`[Config] Rejected ${rejection.overlay} for ${rejection.name}: ${rejection.problem}`);
+    const { effective, rejected } = buildEffectiveConfig(
+      config.get(),
+      structural,
+      (device) =>
+        resolveOutput({
+          forceShadow,
+          deviceOutput: device.output,
+          configDefault: config.get().output.default,
+          envDefault: envDefaultOutput,
+          transition: mqtt.statusBaseTopic !== mqtt.baseTopic,
+          owner: ownership.owner(device.name),
+        }),
+      mqtt,
+      config.file().loadedAt ?? new Date(clock.now()).toISOString(),
+    );
+    for (const rejection of rejected)
+      this.deps.logger.warn(
+        `[Config] Rejected ${rejection.overlay} for ${rejection.name}: ${rejection.problem}`,
+      );
     const previous = this.effective;
     const empty = { ...effective, devices: [], scenes: {} };
     const diff = diffEffectiveConfig(previous ?? empty, effective);
     if (previous && !hasDiff(diff)) return;
     const rev = (previous?.rev ?? 0) + 1;
-    if (decideStamp({ source: "effective", position: previous?.rev ?? 0 }, { source: "effective", position: rev }).action !== "apply") return;
+    if (
+      decideStamp(
+        { source: "effective", position: previous?.rev ?? 0 },
+        { source: "effective", position: rev },
+      ).action !== "apply"
+    )
+      return;
     for (const name of diff.devicesRemoved) this.lives.delete(name);
     for (const name of diff.devicesAdded) this.lives.set(name, ++this.counter);
     this.effective = freeze({ ...effective, rev });
-    this.emit("changed", { effective: this.effective, previous: previous ?? freeze({ ...empty, rev: 0 }), diff });
+    this.emit("changed", {
+      effective: this.effective,
+      previous: previous ?? freeze({ ...empty, rev: 0 }),
+      diff,
+    });
   }
 }

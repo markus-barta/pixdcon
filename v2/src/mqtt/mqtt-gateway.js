@@ -139,12 +139,21 @@ export class MqttGateway extends EventEmitter {
   static fromEnv(env, deps) {
     if (!env.MOSQUITTO_PASS && env.PIXDCON2_MQTT_ANONYMOUS !== "1") return null;
     const port = env.MQTT_PORT ?? "1883";
-    if (!/^\d+$/.test(port) || +port < 1 || +port > 65535) throw new Error("Invalid MQTT_PORT: expected 1 to 65535");
+    if (!/^\d+$/.test(port) || +port < 1 || +port > 65535)
+      throw new Error("Invalid MQTT_PORT: expected 1 to 65535");
     const host = env.MOSQUITTO_HOST || "localhost";
-    if (/[\s/@?#]/.test(host)) throw new Error("Invalid MOSQUITTO_HOST: expected a host");
+    if (/[\s/@?#]/.test(host))
+      throw new Error("Invalid MOSQUITTO_HOST: expected a host");
     return new MqttGateway({
-      ...deps, host, port: +port,
-      ...(env.MOSQUITTO_PASS ? { username: env.MOSQUITTO_USER || "smarthome", password: env.MOSQUITTO_PASS } : {}),
+      ...deps,
+      host,
+      port: +port,
+      ...(env.MOSQUITTO_PASS
+        ? {
+            username: env.MOSQUITTO_USER || "smarthome",
+            password: env.MOSQUITTO_PASS,
+          }
+        : {}),
       clientId: `${deps.instance}-${randomBytes(5).toString("hex")}`,
     });
   }
@@ -169,7 +178,14 @@ export class MqttGateway extends EventEmitter {
     this.attempt = 0;
     this.connection = 0;
     /** @type {MqttStatus} */
-    this.info = { state: "offline", url: `mqtt://${options.host}:${options.port}`, since: null, connection: 0, lastError: null, settled: false };
+    this.info = {
+      state: "offline",
+      url: `mqtt://${options.host}:${options.port}`,
+      since: null,
+      connection: 0,
+      lastError: null,
+      settled: false,
+    };
     /** @type {Map<number, {owner: string, filter: string, handler: (message: MqttMessage) => unknown}>} */
     this.subscriptions = new Map();
     this.subscriptionId = 0;
@@ -187,10 +203,16 @@ export class MqttGateway extends EventEmitter {
    */
   async start(options) {
     if (this.info.state === "connected") return true;
-    if (!this.active) { this.active = true; this.open(); }
+    if (!this.active) {
+      this.active = true;
+      this.open();
+    }
     const wait = new AbortController();
     let connected = false;
-    const ready = () => { connected = true; wait.abort(); };
+    const ready = () => {
+      connected = true;
+      wait.abort();
+    };
     this.once("connect", ready);
     await this.options.clock.sleep(options?.timeoutMs ?? 5000, wait.signal);
     this.off("connect", ready);
@@ -209,8 +231,11 @@ export class MqttGateway extends EventEmitter {
     this.subscriptions.clear();
     this.subacks.clear();
     if (!client) return;
+    if (client.disconnected || client.stream.destroyed) return;
     const limit = new AbortController();
-    const closed = new Promise((resolve) => client.end(false, {}, () => resolve(undefined)));
+    const closed = new Promise((resolve) =>
+      client.end(false, {}, () => resolve(undefined)),
+    );
     await Promise.race([closed, this.options.clock.sleep(2000, limit.signal)]);
     limit.abort();
     client.end(true);
@@ -237,7 +262,13 @@ export class MqttGateway extends EventEmitter {
     if (this.info.state === "connected") void this.wireSubscribe(filter);
     return () => {
       if (!this.subscriptions.delete(id)) return;
-      if (![...this.subscriptions.values()].some((entry) => entry.filter === filter) && this.info.state === "connected") this.client?.unsubscribe(filter);
+      if (
+        ![...this.subscriptions.values()].some(
+          (entry) => entry.filter === filter,
+        ) &&
+        this.info.state === "connected"
+      )
+        this.client?.unsubscribe(filter);
     };
   }
 
@@ -251,10 +282,17 @@ export class MqttGateway extends EventEmitter {
     const filters = new Set();
     for (const [id, entry] of this.subscriptions) {
       if (entry.owner !== owner) continue;
-      filters.add(entry.filter); this.subscriptions.delete(id);
+      filters.add(entry.filter);
+      this.subscriptions.delete(id);
     }
     for (const filter of filters) {
-      if (![...this.subscriptions.values()].some((entry) => entry.filter === filter) && this.info.state === "connected") this.client?.unsubscribe(filter);
+      if (
+        ![...this.subscriptions.values()].some(
+          (entry) => entry.filter === filter,
+        ) &&
+        this.info.state === "connected"
+      )
+        this.client?.unsubscribe(filter);
     }
   }
 
@@ -272,12 +310,32 @@ export class MqttGateway extends EventEmitter {
     const client = this.client;
     const attempt = this.attempt;
     const connection = this.connection;
-    const offline = { ok: false, outcome: /** @type {const} */ ("offline"), connection: 0, error: "MQTT is offline" };
-    if (!this.current(attempt) || this.info.state !== "connected" || !client) return offline;
-    if (!topic || /[+#\0]/.test(topic)) return { ok: false, outcome: "error", connection, error: "Invalid publish topic" };
+    const offline = {
+      ok: false,
+      outcome: /** @type {const} */ ("offline"),
+      connection: 0,
+      error: "MQTT is offline",
+    };
+    if (!this.current(attempt) || this.info.state !== "connected" || !client)
+      return offline;
+    if (!topic || /[+#\0]/.test(topic))
+      return {
+        ok: false,
+        outcome: "error",
+        connection,
+        error: "Invalid publish topic",
+      };
     let text;
-    try { text = typeof payload === "string" ? payload : JSON.stringify(payload); }
-    catch { return { ok: false, outcome: "error", connection, error: "Payload is not JSON" }; }
+    try {
+      text = typeof payload === "string" ? payload : JSON.stringify(payload);
+    } catch {
+      return {
+        ok: false,
+        outcome: "error",
+        connection,
+        error: "Payload is not JSON",
+      };
+    }
     const qos = options?.qos ?? 1;
     const limit = new AbortController();
     return new Promise((resolve) => {
@@ -285,25 +343,63 @@ export class MqttGateway extends EventEmitter {
       /** @param {PublishResult} result */
       const finish = (result) => {
         if (done) return;
-        done = true; this.publishes.delete(finish); limit.abort(); resolve(result);
+        done = true;
+        this.publishes.delete(finish);
+        limit.abort();
+        resolve(result);
       };
       this.publishes.add(finish);
-      void this.options.clock.sleep(options?.timeoutMs ?? 5000, limit.signal).then((elapsed) => {
-        if (!elapsed || done) return;
-        finish(this.current(attempt) && this.info.state === "connected"
-          ? { ok: false, outcome: "timeout", connection, error: "MQTT acknowledgement timed out" }
-          : { ...offline, connection });
-      });
-      try {
-        client.publish(topic, text, { qos, retain: options?.retain ?? false }, (error) => {
-          if (!this.current(attempt) || this.info.state !== "connected") { finish({ ...offline, connection }); return; }
-          // Once handed to the transport an error cannot prove that the
-          // broker did not store it. Keep that outcome conservative.
-          finish(error ? { ok: false, outcome: "timeout", connection, error: error.message }
-            : { ok: true, outcome: qos === 1 ? "confirmed" : "sent", connection, error: null });
+      void this.options.clock
+        .sleep(options?.timeoutMs ?? 5000, limit.signal)
+        .then((elapsed) => {
+          if (!elapsed || done) return;
+          finish(
+            this.current(attempt) && this.info.state === "connected"
+              ? {
+                  ok: false,
+                  outcome: "timeout",
+                  connection,
+                  error: "MQTT acknowledgement timed out",
+                }
+              : { ...offline, connection },
+          );
         });
+      try {
+        client.publish(
+          topic,
+          text,
+          { qos, retain: options?.retain ?? false },
+          (error) => {
+            if (!this.current(attempt) || this.info.state !== "connected") {
+              finish({ ...offline, connection });
+              return;
+            }
+            // Once handed to the transport an error cannot prove that the
+            // broker did not store it. Keep that outcome conservative.
+            finish(
+              error
+                ? {
+                    ok: false,
+                    outcome: "timeout",
+                    connection,
+                    error: error.message,
+                  }
+                : {
+                    ok: true,
+                    outcome: qos === 1 ? "confirmed" : "sent",
+                    connection,
+                    error: null,
+                  },
+            );
+          },
+        );
       } catch (error) {
-        finish({ ok: false, outcome: "error", connection, error: error instanceof Error ? error.message : String(error) });
+        finish({
+          ok: false,
+          outcome: "error",
+          connection,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     });
   }
@@ -320,24 +416,43 @@ export class MqttGateway extends EventEmitter {
   async settle(options) {
     const connection = this.connection;
     const attempt = this.attempt;
-    if (!this.current(attempt) || this.info.state !== "connected") return { connection, complete: false };
+    if (!this.current(attempt) || this.info.state !== "connected")
+      return { connection, complete: false };
     const limit = new AbortController();
     const topic = this.options.syncTopic(randomBytes(8).toString("hex"));
     let marker = false;
     const unsubscribe = this.subscribe(`settle:${topic}`, topic, (message) => {
-      if (decideStamp({ source: connection }, { source: message.connection }).action !== "apply") return;
-      marker = true; limit.abort();
+      if (
+        decideStamp({ source: connection }, { source: message.connection })
+          .action !== "apply"
+      )
+        return;
+      marker = true;
+      limit.abort();
     });
-    const timeout = this.options.clock.sleep(options?.timeoutMs ?? 2000, limit.signal);
+    const timeout = this.options.clock.sleep(
+      options?.timeoutMs ?? 2000,
+      limit.signal,
+    );
     const roundTrip = async () => {
       await Promise.all([...this.subacks]);
-      if (!this.current(attempt) || this.info.state !== "connected" || limit.signal.aborted) return;
-      await this.publish(topic, "sync", { qos: 1, timeoutMs: options?.timeoutMs ?? 2000 });
+      if (
+        !this.current(attempt) ||
+        this.info.state !== "connected" ||
+        limit.signal.aborted
+      )
+        return;
+      await this.publish(topic, "sync", {
+        qos: 1,
+        timeoutMs: options?.timeoutMs ?? 2000,
+      });
       if (!marker) await timeout;
     };
     await Promise.race([roundTrip(), timeout]);
-    limit.abort(); unsubscribe();
-    const complete = marker && this.current(attempt) && this.info.state === "connected";
+    limit.abort();
+    unsubscribe();
+    const complete =
+      marker && this.current(attempt) && this.info.state === "connected";
     if (this.current(attempt) && this.connection === connection) {
       this.info = { ...this.info, settled: complete };
       this.emit("status", this.status());
@@ -359,24 +474,50 @@ export class MqttGateway extends EventEmitter {
       deviceName: ref.device,
       subscribe: (topic, callback) => {
         if (released) return;
-        if (/[+#]/.test(topic)) { this.options.logger.warn(`[MQTT] Exact subscription refused a filter: ${topic}`); return; }
-        this.subscribe(owner, topic, (message) => { if (!released) return callback(message.payload); });
+        if (/[+#]/.test(topic)) {
+          this.options.logger.warn(
+            `[MQTT] Exact subscription refused a filter: ${topic}`,
+          );
+          return;
+        }
+        this.subscribe(owner, topic, (message) => {
+          if (!released) return callback(message.payload);
+        });
       },
       subscribeWildcard: (pattern, callback) => {
         if (released) return;
-        this.subscribe(owner, pattern, (message) => { if (!released) return callback(message.payload, message.topic); });
+        this.subscribe(owner, pattern, (message) => {
+          if (!released) return callback(message.payload, message.topic);
+        });
       },
-      unsubscribeAll: () => { released = true; this.unsubscribeAll(owner); },
+      unsubscribeAll: () => {
+        released = true;
+        this.unsubscribeAll(owner);
+      },
     };
   }
 
   /** @param {number} attempt @returns {boolean} */
-  current(attempt) { return this.active && decideStamp({ source: this.attempt }, { source: attempt }).action === "apply"; }
+  current(attempt) {
+    return (
+      this.active &&
+      decideStamp({ source: this.attempt }, { source: attempt }).action ===
+        "apply"
+    );
+  }
 
   /** @param {MqttStatus["state"]} state */
   setStatus(state) {
-    this.info = { ...this.info, state, connection: this.connection, settled: false,
-      since: state === this.info.state ? this.info.since : new Date(this.options.clock.now()).toISOString() };
+    this.info = {
+      ...this.info,
+      state,
+      connection: this.connection,
+      settled: false,
+      since:
+        state === this.info.state
+          ? this.info.since
+          : new Date(this.options.clock.now()).toISOString(),
+    };
     this.emit("status", this.status());
   }
 
@@ -385,43 +526,72 @@ export class MqttGateway extends EventEmitter {
     if (!this.active) return;
     const attempt = ++this.attempt;
     this.setStatus("connecting");
-    const client = this.client = mqtt.connect(this.info.url ?? "", {
-      clientId: this.options.clientId, clean: true, reconnectPeriod: 0,
-      resubscribe: false, queueQoSZero: false, connectTimeout: 10000,
-      username: this.options.username, password: this.options.password,
-      will: this.options.will, manualConnect: true,
-    });
+    const client = (this.client = mqtt.connect(this.info.url ?? "", {
+      clientId: this.options.clientId,
+      clean: true,
+      reconnectPeriod: 0,
+      resubscribe: false,
+      queueQoSZero: false,
+      connectTimeout: 10000,
+      username: this.options.username,
+      password: this.options.password,
+      will: this.options.will,
+      manualConnect: true,
+    }));
     client.on("connect", () => {
       if (!this.current(attempt)) return;
       this.connection += 1;
       this.setStatus("connected");
       this.emit("connect", { connection: this.connection });
-      for (const filter of new Set([...this.subscriptions.values()].map((entry) => entry.filter))) void this.wireSubscribe(filter);
+      for (const filter of new Set(
+        [...this.subscriptions.values()].map((entry) => entry.filter),
+      ))
+        void this.wireSubscribe(filter);
     });
     client.on("message", (topic, payload, packet) => {
       if (!this.current(attempt) || this.info.state !== "connected") return;
-      const message = { topic, payload: payload.toString("utf8"), retain: packet.retain,
-        connection: this.connection, receivedAt: new Date(this.options.clock.now()).toISOString() };
+      const message = {
+        topic,
+        payload: payload.toString("utf8"),
+        retain: packet.retain,
+        connection: this.connection,
+        receivedAt: new Date(this.options.clock.now()).toISOString(),
+      };
       for (const [id, entry] of [...this.subscriptions]) {
-        if (!this.subscriptions.has(id) || !matches(entry.filter, topic)) continue;
+        if (!this.subscriptions.has(id) || !matches(entry.filter, topic))
+          continue;
         try {
           const returned = entry.handler(message);
-          if (returned !== undefined) void Promise.resolve(returned).catch((error) => this.options.logger.error("[MQTT] Handler rejected", error));
-        } catch (error) { this.options.logger.error("[MQTT] Handler threw", error); }
+          if (returned !== undefined)
+            void Promise.resolve(returned).catch((error) =>
+              this.options.logger.error("[MQTT] Handler rejected", error),
+            );
+        } catch (error) {
+          this.options.logger.error("[MQTT] Handler threw", error);
+        }
       }
     });
     client.on("error", (error) => {
       if (!this.current(attempt)) return;
       // Broker errors can include URLs or credentials. Serve a fixed,
       // actionable description; never include authentication material.
-      this.info = { ...this.info, lastError: { message: /** @type {NodeJS.ErrnoException} */ (error).code === "ECONNREFUSED" ? "MQTT connection refused" : "MQTT connection failed", at: new Date(this.options.clock.now()).toISOString() } };
+      this.info = {
+        ...this.info,
+        lastError: {
+          message:
+            /** @type {NodeJS.ErrnoException} */ (error).code === "ECONNREFUSED"
+              ? "MQTT connection refused"
+              : "MQTT connection failed",
+          at: new Date(this.options.clock.now()).toISOString(),
+        },
+      };
       this.emit("status", this.status());
     });
     client.on("close", () => {
       if (!this.current(attempt)) return;
       this.offline(attempt);
       client.end(true);
-      const wait = this.reconnectWait = new AbortController();
+      const wait = (this.reconnectWait = new AbortController());
       void this.options.clock.sleep(5000, wait.signal).then((elapsed) => {
         if (!elapsed || !this.current(attempt)) return;
         this.open();
@@ -432,9 +602,19 @@ export class MqttGateway extends EventEmitter {
 
   /** @param {number} attempt */
   offline(attempt) {
-    if (decideStamp({ source: this.attempt }, { source: attempt }).action !== "apply") return;
+    if (
+      decideStamp({ source: this.attempt }, { source: attempt }).action !==
+      "apply"
+    )
+      return;
     const connected = this.info.state === "connected";
-    for (const finish of [...this.publishes]) finish({ ok: false, outcome: "offline", connection: this.connection, error: "MQTT disconnected" });
+    for (const finish of [...this.publishes])
+      finish({
+        ok: false,
+        outcome: "offline",
+        connection: this.connection,
+        error: "MQTT disconnected",
+      });
     this.subacks.clear();
     this.setStatus("offline");
     if (connected) this.emit("disconnect", { connection: this.connection });
@@ -444,12 +624,15 @@ export class MqttGateway extends EventEmitter {
   wireSubscribe(filter) {
     const attempt = this.attempt;
     const client = this.client;
-    if (!client || !this.current(attempt) || this.info.state !== "connected") return Promise.resolve();
+    if (!client || !this.current(attempt) || this.info.state !== "connected")
+      return Promise.resolve();
     const ack = new Promise((resolve) => {
       client.subscribe(filter, { qos: 1 }, () => resolve(undefined));
     });
     this.subacks.add(ack);
-    void ack.then(() => { this.subacks.delete(ack); });
+    void ack.then(() => {
+      this.subacks.delete(ack);
+    });
     return ack;
   }
 }
@@ -467,23 +650,43 @@ export function offlineSceneContext(ref, logger) {
   let logged = false;
   const warn = () => {
     if (logged) return;
-    logged = true; logger.debug(`[MQTT] Offline scene context: ${ref.scene}/${ref.device}`);
+    logged = true;
+    logger.debug(`[MQTT] Offline scene context: ${ref.scene}/${ref.device}`);
   };
-  return { deviceName: ref.device, subscribe: () => warn(), subscribeWildcard: () => warn(), unsubscribeAll() {} };
+  return {
+    deviceName: ref.device,
+    subscribe: () => warn(),
+    subscribeWildcard: () => warn(),
+    unsubscribeAll() {},
+  };
 }
 
 /** @param {string} filter @returns {boolean} */
 function validFilter(filter) {
-  return filter !== "" && !filter.includes("\0") && filter.split("/").every((part, index, parts) =>
-    (!part.includes("+") || part === "+") && (!part.includes("#") || part === "#" && index === parts.length - 1));
+  return (
+    filter !== "" &&
+    !filter.includes("\0") &&
+    filter
+      .split("/")
+      .every(
+        (part, index, parts) =>
+          (!part.includes("+") || part === "+") &&
+          (!part.includes("#") || (part === "#" && index === parts.length - 1)),
+      )
+  );
 }
 /** @param {string} filter @param {string} topic @returns {boolean} */
 function matches(filter, topic) {
   if (topic.startsWith("$") && !filter.startsWith("$")) return false;
-  const words = topic.split("/"); const pattern = filter.split("/");
+  const words = topic.split("/");
+  const pattern = filter.split("/");
   for (let index = 0; index < pattern.length; index++) {
     if (pattern[index] === "#") return true;
-    if (words[index] === undefined || pattern[index] !== "+" && pattern[index] !== words[index]) return false;
+    if (
+      words[index] === undefined ||
+      (pattern[index] !== "+" && pattern[index] !== words[index])
+    )
+      return false;
   }
   return words.length === pattern.length;
 }

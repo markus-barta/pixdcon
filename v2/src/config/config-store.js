@@ -55,9 +55,16 @@ import { watch } from "node:fs";
 import { open, readFile, rename } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { ConfigError, HttpError } from "../core/errors.js";
+import { commandLane } from "../core/commands.js";
 import { decideStamp } from "../core/ordering.js";
 import { freeze } from "../core/values.js";
-import { diffConfig, parseConfig, serializeConfig, validateConfig, validateDevice } from "./schema.js";
+import {
+  diffConfig,
+  parseConfig,
+  serializeConfig,
+  validateConfig,
+  validateDevice,
+} from "./schema.js";
 
 /** @typedef {import("../types.js").Config} Config */
 /** @typedef {import("../types.js").DeviceConfig} DeviceConfig */
@@ -79,11 +86,19 @@ export class ConfigStore extends EventEmitter {
     this.options = options;
     this.current = freeze(validateConfig({ devices: [], scenes: {} }).config);
     /** @type {ConfigFileState} */
-    this.fileState = { path: options.path, rev: 0, valid: false, error: null, loadedAt: null, invalidSince: null, warnings: [] };
+    this.fileState = {
+      path: options.path,
+      rev: 0,
+      valid: false,
+      error: null,
+      loadedAt: null,
+      invalidSince: null,
+      warnings: [],
+    };
     this.text = "";
     this.ownHash = "";
     this.appliedHash = "";
-    this.tail = Promise.resolve();
+    this.lane = commandLane();
     this.stopped = false;
     this.watching = false;
     this.life = 0;
@@ -147,7 +162,12 @@ export class ConfigStore extends EventEmitter {
     return this.update((raw) => {
       const devices = /** @type {Record<string, unknown>[]} */ (raw.devices);
       const device = devices.find((item) => item.name === deviceName);
-      if (!device) throw new HttpError(404, "unknown_device", `Unknown device: ${deviceName}`);
+      if (!device)
+        throw new HttpError(
+          404,
+          "unknown_device",
+          `Unknown device: ${deviceName}`,
+        );
       mutate(device);
     });
   }
@@ -179,8 +199,18 @@ export class ConfigStore extends EventEmitter {
     const device = validateDevice(identity);
     return this.update((raw) => {
       const devices = /** @type {Record<string, unknown>[]} */ (raw.devices);
-      if (devices.some((item) => item.name === device.name)) throw new HttpError(409, "duplicate_name", `Device already exists: ${device.name}`);
-      devices.push({ name: device.name, type: device.type, ip: device.ip, ...structuredClone(choice ?? {}) });
+      if (devices.some((item) => item.name === device.name))
+        throw new HttpError(
+          409,
+          "duplicate_name",
+          `Device already exists: ${device.name}`,
+        );
+      devices.push({
+        name: device.name,
+        type: device.type,
+        ip: device.ip,
+        ...structuredClone(choice ?? {}),
+      });
     });
   }
 
@@ -196,12 +226,23 @@ export class ConfigStore extends EventEmitter {
       // never finish over that write. Re-read here for an outside edit that
       // has not yet produced a watch event.
       await this.read("file");
-      if (!this.fileState.valid) throw new HttpError(409, "config_invalid", "Repair config.json before saving");
-      const raw = /** @type {Record<string, unknown>} */ (JSON.parse(this.text));
+      if (!this.fileState.valid)
+        throw new HttpError(
+          409,
+          "config_invalid",
+          "Repair config.json before saving",
+        );
+      const raw = /** @type {Record<string, unknown>} */ (
+        JSON.parse(this.text)
+      );
       mutate(raw);
-      try { validateConfig(raw); }
-      catch (error) {
-        if (error instanceof ConfigError) throw new HttpError(400, "invalid_config", error.message, { path: error.path });
+      try {
+        validateConfig(raw);
+      } catch (error) {
+        if (error instanceof ConfigError)
+          throw new HttpError(400, "invalid_config", error.message, {
+            path: error.path,
+          });
         throw error;
       }
       return this.write(serializeConfig(raw));
@@ -242,35 +283,49 @@ export class ConfigStore extends EventEmitter {
     if (this.watching || this.stopped) return;
     this.watching = true;
     const life = ++this.life;
-    const current = () => decideStamp({ source: this.life }, { source: life }).action === "apply" && !this.stopped;
+    const current = () =>
+      decideStamp({ source: this.life }, { source: life }).action === "apply" &&
+      !this.stopped;
     const hint = () => {
       if (!current()) return;
       this.debounce?.abort();
-      const mine = this.debounce = new AbortController();
-      void this.options.clock.sleep(this.options.debounceMs ?? 500, mine.signal).then(async (elapsed) => {
-        if (!current() || !elapsed || mine.signal.aborted) return;
-        await this.reload();
-      }).catch((error) => this.options.logger.error("[Config] Reload failed", error));
+      const mine = (this.debounce = new AbortController());
+      void this.options.clock
+        .sleep(this.options.debounceMs ?? 500, mine.signal)
+        .then(async (elapsed) => {
+          if (!current() || !elapsed || mine.signal.aborted) return;
+          await this.reload();
+        })
+        .catch((error) =>
+          this.options.logger.error("[Config] Reload failed", error),
+        );
     };
     try {
       this.watcher = watch(this.baseDir(), (_event, file) => {
         if (!current()) return;
-        if (file === null || String(file) === basename(this.options.path)) hint();
+        if (file === null || String(file) === basename(this.options.path))
+          hint();
       });
       this.watcher.on("error", (error) => {
         if (!current()) return;
-        this.options.logger.warn(`[Config] Watch failed; polling: ${error.message}`);
+        this.options.logger.warn(
+          `[Config] Watch failed; polling: ${error.message}`,
+        );
         this.watcher?.close();
         this.watcher = null;
       });
       this.watcher.unref();
     } catch (error) {
-      this.options.logger.warn(`[Config] Watch unavailable; polling: ${String(error)}`);
+      this.options.logger.warn(
+        `[Config] Watch unavailable; polling: ${String(error)}`,
+      );
     }
     // Polling also catches an inode replacement or a lost native event.
     this.poll = this.options.clock.every(() => {
       if (!current()) return;
-      void this.reload().catch((error) => this.options.logger.error("[Config] Poll failed", error));
+      void this.reload().catch((error) =>
+        this.options.logger.error("[Config] Poll failed", error),
+      );
     }, 1000);
   }
 
@@ -282,17 +337,17 @@ export class ConfigStore extends EventEmitter {
     this.poll?.cancel();
     this.watcher?.close();
     this.watcher = null;
-    await this.tail;
+    this.lane.close();
+    await this.lane.drain();
   }
 
   /** @template T @param {() => Promise<T>} work @returns {Promise<T>} */
   enqueue(work) {
-    const result = this.tail.then(() => {
-      if (this.stopped) throw new HttpError(503, "stopping", "Config store is stopped");
+    return this.lane.run(() => {
+      if (this.stopped)
+        throw new HttpError(503, "stopping", "Config store is stopped");
       return work();
     });
-    this.tail = result.then(() => {}, () => {});
-    return result;
   }
 
   /** @param {"startup"|"file"} origin @returns {Promise<ConfigFileState>} */
@@ -308,9 +363,18 @@ export class ConfigStore extends EventEmitter {
     } catch (error) {
       if (this.stopped) return this.file();
       const message = error instanceof Error ? error.message : String(error);
-      this.fileState = { ...this.fileState, valid: false,
-        invalidSince: this.fileState.invalidSince ?? new Date(this.options.clock.now()).toISOString(),
-        error: { message, line: error instanceof ConfigError ? error.line : null, column: error instanceof ConfigError ? error.column : null } };
+      this.fileState = {
+        ...this.fileState,
+        valid: false,
+        invalidSince:
+          this.fileState.invalidSince ??
+          new Date(this.options.clock.now()).toISOString(),
+        error: {
+          message,
+          line: error instanceof ConfigError ? error.line : null,
+          column: error instanceof ConfigError ? error.column : null,
+        },
+      };
       this.emit("file", this.file());
     }
     return this.file();
@@ -323,9 +387,23 @@ export class ConfigStore extends EventEmitter {
     this.text = text;
     this.appliedHash = digest(text);
     this.current = freeze(config);
-    this.fileState = { ...this.fileState, valid: true, error: null, invalidSince: null, warnings,
-      rev: this.fileState.rev + (changed ? 1 : 0), loadedAt: new Date(this.options.clock.now()).toISOString() };
-    if (changed) this.emit("changed", { config: this.current, previous, diff: diffConfig(previous, config), origin, rev: this.fileState.rev });
+    this.fileState = {
+      ...this.fileState,
+      valid: true,
+      error: null,
+      invalidSince: null,
+      warnings,
+      rev: this.fileState.rev + (changed ? 1 : 0),
+      loadedAt: new Date(this.options.clock.now()).toISOString(),
+    };
+    if (changed)
+      this.emit("changed", {
+        config: this.current,
+        previous,
+        diff: diffConfig(previous, config),
+        origin,
+        rev: this.fileState.rev,
+      });
     this.emit("file", this.file());
   }
 
@@ -334,19 +412,34 @@ export class ConfigStore extends EventEmitter {
     const { config, warnings } = parseConfig(text);
     const previous = this.current;
     const unique = randomBytes(6).toString("hex");
-    const temp = join(this.baseDir(), `.${basename(this.options.path)}.${unique}.tmp`);
+    const temp = join(
+      this.baseDir(),
+      `.${basename(this.options.path)}.${unique}.tmp`,
+    );
     if (this.text) {
       const backup = await open(`${temp}.bak`, "wx", 0o600);
-      try { await backup.writeFile(this.text); await backup.sync(); }
-      finally { await backup.close(); }
+      try {
+        await backup.writeFile(this.text);
+        await backup.sync();
+      } finally {
+        await backup.close();
+      }
       await rename(`${temp}.bak`, `${this.options.path}.bak`);
     }
     const file = await open(temp, "wx", 0o600);
-    try { await file.writeFile(text); await file.sync(); }
-    finally { await file.close(); }
+    try {
+      await file.writeFile(text);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
     await rename(temp, this.options.path);
     const dir = await open(this.baseDir(), "r");
-    try { await dir.sync(); } finally { await dir.close(); }
+    try {
+      await dir.sync();
+    } finally {
+      await dir.close();
+    }
     this.ownHash = digest(text);
     // An admitted write finishes before stop returns. It is applied here,
     // never again by the file watcher (appliedHash is the own-write fence).
@@ -356,4 +449,6 @@ export class ConfigStore extends EventEmitter {
 }
 
 /** @param {string} text @returns {string} */
-function digest(text) { return createHash("sha256").update(text).digest("hex"); }
+function digest(text) {
+  return createHash("sha256").update(text).digest("hex");
+}

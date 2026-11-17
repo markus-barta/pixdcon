@@ -81,6 +81,7 @@
 import { EventEmitter } from "node:events";
 import { isDeepStrictEqual } from "node:util";
 import { HttpError } from "../core/errors.js";
+import { commandLane } from "../core/commands.js";
 import { apply, decideStamp, drop } from "../core/ordering.js";
 import { NotImplementedError } from "../core/todo.js";
 import { freeze } from "../core/values.js";
@@ -119,7 +120,7 @@ export class StateStore extends EventEmitter {
     this.localControls = new Map();
     /** @type {Map<string, number>} */
     this.tokens = new Map();
-    /** @type {Map<string, Promise<void>>} */
+    /** @type {Map<string, ReturnType<typeof commandLane>>} */
     this.queues = new Map();
     /** @type {Array<() => void>} */
     this.unwire = [];
@@ -136,7 +137,14 @@ export class StateStore extends EventEmitter {
     this.active = true;
     /** @param {{effective: import("../types.js").EffectiveConfig}} event */
     const runtimeChanged = ({ effective }) => {
-      if (!this.active || decideStamp({ source: this.deps.epoch, position: this.runtimeRev }, { source: this.deps.epoch, position: effective.rev }).action !== "apply") return;
+      if (
+        !this.active ||
+        decideStamp(
+          { source: this.deps.epoch, position: this.runtimeRev },
+          { source: this.deps.epoch, position: effective.rev },
+        ).action !== "apply"
+      )
+        return;
       this.runtimeRev = effective.rev;
       this.sync();
     };
@@ -153,14 +161,26 @@ export class StateStore extends EventEmitter {
     const suppression = ({ device, layer, generation }) => {
       if (!this.active || !this.states.has(device)) return;
       void this.command(device, async () => {
-        if (!this.deps.config.file().valid || this.require(device).runtime.origin !== "config") return;
+        if (
+          !this.deps.config.file().valid ||
+          this.require(device).runtime.origin !== "config"
+        )
+          return;
         await this.deps.config.updateDevice(device, (raw) => {
-          const saved = /** @type {import("../types.js").DeviceConfig["supersedes"]} */ (raw.supersedes);
+          const saved =
+            /** @type {import("../types.js").DeviceConfig["supersedes"]} */ (
+              raw.supersedes
+            );
           if (saved?.[layer]?.generation !== generation) return;
           delete saved[layer];
           if (Object.keys(saved).length === 0) delete raw.supersedes;
         });
-      }).catch((error) => this.deps.logger.error("[State] Cannot retire saved suppression", error));
+      }).catch((error) =>
+        this.deps.logger.error(
+          "[State] Cannot retire saved suppression",
+          error,
+        ),
+      );
     };
     this.deps.runtime.on("changed", runtimeChanged);
     this.deps.overlays.on("changed", overlayChanged);
@@ -178,6 +198,7 @@ export class StateStore extends EventEmitter {
   stop() {
     this.active = false;
     this.tokens.clear();
+    for (const lane of this.queues.values()) lane.close();
     for (const off of this.unwire.splice(0)) off();
   }
 
@@ -212,14 +233,31 @@ export class StateStore extends EventEmitter {
     const device = state.runtime;
     let settingOverlayCount = 0;
     const scene = state.desired.scene.scene;
-    if (scene) settingOverlayCount = Object.keys(skeletonRead(() => this.deps.overlays.settingValues(name, scene), {})).length;
+    if (scene)
+      settingOverlayCount = Object.keys(
+        skeletonRead(() => this.deps.overlays.settingValues(name, scene), {}),
+      ).length;
     return freeze({
-      name, epoch: this.deps.epoch, incarnation: state.incarnation, rev: state.rev,
-      displayName: device.displayName, comment: device.comment, type: device.type,
-      origin: device.origin, size: this.deps.sizeOf(device.type),
-      desired: state.desired, effective: state.effective, health: state.health,
-      preview: device.preview, facts: { minFrameMs: device.minFrameMs, powerCyclePlugTopic: device.powerCyclePlugin?.topic ?? null },
-      blobKeys: device.blobKeys, settingOverlayCount, pending: null,
+      name,
+      epoch: this.deps.epoch,
+      incarnation: state.incarnation,
+      rev: state.rev,
+      displayName: device.displayName,
+      comment: device.comment,
+      type: device.type,
+      origin: device.origin,
+      size: this.deps.sizeOf(device.type),
+      desired: state.desired,
+      effective: state.effective,
+      health: state.health,
+      preview: device.preview,
+      facts: {
+        minFrameMs: device.minFrameMs,
+        powerCyclePlugTopic: device.powerCyclePlugin?.topic ?? null,
+      },
+      blobKeys: device.blobKeys,
+      settingOverlayCount,
+      pending: null,
     });
   }
 
@@ -231,7 +269,9 @@ export class StateStore extends EventEmitter {
    * @returns {Record<string, unknown>}
    */
   runningConfigV1() {
-    return this.deps.runtime.toV1((name) => this.states.get(name)?.desired.scene.scene ?? null);
+    return this.deps.runtime.toV1(
+      (name) => this.states.get(name)?.desired.scene.scene ?? null,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -258,21 +298,46 @@ export class StateStore extends EventEmitter {
   async chooseScene(name, scene) {
     return this.command(name, async () => {
       const state = this.require(name);
-      if (scene !== null && (typeof scene !== "string" || this.check(scene, state.type) !== null)) throw new HttpError(400, "unknown_scene", `Scene cannot run: ${scene}`);
+      if (
+        scene !== null &&
+        (typeof scene !== "string" || this.check(scene, state.type) !== null)
+      )
+        throw new HttpError(400, "unknown_scene", `Scene cannot run: ${scene}`);
       const at = new Date(this.deps.clock.now()).toISOString();
-      const plan = skeletonRead(() => this.deps.overlays.planSupersede(name, at), { device: name, generation: 1, at, granular: null, blob: null });
-      const notSavedReason = state.runtime.origin === "blob" ? "overlay_only_device" : !this.deps.config.file().valid ? "config_invalid" : null;
+      const plan = skeletonRead(
+        () => this.deps.overlays.planSupersede(name, at),
+        { device: name, generation: 1, at, granular: null, blob: null },
+      );
+      const notSavedReason =
+        state.runtime.origin === "blob"
+          ? "overlay_only_device"
+          : !this.deps.config.file().valid
+            ? "config_invalid"
+            : null;
       const persisted = notSavedReason === null;
-      if (persisted) await this.deps.config.updateDevice(name, (raw) => {
-        raw.scene = scene;
-        delete raw.scenes;
-        raw.supersedes = { ...(plan.granular ? { granular: plan.granular } : {}), ...(plan.blob ? { blob: plan.blob } : {}) };
-      });
+      if (persisted)
+        await this.deps.config.updateDevice(name, (raw) => {
+          raw.scene = scene;
+          delete raw.scenes;
+          raw.supersedes = {
+            ...(plan.granular ? { granular: plan.granular } : {}),
+            ...(plan.blob ? { blob: plan.blob } : {}),
+          };
+        });
       this.stillCurrent(name, state.incarnation);
-      this.choices.set(name, { scene, chosenAt: at, persisted, notSavedReason, overridden: false });
+      this.choices.set(name, {
+        scene,
+        chosenAt: at,
+        persisted,
+        notSavedReason,
+        overridden: false,
+      });
       // PIXD-91: the frozen plan crosses the saved-write await. Keep the
       // prescribed plan/apply interface; the coordinator owns its repair.
-      skeletonRead(() => this.deps.overlays.applySupersede(plan), { superseded: [], clearPending: false });
+      skeletonRead(() => this.deps.overlays.applySupersede(plan), {
+        superseded: [],
+        clearPending: false,
+      });
       this.compute(name);
       return { view: this.view(name), persisted, notSavedReason };
     });
@@ -292,15 +357,34 @@ export class StateStore extends EventEmitter {
   async adoptDevice(name) {
     return this.command(name, async () => {
       const state = this.require(name);
-      if (state.runtime.origin !== "blob") throw new HttpError(409, "not_overlay_only", "Device is already saved");
+      if (state.runtime.origin !== "blob")
+        throw new HttpError(409, "not_overlay_only", "Device is already saved");
       const choice = this.choices.get(name);
-      const supersedes = skeletonRead(() => this.deps.overlays.suppressions(name), { granular: null, blob: null });
-      await this.deps.config.adoptDevice({ name, type: state.type, ip: state.runtime.address }, choice ? {
-        scene: choice.scene,
-        supersedes: { ...(supersedes.granular ? { granular: supersedes.granular } : {}), ...(supersedes.blob ? { blob: supersedes.blob } : {}) },
-      } : undefined);
+      const supersedes = skeletonRead(
+        () => this.deps.overlays.suppressions(name),
+        { granular: null, blob: null },
+      );
+      await this.deps.config.adoptDevice(
+        { name, type: state.type, ip: state.runtime.address },
+        choice
+          ? {
+              scene: choice.scene,
+              supersedes: {
+                ...(supersedes.granular
+                  ? { granular: supersedes.granular }
+                  : {}),
+                ...(supersedes.blob ? { blob: supersedes.blob } : {}),
+              },
+            }
+          : undefined,
+      );
       this.stillCurrent(name, state.incarnation);
-      if (choice) this.choices.set(name, { ...choice, persisted: true, notSavedReason: null });
+      if (choice)
+        this.choices.set(name, {
+          ...choice,
+          persisted: true,
+          notSavedReason: null,
+        });
       this.compute(name);
       return this.view(name);
     });
@@ -317,7 +401,11 @@ export class StateStore extends EventEmitter {
     return this.command(name, async () => {
       const state = this.require(name);
       const inputs = this.deps.overlays.sceneInputs(name);
-      const id = inputs.granular?.inEffect ? inputs.granular.overlayId : inputs.blob?.inEffect ? inputs.blob.overlayId : `device-scene:${name}`;
+      const id = inputs.granular?.inEffect
+        ? inputs.granular.overlayId
+        : inputs.blob?.inEffect
+          ? inputs.blob.overlayId
+          : `device-scene:${name}`;
       await this.deps.overlays.clear(id);
       this.stillCurrent(name, state.incarnation);
       this.compute(name);
@@ -337,15 +425,34 @@ export class StateStore extends EventEmitter {
    */
   async setMode(name, mode) {
     return this.command(name, async () => {
-      if (!["play", "pause", "stop"].includes(mode)) throw new HttpError(400, "invalid_mode", "Expected play, pause or stop");
+      if (!["play", "pause", "stop"].includes(mode))
+        throw new HttpError(
+          400,
+          "invalid_mode",
+          "Expected play, pause or stop",
+        );
       const state = this.require(name);
-      const repeatedPlay = mode === "play" && state.desired.mode.value === "play";
+      const repeatedPlay =
+        mode === "play" && state.desired.mode.value === "play";
       await this.deps.overlays.publishControl(name, { mode });
       this.stillCurrent(name, state.incarnation);
-      if (state.runtime.output.mode === "shadow" || !this.deps.overlays.deps.mqtt)
-        this.localControls.set(name, { ...this.localControls.get(name), mode, at: new Date(this.deps.clock.now()).toISOString() });
+      if (
+        state.runtime.output.mode === "shadow" ||
+        !this.deps.overlays.deps.mqtt
+      )
+        this.localControls.set(name, {
+          ...this.localControls.get(name),
+          mode,
+          at: new Date(this.deps.clock.now()).toISOString(),
+        });
       this.compute(name);
-      if (repeatedPlay) this.emit("desired", { name, desired: this.require(name).desired, previous: state.desired, changed: ["mode"] });
+      if (repeatedPlay)
+        this.emit("desired", {
+          name,
+          desired: this.require(name).desired,
+          previous: state.desired,
+          changed: ["mode"],
+        });
       return this.view(name);
     });
   }
@@ -361,12 +468,30 @@ export class StateStore extends EventEmitter {
    */
   async setBrightness(name, percent) {
     return this.command(name, async () => {
-      if (percent !== null && (typeof percent !== "number" || !Number.isFinite(percent) || percent < 1 || percent > 100)) throw new HttpError(400, "invalid_brightness", "Expected brightness from 1 to 100, or null");
+      if (
+        percent !== null &&
+        (typeof percent !== "number" ||
+          !Number.isFinite(percent) ||
+          percent < 1 ||
+          percent > 100)
+      )
+        throw new HttpError(
+          400,
+          "invalid_brightness",
+          "Expected brightness from 1 to 100, or null",
+        );
       const state = this.require(name);
       await this.deps.overlays.publishControl(name, { brightness: percent });
       this.stillCurrent(name, state.incarnation);
-      if (state.runtime.output.mode === "shadow" || !this.deps.overlays.deps.mqtt)
-        this.localControls.set(name, { ...this.localControls.get(name), brightness: percent, at: new Date(this.deps.clock.now()).toISOString() });
+      if (
+        state.runtime.output.mode === "shadow" ||
+        !this.deps.overlays.deps.mqtt
+      )
+        this.localControls.set(name, {
+          ...this.localControls.get(name),
+          brightness: percent,
+          at: new Date(this.deps.clock.now()).toISOString(),
+        });
       this.compute(name);
       return this.view(name);
     });
@@ -396,7 +521,10 @@ export class StateStore extends EventEmitter {
    * @returns {import("../core/ordering.js").Decision}
    */
   reportEffective(name, patch, token) {
-    const decision = decideStamp({ source: this.active ? this.tokens.get(name) ?? null : null }, { source: token });
+    const decision = decideStamp(
+      { source: this.active ? (this.tokens.get(name) ?? null) : null },
+      { source: token },
+    );
     if (decision.action !== "apply") return decision;
     const state = this.states.get(name);
     if (!state) return drop("unknown_device");
@@ -412,7 +540,15 @@ export class StateStore extends EventEmitter {
    * @param {number} token higher than every token before it
    */
   runtimeStarted(name, token) {
-    if (!this.active || !this.states.has(name) || token <= (this.tokens.get(name) ?? -1)) return;
+    if (
+      !this.active ||
+      !this.states.has(name) ||
+      decideStamp(
+        { source: name, position: this.tokens.get(name) ?? -1 },
+        { source: name, position: token },
+      ).action !== "apply"
+    )
+      return;
     this.tokens.set(name, token);
   }
 
@@ -428,46 +564,77 @@ export class StateStore extends EventEmitter {
   /** @param {string} name @returns {DeviceState} */
   require(name) {
     const state = this.states.get(name);
-    if (!state) throw new HttpError(404, "unknown_device", `Unknown device: ${name}`);
+    if (!state)
+      throw new HttpError(404, "unknown_device", `Unknown device: ${name}`);
     return state;
   }
 
   /** @param {string} name @param {number} incarnation */
   stillCurrent(name, incarnation) {
-    if (!this.active || this.require(name).incarnation !== incarnation) throw new HttpError(409, "device_replaced", `Device was replaced: ${name}`);
+    if (
+      !this.active ||
+      decideStamp(
+        { source: this.require(name).incarnation },
+        { source: incarnation },
+      ).action !== "apply"
+    )
+      throw new HttpError(
+        409,
+        "device_replaced",
+        `Device was replaced: ${name}`,
+      );
   }
 
   /** @template T @param {string} name @param {() => Promise<T>} work @returns {Promise<T>} */
   command(name, work) {
     const incarnation = this.require(name).incarnation;
-    const result = (this.queues.get(name) ?? Promise.resolve()).then(() => {
+    const lane = this.queues.get(name) ?? commandLane();
+    this.queues.set(name, lane);
+    return lane.run(() => {
       this.stillCurrent(name, incarnation);
       return work();
     });
-    this.queues.set(name, result.then(() => {}, () => {}));
-    return result;
   }
 
   sync() {
     const devices = this.deps.runtime.get().devices;
     const names = new Set(devices.map((device) => device.name));
     for (const [name, old] of this.states) {
-      if (names.has(name) && this.deps.runtime.incarnationOf(name) === old.incarnation) continue;
-      this.states.delete(name); this.choices.delete(name); this.localControls.delete(name); this.tokens.delete(name);
+      if (
+        names.has(name) &&
+        this.deps.runtime.incarnationOf(name) === old.incarnation
+      )
+        continue;
+      this.states.delete(name);
+      this.choices.delete(name);
+      this.localControls.delete(name);
+      this.tokens.delete(name);
       this.emit("device-removed", { name, incarnation: old.incarnation });
     }
     for (const device of devices) {
       const old = this.states.get(device.name);
       const choice = this.choices.get(device.name);
-      if (old && device.savedScene !== old.runtime.savedScene && choice?.scene !== device.savedScene) this.choices.delete(device.name);
-      if (old?.runtime.output.mode === "shadow" && device.output.mode === "drive") this.localControls.delete(device.name);
+      if (
+        old &&
+        device.savedScene !== old.runtime.savedScene &&
+        choice?.scene !== device.savedScene
+      )
+        this.choices.delete(device.name);
+      if (
+        old?.runtime.output.mode === "shadow" &&
+        device.output.mode === "drive"
+      )
+        this.localControls.delete(device.name);
       this.compute(device.name);
     }
   }
 
   /** @param {string} scene @param {import("../types.js").DeviceType} type @returns {string|null} */
   check(scene, type) {
-    return skeletonRead(() => this.deps.scenes.check(scene, type), Object.hasOwn(this.deps.runtime.scenes(), scene) ? null : "unknown scene");
+    return skeletonRead(
+      () => this.deps.scenes.check(scene, type),
+      Object.hasOwn(this.deps.runtime.scenes(), scene) ? null : "unknown scene",
+    );
   }
 
   /** @param {string} name */
@@ -478,30 +645,134 @@ export class StateStore extends EventEmitter {
     const now = new Date(this.deps.clock.now()).toISOString();
     const since = this.deps.runtime.get().savedAt;
     const choice = this.choices.get(name);
-    const layers = skeletonRead(() => this.deps.overlays.sceneInputs(name), { granular: null, blob: null });
-    const scene = resolveScene({ configScene: device.savedScene, configSince: since,
-      uiChoice: choice ? { scene: choice.scene, at: choice.chosenAt ?? since, persisted: choice.persisted } : null,
-      ...layers, check: (key) => this.check(key, device.type) });
+    const layers = skeletonRead(() => this.deps.overlays.sceneInputs(name), {
+      granular: null,
+      blob: null,
+    });
+    const scene = resolveScene({
+      configScene: device.savedScene,
+      configSince: since,
+      uiChoice: choice
+        ? {
+            scene: choice.scene,
+            at: choice.chosenAt ?? since,
+            persisted: choice.persisted,
+          }
+        : null,
+      ...layers,
+      check: (key) => this.check(key, device.type),
+    });
     // Receipt time is visible on overlay records; an unchanged scene does
     // not cause a desired event or a frame restart merely by being replayed.
-    if (old && scene.scene === old.desired.scene.scene && scene.source === old.desired.scene.source && scene.problem === old.desired.scene.problem) scene.since = old.desired.scene.since;
-    const controls = skeletonRead(() => this.deps.overlays.controls(name), { mode: null, brightness: null });
+    if (
+      old &&
+      scene.scene === old.desired.scene.scene &&
+      scene.source === old.desired.scene.source &&
+      scene.problem === old.desired.scene.problem
+    )
+      scene.since = old.desired.scene.since;
+    const controls = skeletonRead(() => this.deps.overlays.controls(name), {
+      mode: null,
+      brightness: null,
+    });
     const local = this.localControls.get(name);
     /** @type {import("../types.js").DesiredState} */
     const desired = {
       scene,
-      choice: { ...(choice ?? { scene: device.savedScene, persisted: true, notSavedReason: null, chosenAt: null }), overridden: scene.source === "overlay" || scene.source === "blob" },
-      mode: local?.mode ? { value: local.mode, source: "ui", since: local.at } : controls.mode ? { value: controls.mode.value, source: "mqtt", since: controls.mode.record.receivedAt } : { value: "play", source: "default", since: old?.desired.mode.source === "default" ? old.desired.mode.since : since },
-      brightness: local && Object.hasOwn(local, "brightness") ? { override: local.brightness ?? null, source: "ui", since: local.at } : controls.brightness ? { override: controls.brightness.percent, source: "mqtt", since: controls.brightness.record.receivedAt } : { override: null, source: "none", since: old?.desired.brightness.source === "none" ? old.desired.brightness.since : since },
-      address: { value: device.address, source: device.addressSource }, enabled: device.enabled,
+      choice: {
+        ...(choice ?? {
+          scene: device.savedScene,
+          persisted: true,
+          notSavedReason: null,
+          chosenAt: null,
+        }),
+        overridden: scene.source === "overlay" || scene.source === "blob",
+      },
+      mode: local?.mode
+        ? { value: local.mode, source: "ui", since: local.at }
+        : controls.mode
+          ? {
+              value: controls.mode.value,
+              source: "mqtt",
+              since: controls.mode.record.receivedAt,
+            }
+          : {
+              value: "play",
+              source: "default",
+              since:
+                old?.desired.mode.source === "default"
+                  ? old.desired.mode.since
+                  : since,
+            },
+      brightness:
+        local && Object.hasOwn(local, "brightness")
+          ? {
+              override: local.brightness ?? null,
+              source: "ui",
+              since: local.at,
+            }
+          : controls.brightness
+            ? {
+                override: controls.brightness.percent,
+                source: "mqtt",
+                since: controls.brightness.record.receivedAt,
+              }
+            : {
+                override: null,
+                source: "none",
+                since:
+                  old?.desired.brightness.source === "none"
+                    ? old.desired.brightness.since
+                    : since,
+              },
+      address: { value: device.address, source: device.addressSource },
+      enabled: device.enabled,
       output: device.output.mode,
-      outputProblem: device.output.reason === "v1_owner" ? "still driven by pixdcon v1" : device.output.reason === "ownership_unknown" ? "waiting for pixdcon v1's device list" : device.output.reason === "force_shadow" ? "this instance never drives a display" : null,
+      outputProblem:
+        device.output.reason === "v1_owner"
+          ? "still driven by pixdcon v1"
+          : device.output.reason === "ownership_unknown"
+            ? "waiting for pixdcon v1's device list"
+            : device.output.reason === "force_shadow"
+              ? "this instance never drives a display"
+              : null,
     };
-    const health = old?.health ?? { state: device.output.mode === "shadow" ? /** @type {const} */ ("shadow") : /** @type {const} */ ("starting"), since: now,
-      lastFrameAt: null, lastContactAt: null, consecutiveErrors: 0, lastError: null, reason: /** @type {const} */ ("not_started"),
-      powerCycles: { count: 0, max: device.maxPowerCycles, plugTopic: device.powerCyclePlugin?.topic ?? null }, apSsid: null };
-    this.put({ name, type: device.type, incarnation: this.deps.runtime.incarnationOf(name) ?? 0, rev: old?.rev ?? 0,
-      runtime: device, desired, health, effective: old?.effective ?? { scene: null, phase: "idle", showingSince: null, frameCount: 0, lastBrightness: null, appliedBrightness: null, nextRetryAt: null } });
+    const health = old?.health ?? {
+      state:
+        device.output.mode === "shadow"
+          ? /** @type {const} */ ("shadow")
+          : /** @type {const} */ ("starting"),
+      since: now,
+      lastFrameAt: null,
+      lastContactAt: null,
+      consecutiveErrors: 0,
+      lastError: null,
+      reason: /** @type {const} */ ("not_started"),
+      powerCycles: {
+        count: 0,
+        max: device.maxPowerCycles,
+        plugTopic: device.powerCyclePlugin?.topic ?? null,
+      },
+      apSsid: null,
+    };
+    this.put({
+      name,
+      type: device.type,
+      incarnation: this.deps.runtime.incarnationOf(name) ?? 0,
+      rev: old?.rev ?? 0,
+      runtime: device,
+      desired,
+      health,
+      effective: old?.effective ?? {
+        scene: null,
+        phase: "idle",
+        showingSince: null,
+        frameCount: 0,
+        lastBrightness: null,
+        appliedBrightness: null,
+        nextRetryAt: null,
+      },
+    });
   }
 
   /** @param {DeviceState} state */
@@ -512,14 +783,41 @@ export class StateStore extends EventEmitter {
     this.states.set(state.name, next);
     if (!previous) this.emit("device-added", this.view(state.name));
     this.emit("device", this.view(state.name));
-    const changed = ["scene", "mode", "brightness", "address", "enabled", "output"].filter((key) =>
-      !isDeepStrictEqual(/** @type {any} */ (previous?.desired ?? {})[key], /** @type {any} */ (next.desired)[key]));
-    if (changed.length) this.emit("desired", { name: state.name, desired: next.desired, previous: previous?.desired ?? null, changed });
+    const targets = (
+      /** @type {import("../types.js").DesiredState|undefined} */ desired,
+    ) => ({
+      scene: [desired?.scene.scene, desired?.scene.problem],
+      mode: desired?.mode.value,
+      brightness: desired?.brightness.override,
+      address: desired?.address.value,
+      enabled: desired?.enabled,
+      output: desired?.output,
+    });
+    const before = targets(previous?.desired),
+      after = targets(next.desired);
+    const changed = Object.keys(after).filter(
+      (key) =>
+        !isDeepStrictEqual(
+          /** @type {any} */ (before)[key],
+          /** @type {any} */ (after)[key],
+        ),
+    );
+    if (changed.length)
+      this.emit("desired", {
+        name: state.name,
+        desired: next.desired,
+        previous: previous?.desired ?? null,
+        changed,
+      });
   }
 }
 
 /** @template T @param {() => T} read @param {T} fallback @returns {T} */
 function skeletonRead(read, fallback) {
-  try { return read(); }
-  catch (error) { if (error instanceof NotImplementedError) return fallback; throw error; }
+  try {
+    return read();
+  } catch (error) {
+    if (error instanceof NotImplementedError) return fallback;
+    throw error;
+  }
 }

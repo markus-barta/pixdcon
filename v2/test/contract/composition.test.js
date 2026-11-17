@@ -13,7 +13,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile, writeFile } from "node:fs/promises";
 import { ConfigStore } from "../../src/config/config-store.js";
-import { DEFAULTS, parseConfig, validateConfig } from "../../src/config/schema.js";
+import {
+  DEFAULTS,
+  parseConfig,
+  validateConfig,
+} from "../../src/config/schema.js";
 import { manualClock } from "../../src/core/clock.js";
 import { createLogger } from "../../src/core/logger.js";
 import { createApp } from "../../src/main.js";
@@ -150,13 +154,20 @@ test("last will: the health topic of the status base, retained, status offline i
 
 test("composition force-shadow: a shared status namespace registers no controller will; a separate namespace keeps its will", async (t) => {
   requireNetGuard();
+  const stack = await startStack(t, { mqtt: false });
   const logger = createLogger({ sink: { out() {}, err() {} } });
   for (const forceShadow of [false, true]) {
     for (const statusBaseTopic of [DEFAULTS.mqtt.baseTopic, "shadow/status"]) {
       const config = { mqtt: { ...DEFAULTS.mqtt, statusBaseTopic } };
       // Keep this composition check independent of unfinished modules.
-      const load = t.mock.method(ConfigStore.prototype, "load", async () => ({}));
-      const file = t.mock.method(ConfigStore.prototype, "file", () => ({ valid: true }));
+      const load = t.mock.method(
+        ConfigStore.prototype,
+        "load",
+        async () => ({}),
+      );
+      const file = t.mock.method(ConfigStore.prototype, "file", () => ({
+        valid: true,
+      }));
       const get = t.mock.method(ConfigStore.prototype, "get", () => config);
       /** @type {typeof MqttGateway.fromEnv} */
       const fromEnv = (_env, deps) => {
@@ -170,7 +181,13 @@ test("composition force-shadow: a shared status namespace registers no controlle
         return null;
       };
       const gateway = t.mock.method(MqttGateway, "fromEnv", fromEnv);
-      await createApp({ PIXDCON2_FORCE_SHADOW: forceShadow ? "1" : "0" }, { logger });
+      await createApp(
+        {
+          PIXDCON_CONFIG_PATH: stack.configPath,
+          PIXDCON2_FORCE_SHADOW: forceShadow ? "1" : "0",
+        },
+        { logger },
+      );
       assert.equal(gateway.mock.callCount(), 1);
       for (const method of [load, file, get, gateway]) method.mock.restore();
     }
@@ -260,7 +277,7 @@ test("N7 shutdown: a scene import that is still running when the wait for the re
 
   // The effective scene map changes; the import it starts does not end.
   runtime.emit("changed", {
-    effective: { devices: [] },
+    effective: { ...runtime.get(), devices: [], rev: runtime.get().rev + 1 },
     diff: { scenesAdded: ["clock"], scenesRemoved: [], scenesChanged: [] },
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -301,16 +318,27 @@ test("namespace: an invalid config.json at start leaves MQTT off for the run (no
   assert.equal(stack.app.modules.config.file().valid, false);
   assert.equal(stack.app.modules.state.views().length, 0);
   await stack.app.modules.config.replaceRaw('{"devices":[],"scenes":{}}');
-  assert.match(stack.app.controller().restartRequired?.reason ?? "", /not valid when pixdcon started/);
+  assert.match(
+    stack.app.controller().restartRequired?.reason ?? "",
+    /not valid when pixdcon started/,
+  );
   assert.equal(stack.app.modules.mqtt, null);
 });
 test("namespace change: editing mqtt.* in config.json while running moves nothing on the wire and reports restartRequired; after a restart the new names are used", async (t) => {
   const stack = await startStack(t, { mqtt: false });
-  await stack.app.modules.config.update((raw) => { raw.mqtt = { baseTopic: "another/base" }; });
+  await stack.app.modules.config.update((raw) => {
+    raw.mqtt = { baseTopic: "another/base" };
+  });
   assert.equal(stack.app.topics.base, DEFAULTS.mqtt.baseTopic);
-  assert.match(stack.app.controller().restartRequired?.reason ?? "", /MQTT settings/);
+  assert.match(
+    stack.app.controller().restartRequired?.reason ?? "",
+    /MQTT settings/,
+  );
   await stack.app.stop();
-  const app = await createApp({ PIXDCON_CONFIG_PATH: stack.configPath, WEB_PORT: "0" }, { logger: stack.app.logger });
+  const app = await createApp(
+    { PIXDCON_CONFIG_PATH: stack.configPath, WEB_PORT: "0" },
+    { logger: stack.app.logger },
+  );
   t.after(() => app.stop());
   assert.equal(app.topics.base, "another/base");
   assert.equal(app.controller().restartRequired, null);
@@ -326,9 +354,22 @@ test.todo(
 );
 test("effective runtime config: a blob entry that patches minFrameMs, powerCyclePlugin and ip reaches the device runtime; nothing of it is written to config.json", () => {
   const input = effectiveInput();
-  input.structural.blobDevices = [{ name: "D", ip: "127.0.0.2:80", minFrameMs: 20, powerCyclePlugin: { topic: "plug/set" } }];
+  input.structural.blobDevices = [
+    {
+      name: "D",
+      ip: "127.0.0.2:80",
+      minFrameMs: 20,
+      powerCyclePlugin: { topic: "plug/set" },
+    },
+  ];
   const before = structuredClone(input.config);
-  const { effective } = buildEffectiveConfig(input.config, input.structural, () => ({ mode: "drive", requested: "drive", reason: null }), DEFAULTS.mqtt, "2026-11-17T07:00:00Z");
+  const { effective } = buildEffectiveConfig(
+    input.config,
+    input.structural,
+    () => ({ mode: "drive", requested: "drive", reason: null }),
+    DEFAULTS.mqtt,
+    "2026-11-17T07:00:00Z",
+  );
   const device = effective.devices[0];
   assert.equal(device.address, "127.0.0.2:80");
   assert.equal(device.addressSource, "blob");
@@ -338,9 +379,20 @@ test("effective runtime config: a blob entry that patches minFrameMs, powerCycle
 });
 test("effective runtime config: a device that exists only in the blob is listed with origin blob after the config.json devices and runs", () => {
   const input = effectiveInput();
-  input.structural.blobDevices = [{ name: "B", type: "ulanzi", ip: "localhost:81", scene: "blob-scene" }];
-  const { effective } = buildEffectiveConfig(input.config, input.structural, () => ({ mode: "drive", requested: "drive", reason: null }), DEFAULTS.mqtt, "2026-11-17T07:00:00Z");
-  assert.deepEqual(effective.devices.map((device) => device.name), ["D", "B"]);
+  input.structural.blobDevices = [
+    { name: "B", type: "ulanzi", ip: "localhost:81", scene: "blob-scene" },
+  ];
+  const { effective } = buildEffectiveConfig(
+    input.config,
+    input.structural,
+    () => ({ mode: "drive", requested: "drive", reason: null }),
+    DEFAULTS.mqtt,
+    "2026-11-17T07:00:00Z",
+  );
+  assert.deepEqual(
+    effective.devices.map((device) => device.name),
+    ["D", "B"],
+  );
   assert.equal(effective.devices[1].origin, "blob");
   assert.equal(effective.devices[1].savedScene, null);
   assert.equal(effective.devices[1].enabled, true);
@@ -349,14 +401,29 @@ test("effective runtime config: a granular scene path overlay replaces the file 
   const input = effectiveInput();
   input.structural.blobScenes = { A: { path: "blob.js" } };
   input.structural.scenePaths = { A: "new.js", B: "second.js" };
-  const { effective } = buildEffectiveConfig(input.config, input.structural, () => ({ mode: "drive", requested: "drive", reason: null }), DEFAULTS.mqtt, "2026-11-17T07:00:00Z");
-  assert.deepEqual(effective.scenes, { A: { path: "new.js", source: "overlay" }, B: { path: "second.js", source: "overlay" } });
+  const { effective } = buildEffectiveConfig(
+    input.config,
+    input.structural,
+    () => ({ mode: "drive", requested: "drive", reason: null }),
+    DEFAULTS.mqtt,
+    "2026-11-17T07:00:00Z",
+  );
+  assert.deepEqual(effective.scenes, {
+    A: { path: "new.js", source: "overlay" },
+    B: { path: "second.js", source: "overlay" },
+  });
   assert.equal(input.config.scenes.A.path, "a.js");
 });
 test("effective runtime config: a blob entry that would make a device unusable leaves the config.json entry running and is listed as invalid", () => {
   const input = effectiveInput();
   input.structural.blobDevices = [{ name: "D", type: "not-a-display" }];
-  const result = buildEffectiveConfig(input.config, input.structural, () => ({ mode: "drive", requested: "drive", reason: null }), DEFAULTS.mqtt, "2026-11-17T07:00:00Z");
+  const result = buildEffectiveConfig(
+    input.config,
+    input.structural,
+    () => ({ mode: "drive", requested: "drive", reason: null }),
+    DEFAULTS.mqtt,
+    "2026-11-17T07:00:00Z",
+  );
   assert.equal(result.effective.devices[0].type, "pixoo");
   assert.deepEqual(result.effective.devices[0].blobKeys, []);
   assert.equal(result.rejected[0].name, "D");
@@ -407,9 +474,14 @@ test("config store order: an own write is not an outside edit; a file read that 
   config.on("changed", (event) => origins.push(event.origin));
   const original = await readFile(stack.configPath, "utf8");
   const earlierRead = config.reload();
-  await Promise.all([earlierRead,
-    config.updateDevice("pixoo-t", (raw) => { raw.comment = "one"; }),
-    config.updateDevice("ulanzi-t", (raw) => { raw.comment = "two"; }),
+  await Promise.all([
+    earlierRead,
+    config.updateDevice("pixoo-t", (raw) => {
+      raw.comment = "one";
+    }),
+    config.updateDevice("ulanzi-t", (raw) => {
+      raw.comment = "two";
+    }),
   ]);
   assert.deepEqual(origins, ["api", "api"]);
   const rev = config.file().rev;
@@ -427,7 +499,10 @@ test("config store order: an own write is not an outside edit; a file read that 
   await config.reload();
   assert.equal(config.file().valid, false);
   assert.equal(config.get().devices[0].comment, "one");
-  await assert.rejects(config.updateDevice("pixoo-t", () => {}), { code: "config_invalid" });
+  await assert.rejects(
+    config.updateDevice("pixoo-t", () => {}),
+    { code: "config_invalid" },
+  );
   assert.ok(config.file().error?.line);
 });
 test.todo(
@@ -449,13 +524,37 @@ test.todo(
 /** Config/overlay boundary, shared by the effective-config contract cases. */
 function effectiveInput() {
   return {
-    config: validateConfig({ devices: [{ name: "D", type: "pixoo", ip: "127.0.0.1", scene: "A" }], scenes: { A: { path: "a.js" } } }).config,
-    structural: /** @type {import("../../src/types.js").StructuralOverlays} */ ({ blobDevices: [], blobScenes: {}, scenePaths: {}, deviceIps: {}, deviceEnabled: {}, deviceHeld: [] }),
+    config: validateConfig({
+      devices: [{ name: "D", type: "pixoo", ip: "127.0.0.1", scene: "A" }],
+      scenes: { A: { path: "a.js" } },
+    }).config,
+    structural:
+      /** @type {import("../../src/types.js").StructuralOverlays} */ ({
+        blobDevices: [],
+        blobScenes: {},
+        scenePaths: {},
+        deviceIps: {},
+        deviceEnabled: {},
+        deviceHeld: [],
+      }),
   };
 }
 
 test("config contract: v1 normalization, safe identities, duplicate rejection, unknown keys and parse positions", () => {
-  const input = { devices: [{ name: " D ", type: "pixoo", ip: " localhost:1234 ", scenes: ["A"], preview: { pollMs: 1 }, extra: 7 }], scenes: { A: { path: "a.js" } }, extra: { keep: true } };
+  const input = {
+    devices: [
+      {
+        name: " D ",
+        type: "pixoo",
+        ip: " localhost:1234 ",
+        scenes: ["A"],
+        preview: { pollMs: 1 },
+        extra: 7,
+      },
+    ],
+    scenes: { A: { path: "a.js" } },
+    extra: { keep: true },
+  };
   const result = validateConfig(input);
   assert.equal(result.config.devices[0].name, "D");
   assert.equal(result.config.devices[0].scene, "A");
@@ -464,25 +563,70 @@ test("config contract: v1 normalization, safe identities, duplicate rejection, u
   assert.equal(result.config.output.default, null);
   assert.equal(result.warnings.length, 2);
   assert.deepEqual(input.devices[0].name, " D ");
-  assert.throws(() => validateConfig({ ...input, devices: [...input.devices, ...input.devices] }), /duplicate/);
-  assert.throws(() => validateConfig({ ...input, devices: [{ ...input.devices[0], name: "unsafe/#" }] }), /invalid name/);
-  assert.throws(() => validateConfig({ ...input, devices: [{ ...input.devices[0], ip: "http://host/path" }] }), /host/);
-  assert.throws(() => parseConfig('{\n "devices": [oops] }'), (error) => {
-    assert.equal(/** @type {any} */ (error).line, 2);
-    return true;
-  });
+  assert.throws(
+    () =>
+      validateConfig({
+        ...input,
+        devices: [...input.devices, ...input.devices],
+      }),
+    /duplicate/,
+  );
+  assert.throws(
+    () =>
+      validateConfig({
+        ...input,
+        devices: [{ ...input.devices[0], name: "unsafe/#" }],
+      }),
+    /invalid name/,
+  );
+  assert.throws(
+    () =>
+      validateConfig({
+        ...input,
+        devices: [{ ...input.devices[0], ip: "http://host/path" }],
+      }),
+    /host/,
+  );
+  assert.throws(
+    () => parseConfig('{\n "devices": [oops] }'),
+    (error) => {
+      assert.equal(/** @type {any} */ (error).line, 2);
+      return true;
+    },
+  );
 });
 
 test("settings contract: normalization keeps v1 coercion and bounds, invalid layers fall through, JSON errors never become an empty object", () => {
-  const field = /** @type {import("../../src/types.js").SettingField} */ ({ type: "int", default: 4, min: 1, max: 10 });
+  const field = /** @type {import("../../src/types.js").SettingField} */ ({
+    type: "int",
+    default: 4,
+    min: 1,
+    max: 10,
+  });
   assert.equal(normalizeSettingValue("8.9", field), 8);
   assert.equal(normalizeSettingValue("8junk", field), undefined);
   assert.equal(normalizeSettingValue(100, field), 10);
-  assert.equal(resolveSetting(field, { saved: 6, overlay: "invalid", preview: 9 }).effective, 9);
-  assert.equal(resolveSetting(field, { saved: 6, overlay: "invalid" }).source, "saved");
-  assert.equal(normalizeSettingValue("not json", { ...field, type: "json" }), undefined);
-  assert.equal(normalizeSettingValue("23:59", { ...field, type: "time" }), "23:59");
-  assert.equal(normalizeSettingValue("24:00", { ...field, type: "time" }), undefined);
+  assert.equal(
+    resolveSetting(field, { saved: 6, overlay: "invalid", preview: 9 })
+      .effective,
+    9,
+  );
+  assert.equal(
+    resolveSetting(field, { saved: 6, overlay: "invalid" }).source,
+    "saved",
+  );
+  assert.equal(
+    normalizeSettingValue("not json", { ...field, type: "json" }),
+    undefined,
+  );
+  assert.equal(
+    normalizeSettingValue("23:59", { ...field, type: "time" }),
+    "23:59",
+  );
+  assert.equal(
+    normalizeSettingValue("24:00", { ...field, type: "time" }),
+    undefined,
+  );
   assert.equal(percentToNative(100, "ulanzi"), 255);
   assert.equal(percentToNative(50, "pixoo"), 50);
 });
@@ -491,23 +635,76 @@ test("device lives and reports: remove/add hands out a fresh incarnation, old ru
   const stack = await startStack(t, { mqtt: false });
   const { state, config, runtime } = stack.app.modules;
   state.runtimeStarted("pixoo-t", 10);
-  assert.equal(state.reportEffective("pixoo-t", { frameCount: 1 }, 10).action, "apply");
+  assert.equal(
+    state.reportEffective("pixoo-t", { frameCount: 1 }, 10).action,
+    "apply",
+  );
   state.runtimeStarted("pixoo-t", 11);
-  assert.equal(state.reportEffective("pixoo-t", { frameCount: 100 }, 10).action, "drop");
+  assert.equal(
+    state.reportEffective("pixoo-t", { frameCount: 100 }, 10).action,
+    "drop",
+  );
   assert.equal(state.view("pixoo-t").effective.frameCount, 1);
   const raw = JSON.parse(await readFile(stack.configPath, "utf8"));
   const first = state.view("pixoo-t").incarnation;
-  await config.update((file) => { file.devices = /** @type {any[]} */ (file.devices).filter((device) => device.name !== "pixoo-t"); });
+  await config.update((file) => {
+    file.devices = /** @type {any[]} */ (file.devices).filter(
+      (device) => device.name !== "pixoo-t",
+    );
+  });
   assert.equal(state.get("pixoo-t"), undefined);
-  await config.update((file) => { /** @type {any[]} */ (file.devices).unshift(raw.devices[0]); });
+  await config.update((file) => {
+    /** @type {any[]} */ (file.devices).unshift(raw.devices[0]);
+  });
   assert.ok(state.view("pixoo-t").incarnation > first);
   assert.equal(state.view("pixoo-t").rev, 1);
   assert.equal(runtime.incarnations(), 3);
-  assert.equal(state.reportEffective("pixoo-t", { frameCount: 100 }, 11).action, "drop");
+  assert.equal(
+    state.reportEffective("pixoo-t", { frameCount: 100 }, 11).action,
+    "drop",
+  );
   /** @type {Array<{name: string}>} */
   const retries = [];
   state.on("retry", (event) => retries.push(event));
   await state.retry("pixoo-t");
   assert.deepEqual(retries, [{ name: "pixoo-t" }]);
   await assert.rejects(state.retry("missing"), { code: "unknown_device" });
+});
+
+test("shutdown deadline: app.stop shares one 8 s budget across a hung scheduler and scene release, passes the remainder, and still fences reports and stops ownership", async (t) => {
+  for (const hangScheduler of [true, false]) {
+    const clock = manualClock();
+    const stack = await startStack(t, { clock, mqtt: false });
+    const { scheduler, sceneRuntime, state, ownership } = stack.app.modules;
+    const never = new Promise(() => {});
+    /** @type {number[]} */ const budgets = [];
+    scheduler.stop = async (options) => {
+      budgets.push(options?.deadlineMs ?? -1);
+      if (hangScheduler) await never;
+    };
+    sceneRuntime.releaseAll = /** @type {any} */ (
+      async (/** @type {{deadlineMs?: number}} */ options) => {
+        budgets.push(options.deadlineMs ?? -1);
+        await never;
+      }
+    );
+    let stoppedOwnership = false;
+    ownership.stop = () => {
+      stoppedOwnership = true;
+    };
+    state.runtimeStarted("pixoo-t", 1);
+    const began = clock.now();
+    const stopped = stack.app.stop();
+    for (let step = 0; step < 80; step++) await clock.advance(100);
+    await stopped;
+    assert.ok(clock.now() - began <= 8000);
+    assert.ok(stoppedOwnership);
+    assert.equal(budgets.length, 2);
+    assert.ok(budgets[0] <= 6000);
+    assert.ok(budgets[1] <= (hangScheduler ? 1500 : 7500));
+    assert.equal(
+      state.reportEffective("pixoo-t", { frameCount: 999 }, 1).action,
+      "drop",
+    );
+  }
 });
