@@ -22,7 +22,6 @@
  */
 
 import { EventEmitter } from "node:events";
-import { todo } from "../core/todo.js";
 
 /** @typedef {import("../types.js").PreviewFrame} PreviewFrame */
 /** @typedef {import("../types.js").Frame} Frame */
@@ -32,6 +31,12 @@ export class PreviewStore extends EventEmitter {
   constructor(deps) {
     super();
     this.deps = deps;
+    /** @type {Map<string, PreviewFrame>} */
+    this.frames = new Map();
+    /** @type {Map<string, number>} */
+    this.emittedAt = new Map();
+    /** @type {Map<string, {stop: () => void, pollMs: number}>} */
+    this.feeds = new Map();
   }
 
   /**
@@ -42,7 +47,16 @@ export class PreviewStore extends EventEmitter {
    * @param {PreviewFrame["source"]} source
    */
   put(device, frame, source) {
-    return todo("PreviewStore.put", device, frame, source);
+    if (!Number.isInteger(frame.width) || !Number.isInteger(frame.height) || frame.width <= 0 || frame.height <= 0 || !(frame.rgb instanceof Uint8Array) || frame.rgb.length !== frame.width * frame.height * 3) return;
+    const previous = this.frames.get(device);
+    const now = this.deps.clock.now();
+    const next = { device, width: frame.width, height: frame.height, rgb: frame.rgb.slice(), source, receivedAt: new Date(now).toISOString(), seq: (previous?.seq ?? 0) + 1 };
+    this.frames.set(device, next);
+    const changed = !previous || previous.source !== source || previous.width !== frame.width || previous.height !== frame.height || !Buffer.from(previous.rgb).equals(next.rgb);
+    if (changed || now - (this.emittedAt.get(device) ?? -Infinity) >= 1000) {
+      this.emittedAt.set(device, now);
+      this.emit("frame", { ...next, rgb: next.rgb.slice() });
+    }
   }
 
   /**
@@ -54,7 +68,24 @@ export class PreviewStore extends EventEmitter {
    * @returns {() => void} stop this feed
    */
   feedFromDevice(device, driver, pollMs) {
-    return todo("PreviewStore.feedFromDevice", device, driver, pollMs);
+    this.feeds.get(device)?.stop();
+    let active = true;
+    let busy = false;
+    const controller = new AbortController();
+    const tick = async () => {
+      if (!active || busy || !driver.readScreen) return;
+      busy = true;
+      try {
+        const frame = await driver.readScreen({ signal: controller.signal });
+        if (active && frame) this.put(device, frame, "device");
+      } catch (error) { if (active) this.deps.logger.debug(`[Preview] ${device}: ${String(error)}`); }
+      finally { busy = false; }
+    };
+    const timer = this.deps.clock.every(() => { void tick(); }, pollMs);
+    const stop = () => { active = false; controller.abort(); timer.cancel(); if (this.feeds.get(device)?.stop === stop) this.feeds.delete(device); };
+    this.feeds.set(device, { stop, pollMs });
+    void tick();
+    return stop;
   }
 
   /**
@@ -62,12 +93,13 @@ export class PreviewStore extends EventEmitter {
    * @returns {PreviewFrame|undefined}
    */
   get(device) {
-    return todo("PreviewStore.get", device);
+    const frame = this.frames.get(device);
+    return frame ? { ...frame, rgb: frame.rgb.slice() } : undefined;
   }
 
   /** @returns {PreviewFrame[]} */
   list() {
-    return todo("PreviewStore.list");
+    return [...this.frames.values()].map((frame) => ({ ...frame, rgb: frame.rgb.slice() }));
   }
 
   /**
@@ -77,11 +109,17 @@ export class PreviewStore extends EventEmitter {
    * @returns {Record<string, {width: number, height: number, data: string, source: "runtime"|"device", intervalMs: number, updatedAt: string}>}
    */
   toV1() {
-    return todo("PreviewStore.toV1");
+    return Object.fromEntries(this.list().map((frame) => [frame.device, {
+      width: frame.width, height: frame.height, data: Buffer.from(frame.rgb).toString("base64"),
+      source: frame.source === "simulated" ? "runtime" : frame.source,
+      intervalMs: this.feeds.get(frame.device)?.pollMs ?? 500, updatedAt: frame.receivedAt,
+    }]));
   }
 
   /** Forget a device that left the config. @param {string} device */
   remove(device) {
-    return todo("PreviewStore.remove", device);
+    this.feeds.get(device)?.stop();
+    this.frames.delete(device);
+    this.emittedAt.delete(device);
   }
 }

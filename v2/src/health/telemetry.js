@@ -29,7 +29,6 @@
  * Owner: drivers worker.
  */
 
-import { todo } from "../core/todo.js";
 
 /**
  * @typedef {object} TelemetryDeps
@@ -47,23 +46,84 @@ export class TelemetryCollector {
   /** @param {TelemetryDeps} deps */
   constructor(deps) {
     this.deps = deps;
+    /** @type {Map<string, {active: boolean, snapshot: Record<string, unknown>|null, cancel: () => void, replay: () => Promise<void>}>} */
+    this.pollers = new Map();
+    this.onConnect = () => { for (const poller of this.pollers.values()) void poller.replay().catch((error) => deps.logger.error("[Telemetry] replay", error)); };
+    this.listening = false;
   }
 
   /**
    * @param {{name: string, type: import("../types.js").DeviceType, address: string}} device from the EffectiveDevice; the scheduler calls this for driven devices only
    * @param {import("../drivers/driver.js").DeviceDriver} driver
+   * @param {Pick<import('./health-model.js').HealthModel, 'contactOk'>} [health] current runtime's fenced view
    */
-  start(device, driver) {
-    return todo("TelemetryCollector.start", device, driver);
+  start(device, driver, health = this.deps.health) {
+    this.stop(device.name);
+    if (!driver.info.drives) return;
+    if (!this.listening) { this.deps.mqtt.on("connect", this.onConnect); this.listening = true; }
+    const poller = { active: true, snapshot: /** @type {Record<string, unknown>|null} */ (null), cancel: () => {}, replay: async () => {} };
+    const current = () => poller.active && this.pollers.get(device.name) === poller;
+    let busy = false;
+    let lastRead = -Infinity;
+    let discoveryKey = "";
+    const publish = async (force = false) => {
+      if (!current() || !poller.snapshot) return;
+      const key = JSON.stringify([poller.snapshot.uid, poller.snapshot.version, device.address, this.deps.intervalMs()]);
+      if (this.deps.haDiscovery && (force || discoveryKey !== key)) {
+        const options = { telemetryIntervalMs: this.deps.intervalMs() };
+        const messages = device.type === "pixoo" ? this.deps.discovery.pixoo(device, this.deps.topics, options)
+          : this.deps.discovery.ulanzi(device, poller.snapshot, this.deps.topics, options);
+        let complete = true;
+        for (const message of messages) {
+          if (!current()) return;
+          const result = await this.deps.mqtt.publish(message.topic, message.payload, { retain: true, qos: 1 });
+          complete = complete && result.ok;
+        }
+        if (current() && complete) discoveryKey = key;
+      }
+      if (current()) await this.deps.mqtt.publish(this.deps.topics.telemetry(device.name), poller.snapshot, { retain: true, qos: 1 });
+    };
+    poller.replay = () => publish(true);
+    const tick = async () => {
+      if (!current() || busy || this.deps.clock.now() - lastRead < Math.max(1, this.deps.intervalMs())) return;
+      busy = true;
+      lastRead = this.deps.clock.now();
+      try {
+        let snapshot;
+        try {
+          snapshot = await driver.readTelemetry();
+          if (!current()) return;
+          health.contactOk(device.name, { apSsid: typeof snapshot.uid === "string" ? snapshot.uid : undefined });
+        } catch (error) {
+          if (!current()) return;
+          this.deps.logger.debug(`[Telemetry] ${device.name}: ${String(error)}`);
+          if (device.type !== "pixoo") return;
+          snapshot = { reachable: false };
+        }
+        if (!current()) return;
+        poller.snapshot = { ...snapshot, ...(device.type === "pixoo" ? { ip_address: device.address } : {}), ts: new Date(this.deps.clock.now()).toISOString() };
+        await publish();
+      } catch (error) { if (current()) this.deps.logger.error(`[Telemetry] ${device.name}`, error); }
+      finally { busy = false; }
+    };
+    const timer = this.deps.clock.every(() => { void tick(); }, Math.max(1, Math.min(1000, this.deps.intervalMs())));
+    poller.cancel = () => timer.cancel();
+    this.pollers.set(device.name, poller);
+    void tick();
   }
 
   /** Abort the read in flight and forget the device. @param {string} name */
   stop(name) {
-    return todo("TelemetryCollector.stop", name);
+    const poller = this.pollers.get(name);
+    if (!poller) return;
+    poller.active = false;
+    poller.cancel();
+    this.pollers.delete(name);
+    if (!this.pollers.size && this.listening) { this.deps.mqtt.off("connect", this.onConnect); this.listening = false; }
   }
 
   stopAll() {
-    return todo("TelemetryCollector.stopAll");
+    for (const name of this.pollers.keys()) this.stop(name);
   }
 
   /**
@@ -71,6 +131,7 @@ export class TelemetryCollector {
    * @returns {Record<string, unknown>|null} a copy of the last snapshot
    */
   latest(name) {
-    return todo("TelemetryCollector.latest", name);
+    const snapshot = this.pollers.get(name)?.snapshot;
+    return snapshot ? structuredClone(snapshot) : null;
   }
 }

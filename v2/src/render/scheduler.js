@@ -57,7 +57,9 @@
  * Owner: drivers worker.
  */
 
-import { todo } from "../core/todo.js";
+import { createLane, decideStamp, whileCurrent } from "../core/ordering.js";
+import { NotImplementedError } from "../core/todo.js";
+import { RenderLoop } from "./render-loop.js";
 
 /**
  * @typedef {object} SchedulerDeps
@@ -77,11 +79,78 @@ export class Scheduler {
   /** @param {SchedulerDeps} deps */
   constructor(deps) {
     this.deps = deps;
+    this.active = false;
+    this.rev = -1;
+    this.restarts = 0;
+    this.lastWatchdogAt = /** @type {string|null} */ (null);
+    this.watchdogIntervalMs = 1000;
+    /** @type {Map<string, ReturnType<typeof createLane>>} */
+    this.queues = new Map();
+    /** @type {Map<string, number>} */
+    this.tokens = new Map();
+    /** @type {Map<string, {token: number, device: import('../types.js').EffectiveDevice, driver: import('../drivers/driver.js').DeviceDriver, loop: RenderLoop, stopFeed: () => void}>} */
+    this.runtimes = new Map();
+    this.timer = /** @type {{cancel: () => void}|null} */ (null);
+    /** @param {{effective: import('../types.js').EffectiveConfig, diff: import('../types.js').EffectiveDiff}} change */
+    this.onChanged = ({ effective, diff }) => {
+      if (!this.active || decideStamp({ source: "effective", position: this.rev }, { source: "effective", position: effective.rev }).action !== "apply") return;
+      this.rev = effective.rev;
+      for (const name of diff.devicesRemoved) this.enqueue(name, async () => { await this.retire(name); this.deps.previews.remove(name); this.deps.health.unregister(name); });
+      for (const name of diff.devicesAdded) {
+        const device = effective.devices.find((entry) => entry.name === name);
+        if (device) this.enqueue(name, () => this.build(device));
+      }
+      for (const [name, keys] of Object.entries(diff.devicesChanged)) {
+        const device = effective.devices.find((entry) => entry.name === name);
+        if (!device) continue;
+        const impacts = keys.map((key) => this.deps.factories.changeImpact(key));
+        this.enqueue(name, async () => {
+          if (impacts.includes("restart")) { await this.retire(name); await this.build(device); }
+          else {
+            const record = this.runtimes.get(name);
+            if (record && impacts.includes("preview")) {
+              record.stopFeed();
+              record.stopFeed = record.driver.info.drives && record.driver.readScreen ? this.deps.previews.feedFromDevice(name, record.driver, device.preview.pollMs) : () => {};
+            }
+            // SettingsService owns saved setting notifications; no scene replacement here.
+          }
+        });
+      }
+      const scenes = new Set([...diff.scenesChanged, ...diff.scenesRemoved]);
+      for (const [name, record] of this.runtimes) if (scenes.has(record.loop.target.scene ?? "")) this.enqueue(name, () => record.loop.reloadScene());
+    };
+    /** @param {{name: string, desired: import('../types.js').DesiredState, changed: string[]}} event */
+    this.onDesired = ({ name, desired, changed }) => {
+      const target = this.targetOf(desired, this.deps.runtime.device(name)?.type ?? "pixoo");
+      this.enqueue(name, () => {
+        const loop = this.runtimes.get(name)?.loop;
+        if (!loop) return;
+        const patch = {};
+        if (changed.some((key) => key === "scene" || key.startsWith("scene."))) Object.assign(patch, { scene: target.scene });
+        if (changed.some((key) => key === "mode" || key.startsWith("mode."))) Object.assign(patch, { mode: target.mode });
+        if (changed.some((key) => key === "brightness" || key.startsWith("brightness."))) Object.assign(patch, { brightnessOverride: target.brightnessOverride });
+        loop.apply(patch);
+      });
+    };
+    /** @param {{name: string}} event */
+    this.onRetry = ({ name }) => this.enqueue(name, () => this.runtimes.get(name)?.loop.retryNow());
+    /** @param {{device: string, health: import('../types.js').DeviceHealth}} event */
+    this.onHealth = ({ device, health }) => { if (this.active) this.deps.state.reportHealth(device, health); };
   }
 
   /** Start a runtime for every enabled device, concurrently, and begin to follow changes. Resolves without waiting for any display. */
   async start() {
-    return todo("Scheduler.start");
+    if (this.active) return;
+    const effective = this.deps.runtime.get();
+    this.rev = effective.rev;
+    this.active = true;
+    this.deps.runtime.on("changed", this.onChanged);
+    this.deps.state.on("desired", this.onDesired);
+    this.deps.state.on("retry", this.onRetry);
+    this.deps.health.on("health", this.onHealth);
+    for (const device of effective.devices) this.enqueue(device.name, () => this.build(device));
+    this.lastWatchdogAt = new Date(this.deps.clock.now()).toISOString();
+    this.timer = this.deps.clock.every(() => this.watchdog(), this.watchdogIntervalMs);
   }
 
   /**
@@ -89,7 +158,24 @@ export class Scheduler {
    * @returns {Promise<void>}
    */
   async stop(options) {
-    return todo("Scheduler.stop", options);
+    this.active = false;
+    this.timer?.cancel(); this.timer = null;
+    this.deps.runtime.off("changed", this.onChanged);
+    this.deps.state.off("desired", this.onDesired);
+    this.deps.state.off("retry", this.onRetry);
+    this.deps.health.off("health", this.onHealth);
+    for (const lane of this.queues.values()) lane.close();
+    // Invalidate all report views before waiting for any old render.
+    const records = [...this.runtimes.values()];
+    this.runtimes.clear();
+    await Promise.all(records.map(async (record) => {
+      record.stopFeed();
+      await record.loop.stop(options);
+      this.deps.telemetry?.stop(record.device.name);
+      await record.driver.close();
+    }));
+    await Promise.all([...this.queues.values()].map((lane) => lane.drain()));
+    this.queues.clear();
   }
 
   /**
@@ -97,7 +183,7 @@ export class Scheduler {
    * @returns {import("./render-loop.js").RenderLoop|undefined}
    */
   loop(name) {
-    return todo("Scheduler.loop", name);
+    return this.runtimes.get(name)?.loop;
   }
 
   /**
@@ -108,6 +194,80 @@ export class Scheduler {
    * @returns {{devices: number, loopsAlive: number, restarts: number, lastWatchdogAt: string|null, watchdogIntervalMs: number}}
    */
   status() {
-    return todo("Scheduler.status");
+    // Composition's skeleton adapter reports unmeasured until RuntimeConfig can start us.
+    if (this.lastWatchdogAt === null) throw new NotImplementedError("Scheduler awaiting runtime config");
+    return { devices: this.runtimes.size, loopsAlive: [...this.runtimes.values()].filter((record) => record.loop.status().alive).length, restarts: this.restarts, lastWatchdogAt: this.lastWatchdogAt, watchdogIntervalMs: this.watchdogIntervalMs };
+  }
+
+  /** @param {string} name @param {() => unknown} task */
+  enqueue(name, task) {
+    if (!this.active) return;
+    let lane = this.queues.get(name);
+    if (!lane) { lane = createLane({ onError: (_, error) => this.deps.logger.error(`[Scheduler] ${name}`, error) }); this.queues.set(name, lane); }
+    void lane.run(name, task);
+  }
+
+  /** @param {import('../types.js').DesiredState} desired @param {import('../types.js').DeviceType} type @returns {import('./render-loop.js').LoopTarget} */
+  targetOf(desired, type) {
+    const percent = desired.brightness.override;
+    return { scene: desired.scene.scene, mode: desired.mode.value, brightnessOverride: percent === null ? null : type === "pixoo" ? percent : Math.round(percent * 255 / 100) };
+  }
+
+  /** @param {import('../types.js').EffectiveDevice} device */
+  async build(device) {
+    if (!this.active || !device.enabled) return;
+    const name = device.name;
+    const token = (this.tokens.get(name) ?? 0) + 1;
+    this.tokens.set(name, token);
+    this.deps.state.runtimeStarted(name, token);
+    const current = () => this.active && this.runtimes.get(name)?.token === token;
+    const driver = this.deps.factories.createDriver({ ...device, output: device.output.mode }, { clock: this.deps.clock, logger: this.deps.logger, rasterizeAwtrixApp: this.deps.factories.rasterizeAwtrixApp });
+    const health = /** @type {import('../health/health-model.js').HealthModel} */ (whileCurrent(current, this.deps.health, ["frameOk", "contactOk", "renderFailed", "expect", "powerCycles"]));
+    const previews = /** @type {import('./preview-store.js').PreviewStore} */ (whileCurrent(current, this.deps.previews, ["put"]));
+    const report = whileCurrent(current, { report: (/** @type {Partial<import('../types.js').EffectiveState>} */ patch) => { this.deps.state.reportEffective(name, patch, token); } }, ["report"]).report;
+    const desired = this.deps.state.get(name)?.desired;
+    const target = desired ? this.targetOf(desired, device.type) : { scene: device.savedScene, mode: /** @type {const} */ ("play"), brightnessOverride: null };
+    const loop = new RenderLoop({ device: { ...device, output: device.output.mode }, driver, createSurface: this.deps.factories.createSurface, scenes: this.deps.scenes, health, previews, report, mqtt: this.deps.mqtt, clock: this.deps.clock, logger: this.deps.logger }, target);
+    const record = { device, token, driver, loop, stopFeed: () => {} };
+    this.runtimes.set(name, record);
+    this.deps.health.register(name, { shadow: device.output.mode === "shadow", powerCycleMax: device.maxPowerCycles, plugTopic: device.powerCyclePlugin?.topic ?? null });
+    if (device.output.mode === "drive") {
+      if (driver.readScreen) record.stopFeed = this.deps.previews.feedFromDevice(name, driver, device.preview.pollMs);
+      this.deps.telemetry?.start(device, driver, health);
+    }
+    loop.start();
+  }
+
+  /** @param {string} name */
+  async retire(name) {
+    const record = this.runtimes.get(name);
+    if (!record) return;
+    this.runtimes.delete(name);
+    record.stopFeed();
+    this.deps.telemetry?.stop(name);
+    await record.loop.stop();
+    await record.driver.close();
+  }
+
+  watchdog() {
+    if (!this.active) return;
+    const now = this.deps.clock.now();
+    this.lastWatchdogAt = new Date(now).toISOString();
+    for (const [name, record] of this.runtimes) {
+      const status = record.loop.status();
+      const deadline = status.nextWakeAt ? Date.parse(status.nextWakeAt) + 30000 : Date.parse(status.lastTickAt ?? this.lastWatchdogAt) + 60000;
+      if (!status.alive || now > deadline) {
+        // Mark once, before the queued stop, so watchdog ticks cannot enqueue repeated restarts.
+        this.restarts += 1;
+        this.deps.logger.warn(`[Scheduler] ${name}: loop ${status.alive ? "overdue" : "dead"}, restarting`);
+        this.runtimes.delete(name);
+        this.enqueue(name, async () => {
+          record.stopFeed(); this.deps.telemetry?.stop(name);
+          await record.loop.stop(); await record.driver.close();
+          const device = this.deps.runtime.device(name);
+          if (device) await this.build(device);
+        });
+      }
+    }
   }
 }

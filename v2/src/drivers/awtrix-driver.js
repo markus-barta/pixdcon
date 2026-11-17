@@ -26,7 +26,9 @@
  * Owner: drivers worker.
  */
 
-import { todo } from "../core/todo.js";
+import { DeviceError } from "../core/errors.js";
+import { findBuiltin } from "./builtin-modes.js";
+import { brightness, copyFrame, createTransport } from "./http-transport.js";
 
 /** @typedef {import("./driver.js").DeviceDriver} DeviceDriver */
 
@@ -35,7 +37,74 @@ import { todo } from "../core/todo.js";
  * @returns {DeviceDriver}
  */
 export function createAwtrixDriver(options) {
-  return todo("createAwtrixDriver", options);
+  const transport = createTransport(options, "AWTRIX");
+  const appName = `pixdcon_${options.name}`;
+  const appPath = (/** @type {string} */ name) => `/api/custom?name=${encodeURIComponent(name)}`;
+  let cleanupDone = false;
+  /** @returns {Promise<Record<string, unknown>>} */
+  async function stats() {
+    const data = await transport.request("/api/stats");
+    if (!data || typeof data !== "object" || Array.isArray(data)) throw new DeviceError("AWTRIX invalid stats");
+    return /** @type {Record<string, unknown>} */ (data);
+  }
+  async function initialize() {
+    const data = await stats();
+    options.logger.info(`[UlanziDriver] Initialized ${options.address} (battery: ${data.bat ?? "AC"}%)`);
+    if (options.cleanupLegacyApps && !cleanupDone) {
+      try {
+        const files = await transport.request("/list?dir=/CUSTOMAPPS");
+        if (!Array.isArray(files)) throw new DeviceError("AWTRIX invalid app list");
+        let complete = true;
+        for (const file of files) {
+          if (file?.type !== "file" || typeof file.name !== "string" || !file.name.endsWith(".json") || file.name === `${appName}.json`) continue;
+          try { await transport.request(appPath(file.name.slice(0, -5)), ""); }
+          catch (error) { complete = false; options.logger.warn(`[UlanziDriver] cleanup: ${String(error)}`); }
+        }
+        cleanupDone = complete;
+      } catch (error) { options.logger.warn(`[UlanziDriver] cleanup: ${String(error)}`); }
+    }
+    transport.ready = true;
+  }
+  /** @param {import('../types.js').Frame} frame */
+  async function send(frame) {
+    const copy = copyFrame(frame, 32, 8);
+    await transport.request("/api/draw", { matrix: Buffer.from(copy.rgb).toString("base64") });
+  }
+  return {
+    info: { type: "ulanzi", width: 32, height: 8, brightness: { min: 0, max: 255 }, drives: true },
+    get ready() { return transport.ready; },
+    init: () => transport.queue(initialize),
+    probe: () => transport.queue(async () => { await stats(); return { at: new Date(options.clock.now()).toISOString() }; }),
+    show: (output) => transport.queue(async () => {
+      if (!transport.ready) await initialize();
+      if (output.kind === "frame") await send(output.frame);
+      else {
+        await transport.request(appPath(appName), output.app);
+        try { await transport.request("/api/switch", { name: appName }); }
+        catch (error) { transport.ready = false; options.logger.warn(`[UlanziDriver] switchToApp failed: ${String(error)}`); }
+      }
+    }),
+    blank: () => transport.queue(() => send({ width: 32, height: 8, rgb: new Uint8Array(32 * 8 * 3) })),
+    setBrightness: (native) => transport.queue(async () => { await transport.request("/api/settings", { BRI: brightness(native, 0, 255) }); }),
+    setPower: (on) => transport.queue(async () => { await transport.request("/api/power", { power: on }); }),
+    activateBuiltin: (key) => transport.queue(async () => {
+      const mode = findBuiltin("ulanzi", key);
+      if (!mode) throw new DeviceError(`Unknown AWTRIX built-in ${key}`);
+      await transport.request("/api/power", { power: true });
+      await transport.request("/api/switch", { name: mode.app });
+    }),
+    reclaim: () => transport.queue(async () => {
+      await transport.request("/api/power", { power: true });
+      await initialize();
+      await transport.request("/api/switch", { name: appName });
+    }),
+    readTelemetry: () => transport.queue(stats),
+    readScreen: (readOptions) => transport.queue(async () => screenToFrame(await transport.request("/api/screen", undefined, readOptions?.signal))),
+    notify: (notification) => transport.queue(async () => { await transport.request("/api/notify", notification); }),
+    switchApp: (name) => transport.queue(async () => { await transport.request("/api/switch", { name }); }),
+    selectChannel: null,
+    close: () => transport.close(),
+  };
 }
 
 /**
@@ -46,5 +115,22 @@ export function createAwtrixDriver(options) {
  * @returns {import("../types.js").Frame|null}
  */
 export function screenToFrame(screen) {
-  return todo("screenToFrame", screen);
+  if (!Array.isArray(screen)) return null;
+  const flat = screen.flat(Infinity);
+  const rgb = new Uint8Array(32 * 8 * 3);
+  if (flat.length === rgb.length) {
+    if (!flat.every((v) => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 255)) return null;
+    rgb.set(flat);
+  } else if (flat.length === 256) {
+    for (let i = 0; i < flat.length; i++) {
+      const color = flat[i];
+      const value = typeof color === "string" && /^(?:#|0x)?[0-9a-f]{6}$/i.test(color)
+        ? Number.parseInt(color.replace(/^(#|0x)/i, ""), 16) : color;
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 0xffffff) return null;
+      rgb[i * 3] = value >> 16;
+      rgb[i * 3 + 1] = (value >> 8) & 255;
+      rgb[i * 3 + 2] = value & 255;
+    }
+  } else return null;
+  return { width: 32, height: 8, rgb };
 }

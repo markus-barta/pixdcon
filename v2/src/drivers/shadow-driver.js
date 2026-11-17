@@ -24,7 +24,9 @@
  * Owner: drivers worker.
  */
 
-import { todo } from "../core/todo.js";
+import { DeviceError } from "../core/errors.js";
+import { findBuiltin } from "./builtin-modes.js";
+import { brightness, copyFrame } from "./http-transport.js";
 
 /** @typedef {import("./driver.js").DeviceDriver} DeviceDriver */
 
@@ -33,5 +35,38 @@ import { todo } from "../core/todo.js";
  * @returns {DeviceDriver & {recorded: () => {outputs: number, brightness: number|null, power: boolean, builtin: string|null}}}
  */
 export function createShadowDriver(options) {
-  return todo("createShadowDriver", options);
+  const pixoo = options.type === "pixoo";
+  const width = pixoo ? 64 : 32;
+  const height = pixoo ? 64 : 8;
+  let ready = false;
+  let closed = false;
+  const record = { outputs: 0, brightness: /** @type {number|null} */ (null), power: true, builtin: /** @type {string|null} */ (null) };
+  /** @type {import('../types.js').Frame|null} */
+  let lastFrame = null;
+  const check = () => { if (closed) throw new DeviceError("Shadow driver closed"); };
+  return {
+    info: { type: options.type, width, height, brightness: { min: pixoo ? 1 : 0, max: pixoo ? 100 : 255 }, drives: false },
+    get ready() { return ready; },
+    async init() { check(); ready = true; },
+    async probe() { check(); return { at: new Date(options.clock.now()).toISOString() }; },
+    async show(output) {
+      check();
+      lastFrame = output.kind === "frame" ? copyFrame(output.frame, width, height)
+        : options.rasterizeAwtrixApp(output.app).frame;
+      record.outputs += 1;
+    },
+    async blank() { check(); lastFrame = { width, height, rgb: new Uint8Array(width * height * 3) }; record.outputs += 1; },
+    async setBrightness(value) { check(); record.brightness = brightness(value, pixoo ? 1 : 0, pixoo ? 100 : 255); },
+    async setPower(on) { check(); record.power = on; },
+    async activateBuiltin(key) { check(); if (!findBuiltin(options.type, key)) throw new DeviceError(`Unknown built-in ${key}`); record.builtin = key; record.power = key !== "builtin:black"; },
+    async reclaim() { check(); record.power = true; record.builtin = null; ready = true; },
+    async readTelemetry() { throw new DeviceError("Shadow telemetry unavailable"); },
+    readScreen: null,
+    previewFrame: () => lastFrame ? { ...lastFrame, rgb: lastFrame.rgb.slice() } : null,
+    notify: pixoo ? null : async () => { check(); },
+    switchApp: pixoo ? null : async (name) => { check(); record.builtin = name; },
+    selectChannel: pixoo ? async (index) => { check(); record.builtin = `channel:${index}`; } : null,
+    async close() { closed = true; ready = false; },
+    recorded: () => ({ ...record }),
+  };
 }
