@@ -30,7 +30,7 @@ import { manualClock } from "../../src/core/clock.js";
 import { deferred, flush, loopRig, nextFrameReport, nextPreview, rig, sceneRig, until } from "./runtime-fixture.js";
 import { ScenesWatcher } from "../../src/scenes/scenes-watcher.js";
 import { createLane } from "../../src/core/ordering.js";
-import { requireNetGuard, startStack } from "../helpers/harness.js";
+import { requireNetGuard, startStack, waitFor } from "../helpers/harness.js";
 
 /**
  * Listening sockets and broker timers that are open in this process. A
@@ -643,10 +643,38 @@ function asyncFile(path) {
   // Access is observed once per event-loop turn without changing loop time.
   return () => { if (!present) void access(path).then(() => { present = true; }, () => {}); return present; };
 }
-// Blocked W1: RuntimeConfig effective output policy and composition; the W5 scene path is implemented.
-test.todo(
-  "PIXDCON2_FORCE_SHADOW=1: no fake receives a request although config.json says drive",
-);
+test("PIXDCON2_FORCE_SHADOW=1: no fake receives a request although config.json says drive", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, {
+    clock,
+    env: { PIXDCON2_FORCE_SHADOW: "1" },
+    config: (raw) =>
+      raw.devices.forEach((/** @type {any} */ device) => {
+        device.output = "drive";
+      }),
+  });
+  const { state, scheduler, previews } = stack.app.modules;
+  await waitFor(() =>
+    state.views().every((view) => view.effective.frameCount >= 1),
+  );
+  assert.equal(previews.list().length, 2);
+  for (const view of state.views()) {
+    assert.equal(view.desired.output, "shadow");
+    assert.equal(
+      view.desired.outputProblem,
+      "this instance never drives a display",
+    );
+    assert.equal(scheduler.runtimes.get(view.name)?.driver.info.drives, false);
+    await state.setMode(view.name, "pause");
+    await state.setBrightness(view.name, 30);
+  }
+  await clock.advance(30000);
+  assert.equal(stack.pixoo.state().requests.length, 0);
+  assert.equal(stack.awtrix.state().requests.length, 0);
+  assert.equal(stack.app.modules.mqtt?.options.will, undefined);
+  assert.equal(stack.broker.retained()[stack.app.topics.health], undefined);
+});
+
 test("a scene file that changes is reloaded for the displays running it; a broken edit keeps the last good version", async (t) => {
   const r = await sceneRig(t, 'let count=0; export default { async render(surface) { await surface.paint(3 + ++count); } };');
   const first = nextPreview(r.previews, "p");
@@ -710,18 +738,293 @@ test("two displays run the same scene: module-level state of the scene file is n
   assert.equal(r.pixoo.state().lastFrame?.[0], 2);
   assert.equal(/** @type {any} */ (r.awtrix.state().apps.pixdcon_u).text, "2");
 });
-// Blocked W1: gateway reconnect/replay and overlay pending-clear reconciliation are skeletons.
-test.todo(
-  "MQTT gone and back: displays keep rendering and keep their scene, mode, brightness and settings while the broker is away; after the reconnect a display that showed an overlay scene, was paused, or had a setting or brightness overlay goes back to it when the broker has replayed it, and stays on the saved values when the overlay was cleared meanwhile; nothing is published because the connection came back, a stale overlay is cleared when it is replayed",
-);
-// Blocked W1: OverlayService mirror reconnect effects and RuntimeConfig address holds.
-test.todo(
-  "held display: with an IP overlay that the new connection has not delivered, the display's runtime is stopped and no request goes to the overlay's address or to the one in config.json; the replay starts it on the overlay's address, a clear starts it on config.json's",
-);
-// Blocked W1: enabled overlay protective effect across reconnect in OverlayService/RuntimeConfig.
-test.todo(
-  "switched off stays off: a display that an enabled overlay switched off gets no request across a reconnect, also when the overlay was cleared while pixdcon was away, until a message for its topic is delivered",
-);
+test("MQTT gone and back: displays keep rendering and keep their scene, mode, brightness and settings while the broker is away; after the reconnect a display that showed an overlay scene, was paused, or had a setting or brightness overlay goes back to it when the broker has replayed it, and stays on the saved values when the overlay was cleared meanwhile; nothing is published because the connection came back, a stale overlay is cleared when it is replayed", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, {
+    clock,
+    prepare: async ({ config, dataDir }) => {
+      const file = join(dataDir, "reconnect.mjs");
+      await writeFile(
+        file,
+        `export default {
+        settingsSchema: { n: { type: 'int', default: 1, min: 0, max: 100 } },
+        init(ctx) { this.key = ctx.sceneName; this.values = ctx.settings.all();
+          ctx.settings.subscribe(values => { this.values = values; }); },
+        async render(surface) { await surface.setBrightness(77);
+          await surface.drawCustom({text: this.key + ':' + this.values.n}); return 1000; }
+      };`,
+      );
+      config.scenes = { saved: { path: file }, overlay: { path: file } };
+      config.devices = [
+        {
+          ...config.devices[1],
+          scene: "saved",
+          sceneSettings: { saved: { n: 2 }, overlay: { n: 3 } },
+        },
+      ];
+    },
+  });
+  const { mqtt, overlays, state, settings, scheduler } = stack.app.modules;
+  assert.ok(mqtt);
+  const name = "ulanzi-t",
+    topics = stack.app.topics;
+  const appText = () =>
+    /** @type {any} */ (stack.awtrix.state().apps["pixdcon_ulanzi-t"])?.text;
+  const commanded = [
+    topics.overlayDeviceScene(name),
+    topics.mode(name),
+    topics.brightnessOverride(name),
+    topics.setting(name, "overlay", "n"),
+  ];
+  const ownWrites = () =>
+    stack.broker
+      .published()
+      .filter(
+        (entry) =>
+          entry.clientId !== "outside" && commanded.includes(entry.topic),
+      );
+  let probe = 0;
+  const inject = async (
+    /** @type {string} */ topic,
+    /** @type {string} */ value,
+    /** @type {string} */ id,
+  ) => {
+    let delivered = false;
+    const off = mqtt.subscribe(`smoke-input:${++probe}`, topic, (message) => {
+      if (!message.retain && message.payload === value) delivered = true;
+    });
+    await mqtt.settle();
+    await stack.broker.inject(topic, value, { retain: true });
+    await waitFor(() => delivered);
+    off();
+    assert.equal(overlays.get(id)?.raw, value);
+    await clock.advance(300);
+  };
+  await waitFor(() => appText() === "saved:2");
+  await inject(commanded[3], "9", `setting:${name}:overlay:n`);
+  await inject(commanded[2], "19", `brightness:${name}`);
+  await inject(commanded[0], "overlay", `device-scene:${name}`);
+  await waitFor(
+    () =>
+      appText() === "overlay:9" &&
+      stack.awtrix.state().brightness === Math.round((19 * 255) / 100),
+  );
+  await waitFor(
+    () =>
+      state.view(name).effective.scene === "overlay" &&
+      scheduler.loop(name)?.status().nextWakeAt != null,
+  );
+  const frames = stack.awtrix.state().updates;
+  await stack.broker.dropClients();
+  await waitFor(() => mqtt.status().state === "offline");
+  await clock.advance(1000);
+  await waitFor(() => stack.awtrix.state().updates > frames);
+  assert.equal(state.view(name).desired.scene.scene, "overlay");
+  assert.equal(state.view(name).desired.mode.value, "play");
+  assert.equal(state.view(name).desired.brightness.override, 19);
+  assert.equal(settings.state(name, "overlay").values.n.effective, 9);
+  await stack.broker.inject(commanded[1], "pause", { retain: true });
+  let release = stack.broker.holdRetained();
+  stack.cleanup.add("held reconnect replay", () => release());
+  let writes = ownWrites().length;
+  await clock.advance(5000);
+  await waitFor(() => mqtt.status().connection === 2);
+  await mqtt.settle();
+  await clock.advance(300);
+  await waitFor(
+    () => appText() === "saved:2" && stack.awtrix.state().brightness === 77,
+  );
+  assert.equal(state.view(name).desired.brightness.override, null);
+  assert.equal(settings.state(name, "overlay").values.n.effective, 3);
+  assert.equal(
+    ownWrites().length,
+    writes,
+    "connect alone publishes no commands or clears",
+  );
+  release();
+  await waitFor(
+    () =>
+      overlays.get(`mode:${name}`)?.confirmed &&
+      overlays.get(`device-scene:${name}`)?.confirmed,
+  );
+  await clock.advance(300);
+  await waitFor(
+    () =>
+      scheduler.loop(name)?.status().phase === "paused" &&
+      appText() === "overlay:9",
+  );
+  assert.equal(stack.awtrix.state().brightness, Math.round((19 * 255) / 100));
+  assert.equal(settings.state(name, "overlay").values.n.effective, 9);
+  await stack.broker.dropClients();
+  await waitFor(() => mqtt.status().state === "offline");
+  assert.equal(state.view(name).desired.mode.value, "pause");
+  for (const topic of commanded)
+    await stack.broker.inject(topic, "", { retain: true });
+  release = stack.broker.holdRetained();
+  writes = ownWrites().length;
+  await clock.advance(5000);
+  await waitFor(() => mqtt.status().connection === 3);
+  await mqtt.settle();
+  await clock.advance(300);
+  await waitFor(
+    () => appText() === "saved:2" && stack.awtrix.state().brightness === 77,
+  );
+  release();
+  await mqtt.settle();
+  await clock.advance(300);
+  assert.equal(state.view(name).desired.scene.scene, "saved");
+  assert.equal(state.view(name).desired.mode.value, "play");
+  assert.equal(state.view(name).desired.brightness.override, null);
+  assert.equal(settings.state(name, "overlay").values.n.effective, 3);
+  assert.equal(ownWrites().length, writes);
+  // A choice saved offline suppresses a retained scene until its replay
+  // authorizes the clear, then survives the clear's echo on the real loop.
+  await inject(commanded[0], "overlay", `device-scene:${name}`);
+  await waitFor(() => appText() === "overlay:3");
+  await stack.broker.dropClients();
+  await waitFor(() => mqtt.status().state === "offline");
+  await state.chooseScene(name, "saved");
+  release = stack.broker.holdRetained();
+  writes = ownWrites().length;
+  await clock.advance(5000);
+  await waitFor(() => mqtt.status().connection === 4);
+  await mqtt.settle();
+  await clock.advance(300);
+  assert.equal(ownWrites().length, writes);
+  release();
+  await waitFor(() => stack.broker.retained()[commanded[0]] === undefined);
+  await clock.advance(300);
+  await waitFor(() => appText() === "saved:2");
+  assert.equal(state.view(name).desired.scene.scene, "saved");
+});
+test("held display: with an IP overlay that the new connection has not delivered, the display's runtime is stopped and no request goes to the overlay's address or to the one in config.json; the replay starts it on the overlay's address, a clear starts it on config.json's", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, {
+    clock,
+    config: (raw) => {
+      raw.devices = [raw.devices[1]];
+    },
+  });
+  const replacement = await startFakeAwtrix();
+  t.after(() => replacement.stop());
+  const { mqtt, overlays, scheduler, state } = stack.app.modules;
+  assert.ok(mqtt);
+  const name = "ulanzi-t",
+    topic = stack.app.topics.overlayDeviceIp(name);
+  await waitFor(() => stack.awtrix.state().updates >= 1);
+  await stack.broker.inject(topic, replacement.address, { retain: true });
+  await waitFor(
+    () => overlays.get(`device-ip:${name}`)?.value === replacement.address,
+  );
+  await clock.advance(300);
+  await waitFor(() => replacement.state().updates >= 1);
+  const release = stack.broker.holdRetained();
+  t.after(release);
+  await reconnectStack(stack, clock);
+  await scheduler.queues.get(name)?.drain();
+  assert.equal(scheduler.loop(name), undefined);
+  assert.equal(state.view(name).desired.held, true);
+  const oldRequests = stack.awtrix.state().requests.length;
+  const newRequests = replacement.state().requests.length;
+  await clock.advance(30000);
+  assert.equal(stack.awtrix.state().requests.length, oldRequests);
+  assert.equal(replacement.state().requests.length, newRequests);
+  const replayFrames = replacement.state().updates;
+  release();
+  await waitFor(() => overlays.get(`device-ip:${name}`)?.confirmed);
+  await clock.advance(300);
+  await waitFor(() => replacement.state().updates > replayFrames);
+  assert.equal(
+    scheduler.runtimes.get(name)?.device.address,
+    replacement.address,
+  );
+  const heldAgain = stack.broker.holdRetained();
+  t.after(heldAgain);
+  await reconnectStack(stack, clock);
+  await scheduler.queues.get(name)?.drain();
+  assert.equal(state.view(name).desired.held, true);
+  const savedFrames = stack.awtrix.state().updates;
+  await stack.broker.inject(topic, "", { retain: true });
+  await waitFor(() => overlays.get(`device-ip:${name}`) === undefined);
+  await clock.advance(300);
+  await waitFor(() => stack.awtrix.state().updates > savedFrames);
+  assert.equal(state.view(name).desired.held, false);
+  assert.equal(
+    scheduler.runtimes.get(name)?.device.address,
+    stack.awtrix.address,
+  );
+  const retiredRequests = replacement.state().requests.length;
+  await clock.advance(10000);
+  assert.equal(replacement.state().requests.length, retiredRequests);
+  heldAgain();
+  await mqtt.settle();
+  await clock.advance(300);
+  assert.equal(state.view(name).desired.address.value, stack.awtrix.address);
+  assert.equal(state.view(name).desired.held, false);
+});
+
+test("switched off stays off: a display that an enabled overlay switched off gets no request across a reconnect, also when the overlay was cleared while pixdcon was away, until a message for its topic is delivered", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, {
+    clock,
+    config: (raw) => {
+      raw.devices = [raw.devices[1]];
+    },
+  });
+  const { mqtt, overlays, scheduler, state } = stack.app.modules;
+  assert.ok(mqtt);
+  const name = "ulanzi-t",
+    topic = stack.app.topics.overlayDeviceEnabled(name);
+  await waitFor(() => stack.awtrix.state().updates >= 1);
+  await stack.broker.inject(topic, "false", { retain: true });
+  await waitFor(() => overlays.get(`device-enabled:${name}`)?.value === false);
+  await clock.advance(300);
+  await scheduler.queues.get(name)?.drain();
+  assert.equal(scheduler.loop(name), undefined);
+  await stack.broker.dropClients();
+  await waitFor(() => mqtt.status().state === "offline");
+  await stack.broker.inject(topic, "", { retain: true });
+  const release = stack.broker.holdRetained();
+  t.after(release);
+  await clock.advance(5000);
+  await waitFor(() => mqtt.status().connection === 2);
+  await mqtt.settle();
+  await clock.advance(300);
+  const requests = stack.awtrix.state().requests.length;
+  await clock.advance(120000);
+  assert.equal(stack.awtrix.state().requests.length, requests);
+  assert.equal(state.view(name).desired.enabled, false);
+  assert.equal(state.view(name).desired.held, false);
+  assert.equal(overlays.get(`device-enabled:${name}`)?.confirmed, false);
+  release();
+  await clock.advance(300);
+  assert.equal(
+    scheduler.loop(name),
+    undefined,
+    "no retained value means no evidence of release",
+  );
+  const updates = stack.awtrix.state().updates;
+  await stack.broker.inject(topic, "", { retain: true });
+  await waitFor(() => overlays.get(`device-enabled:${name}`) === undefined);
+  await clock.advance(300);
+  await waitFor(
+    () => scheduler.loop(name) && stack.awtrix.state().updates > updates,
+  );
+  assert.equal(state.view(name).desired.enabled, true);
+});
+
+/** @param {Awaited<ReturnType<typeof startStack>>} stack @param {ReturnType<typeof manualClock>} clock */
+async function reconnectStack(stack, clock) {
+  const mqtt = stack.app.modules.mqtt;
+  assert.ok(mqtt);
+  const connection = mqtt.status().connection;
+  await stack.broker.dropClients();
+  await waitFor(() => mqtt.status().state === "offline");
+  await clock.advance(5000);
+  await waitFor(() => mqtt.status().connection > connection);
+  await mqtt.settle();
+  await clock.advance(300);
+}
 
 // --- Ordering (knowledge entry, section 3.0) ---
 
