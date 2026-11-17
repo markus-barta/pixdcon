@@ -43,6 +43,8 @@
  *  - runtime "changed" is applied only when `effective.rev` is higher than
  *    the one the scheduler holds; state "desired" events of one device are
  *    applied in the order they arrive, in the device's queue.
+ *  - Queued builds read expected at execution and again after retirement;
+ *    a superseded EffectiveDevice can never create a driven runtime.
  *  - Every device runtime gets a token, a number that rises with every
  *    runtime the scheduler builds for that device, and the scheduler tells
  *    the state store (`state.runtimeStarted(name, token)`). What a runtime
@@ -103,23 +105,23 @@ export class Scheduler {
       if (!this.active || decideStamp({ source: "effective", position: this.rev }, { source: "effective", position: effective.rev }).action !== "apply") return;
       this.rev = effective.rev;
       this.expected = new Map(effective.devices.filter((device) => device.enabled).map((device) => [device.name, device]));
-      for (const name of diff.devicesRemoved) this.enqueue(name, async () => { await this.retire(name); this.deps.previews.remove(name); this.deps.health.unregister(name); });
-      for (const name of diff.devicesAdded) {
-        const device = effective.devices.find((entry) => entry.name === name);
-        if (device) this.enqueue(name, () => this.build(device));
-      }
+      for (const name of diff.devicesRemoved) this.enqueue(name, async () => {
+        if (this.expected.has(name)) return;
+        await this.retire(name);
+        if (this.expected.has(name)) return;
+        this.deps.previews.remove(name); this.deps.health.unregister(name);
+      });
+      for (const name of diff.devicesAdded) this.enqueue(name, () => this.rebuild(name));
       for (const [name, keys] of Object.entries(diff.devicesChanged)) {
-        const device = effective.devices.find((entry) => entry.name === name);
-        if (!device) continue;
         const impacts = keys.map((key) => this.deps.factories.changeImpact(key));
         this.enqueue(name, async () => {
           if (impacts.includes("restart")) {
-            if (this.runtimes.get(name)?.device === device) return;
-            await this.retire(name); await this.build(device);
+            await this.rebuild(name);
           }
           else {
+            const device = this.expected.get(name);
             const record = this.runtimes.get(name);
-            if (record && impacts.includes("preview")) {
+            if (device && record && impacts.includes("preview")) {
               record.stopFeed();
               record.stopFeed = record.driver.info.drives && record.driver.readScreen ? this.deps.previews.feedFromDevice(name, record.driver, device.preview.pollMs) : () => {};
             }
@@ -160,7 +162,7 @@ export class Scheduler {
     this.deps.state.on("desired", this.onDesired);
     this.deps.state.on("retry", this.onRetry);
     this.deps.health.on("health", this.onHealth);
-    for (const device of effective.devices) this.enqueue(device.name, () => this.build(device));
+    for (const name of this.expected.keys()) this.enqueue(name, () => this.rebuild(name));
     this.lastWatchdogAt = new Date(this.deps.clock.now()).toISOString();
     this.timer = this.deps.clock.every(() => this.watchdog(), this.watchdogIntervalMs);
   }
@@ -238,9 +240,17 @@ export class Scheduler {
     return { scene: desired.scene.scene, mode: desired.mode.value, brightnessOverride: percent === null ? null : type === "pixoo" ? percent : Math.round(percent * 255 / 100) };
   }
 
+  /** @param {string} name */
+  async rebuild(name) {
+    if (this.runtimes.get(name)?.device === this.expected.get(name)) return;
+    await this.retire(name);
+    const device = this.expected.get(name);
+    if (device) await this.build(device);
+  }
+
   /** @param {import('../types.js').EffectiveDevice} device */
   async build(device) {
-    if (!this.active || !device.enabled) return;
+    if (!this.active || !device.enabled || this.expected.get(device.name) !== device) return;
     const name = device.name;
     const token = (this.tokens.get(name) ?? 0) + 1;
     this.tokens.set(name, token);
@@ -252,6 +262,7 @@ export class Scheduler {
       const member = Reflect.get(target, key);
       if (typeof member !== "function") return member;
       if (key === "close") return member.bind(target);
+      if (key === "previewFrame") return () => current() ? member.call(target) : null;
       return (/** @type {unknown[]} */ ...args) => current() ? member.apply(target, args) : Promise.reject(new DeviceError("Device runtime retired", { device: name }));
     } });
     const health = /** @type {import('../health/health-model.js').HealthModel} */ (whileCurrent(current, this.deps.health, ["frameOk", "contactOk", "renderFailed", "expect", "powerCycles"]));
@@ -300,15 +311,14 @@ export class Scheduler {
         this.enqueue(name, async () => {
           record.stopFeed(); this.deps.telemetry?.stop(name);
           const stopping = record.loop.stop(); await record.driver.close(); await stopping;
-          const device = this.deps.runtime.device(name);
-          if (device) await this.build(device);
+          await this.rebuild(name);
         });
       }
     }
-    for (const [name, device] of this.expected) {
+    for (const name of this.expected.keys()) {
       if (this.runtimes.has(name) || (this.queues.get(name)?.pending() ?? 0) > 0 || now < (this.retryAfter.get(name) ?? 0)) continue;
       this.restarts += 1;
-      this.enqueue(name, () => this.build(device));
+      this.enqueue(name, () => this.rebuild(name));
     }
   }
 }

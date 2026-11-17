@@ -138,43 +138,43 @@
       "test": "test/smoke/smoke.test.js: render reports in order:"
     },
     {
-      "site": "src/render/scheduler.js:159",
+      "site": "src/render/scheduler.js:161",
       "id": "listener:this.deps.runtime.on(\"changed\")#1",
       "input": "effective config change",
       "metadata": "effective revision, per-device lane position and runtime token",
-      "fence": "decideStamp on effective revision; per-device createLane; runtime reports use whileCurrent; watchdog only acts on measured liveness",
-      "test": "test/smoke/drivers-render.test.js: scheduler in order:"
-    },
-    {
-      "site": "src/render/scheduler.js:160",
-      "id": "listener:this.deps.state.on(\"desired\")#1",
-      "input": "desired device command",
-      "metadata": "effective revision, per-device lane position and runtime token",
-      "fence": "decideStamp on effective revision; per-device createLane; runtime reports use whileCurrent; watchdog only acts on measured liveness",
-      "test": "test/smoke/drivers-render.test.js: scheduler in order:"
-    },
-    {
-      "site": "src/render/scheduler.js:161",
-      "id": "listener:this.deps.state.on(\"retry\")#1",
-      "input": "explicit retry command",
-      "metadata": "effective revision, per-device lane position and runtime token",
-      "fence": "decideStamp on effective revision; per-device createLane; runtime reports use whileCurrent; watchdog only acts on measured liveness",
-      "test": "test/smoke/drivers-render.test.js: scheduler in order:"
+      "fence": "decideStamp on revision; device lane reads expected again after retirement; build checks current object; reports use whileCurrent; synchronous previewFrame returns null when retired",
+      "test": "test/smoke/drivers-render.test.js: queued drive then shadow changes and additions"
     },
     {
       "site": "src/render/scheduler.js:162",
+      "id": "listener:this.deps.state.on(\"desired\")#1",
+      "input": "desired device command",
+      "metadata": "effective revision, per-device lane position and runtime token",
+      "fence": "decideStamp on revision; device lane reads expected again after retirement; build checks current object; reports use whileCurrent; synchronous previewFrame returns null when retired",
+      "test": "test/smoke/drivers-render.test.js: scheduler in order:"
+    },
+    {
+      "site": "src/render/scheduler.js:163",
+      "id": "listener:this.deps.state.on(\"retry\")#1",
+      "input": "explicit retry command",
+      "metadata": "effective revision, per-device lane position and runtime token",
+      "fence": "decideStamp on revision; device lane reads expected again after retirement; build checks current object; reports use whileCurrent; synchronous previewFrame returns null when retired",
+      "test": "test/smoke/drivers-render.test.js: scheduler in order:"
+    },
+    {
+      "site": "src/render/scheduler.js:164",
       "id": "listener:this.deps.health.on(\"health\")#1",
       "input": "derived health measurement",
       "metadata": "effective revision, per-device lane position and runtime token",
-      "fence": "decideStamp on effective revision; per-device createLane; runtime reports use whileCurrent; watchdog only acts on measured liveness",
+      "fence": "decideStamp on revision; device lane reads expected again after retirement; build checks current object; reports use whileCurrent; synchronous previewFrame returns null when retired",
       "test": "test/smoke/smoke.test.js: render reports in order:"
     },
     {
-      "site": "src/render/scheduler.js:165",
+      "site": "src/render/scheduler.js:167",
       "id": "timer:this.deps.clock.every#1",
       "input": "watchdog tick",
       "metadata": "effective revision, per-device lane position and runtime token",
-      "fence": "decideStamp on effective revision; per-device createLane; runtime reports use whileCurrent; watchdog only acts on measured liveness",
+      "fence": "decideStamp on revision; device lane reads expected again after retirement; build checks current object; reports use whileCurrent; synchronous previewFrame returns null when retired",
       "test": "test/smoke/drivers-render.test.js: watchdog replaces an overdue render"
     }
   ],

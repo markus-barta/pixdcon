@@ -750,6 +750,64 @@ test("switching drive to shadow revokes transport work that was queued behind a 
   assert.equal(r.pixoo.state().frames, before); assert.equal(r.scheduler.loop("p")?.driver.info.drives, false);
 });
 
+test("queued drive then shadow changes and additions build only the current shadow device", async (t) => {
+  for (const added of [false, true]) {
+    const r = await rig(t, { start: false });
+    /** @type {string[][]} */
+    const builds = [];
+    const factory = r.factories.createDriver;
+    r.factories.createDriver = (device, deps) => { builds.push([device.name, device.output]); return factory(device, deps); };
+    for (const device of r.devices) device.output = { mode: "shadow", requested: "shadow", reason: "config" };
+    if (!added) { await r.scheduler.start(); await until(() => r.previews.get("p")); }
+    else {
+      r.change([], { devicesRemoved: ["p", "u"] });
+      await r.scheduler.start();
+    }
+    builds.length = 0;
+    const before = r.pixoo.state().requests.length + r.awtrix.state().requests.length;
+    const drive = r.devices.map((/** @type {any} */ d) => ({ ...d, output: { mode: "drive", requested: "drive", reason: null } }));
+    const shadow = drive.map((/** @type {any} */ d) => ({ ...d, output: { mode: "shadow", requested: "drive", reason: "v1_owner" } }));
+    r.change(drive, added ? { devicesAdded: ["p", "u"] } : { devicesChanged: { p: ["output"], u: ["output"] } });
+    r.change(shadow, { devicesChanged: { p: ["output"], u: ["output"] } });
+    await until(() => builds.length === 2 && r.scheduler.loop("u")?.driver.info.drives === false);
+    await r.clock.advance(1000); await flush();
+    assert.deepEqual(builds, [["p", "shadow"], ["u", "shadow"]]);
+    assert.equal(r.pixoo.state().requests.length + r.awtrix.state().requests.length, before);
+  }
+});
+
+test("a drive rebuild superseded while retirement waits builds the latest shadow device", async (t) => {
+  const held = deferred(); let first = true;
+  const r = await rig(t, { start: false, render: async (/** @type {string} */ _, /** @type {string} */ name, /** @type {any} */ surface) => {
+    if (name === "p" && first) { first = false; await held.promise; }
+    await surface.paint(3); return null;
+  } });
+  for (const device of r.devices) device.output = { mode: "shadow", requested: "shadow", reason: "config" };
+  await r.scheduler.start(); await until(() => r.renderCalls.has("p"));
+  /** @type {string[]} */
+  const builds = []; const factory = r.factories.createDriver;
+  r.factories.createDriver = (device, deps) => { builds.push(device.output); return factory(device, deps); };
+  const drive = r.devices.map((/** @type {any} */ d) => d.name === "p" ? { ...d, output: { mode: "drive", requested: "drive", reason: null } } : d);
+  r.change(drive, { devicesChanged: { p: ["output"] } });
+  await flush(); assert.equal(r.scheduler.loop("p"), undefined, "old runtime is retiring");
+  r.change(drive.map((/** @type {any} */ d) => d.name === "p" ? { ...d, output: { mode: "shadow", requested: "drive", reason: "v1_owner" } } : d), { devicesChanged: { p: ["output"] } });
+  held.resolve(null); await until(() => r.tokens.get("p") === 2);
+  assert.deepEqual(builds, ["shadow"]); assert.equal(r.pixoo.state().requests.length, 0);
+});
+
+test("the scheduler proxy keeps shadow previewFrame synchronous and returns null after retirement", async (t) => {
+  const r = await rig(t, { start: false });
+  for (const device of r.devices) device.output = { mode: "shadow", requested: "shadow", reason: "config" };
+  await r.scheduler.start(); await until(() => r.previews.get("u"));
+  const old = r.scheduler.loop("u"); assert.ok(old?.driver.previewFrame);
+  const frame = old.driver.previewFrame();
+  assert.equal(frame?.width, 32); assert.equal(frame?.rgb[0], 3);
+  r.change(r.devices.map((/** @type {any} */ d) => d.name === "u" ? { ...d, minFrameMs: 750 } : d), { devicesChanged: { u: ["minFrameMs"] } });
+  await until(() => r.tokens.get("u") === 2);
+  assert.equal(old.driver.previewFrame(), null);
+  await r.clock.advance(1000); assert.equal(r.previews.get("u")?.source, "simulated");
+});
+
 test("AWTRIX startup creates its custom app before selecting it and a failed switch keeps the accepted first frame", async (t) => {
   const r = await rig(t, { start: false }); r.awtrix.failNext(1, "POST /api/switch");
   await r.scheduler.start(); await until(() => r.health.get("u")?.state === "online");
