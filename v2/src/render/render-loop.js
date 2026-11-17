@@ -36,7 +36,8 @@
  *  - An OFF result other than certain error owes ON until QoS-1 confirmation.
  *    The scheduler retains the original plug across runtime replacement and
  *    retirement. Reconnects wake ON retries only; offline retries wait 30 s.
- *    apply()/retryNow() wait for ON; stop keeps trying within its deadline (D-124).
+ *    After the OFF wait (which apply/retryNow/reload may cut short, as in v1),
+ *    commands wait for ON; stop keeps trying within its deadline (D-124).
  *    The log says what was really sent (D-B16).
  *  - stop() has a deadline; a render that hangs cannot block the process (B-044, A-028).
  *  - Output "shadow" initiates no MQTT publish or power cycle. A scheduler-owned
@@ -126,7 +127,7 @@ export class RenderLoop {
     this.errors = 0;
     this.cycles = 0;
     this.stopUntil = /** @type {number|null} */ (null);
-    this.plugRecovery = deps.plugRecovery ?? new PlugRecovery({ name: deps.device.name, mqtt: deps.mqtt, clock: deps.clock, logger: deps.logger, until: () => this.running ? Infinity : this.stopUntil ?? 0 });
+    this.plugRecovery = deps.plugRecovery ?? new PlugRecovery({ name: deps.device.name, mqtt: deps.mqtt, clock: deps.clock, logger: deps.logger, until: () => this.running ? Infinity : this.stopUntil ?? 0, report: (nextRetryAt) => this.report({ phase: "retrying", nextRetryAt }) });
     this.pausedFrame = false;
     this.lastSceneBrightness = /** @type {number|null} */ (null);
     this.appliedNative = /** @type {number|null} */ (null);
@@ -187,7 +188,8 @@ export class RenderLoop {
   /**
    * Change scene, mode or brightness override. Idempotent; wakes ordinary sleeps.
    * Setting mode "play" while playing is a manual retry and re-init (v1, contract 4.7).
-   * apply()/retryNow() wait for confirmed ON while a plug ON is owed.
+   * apply()/retryNow()/reloadScene() may cut the OFF wait short, as in v1;
+   * after the OFF wait, commands wait for confirmed ON while it is owed.
    *
    * @param {Partial<LoopTarget>} patch
    */
@@ -205,7 +207,7 @@ export class RenderLoop {
     this.sleeper?.abort();
   }
 
-  /** "Retry now": re-init and start counting again; waits for any owed ON first. */
+  /** "Retry now": cut the OFF wait short, then await owed ON before re-init/count reset. */
   retryNow() {
     this.retry = true;
     this.sleeper?.abort();

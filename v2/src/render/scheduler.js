@@ -299,7 +299,9 @@ export class Scheduler {
     const target = desired ? this.targetOf(desired, device.type) : { scene: device.savedScene, mode: /** @type {const} */ ("play"), brightnessOverride: null };
     let plugRecovery = this.plugRecoveries.get(name);
     if (!plugRecovery) {
-      plugRecovery = new PlugRecovery({ name, mqtt: this.deps.mqtt, clock: this.deps.clock, logger: this.deps.logger, until: () => this.active ? Infinity : this.stopUntil });
+      plugRecovery = new PlugRecovery({ name, mqtt: this.deps.mqtt, clock: this.deps.clock, logger: this.deps.logger, until: () => this.active ? Infinity : this.stopUntil,
+        report: (nextRetryAt) => this.runtimes.get(name)?.loop.report({ phase: "retrying", nextRetryAt }),
+      });
       this.plugRecoveries.set(name, plugRecovery);
     }
     const loop = new RenderLoop({ device: { ...device, output: device.output.mode }, driver: driverView, createSurface: this.deps.factories.createSurface, scenes: this.deps.scenes, health, previews, report, mqtt: this.deps.mqtt, clock: this.deps.clock, logger: this.deps.logger, probeIntervalMs: () => this.deps.runtime.get().health.probeIntervalMs, plugRecovery }, target);

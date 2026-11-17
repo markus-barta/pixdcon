@@ -5,14 +5,15 @@
  * that original ON. All restorers share one task, including a late old runtime.
  * OFF must settle before ON; reconnect wakes only the ON retry sleeper, never
  * the render loop's ten-second OFF wait. Shutdown bounds retries by until().
- * Timers pace attempts; publish outcomes alone settle the debt (v1 D-124).
+ * Each publish and retry wait sets a fresh watchdog deadline; ON retry times
+ * report through the current runtime. Outcomes alone settle the debt (v1 D-124).
  * Owner: drivers worker.
  */
 export class PlugRecovery {
   /**
    * @param {{name: string, mqtt: import('../mqtt/mqtt-gateway.js').MqttGateway|null,
    * clock: import('../types.js').Clock, logger: import('../types.js').Logger,
-   * until: () => number}} deps Infinity while its owner runs, shutdown deadline otherwise
+   * until: () => number, report?: (nextRetryAt: string) => void}} deps Infinity while its owner runs, shutdown deadline otherwise
    */
   constructor(deps) {
     this.deps = deps;
@@ -30,13 +31,19 @@ export class PlugRecovery {
   get owed() { return this.plug !== null; }
   wake() { this.woken = true; this.sleeper?.abort(); }
   allowed() { return !this.closed && this.deps.clock.now() < this.deps.until(); }
-  clear() { this.plug = null; this.deps.mqtt?.off("connect", this.onConnect); }
+  clear() {
+    this.plug = null;
+    this.lastTickAt = this.nextWakeAt = null;
+    this.deps.mqtt?.off("connect", this.onConnect);
+  }
   close() { this.closed = true; this.wake(); this.deps.mqtt?.off("connect", this.onConnect); }
 
   /** @param {import('../types.js').PowerCyclePlugin} plug */
   async powerOff(plug) {
     if (this.owed || !this.allowed() || !this.deps.mqtt) return false;
     this.plug = { ...plug };
+    this.lastTickAt = new Date(this.deps.clock.now()).toISOString();
+    this.nextWakeAt = new Date(this.deps.clock.now() + 5000).toISOString();
     this.deps.mqtt.on("connect", this.onConnect);
     this.offTask = this.sendOff(this.plug);
     return this.offTask;
@@ -47,10 +54,11 @@ export class PlugRecovery {
     const mqtt = this.deps.mqtt;
     if (!mqtt) { this.clear(); return false; }
     try {
-      const off = await mqtt.publish(plug.topic, plug.offPayload ?? '{"state":"OFF"}', { qos: 1, retain: false });
+      const off = await mqtt.publish(plug.topic, plug.offPayload ?? '{"state":"OFF"}', { qos: 1, retain: false, timeoutMs: 5000 });
       if (off.outcome === "error") { this.clear(); return false; }
       this.deps.logger.info(`[PlugRecovery] ${this.deps.name}: plug OFF ${off.outcome}`);
     } catch (error) { this.deps.logger.warn(`[PlugRecovery] ${this.deps.name}: plug OFF uncertain: ${String(error)}`); }
+    finally { this.nextWakeAt = null; }
     return true;
   }
 
@@ -72,6 +80,7 @@ export class PlugRecovery {
       const timeoutMs = Math.min(5000, this.deps.until() - clock.now());
       this.lastTickAt = new Date(clock.now()).toISOString();
       this.nextWakeAt = new Date(clock.now() + timeoutMs).toISOString();
+      this.deps.report?.(this.nextWakeAt);
       try {
         const on = await mqtt.publish(plug.topic, plug.onPayload ?? '{"state":"ON"}', { qos: 1, retain: false, timeoutMs });
         if (on.outcome === "confirmed") this.clear();
@@ -86,6 +95,7 @@ export class PlugRecovery {
       const sleeper = new AbortController();
       this.sleeper = sleeper;
       this.nextWakeAt = new Date(clock.now() + wait).toISOString();
+      this.deps.report?.(this.nextWakeAt);
       await clock.sleep(wait, sleeper.signal);
       if (this.sleeper === sleeper) this.sleeper = null;
       this.nextWakeAt = null;

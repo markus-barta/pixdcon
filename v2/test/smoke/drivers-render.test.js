@@ -666,6 +666,27 @@ test("reconnect during plug OFF preserves the full ten-second off wait", async (
   await r.clock.advance(1); assert.equal(r.mqtt.messages[1]?.payload, '{"state":"ON"}');
 });
 
+test("apply, retryNow and reloadScene cut the OFF wait short, then await confirmed ON", async (t) => {
+  for (const command of ["apply", "retryNow", "reloadScene"]) {
+    const error = new DeviceError("offline");
+    const r = loopRig(t, { deviceError: error, probeError: error, device: { powerCyclePlugin: { topic: "plug" } } });
+    await flush(); await r.clock.advance(151000 + 500);
+    const renders = r.renders();
+    r.mqtt.outcomes = ["timeout", "confirmed"];
+    if (command === "apply") r.loop.apply({ mode: "pause" });
+    else if (command === "retryNow") r.loop.retryNow();
+    else r.loop.reloadScene();
+    await flush();
+    assert.deepEqual(r.mqtt.messages.map((m) => m.payload), ['{"state":"OFF"}', '{"state":"ON"}'], command);
+    assert.equal(r.loop.plugOnOwed, true);
+    await r.clock.advance(999);
+    assert.equal(r.renders(), renders, command);
+    assert.equal(r.mqtt.messages.length, 2);
+    await r.clock.advance(1);
+    assert.equal(r.loop.plugOnOwed, false);
+  }
+});
+
 test("failed ON retries on the clock and cannot enter exhausted or send another OFF while owed", async (t) => {
   const error = new DeviceError("offline");
   const r = loopRig(t, { deviceError: error, probeError: error, device: { maxPowerCycles: 1, powerCyclePlugin: { topic: "plug" } } });
@@ -813,6 +834,100 @@ test("five-second unacknowledged ON publishes refresh watchdog liveness without 
   assert.ok(Date.parse(status.lastTickAt ?? "") >= r.clock.now() - 6000);
   assert.ok(Date.parse(status.nextWakeAt ?? "") > r.clock.now());
   assert.equal(r.maxInFlight(), 1);
+});
+
+test("slow later OFF publishes never restart the runtime or replenish its cycle budget", async (t) => {
+  for (const offDelay of [1500, 5000]) {
+    let failing = true;
+    const r = await rig(t, { start: false, render: async (/** @type {string} */ _, /** @type {string} */ name, /** @type {any} */ surface) => {
+      if (name === "p" && failing) throw new DeviceError("frame rejected");
+      await surface.paint(3); return 120000;
+    } });
+    const maxCycles = 3;
+    r.devices[0].powerCyclePlugin = { topic: "plug" };
+    r.devices[0].maxPowerCycles = maxCycles;
+    const publish = r.mqtt.publish.bind(r.mqtt);
+    let offCount = 0;
+    r.mqtt.publish = async (topic, payload, options) => {
+      const result = await publish(topic, payload, options);
+      if (payload === '{"state":"OFF"}' && ++offCount > 1) {
+        await r.clock.sleep(offDelay);
+        if (offDelay === 5000) return { ...result, ok: false, outcome: "timeout" };
+      }
+      return result;
+    };
+    await r.scheduler.start();
+    await until(() => r.scheduler.loop("p")?.deviceErrors === 1);
+    const loop = r.scheduler.loop("p"); assert.ok(loop);
+    const rejectTen = async () => {
+      await until(() => loop.deviceErrors === 1);
+      for (const [index, ms] of [1000, 2000, 4000, 8000, 10000, 10000, 10000, 10000, 10000].entries()) {
+        await r.clock.advance(ms); await until(() => loop.deviceErrors === index + 2);
+      }
+    };
+    await rejectTen();
+    failing = false;
+    await r.clock.advance(40000);
+    await until(() => loop.status().frameCount === 1);
+    assert.equal(loop.status().powerCycleCount, 0, "the accepted frame replenishes the budget");
+    failing = true;
+    await r.clock.advance(120000); // Age the previous recovery beyond the watchdog's 60 s grace.
+    const baseline = offCount;
+    for (let cycle = 1; cycle <= maxCycles; cycle++) {
+      await rejectTen();
+      await until(() => offCount === baseline + cycle);
+      assert.equal(loop.status().lastTickAt, new Date(r.clock.now()).toISOString());
+      assert.equal(loop.status().nextWakeAt, new Date(r.clock.now() + 5000).toISOString());
+      await r.clock.advance(offDelay); await flush();
+      assert.equal(r.scheduler.status().restarts, 0, `OFF delayed ${offDelay} ms`);
+      assert.equal(r.scheduler.loop("p"), loop);
+      assert.equal(loop.status().powerCycleCount, cycle);
+      assert.equal(r.mqtt.messages.at(-1)?.options.timeoutMs, 5000);
+      const count = r.mqtt.messages.length;
+      await r.clock.advance(9999); assert.equal(r.mqtt.messages.length, count);
+      await r.clock.advance(1); assert.equal(r.mqtt.messages.at(-1)?.payload, '{"state":"ON"}');
+      assert.equal(loop.plugRecovery.lastTickAt, null);
+      assert.equal(loop.plugRecovery.nextWakeAt, null);
+      await r.clock.advance(30000);
+    }
+    await rejectTen();
+    await until(() => loop.status().phase === "exhausted");
+    assert.equal(offCount - baseline, maxCycles);
+    assert.equal(loop.status().powerCycleCount, maxCycles);
+    assert.equal(r.scheduler.status().restarts, 0);
+  }
+});
+
+test("owed ON reports each publish deadline and connected or offline retry wait through the current runtime", async (t) => {
+  const r = await owedOnRig(t, { slowOn: true });
+  const latest = () => r.reports.filter((entry) => entry.name === "p").at(-1)?.patch;
+  const check = (/** @type {number} */ wait) => {
+    assert.equal(latest()?.phase, "retrying");
+    assert.equal(latest()?.nextRetryAt, new Date(r.clock.now() + wait).toISOString());
+    assert.equal(r.scheduler.loop("p")?.status().nextRetryAt, latest()?.nextRetryAt);
+  };
+  check(5000);
+  await r.clock.advance(5000); check(1000);
+  await r.clock.advance(1000); check(5000);
+  r.mqtt.connected = false;
+  await r.clock.advance(5000); check(30000);
+  await r.clock.advance(30000); check(5000);
+  const old = r.loop;
+  r.change(r.devices.map((/** @type {any} */ d) => d.name === "p" ? { ...d, minFrameMs: 900 } : d), { devicesChanged: { p: ["minFrameMs"] } });
+  await flush(); await r.clock.advance(6001);
+  await until(() => r.tokens.get("p") === 2);
+  const oldReports = r.reports.filter((entry) => entry.name === "p" && entry.token === 1).length;
+  r.mqtt.connected = true;
+  r.mqtt.emit("connect", { connection: ++r.mqtt.connection }); await flush();
+  // Reconnect wakes a retry sleep; it does not duplicate an ON still in flight.
+  const remaining = Date.parse(old.plugRecovery.nextWakeAt ?? "") - r.clock.now();
+  check(remaining);
+  await r.clock.advance(remaining);
+  check(5000);
+  assert.notEqual(r.scheduler.loop("p"), old);
+  assert.equal(r.reports.filter((entry) => entry.name === "p" && entry.token === 1).length, oldReports);
+  assert.equal(r.reports.filter((entry) => entry.name === "p").at(-1)?.token, 2);
+  await r.clock.advance(5000); check(1000);
 });
 
 test("owed original ON survives shadow, address/plug changes, disable and removal past the retirement deadline", async (t) => {
