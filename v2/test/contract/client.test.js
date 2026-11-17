@@ -6415,12 +6415,6 @@ const R4_KNOWN = new Set([
   // r6: Reset stories expose the same phase-B ownership bugs.
   "settings reset preview × commit × 500",
   "settings reset preview × commit × timeout",
-  "settings reset preview × epoch × 500",
-  "settings reset preview × epoch × 500, last",
-  "settings reset preview × epoch × success",
-  "settings reset preview × epoch × success, last",
-  "settings reset preview × epoch × timeout",
-  "settings reset preview × epoch × timeout, last",
   "settings reset preview × newer draft × 500",
   "settings reset preview × newer draft × timeout",
   "settings reset preview × other field × 500",
@@ -6437,9 +6431,6 @@ const R4_KNOWN = new Set([
   "settings reset preview × reset replaced by equal default × timeout (gate r5b G)",
   "settings reset preview × schema × 500",
   "settings reset preview × schema × timeout",
-  "settings reset save × epoch × 500",
-  "settings reset save × epoch × success",
-  "settings reset save × epoch × timeout",
   "settings reset save × membership × 500",
   "settings reset save × membership × success",
   "settings reset save × membership × timeout",
@@ -6448,9 +6439,6 @@ const R4_KNOWN = new Set([
   "settings reset save × reincarnate × timeout",
   "settings reset save × schema × 500",
   "settings reset save × schema × timeout",
-  "settings reset save × epoch × 500, last",
-  "settings reset save × epoch × success, last",
-  "settings reset save × epoch × timeout, last",
   "settings reset save × reincarnate × 500, last",
   "settings reset save × reincarnate × success, last",
   "settings reset save × reincarnate × timeout, last",
@@ -6867,9 +6855,21 @@ async function r4Mutant(file, edits, replace = {}) {
   return `data:text/javascript;base64,${Buffer.from(src).toString("base64")}`;
 }
 
+/** The central admission has two independent old-run barriers: retired slot
+ * token and captured epoch. Remove both to expose the original page-local
+ * defects; opening/revision checks and the store fence remain executable.
+ * @type {Array<[string, string]>}
+ */
+const R4_B1A_OLD_EPOCH_GUARD_REMOVALS = [
+  ["if (owner.slot && op(owner.slot.key).token !== owner.slot.token) return false;", "if (false) return false;"],
+  ["if (read() !== owner.values[name]) return false;", 'if (name !== "epoch" && read() !== owner.values[name]) return false;'],
+];
+
 test("r4 harness self-test: an epoch guard on Raw's load without a replacement load is caught (gate r4 §4)", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
+  // Remove the new restart trigger; retain the old recipe and every observation.
   const mutant = await r4Mutant("pages/config-raw.js", [
+    ["if (state.epoch !== epoch)", "if (false)"],
     ["function load(base = { opened, revision }, tries = 0) {", "function load(base = { opened, revision, epoch: getState().epoch }, tries = 0) {"],
     ["if (base.opened !== opened || !root) return;\n        if (decision", "if (base.opened !== opened || !root || /** @type {any} */ (base).epoch !== getState().epoch) return;\n        if (decision"],
   ]);
@@ -6878,6 +6878,22 @@ test("r4 harness self-test: an epoch guard on Raw's load without a replacement l
   const differences = await r4Case(t, kind, "epoch", "success", { modules: { raw } });
   assert.ok(differences.some((d) => /editor text/.test(d)), `the harness reports the empty editor: ${differences.join("\n")}`);
   assert.ok(differences.some((d) => /replacement load/.test(d)), "and the missing replacement load");
+  assert.deepEqual(await r4Case(t, kind, "epoch", "success"), [], "the real replacement trigger supplies the new run's editor");
+});
+
+test("r4 harness self-test: no longer reachable: the page-local Raw epoch guard alone cannot lose the replacement load (gate r4 §4)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mutant = await r4Mutant("pages/config-raw.js", [
+    ["function load(base = { opened, revision }, tries = 0) {", "function load(base = { opened, revision, epoch: getState().epoch }, tries = 0) {"],
+    ["if (base.opened !== opened || !root) return;\n        if (decision", "if (base.opened !== opened || !root || /** @type {any} */ (base).epoch !== getState().epoch) return;\n        if (decision"],
+  ]);
+  const raw = (await import(mutant)).page;
+  const kind = /** @type {R4Kind} */ (R4_KINDS.find((k) => k.name === "raw load"));
+  const differences = await r4Case(t, kind, "epoch", "success", { modules: { raw } });
+  // Original A5 mutant, unchanged: a page-local epoch check adds no replacement load.
+  // The B1a render trigger supplies that load independently. If it disappears,
+  // this check reports the original empty-editor / missing-replacement defect.
+  assert.deepEqual(differences, [], "no longer reachable: the old page-local Raw epoch mutant cannot lose the replacement load");
 });
 
 test("r4 harness self-test: Save suppressed while a newer draft exists is caught (gate r4 §3)", async (t) => {
@@ -7160,27 +7176,22 @@ test("r4 harness self-test: an old answer that fills Raw's editor for a moment w
   t.mock.timers.enable({ apis: ["setTimeout"] });
   /** A load belongs to the run it was sent in. @type {[string, string]} */
   const base = ["function load(base = { opened, revision }, tries = 0) {", "function load(base = { opened, revision, epoch: getState().epoch }, tries = 0) {"];
-  /** Raw loads again when the store holds a new run. @type {[string, string]} */
-  const reload = [
-    "unsubscribe = subscribe((state) => state, render);\n    load();",
-    "let r4Seen = getState().epoch;\n    unsubscribe = subscribe((state) => state, (state) => {\n      if (state.epoch !== r4Seen) {\n        r4Seen = state.epoch;\n        load();\n      }\n      render(state);\n    });\n    load();",
-  ];
   /** A failure of a load of an earlier run says nothing. @type {[string, string]} */
   const failed = ["failed: () => {\n        if (base.opened !== opened || !root) return;\n        loading = false;", "failed: () => {\n        if (base.opened !== opened || !root || /** @type {any} */ (base).epoch !== getState().epoch) return;\n        loading = false;"];
   const done = "if (base.opened !== opened || !root) return;\n        if (decision.action === \"apply\") {";
   // The control: the answer of a load of an earlier run changes nothing.
-  const control = (await import(await r4Mutant("pages/config-raw.js", [base, reload, failed, [done, done.replace("|| !root)", "|| !root || /** @type {any} */ (base).epoch !== getState().epoch)")]]))).page;
+  const control = (await import(await r4Mutant("pages/config-raw.js", [base, failed, [done, done.replace("|| !root)", "|| !root || /** @type {any} */ (base).epoch !== getState().epoch)")]]))).page;
+  const unguarded = await r4Mutant("ops.js", R4_B1A_OLD_EPOCH_GUARD_REMOVALS);
   // The gate's mutant: Raw loads again in the new run, each run's load has a slot of its own, and the 200 answer of the
   // old run's load is let into the editor. The replacement's answer repairs it later.
   const mutant = (
     await import(
       await r4Mutant("pages/config-raw.js", [
         base,
-        reload,
         failed,
         ['"raw-load",\n    async () => {', "`raw-load:${/** @type {any} */ (base).epoch}`,\n    async () => {"],
         [done, done.replace('decision.action === "apply")', 'decision.action === "apply" || /** @type {any} */ (base).epoch !== getState().epoch)')],
-      ])
+      ], { "../ops.js": unguarded })
     )
   ).page;
   const kind = r4KindOf("raw load");
@@ -7197,6 +7208,47 @@ test("r4 harness self-test: an old answer that fills Raw's editor for a moment w
   // The control passes all three ends, with the replacement load still out when the old answer comes.
   for (const end of R4_ENDS) assert.deepEqual(await r4Case(t, kind, "epoch", end, { modules: { raw: control } }), [], `raw load × epoch × ${end} with a page that drops the old run's answer`);
   assert.equal((await r4Run(t, kind, "epoch", "success", "case", { raw: control })).replacing, "GET /api/v2/config/raw", "the old answer was delivered while the replacement load was still out");
+});
+
+test("r4 harness self-test: no longer reachable: the page-local old Raw answer mutant cannot cross central ownership (gate r5a C)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  /** A load belongs to the run it was sent in. @type {[string, string]} */
+  const base = ["function load(base = { opened, revision }, tries = 0) {", "function load(base = { opened, revision, epoch: getState().epoch }, tries = 0) {"];
+  /** Raw loads again when the store holds a new run. @type {[string, string]} */
+  const reload = [
+    "unsubscribe = subscribe((state) => state, render);\n    load();",
+    "let r4Seen = getState().epoch;\n    unsubscribe = subscribe((state) => state, (state) => {\n      if (state.epoch !== r4Seen) {\n        r4Seen = state.epoch;\n        load();\n      }\n      render(state);\n    });\n    load();",
+  ];
+  /** A failure of a load of an earlier run says nothing. @type {[string, string]} */
+  const failed = ["failed: () => {\n        if (base.opened !== opened || !root) return;\n        loading = false;", "failed: () => {\n        if (base.opened !== opened || !root || /** @type {any} */ (base).epoch !== getState().epoch) return;\n        loading = false;"];
+  const done = "if (base.opened !== opened || !root) return;\n        if (decision.action === \"apply\") {";
+  // The gate's mutant: Raw loads again in the new run, each run's load has a slot of its own, and the 200 answer of the
+  // old run's load is let into the editor. The replacement's answer repairs it later.
+  const mutant = (
+    await import(
+      await r4Mutant("pages/config-raw.js", [
+        base,
+        reload,
+        failed,
+        ['"raw-load",\n    async () => {', "`raw-load:${/** @type {any} */ (base).epoch}`,\n    async () => {"],
+        [done, done.replace('decision.action === "apply")', 'decision.action === "apply" || /** @type {any} */ (base).epoch !== getState().epoch)')],
+      ])
+    )
+  ).page;
+  const kind = r4KindOf("raw load");
+  // Original A5 recipe above, including its extra replacement subscription.
+  // That duplicate subscription can still interfere with its final loading
+  // state; the obsolete stale-write path is checked directly, before any
+  // replacement answer repairs it. The retargeted test checks final state.
+  for (const end of R4_ENDS) {
+    const made = await r4Run(t, kind, "epoch", end, "case", { raw: mutant });
+    assert.equal(made.replacing, "GET /api/v2/config/raw", "the original mutant's replacement is still out");
+    assert.equal(made.points[0].get("raw: editor text")?.value, "");
+    assert.match(made.points[0].get("raw: load and validity state")?.value ?? "", /Loading config/);
+    for (const at of [1, 2])
+      for (const name of ["raw: editor text", "raw: load and validity state"])
+        assert.equal(made.points[at].get(name)?.value, made.points[0].get(name)?.value, `no longer reachable: ${name} cannot change at the old Raw answer (${end}, point ${at})`);
+  }
 });
 
 test("r4 harness self-test: an old rejection that brings back the edit a Save committed meanwhile is caught; the real form passes (gate r5a D)", async (t) => {
@@ -7229,11 +7281,16 @@ test("r4 harness self-test: a slider cleanup that runs without its condition is 
   t.mock.timers.enable({ apis: ["setTimeout"] });
   // The gate's mutant: the end of a control's request forgets the slider's level, whoever owns the slider now.
   const device = (await import(await r4Mutant("pages/device.js", [["if (sliding?.key === key) sliding = null;", "sliding = null;"]]))).page;
+  // In a new epoch, remove central token/epoch admission as well as the old
+  // page-local cleanup condition. The reincarnation recipe remains unchanged.
+  const epochDevice = (await import(await r4Mutant("pages/device.js", [["if (sliding?.key === key) sliding = null;", "sliding = null;"]], {
+    "../ops.js": await r4Mutant("ops.js", R4_B1A_OLD_EPOCH_GUARD_REMOVALS),
+  }))).page;
   const kind = r4KindOf("device brightness range");
   // Life 1 sends 40 %, the device is re-added, life 2 sends 60 % and its request stays out, then life 1's request ends.
   for (const [story, own] of /** @type {Array<[string, string]>} */ ([["reincarnate, then the new owner slides", "35"], ["epoch, then the new owner slides", "32"]]))
     for (const end of R4_ENDS) {
-      const differences = await r4Case(t, kind, story, end, { modules: { device } });
+      const differences = await r4Case(t, kind, story, end, { modules: { device: story.startsWith("epoch") ? epochDevice : device } });
       // A request that ends well runs its cleanup before the slot is written, so the level shows at once; one that fails
       // or runs out of time runs it after, so it shows at the next render.
       const piece = `after the end${end === "success" ? "" : ", at the next render"}, device: brightness [epoch, life, owner, token]: "${own} [disabled] | ${own} % | xx" — the story without the old operation reads "60 [disabled] | 60 % | xx"`;
@@ -7247,6 +7304,15 @@ test("r4 harness self-test: a slider cleanup that runs without its condition is 
   const world = r4World(r4d1({ override: 30 }));
   world.epochs.push("e-a", "e-b");
   assert.deepEqual([r4View(world, "d1", "e-a", 1, 1), r4View(world, "d1", "e-a", 2, 1), r4View(world, "d1", "e-b", 1, 1)].map((v) => v.desired.brightness.override), [30, 35, 32]);
+});
+
+test("r4 harness self-test: no longer reachable: the page-local slider cleanup mutant cannot cross epoch ownership (gate r5a E)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  // Original A5 mutant. Its life-change defect is still tested above; only
+  // its old-epoch path is now unreachable behind central admission.
+  const device = (await import(await r4Mutant("pages/device.js", [["if (sliding?.key === key) sliding = null;", "sliding = null;"]]))).page;
+  for (const end of R4_ENDS)
+    assert.deepEqual(await r4Case(t, r4KindOf("device brightness range"), "epoch, then the new owner slides", end, { modules: { device } }), [], `no longer reachable: old slider cleanup cannot reset its successor (${end})`);
 });
 
 /** Browser-owned APIs used by the remaining view, route and render predicates. @param {(browser: any) => Promise<void>} story */
@@ -8984,7 +9050,14 @@ test("r4 inventory: persistent UI state writers across imported helpers all decl
   assert.ok(rows.length > 100, "all UI modules, not only async spans, were scanned");
   for (const row of rows) assert.ok(row.owner.length > 10, `${r6xWriteKey(row)} requires ownership review`);
   const digest = createHash("sha256").update(rows.map(r6xWriteKey).join("\n")).digest("hex");
-  assert.equal(digest, "40c9e05cfa81c8ccf8654db8a9cad2199d74928f304120876d6f04ea43d42a94", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+  // PIXD-96 B1a inventory review: 377 -> 384 writers; extractor unchanged.
+  // API busy.add/request-delete -> busy.set/release-delete: captured request
+  // and epoch (control reuse, old cleanup, same-run exclusivity stories).
+  // current.owner/effect/follow: immutable captured operation (inherited child
+  // and named-effect projection stories). Raw render/mount epoch, errorLine
+  // and again: current opening/restart (replacement-load story and Raw's
+  // admitted-effect runtime probe). Exact before/after rows in the B1a report.
+  assert.equal(digest, "2de91f910f50acedf31143d0c3cbe81350eab7e11252536c9f6639fc25421295", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
 });
 test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
   for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {
