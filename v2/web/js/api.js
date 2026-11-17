@@ -54,8 +54,10 @@ export class ApiError extends Error {
 /** How long pixdcon has to answer one request, body included (ms). */
 export const REQUEST_TIMEOUT_MS = 15000;
 
-/** @type {Set<string>} */
-const busy = new Set();
+/** A control is owned by one request in one run; old cleanup cannot free its successor.
+ * @type {Map<string, {epoch: string|null}>}
+ */
+const busy = new Map();
 /** @type {Set<(key: string, busy: boolean) => void>} */
 const listeners = new Set();
 
@@ -65,6 +67,16 @@ function announce(key, state) {
     try {
       listener(key, state);
     } catch {}
+  }
+}
+
+/** @param {string|undefined} key @param {{epoch: string|null}} control */
+function release(key, control) {
+  if (key === undefined || busy.get(key) === control) {
+    if (key !== undefined) {
+      busy.delete(key);
+      announce(key, false);
+    }
   }
 }
 
@@ -138,19 +150,20 @@ function bound(outer) {
  */
 export async function request(method, path, options) {
   const { resource, body, key, signal } = options;
-  if (key !== undefined && busy.has(key))
+  if (key !== undefined && isBusy(key))
     throw new ApiError("Still working on the last request.", {
       status: 0,
       code: "busy",
     });
   const fence = storeFence();
+  const control = { epoch: fence.epoch };
   // The generation is taken before the request leaves (ordering.js).
   const generation =
     resource === "bootstrap"
       ? openSource(fence, "bootstrap")
       : beginRequest(fence, resource);
   if (key !== undefined) {
-    busy.add(key);
+    busy.set(key, control);
     announce(key, true);
   }
   const time = bound(signal);
@@ -222,10 +235,7 @@ export async function request(method, path, options) {
     };
   } finally {
     time.end();
-    if (key !== undefined) {
-      busy.delete(key);
-      announce(key, false);
-    }
+    release(key, control);
   }
 }
 
@@ -308,7 +318,7 @@ function frameOf(generation, response, bytes) {
  * @returns {boolean} true while a request with this key is running
  */
 export function isBusy(key) {
-  return busy.has(key);
+  return busy.get(key)?.epoch === storeFence().epoch;
 }
 
 /**

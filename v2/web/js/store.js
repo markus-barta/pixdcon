@@ -112,7 +112,7 @@ import {
  * @property {number|null} dataAt epoch ms of the last data that was applied ("values below are from 18:41:52")
  * @property {{message: string, at: number}|null} loadError the first load failed (no snapshot yet)
  * @property {number} now epoch ms the ages on screen are computed against; moved by `tick`
- * @property {Map<string, OpSlot>} ops the page's operations by slot (ops.js): busy label, kept failure, note. Not data of pixdcon: a new epoch keeps them, and their slot keys name the epoch and device life they belong to
+ * @property {Map<string, OpSlot>} ops the page's operations by slot (ops.js): busy label, kept failure, note. A new epoch invalidates every operation of the previous run
  */
 
 /**
@@ -420,7 +420,6 @@ export function createStore() {
         ...fresh,
         live: state.live,
         now: state.now,
-        ops: state.ops,
       };
     }
     next.epoch = fenceState.epoch;

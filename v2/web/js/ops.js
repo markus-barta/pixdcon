@@ -16,7 +16,11 @@
  *  1. An operation takes a token when it starts; the slot's token is the
  *     operation that is current for it.
  *  2. Its outcome changes the slot, and runs the caller's `done`, only while
- *     its token is still the slot's. An obsolete outcome changes nothing on
+ *     its token is still the slot's and its captured epoch is current.
+ *     Page effects declare their identity projection through `effect` or
+ *     `current.effect`. Deferred work inherits the capture through `owner`
+ *     or `current.follow`; it is checked before any request starts.
+ *     An obsolete outcome changes nothing on
  *     screen. What an answer brings goes to the store first, in the
  *     operation's own work (store.applyAnswer: the fence decides), whether
  *     or not the operation is still current.
@@ -25,7 +29,7 @@
  *  4. Every request has a time bound (api.js REQUEST_TIMEOUT_MS). When it
  *     runs out, the request fails like any other, and the slot is free.
  *  5. One busy owner per slot, across all pages and openings: the slots are
- *     kept in the store (`state.ops`), and `start` ignores a second start
+ *     kept in the store (`state.ops`) for the run, and `start` ignores a second start
  *     while the slot is busy, before anything is changed (B-176).
  *  6. A retry is a new operation in the same slot, with the identity it
  *     retries (the caller passes it on).
@@ -54,6 +58,49 @@ const IDLE = Object.freeze({
 });
 
 let tokens = 0;
+
+/**
+ * Readers name the identities an effect may project on. Values are taken
+ * once, before work starts; a deferred step inherits this same capture.
+ * Later slices can add life, definition, visit and draft readers here.
+ *
+ * @typedef {{readers: Record<string, () => unknown>, values: Record<string, unknown>, slot?: {key: string, token: number}}} Ownership
+ * @typedef {((projection?: string[]) => boolean) & {owner: Ownership, effect: <T>(name: string, work: () => T) => T|undefined, follow: <T>(key: string, work: (current: Operation) => Promise<T>, options?: OpOptions<T>) => Promise<T>}} Operation
+ */
+
+/** @param {Record<string, () => unknown>} [owns] @returns {Ownership} */
+export function capture(owns = {}) {
+  const readers = Object.freeze({ epoch: () => getState().epoch, ...owns });
+  return Object.freeze({
+    readers,
+    values: Object.freeze(Object.fromEntries(Object.entries(readers).map(([name, read]) => [name, read()]))),
+  });
+}
+
+/** The single admission rule for slot outcomes and projected page effects.
+ * @param {Ownership} owner @param {string[]} projection @returns {boolean}
+ */
+export function owned(owner, projection) {
+  if (owner.slot && op(owner.slot.key).token !== owner.slot.token) return false;
+  for (const name of projection) {
+    const read = owner.readers[name];
+    if (read() !== owner.values[name]) return false;
+  }
+  return true;
+}
+
+/** @template T @param {Ownership} owner @param {string[]} projection @param {() => T} work @returns {T|undefined} */
+export function effect(owner, projection, work) {
+  if (!owned(owner, projection)) return;
+  return work();
+}
+
+/** Drop only the operation this continuation actually superseded.
+ * @param {string} key @param {number} token
+ */
+export function dropOwn(key, token) {
+  if (op(key).token === token) drop(key);
+}
 
 /**
  * @param {string} key
@@ -100,6 +147,9 @@ export function failureText(error) {
  * @property {(result: T) => (string|null|void)} [done] runs only while the operation is current; what it returns is the slot's note
  * @property {(error: unknown) => (string|void)} [describe] the failure sentence to keep, when it is not the error's own
  * @property {(error: unknown) => void} [failed] runs only while the operation is current, after the failure was kept
+ * @property {Ownership} [owner] inherited capture, never refreshed by deferred work
+ * @property {Record<string, () => unknown>} [owns] additional identities, captured at start
+ * @property {Record<string, string[]>} [effects] named projections for current.effect, plus start (request admission); slot outcomes always depend on epoch
  */
 
 /**
@@ -107,13 +157,15 @@ export function failureText(error) {
  *
  * @template T
  * @param {string} key the slot
- * @param {(current: () => boolean) => Promise<T>} work the request(s); applies what comes back to the store. `current()` says whether the operation is still the slot's (a step that waited in a lane asks it before it sends)
+ * @param {(current: Operation) => Promise<T>} work the request(s); applies what comes back to the store. `current()` says whether the operation still owns the effect
  * @param {OpOptions<T>} [options]
  * @returns {boolean} false: the slot was busy, and nothing was started or changed
  */
 export function start(key, work, options = {}) {
+  const owner = options.owner ?? capture(options.owns);
+  if (!owned(owner, options.effects?.start ?? ["epoch"])) return false;
   if (busy(key)) return false;
-  run(key, work, options);
+  run(key, work, { ...options, owner });
   return true;
 }
 
@@ -123,7 +175,7 @@ export function start(key, work, options = {}) {
  *
  * @template T
  * @param {string} key
- * @param {(current: () => boolean) => Promise<T>} work
+ * @param {(current: Operation) => Promise<T>} work
  * @param {OpOptions<T>} [options]
  * @returns {Promise<T>} the work itself, for a caller that waits for it (a lane); its failure is kept in the slot already
  */
@@ -167,13 +219,18 @@ export function clearNote(key) {
 /**
  * @template T
  * @param {string} key
- * @param {(current: () => boolean) => Promise<T>} work
+ * @param {(current: Operation) => Promise<T>} work
  * @param {OpOptions<T>} options
  * @returns {Promise<T>}
  */
 function run(key, work, options) {
+  const inherited = options.owner ?? capture(options.owns);
+  const projections = options.effects ?? {};
+  if (!owned(inherited, projections.start ?? ["epoch"]))
+    return Promise.resolve(/** @type {T} */ (undefined));
   tokens += 1;
   const token = tokens;
+  const owner = { ...inherited, slot: { key, token } };
   setOp(key, {
     token,
     busy: true,
@@ -182,7 +239,10 @@ function run(key, work, options) {
     failure: null,
     note: null,
   });
-  const current = () => op(key).token === token;
+  const current = /** @type {Operation} */ ((projection = ["epoch"]) => owned(owner, projection));
+  current.owner = owner;
+  current.effect = (name, work) => effect(owner, projections[name] ?? ["epoch"], work);
+  current.follow = (key, work, options = {}) => follow(key, work, { ...options, owner });
   const outcome = (async () => work(current))();
   outcome.then(
     (result) => {
