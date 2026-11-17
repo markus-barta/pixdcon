@@ -765,3 +765,19 @@ test("r2 finding 9, log: lines from the HTTP answer and from the stream are merg
   assert.equal(new Set(seqs).size, 200);
   assert.deepEqual([seqs[0], seqs[199]], [61, 260]);
 });
+
+test("r2 finding 10, item 11: a device that an entry of the config overlay (blob) switches off reads 'Switched off by an MQTT overlay', confirmed or not, and never 'disabled in config.json'", () => {
+  for (const confirmed of [true, false]) {
+    const blob = record("blob", "blob", { value: { devices: [{ name: "d1", enabled: false }, { name: "d2", scene: "clock" }] }, confirmed, restricts: null });
+    const { store } = loadedStore([view("d1", { enabled: false }), view("d2", { enabled: false })], { overlays: [blob] });
+    const state = store.getState();
+    const off = state.devices.get("d1");
+    assert.equal(deviceCondition(state, off)?.text, "Switched off by an MQTT overlay", `confirmed: ${confirmed}`);
+    assert.equal(showingNow(state, off).display.text, "Off · switched off by an MQTT overlay");
+    assert.deepEqual(deviceStatus(off, state).meta.map((m) => m.text), ["switched off by an MQTT overlay"]);
+    // d2 is in the blob too, but the blob does not switch it off: config.json does.
+    const disabled = state.devices.get("d2");
+    assert.equal(showingNow(state, disabled).display.text, "Off · disabled in config.json");
+    assert.equal(deviceCondition(state, disabled), null);
+  }
+});

@@ -119,7 +119,27 @@ export function heldBy(view, overlays) {
 }
 
 /**
- * The record that switches this device off, when one does.
+ * The device's entry in the config overlay (blob) record: `{devices: [...]}`,
+ * one entry per display, matched by `name`.
+ *
+ * @param {any} record OverlayRecord of kind "blob"
+ * @param {string} name
+ * @returns {any|null}
+ */
+function blobEntry(record, name) {
+  const devices = record?.value?.devices;
+  if (!Array.isArray(devices)) return null;
+  return devices.find((entry) => entry && entry.name === name) ?? null;
+}
+
+/**
+ * The record that switches this device off, when one does: its own
+ * `enabled` overlay, or its entry in the config overlay that says
+ * `enabled: false` (section 13, item 11: "as its own topic or inside the
+ * config overlay"). Confirmed or not: a switch-off keeps holding the
+ * device off. The blob record is one record for every display, so its own
+ * `restricts` cannot say which display it holds; the entry of the device
+ * says it.
  *
  * @param {any} view
  * @param {any[]} overlays
@@ -127,13 +147,19 @@ export function heldBy(view, overlays) {
  */
 export function switchedOffBy(view, overlays) {
   if (!view || view.desired?.enabled !== false) return null;
+  const list = overlays ?? [];
   return (
-    (overlays ?? []).find(
+    list.find(
       (record) =>
         record.kind === "device-enabled" &&
         record.device === view.name &&
         record.restricts === "off",
-    ) ?? null
+    ) ??
+    list.find(
+      (record) =>
+        record.kind === "blob" && blobEntry(record, view.name)?.enabled === false,
+    ) ??
+    null
   );
 }
 
@@ -571,11 +597,14 @@ export function deviceCell(view) {
  *
  * @param {ClientState} state
  * @param {any} view
+ * @param {{previewFailure?: string|null}} [local] what the page knows beside the store: why the settings form's last preview failed (B-175)
  * @returns {{text: string, cls: string, icon: string|null, dot?: string|null, action?: {label: string, kind: string}, title?: string}|null}
  */
-export function deviceCondition(state, view) {
+export function deviceCondition(state, view, local = {}) {
   const page = pageCondition(state);
   if (page && page.cls === "bad") return page;
+  if (local.previewFailure)
+    return { text: previewFailureText(local.previewFailure), cls: "warn", icon: "alert" };
   if (view.origin === "blob")
     return {
       text: "This device comes from the MQTT config overlay and is not in config.json. Changes are applied but not saved.",
@@ -602,6 +631,19 @@ export function deviceCondition(state, view) {
 }
 
 /**
+ * A preview of settings that failed, as the title status line and the
+ * Display line say it (B-175: "a failed preview … shows in the status line
+ * beside the page title … and on the affected device's Display line"). The
+ * form says "Not previewed: …" beside its own actions.
+ *
+ * @param {string} message the request's sentence, e.g. "pixdcon failed to answer (500)."
+ * @returns {string}
+ */
+export function previewFailureText(message) {
+  return `Settings not previewed: ${message}`;
+}
+
+/**
  * When the current MQTT connection began: the reconnect after which a record
  * has not been delivered again.
  *
@@ -617,9 +659,10 @@ export function reconnectAt(state) {
  *
  * @param {ClientState} state
  * @param {any} view
+ * @param {{previewFailure?: string|null}} [local] why the settings form's last preview failed (B-175: said on the Display line)
  * @returns {{tint: string, label: string, showing: {name: string, key: string|null}, source: Line & {sub?: string, html?: boolean}, display: Line & {sub?: string}, choice: {text: string, note: string, cls: string, noteTitle?: string}, action: {kind: string, label: string, disabled?: boolean, title?: string}|null}}
  */
-export function showingNow(state, view) {
+export function showingNow(state, view, local = {}) {
   const type = view.type;
   const scene = view.desired?.scene ?? {};
   const choice = view.desired?.choice ?? {};
@@ -690,6 +733,8 @@ export function showingNow(state, view) {
       icon: "alert",
       text: `Live updates paused · retrying · values from ${clock(state.dataAt)}`,
     };
+  else if (local.previewFailure)
+    display = { cls: "warn", icon: "alert", text: previewFailureText(local.previewFailure) };
   else if (shadow)
     display = {
       dot: "shadow",
