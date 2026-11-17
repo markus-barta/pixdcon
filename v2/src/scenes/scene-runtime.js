@@ -422,15 +422,17 @@ export class SceneRuntime {
     return promise;
   }
 
-  /** Release every instance (shutdown). */
-  async releaseAll() {
+  /** Release every instance concurrently (shutdown); apply the remaining frame-drain budget to each.
+   * Pending init and mounted destroy remain uncancellable; main owns the absolute shutdown deadline.
+   * @param {SceneReleaseOptions} [options] */
+  async releaseAll(options) {
     this.closed = true;
     for (const entry of this.entries.values()) entry.generation++;
     this.entries.clear();
     // Fence admitted instances before yielding to pending init work. A
     // hanging init must not leave installed scenes open to another frame.
     const releases = [...this.instances].map((instance) =>
-      this.release(instance),
+      this.release(instance, options),
     );
     await Promise.allSettled([...this.pending]);
     await Promise.all(releases);

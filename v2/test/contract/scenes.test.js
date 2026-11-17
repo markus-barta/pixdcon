@@ -693,6 +693,8 @@ async function virtualRuntimePeer(t) {
     started: 0,
     /** @type {ReturnType<typeof Promise.withResolvers<void>>|null} */
     gate: null,
+    /** @type {ReturnType<typeof Promise.withResolvers<void>>|null} */
+    frame: null,
     /** @type {Set<ReturnType<typeof Promise.withResolvers<void>>>} */
     gates: new Set(),
     /** @type {Map<number, {device: string, path: string}>} */
@@ -719,7 +721,7 @@ async function virtualRuntimePeer(t) {
         if (control.failNext) { control.failNext = false; control.failed++; throw Error('seeded init failure'); }
         if (control.gate) { control.gates.add(control.gate); await control.gate.promise; }
       },
-      render(surface) { surface.record(this.id); },
+      render(surface) { surface.record(this.id); return control.frame?.promise; },
       destroy() {
         clearInterval(this.timer);
         control.live.delete(this.id);
@@ -766,6 +768,7 @@ async function virtualRuntimePeer(t) {
   };
   t.after(async () => {
     control.gate?.resolve();
+    control.frame?.resolve();
     for (const gate of control.gates) gate.resolve();
     await peer.runtime.releaseAll();
     hook.deregister();
@@ -959,6 +962,73 @@ test("scene first caller: cancelling every acquire retires a cross-mode invalida
     assert.equal(control.live.size, 0);
     assert.equal(contexts.subscriptions.size, 0);
     assert.equal(contexts.settings.size, 0);
+  }
+});
+
+test("scene releaseAll budget: hung frames share the supplied remaining drain budget, including zero", async (t) => {
+  for (const deadlineMs of [0, 25]) {
+    const { runtime, control, contexts } = await virtualRuntimePeer(t);
+    /** @type {string[]} */
+    const warnings = [];
+    runtime.deps.logger = {
+      ...silentLogger,
+      warn: (message) => warnings.push(message),
+    };
+    const first = await runtime.acquire("scene", "first");
+    const second = await runtime.acquire("scene", "second");
+    control.frame = Promise.withResolvers();
+    let admitted = 0;
+    const surface = { deviceName: "fake", record: () => admitted++ };
+    const frames = [first.renderFrame(surface), second.renderFrame(surface)];
+    await waitFor(() => admitted === 2);
+    const stopping = runtime.releaseAll({ deadlineMs });
+    assert.equal(runtime.entries.size, 0);
+    assert.equal(
+      contexts.subscriptions.size,
+      0,
+      "all MQTT owners fenced before awaiting frame drain",
+    );
+    /** @type {ReturnType<typeof setTimeout>|undefined} */
+    let bound;
+    try {
+      const drained = await Promise.race([
+        stopping.then(() => true),
+        new Promise((resolve) => {
+          bound = setTimeout(() => resolve(false), 250);
+        }),
+      ]);
+      assert.equal(
+        drained,
+        true,
+        `releaseAll forwarded ${deadlineMs}ms rather than the 6000ms default`,
+      );
+      assert.equal(
+        control.live.size,
+        0,
+        "bounded destroy stopped both samplers",
+      );
+      assert.equal(runtime.instances.size, 0);
+      assert.equal(contexts.settings.size, 0);
+      assert.equal(warnings.length, 2, "one drain warning per hung instance");
+      assert.ok(
+        warnings.every((warning) =>
+          warning.includes(`timed out after ${deadlineMs}ms`),
+        ),
+      );
+    } finally {
+      clearTimeout(bound);
+      control.frame.resolve();
+      await Promise.all([...frames, stopping]);
+    }
+    const before = control.writes.length;
+    await contexts.deliver("input", "late");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(control.writes.length, before);
+    assert.deepEqual(
+      [...control.destroyed.values()],
+      [1, 1],
+      "late frames never destroy twice",
+    );
   }
 });
 
