@@ -9411,7 +9411,14 @@ for (const { name, edits } of R7_RETURN_MUTANTS)
               `${to}\n// ${change}/${end}\n`,
             ]),
         );
-        const device = (await r5Module("pages/device.js", fresh)).page;
+        // In a new epoch B1a retires the old slot before it can hold a
+        // failure. Retain X10b's foreign-slot reader and restore that path
+        // by removing central token/epoch admission only for this mutant.
+        /** @type {Record<string, string>} */
+        const replace = name === "X10b" && change === "epoch"
+          ? { "../ops.js": await r4Mutant("ops.js", R4_B1A_OLD_EPOCH_GUARD_REMOVALS) }
+          : {};
+        const device = (await r5Module("pages/device.js", fresh, replace)).page;
         const differences = await r4Case(t, kind, change, end, {
           modules: { device },
         });
@@ -9424,6 +9431,22 @@ for (const { name, edits } of R7_RETURN_MUTANTS)
         t_log(`${name} ${change}/${end}: ${failure}`);
       }
   });
+
+test("r4 harness self-test: no longer reachable: r7 K2 X10b cannot read an old epoch's failure behind central ownership", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const kind = r4KindOf("device return");
+  const original = R7_RETURN_MUTANTS.find((mutant) => mutant.name === "X10b");
+  assert.ok(original);
+  const edits = /** @type {Array<[string, string]>} */ (original.edits);
+  for (const end of /** @type {R4End[]} */ (["500", "timeout"])) {
+    assert.deepEqual(await r4Case(t, kind, "epoch", end), [], "the real Return control passes");
+    // Exact A7 page-local recipe; no central guard is removed. Reincarnation
+    // remains reachable and is still caught under the original test name.
+    const fresh = edits.map(([from, to]) => /** @type {[string, string]} */ ([from, `${to}\n// epoch/${end}\n`]));
+    const device = (await r5Module("pages/device.js", fresh)).page;
+    assert.deepEqual(await r4Case(t, kind, "epoch", end, { modules: { device } }), [], `no longer reachable: X10b cannot display an old run's Return failure (${end})`);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // r7: extract rendered operation readers and persistent async outcome reads.
