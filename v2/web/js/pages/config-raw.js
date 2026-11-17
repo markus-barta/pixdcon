@@ -29,7 +29,7 @@
  */
 
 import { ApiError, request } from "../api.js";
-import { clearNote, drop, failureText, follow, forgetIdle, op, start } from "../ops.js";
+import { capture, clearNote, dropOwn as drop, effect, failureText, follow, forgetIdle, op, start } from "../ops.js";
 import { icon, setHtml, setStatusLine } from "../dom.js";
 import { clock, esc } from "../format.js";
 import { applyAnswer, getState, subscribe } from "../store.js";
@@ -48,12 +48,15 @@ let errorLine = null;
 let opened = 0;
 /** The editor's revision in this opening: raised by every input. */
 let revision = 0;
+/** Epoch whose opening load supplies the editor. @type {string|null} */
+let epoch = null;
 /**
  * Where a load started: the opening and the editor's revision then. A load
  * that is asked again keeps it (rule 6), so what was typed after the first
  * request left is never replaced by the text of the retry.
+ * The non-enumerable owner is immutable capture metadata, shared by retries.
  *
- * @typedef {{opened: number, revision: number}} Base
+ * @typedef {{opened: number, revision: number, owner?: import("../ops.js").Ownership}} Base
  */
 /** A load whose answer the store did not take: asked again, from the same base, when the store changes next. @type {Base|null} */
 let again = null;
@@ -95,6 +98,12 @@ export function checkJson(text) {
 /** @param {import("../store.js").ClientState} state */
 function render(state) {
   if (!root) return;
+  if (state.epoch !== epoch) {
+    epoch = state.epoch;
+    again = null;
+    errorLine = null;
+    load();
+  }
   const saving = op("raw-save");
   const reloading = op("raw-reload");
   if (again && state.loaded && !saving.busy && !reloading.busy) {
@@ -171,6 +180,9 @@ function gutter(text, marked) {
  * @param {number} [tries] answers that stood before the copy the page holds, so far
  */
 function load(base = { opened, revision }, tries = 0) {
+  if (!base.owner) Object.defineProperty(base, "owner", {
+    value: capture({ opening: () => opened, revision: () => revision }),
+  });
   loading = true;
   follow(
     "raw-load",
@@ -180,6 +192,7 @@ function load(base = { opened, revision }, tries = 0) {
       return { answer, decision: applyAnswer(answer) };
     },
     {
+      owner: base.owner,
       done: ({ answer, decision }) => {
         if (base.opened !== opened || !root) return;
         if (decision.action === "apply") {
@@ -214,7 +227,9 @@ function load(base = { opened, revision }, tries = 0) {
 function takeText(answer, base) {
   loaded = String(answer.body?.text ?? "");
   const editor = editorOf();
-  if (editor && base.opened === opened && base.revision === revision) editor.value = loaded;
+  effect(/** @type {import("../ops.js").Ownership} */ (base.owner), ["epoch", "opening", "revision"], () => {
+    if (editor && base.opened === opened && base.revision === revision) editor.value = loaded;
+  });
   loading = false;
   redraw();
 }
@@ -223,6 +238,7 @@ function save() {
   const editor = editorOf();
   if (!editor) return;
   const mine = opened;
+  const owner = capture({ opening: () => opened, revision: () => revision });
   const text = editor.value;
   const started = start(
     "raw-save",
@@ -236,9 +252,12 @@ function save() {
       return answer;
     },
     {
+      owner,
       label: "Saving…",
       done: (answer) => {
-        if (mine === opened && root) loaded = text;
+        effect(owner, ["epoch", "opening"], () => {
+          if (mine === opened && root) loaded = text;
+        });
         const diff = answer.body?.diff ?? {};
         const changed = [
           ...(diff.devicesAdded ?? []),
@@ -255,8 +274,10 @@ function save() {
           : `Not saved: ${failureText(error)}`,
       failed: (error) => {
         if (mine !== opened || !root) return;
-        if (error instanceof ApiError && error.code === "invalid_config")
-          errorLine = typeof error.extra.line === "number" ? error.extra.line : null;
+        effect(owner, ["epoch", "opening", "revision"], () => {
+          if (error instanceof ApiError && error.code === "invalid_config")
+            errorLine = typeof error.extra.line === "number" ? error.extra.line : null;
+        });
       },
     },
   );
@@ -270,17 +291,22 @@ function save() {
  * dropped), so an older load's late answer or failure says nothing.
  */
 function reloadFromDisk() {
-  const base = { opened, revision };
+  const owner = capture({ opening: () => opened, revision: () => revision });
+  const base = { opened, revision, owner };
+  const superseded = op("raw-load").token;
   start(
     "raw-reload",
-    async () => {
+    async (current) => {
       applyAnswer(await request("POST", "/api/v2/config/reload", { resource: "config", key: "raw-reload", body: {} }));
-      drop("raw-load");
+      if (!current(["epoch", "opening"])) return;
+      drop("raw-load", superseded);
       const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });
+      if (!current(["epoch", "opening"])) return;
       if (applyAnswer(answer).action === "apply" && base.opened === opened && root) takeText(answer, base);
       else if (base.opened === opened) loading = false;
     },
     {
+      owner,
       label: "Reloading…",
       done: () => "Reloaded from disk",
       describe: (error) => `Not reloaded: ${failureText(error)}`,
@@ -330,6 +356,7 @@ export const page = {
     loaded = "";
     loading = true;
     revision = 0;
+    epoch = getState().epoch;
     errorLine = null;
     // A fresh opening says nothing of the last one; a Save or Reload that
     // still runs keeps its slot (busy), and says its outcome when it comes.

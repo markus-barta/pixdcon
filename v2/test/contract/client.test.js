@@ -5870,6 +5870,381 @@ R5_STORIES.push(
   },
 );
 
+// B1a: new guard boundaries; existing harness stories and self-tests stay frozen.
+R5_STORIES.push(
+  {
+    name: "b1a: an inherited scope cannot start cleanup in a replacement epoch",
+    file: "ops.js",
+    edits: [['if (!owned(inherited, projections.start ?? ["epoch"]))', 'if (false)']],
+    run: async (_t, ops) => {
+      const world = r4World(r4d1());
+      r4NewEpoch(world);
+      const owner = ops.capture();
+      r4NewEpoch(world);
+      /** @type {string[]} */
+      const sent = [];
+      await ops.follow("b1a-cleanup", async () => sent.push("DELETE"), { owner });
+      assert.deepEqual(sent, [], "a queued end inherits the run it was queued in");
+      assert.equal(r4State().ops.has("b1a-cleanup"), false, "stale work creates no busy slot");
+    },
+  },
+  {
+    name: "b1a: starting an action with a stale capture reports that it did not start",
+    file: "ops.js",
+    edits: [['if (!owned(owner, options.effects?.start ?? ["epoch"])) return false;', 'if (false) return false;']],
+    run: async (_t, ops) => {
+      const world = r4World(r4d1());
+      r4NewEpoch(world);
+      const owner = ops.capture();
+      r4NewEpoch(world);
+      assert.equal(ops.start("b1a-stale-action", async () => {}, { owner }), false);
+    },
+  },
+  {
+    name: "b1a: projected effects admit unrelated edits and reject their own changed opening",
+    file: "ops.js",
+    edits: [["if (read() !== owner.values[name]) return false;", "if (false) return false;"]],
+    run: async (_t, ops) => {
+      let opening = 1;
+      let revision = 1;
+      const owner = ops.capture({ opening: () => opening, revision: () => revision });
+      /** @type {string[]} */
+      const seen = [];
+      ops.effect(owner, ["epoch", "opening"], () => seen.push("first"));
+      revision += 1;
+      ops.effect(owner, ["epoch", "opening"], () => seen.push("unrelated edit"));
+      opening += 1;
+      ops.effect(owner, ["epoch", "opening"], () => seen.push("stale opening"));
+      assert.deepEqual(seen, ["first", "unrelated edit"], "each effect checks exactly its projection");
+    },
+  },
+  {
+    name: "b1a: a deferred child inherits its parent's capture instead of reading the replacement run",
+    file: "ops.js",
+    edits: [["follow(key, work, { ...options, owner });", "follow(key, work, { ...options, owner: capture() });"]],
+    run: async (_t, ops) => {
+      const world = r4World(r4d1());
+      r4NewEpoch(world);
+      /** @type {any} */
+      let parent;
+      await ops.follow("b1a-parent", async (/** @type {any} */ current) => { parent = current; });
+      r4NewEpoch(world);
+      /** @type {string[]} */
+      const sent = [];
+      await parent.follow("b1a-child", async () => sent.push("request"));
+      assert.deepEqual(sent, [], "the child cannot authorize an old continuation with a new capture");
+    },
+  },
+  {
+    name: "b1a: dropping a superseded load leaves its successor's slot intact",
+    file: "ops.js",
+    edits: [["if (op(key).token === token) drop(key);", "if (true) drop(key);"]],
+    run: async (_t, ops) => {
+      await ops.follow("b1a-drop", async () => "first");
+      const first = ops.op("b1a-drop").token;
+      await ops.follow("b1a-drop", async () => "successor");
+      const next = ops.op("b1a-drop");
+      ops.dropOwn("b1a-drop", first);
+      assert.deepEqual(ops.op("b1a-drop"), next, "a predecessor does not own the successor's slot");
+      ops.dropOwn("b1a-drop", next.token);
+      assert.equal(r4State().ops.has("b1a-drop"), false, "the actual owner can drop it");
+    },
+  },
+  {
+    name: "b1a: a named effect checks its own projection while the slot outcome survives an unrelated edit",
+    file: "ops.js",
+    edits: [['effect(owner, projections[name] ?? ["epoch"], work)', 'effect(owner, ["epoch"], work)']],
+    run: async (_t, ops) => {
+      let opening = 1;
+      let revision = 1;
+      /** @type {any} */ let current;
+      await ops.follow("b1a-projection", async (/** @type {any} */ action) => { current = action; }, {
+        owns: { opening: () => opening, revision: () => revision },
+        effects: { editor: ["epoch", "opening"] },
+        done: () => "Saved",
+      });
+      /** @type {string[]} */ const changes = [];
+      revision += 1;
+      current.effect("editor", () => changes.push("same opening"));
+      opening += 1;
+      current.effect("editor", () => changes.push("obsolete editor"));
+      assert.deepEqual(changes, ["same opening"]);
+      assert.equal(ops.op("b1a-projection").note, "Saved", "the slot outcome has a smaller projection");
+      ops.drop("b1a-projection");
+    },
+  },
+  {
+    name: "b1a: Raw's already-started Reload GET cannot finish the replacement run's loading state",
+    file: "pages/config-raw.js",
+    edits: [[
+      'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      if (!current(["epoch", "opening"])) return;',
+      'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      if (false) return;',
+    ]],
+    run: async (_t, m) => r5Raw(m, async ({ world, calls, root }) => {
+      pending(calls, "GET", "/config/raw").ok();
+      await settle();
+      click(root.querySelector('[data-act="reload"]'));
+      await settle();
+      pending(calls, "POST", "/config/reload").ok();
+      await settle();
+      const old = pending(calls, "GET", "/config/raw");
+      r4NewEpoch(world);
+      await settle();
+      const before = r4Text(root.querySelector(".edbar .state"));
+      assert.match(before, /Loading config/);
+      old.ok();
+      await settle();
+      world.rev += 1;
+      r4Live(world, "device", r4View(world, "d1", world.epoch, 1, world.rev));
+      await settle();
+      assert.equal(r4Text(root.querySelector(".edbar .state")), before, "the replacement GET is still out");
+      pending(calls, "GET", "/config/raw").ok();
+      await settle();
+      assert.doesNotMatch(r4Text(root.querySelector(".edbar .state")), /Loading/);
+    }),
+  },
+  {
+    name: "b1a: Raw replaces the opening load once on restart and preserves it on reconnect",
+    file: "pages/config-raw.js",
+    edits: [["if (state.epoch !== epoch)", "if (false)"]],
+    run: async (_t, m) => r5Raw(m, async ({ world, calls }) => {
+      const count = () => calls.filter((/** @type {any} */ c) => c.method === "GET").length;
+      assert.equal(count(), 1);
+      r4Snapshot(world);
+      await settle();
+      assert.equal(count(), 1, "a reconnect keeps the run and its opening load");
+      r4NewEpoch(world);
+      await settle();
+      assert.equal(count(), 2, "a restart sends exactly one replacement load");
+    }),
+  },
+  {
+    name: "b1a: Revert queued behind a preview sends no DELETE after an epoch change",
+    file: "components/settings-form.js",
+    edits: [[
+      'enqueue(laneOf(mine), async () => {\n          if (!current()) return;',
+      'enqueue(laneOf(mine), async () => {\n          if (false) return;',
+    ]],
+    run: async (t, m) => r5Form(t, m, async ({ world, calls, edit, root, form, values }) => {
+      await edit("2");
+      const old = r5Previews(calls)[0];
+      click(root.querySelector('[data-act="revert"]'));
+      await settle();
+      r4NewEpoch(world);
+      form.setScene("clock", "Clock", { epoch: world.epoch, incarnation: 1 });
+      form.update(values("clock"));
+      old.ok();
+      await settle();
+      assert.equal(calls.filter((/** @type {any} */ c) => c.method === "DELETE").length, 0, "a queued Revert keeps its original operation owner");
+    }),
+  },
+  ...[
+    {
+      name: "b1a: the replacement epoch can reuse a control while its old request is pending",
+      edits: [['return busy.get(key)?.epoch === storeFence().epoch;', 'return busy.has(key);']],
+    },
+    {
+      name: "b1a: an old request's cleanup cannot release the replacement epoch's control",
+      edits: [["if (key === undefined || busy.get(key) === control)", "if (true)"]],
+    },
+  ].map(({ name, edits }) => ({
+    name,
+    file: "api.js",
+    edits: /** @type {Array<[string, string]>} */ (edits),
+    run: async (/** @type {any} */ _t, /** @type {any} */ api) => {
+      const world = r4World(r4d1());
+      const calls = r4Server(world);
+      r4NewEpoch(world);
+      const key = "b1a-reused-control";
+      const old = api.request("GET", "/api/v2/config/raw", { resource: "config", key });
+      void old.catch(() => {});
+      const first = pending(calls, "GET", "/config/raw");
+      r4NewEpoch(world);
+      const next = api.request("GET", "/api/v2/config/raw", { resource: "config", key });
+      void next.catch(() => {});
+      try {
+        await settle();
+        assert.equal(calls.length, 2, "the current run immediately owns its own request");
+        first.ok();
+        await old;
+        assert.equal(api.isBusy(key), true, "old cleanup leaves the new owner busy");
+        pending(calls, "GET", "/config/raw").ok();
+        await next;
+        assert.equal(api.isBusy(key), false, "only the new request frees its control");
+      } finally {
+        await r4AnswerAll({ calls });
+        await Promise.allSettled([old, next]);
+      }
+    },
+  })),
+  {
+    name: "b1a: the same run refuses a second request for a control that is still busy",
+    file: "api.js",
+    edits: [["if (key !== undefined && isBusy(key))", "if (false)"]],
+    run: async (_t, api) => {
+      const world = r4World(r4d1());
+      const calls = r4Server(world);
+      r4NewEpoch(world);
+      const key = "b1a-single-control";
+      const first = api.request("GET", "/api/v2/config/raw", { resource: "config", key });
+      try {
+        const second = api.request("GET", "/api/v2/config/raw", { resource: "config", key });
+        // A missing guard sends a second held request: answer it so a
+        // must-fail self-test terminates instead of waiting for a timeout.
+        void second.catch(() => {});
+        if (calls.length > 1) calls[1].ok();
+        await assert.rejects(second, (/** @type {any} */ error) => error.code === "busy");
+        assert.equal(calls.length, 1, "no second request reached pixdcon");
+      } finally {
+        await r4AnswerAll({ calls });
+        await first;
+      }
+    },
+  },
+);
+
+R5_PROBES.push(
+  {
+    name: "b1a: Raw's admitted effects already have their captured editor and opening",
+    run: async () => {
+      const m = await r5Module("pages/config-raw.js", [
+        ["let revision = 0;", "let revision = 0;\nexport const __b1aEntries = [];"],
+        ["function save() {\n  const editor = editorOf();", "function save() {\n  const editor = editorOf();\n  __b1aEntries.push({kind:'entry', editor:!!editor, root:!!root});"],
+        ['effect(/** @type {import("../ops.js").Ownership} */ (base.owner), ["epoch", "opening", "revision"], () => {', 'effect(/** @type {import("../ops.js").Ownership} */ (base.owner), ["epoch", "opening", "revision"], () => {\n    __b1aEntries.push({kind:"text", editor:!!editor, root:!!root, opened, revision, baseOpening:base.opened, baseRevision:base.revision, ownerOpening:base.owner.values.opening, ownerRevision:base.owner.values.revision});'],
+        ['effect(owner, ["epoch", "opening"], () => {', 'effect(owner, ["epoch", "opening"], () => {\n          __b1aEntries.push({kind:"saved", root:!!root, opened, baseOpening:mine, ownerOpening:owner.values.opening});'],
+        ['effect(owner, ["epoch", "opening", "revision"], () => {', 'effect(owner, ["epoch", "opening", "revision"], () => {\n          __b1aEntries.push({kind:"refused", root:!!root, opened, revision, baseOpening:mine, ownerOpening:owner.values.opening, ownerRevision:owner.values.revision});'],
+        ["  redraw();\n}\n\n/**\n * Reload from disk", "  __b1aEntries.push({kind:'start',started,root:!!root});\n  redraw();\n}\n\n/**\n * Reload from disk"],
+      ]);
+      for (const change of ["none", "type", "reopen", "epoch"]) for (const failure of [false, true]) {
+        await r5Raw(m, async ({ world, calls, root }) => {
+          pending(calls, "GET", "/config/raw").ok();
+          await settle();
+          typeInto(root.querySelector("textarea"), '{"devices":[],\n"edit":1}');
+          click(root.querySelector('[data-act="save"]'));
+          await settle();
+          assert.equal(click(root.querySelector('[data-act="save"]')), false, "the busy button cannot enter Save again");
+          const old = pending(calls, "PUT", "/config/raw");
+          if (change === "type") typeInto(root.querySelector("textarea"), '{"devices":[],\n"edit":2}');
+          if (change === "reopen") { m.page.unmount(); m.page.mount(root, {}); }
+          if (change === "epoch") r4NewEpoch(world);
+          await r4AnswerAll({ calls }, old);
+          if (failure) old.answer(422, { code: "invalid_config", error: "Invalid config", line: 2 }); else old.ok();
+          await settle();
+          typeInto(root.querySelector("textarea"), '{"devices":[],\n"edit":3}');
+          const retained = root.querySelector('[data-act="save"]');
+          const entries = m.__b1aEntries.length;
+          m.page.unmount();
+          click(retained);
+          await settle();
+          assert.equal(m.__b1aEntries.length, entries, "an unmounted editor has no action listener");
+        });
+      }
+      for (const entry of m.__b1aEntries) {
+        assert.equal(entry.root, true, "every admitted effect has its mounted root");
+        if ("editor" in entry) assert.equal(entry.editor, true, "the mounted markup has its editor");
+        if ("baseOpening" in entry) assert.equal(entry.baseOpening, entry.opened, "the central projection already requires this opening");
+        if ("ownerOpening" in entry) assert.equal(entry.ownerOpening, entry.opened);
+        if ("baseRevision" in entry) assert.equal(entry.baseRevision, entry.revision, "base and capture inherited the same revision");
+        if ("ownerRevision" in entry) assert.equal(entry.ownerRevision, entry.revision);
+        if ("started" in entry) assert.equal(entry.started, true, "every reachable enabled Save starts; busy clicks never enter");
+      }
+      assert.ok(m.__b1aEntries.some((/** @type {any} */ e) => e.kind === "refused"));
+      assert.ok(m.__b1aEntries.some((/** @type {any} */ e) => e.kind === "saved"));
+    },
+  },
+  {
+    name: "b1a: retirement alone prevents old callbacks from entering any page effect",
+    run: async () => {
+      const ops = await r5Module("ops.js");
+      const world = r4World(r4d1());
+      for (const failure of [false, true]) {
+        r4NewEpoch(world);
+        /** @type {any} */ let finish;
+        /** @type {any} */ let action;
+        /** @type {string[]} */ const outcomes = [];
+        const old = ops.follow("b1a-retired", (/** @type {any} */ current) => {
+          action = current;
+          return new Promise((resolve, reject) => {
+          finish = () => failure ? reject(new Error("old failure")) : resolve("old success");
+          });
+        }, { done: () => { outcomes.push("done"); }, failed: () => { outcomes.push("failed"); } });
+        void old.catch(() => {});
+        const token = ops.op("b1a-retired").token;
+        r4NewEpoch(world);
+        assert.notEqual(ops.op("b1a-retired").token, token, "the old token is retired synchronously");
+        assert.equal(action([]), false, "the retired token independently rejects every projection");
+        action.effect("unconfigured", () => outcomes.push("effect"));
+        finish();
+        await old.catch(() => {});
+        await settle();
+        assert.deepEqual(outcomes, [], "every page callback remains behind token admission, even without an extra epoch projection");
+      }
+    },
+  },
+  {
+    name: "b1a: inherited admission independently blocks a queued cleanup's old epoch",
+    run: async () => {
+      const ops = await r5Module("ops.js");
+      const world = r4World(r4d1());
+      r4NewEpoch(world);
+      const owner = ops.capture();
+      r4NewEpoch(world);
+      /** @type {string[]} */ const sent = [];
+      await ops.follow("b1a-proof-end", async () => sent.push("DELETE"), { owner });
+      assert.deepEqual(sent, []);
+      assert.equal(r4State().ops.has("b1a-proof-end"), false);
+    },
+  },
+  {
+    name: "b1a: an unkeyed API request never owns a keyed control",
+    run: async () => {
+      const api = await r5Module("api.js");
+      const world = r4World(r4d1());
+      const calls = r4Server(world);
+      /** @type {any[]} */ const notices = [];
+      const stop = api.onBusy((/** @type {string} */ key, /** @type {boolean} */ busy) => notices.push([key, busy]));
+      try {
+        for (let n = 0; n < 2; n += 1) {
+          r4NewEpoch(world);
+          assert.equal(api.isBusy(undefined), false);
+          const read = api.request("GET", "/api/v2/config/raw", { resource: "config" });
+          assert.equal(api.isBusy(undefined), false);
+          pending(calls, "GET", "/config/raw").ok();
+          await read;
+          assert.equal(api.isBusy(undefined), false);
+        }
+        assert.deepEqual(notices, [], "unkeyed work creates, owns and releases no control");
+      } finally { stop(); }
+    },
+  },
+  {
+    name: "b1a: queued previews of an old epoch are left and their outcomes are hidden",
+    run: async (t) => {
+      const m = await r5Module("components/settings-form.js", [
+        ["let ids = 0;", "let ids = 0;\nexport const __b1aSends = [];\nexport const __b1aOutcomes = [];"],
+        ["async function sendPreview(of) {\n    of.queued = false;", "async function sendPreview(of) {\n    __b1aSends.push({left:of.left, epoch:of.owner.values.epoch, now:getState().epoch});\n    of.queued = false;"],
+        ["if (!shown(of)) return;", "__b1aOutcomes.push({shown:shown(of), epoch:of.owner.values.epoch, now:getState().epoch});\n    if (!shown(of)) return;"],
+      ]);
+      for (const failure of [false, true]) await r5Form(t, m, async ({ world, form, values, calls, edit }) => {
+        await edit("2");
+        await edit("3");
+        const old = r5Previews(calls)[0];
+        r4NewEpoch(world);
+        form.setScene("clock", "Clock", { epoch: world.epoch, incarnation: 1 });
+        form.update(values("clock"));
+        await edit("4");
+        if (failure) old.answer(500, {}); else old.ok();
+        await settle();
+        assert.equal(calls.filter((/** @type {any} */ c) => c.method === "DELETE").length, 0);
+      });
+      assert.ok(m.__b1aSends.some((/** @type {any} */ s) => s.epoch !== s.now), "an old queued preview reached its send entry");
+      assert.ok(m.__b1aOutcomes.some((/** @type {any} */ s) => s.epoch !== s.now), "a late failed preview reached its outcome entry");
+      for (const s of m.__b1aSends) if (s.epoch !== s.now) assert.equal(s.left, true, "leaving the scope independently prevents its queued PUT");
+      for (const s of m.__b1aOutcomes) if (s.epoch !== s.now) assert.equal(s.shown, false, "an old book is hidden and cannot report to the shown scope");
+    },
+  },
+);
+
 /** Cases that fail at fbf3f61: phase B makes each one pass and takes it off this list. */
 /** @type {Set<string>} */
 // r6 / gate F-J. Extra histories supplement every A5 story and assertion.
@@ -5972,15 +6347,7 @@ async function r6Overlays(module, overlap, end, t = /** @type {any} */ (null), i
 }
 
 const R4_KNOWN = new Set([
-  "config add device × epoch × 500",
-  "config add device × epoch × 500, last",
-  "config add device × epoch × success",
-  "config add device × epoch × success, last",
-  "config add device × epoch × timeout",
-  "config add device × epoch × timeout, last",
   "config add device × type × success",
-  "config patch × epoch × success",
-  "config patch × epoch × success, last",
   "config patch × leave × success",
   "config patch × membership × 500",
   "config patch × membership × success",
@@ -5992,67 +6359,17 @@ const R4_KNOWN = new Set([
   "config patch × reopen × timeout, last",
   "config patch × revisit × success",
   "config patch × type × success",
-  "device copy × epoch × 500",
-  "device copy × epoch × 500, last",
-  "device copy × epoch × success",
-  "device copy × epoch × success, last",
-  "device copy × epoch × timeout",
-  "device copy × epoch × timeout, last",
-  "devices add device × epoch × 500",
-  "devices add device × epoch × 500, last",
-  "devices add device × epoch × success",
-  "devices add device × epoch × success, last",
-  "devices add device × epoch × timeout",
-  "devices add device × epoch × timeout, last",
   "health log × epoch × 500",
   "health log × epoch × 500, last",
   "health log × epoch × success",
   "health log × epoch × success, last",
   "health log × epoch × timeout",
   "health log × epoch × timeout, last",
-  "overlays clear × epoch × 500",
-  "overlays clear × epoch × 500, last",
-  "overlays clear × epoch × success",
-  "overlays clear × epoch × success, last",
-  "overlays clear × epoch × timeout",
-  "overlays clear × epoch × timeout, last",
-  "raw load × epoch × 500",
-  "raw load × epoch × 500, last",
-  "raw load × epoch × success",
-  "raw load × epoch × success, last",
-  "raw load × epoch × timeout",
-  "raw load × epoch × timeout, last",
-  "raw reload × epoch × 500",
-  "raw reload × epoch × 500, last",
-  "raw reload × epoch × success",
-  "raw reload × epoch × success, last",
-  "raw reload × epoch × timeout",
-  "raw reload × epoch × timeout, last",
-  "raw reload × leave × success",
-  "raw reload × reopen × success",
-  "raw reload × reopen × success, last",
-  "raw save × epoch × 500",
-  "raw save × epoch × 500, last",
-  "raw save × epoch × refused",
-  "raw save × epoch × refused, last",
-  "raw save × epoch × success",
-  "raw save × epoch × success, last",
-  "raw save × epoch × timeout",
-  "raw save × epoch × timeout, last",
-  "raw save × type × refused",
-  "settings preview rejected × epoch × success",
-  "settings preview rejected × epoch × success, last",
   "settings preview rejected × reincarnate × success",
   "settings preview rejected × reincarnate × success, last",
   "settings preview rejected × schema × success",
   "settings preview × commit × 500",
   "settings preview × commit × timeout",
-  "settings preview × epoch × 500",
-  "settings preview × epoch × 500, last",
-  "settings preview × epoch × success",
-  "settings preview × epoch × success, last",
-  "settings preview × epoch × timeout",
-  "settings preview × epoch × timeout, last",
   "settings preview × newer draft × 500",
   "settings preview × newer draft × timeout",
   "settings preview × other field × 500",
@@ -6066,24 +6383,12 @@ const R4_KNOWN = new Set([
   "settings preview × schema × 500",
   "settings preview × schema × success",
   "settings preview × schema × timeout",
-  "settings revert × epoch × 500",
-  "settings revert × epoch × 500, last",
-  "settings revert × epoch × success",
-  "settings revert × epoch × success, last",
-  "settings revert × epoch × timeout",
-  "settings revert × epoch × timeout, last",
   "settings revert × reincarnate × 500",
   "settings revert × reincarnate × 500, last",
   "settings revert × reincarnate × success",
   "settings revert × reincarnate × success, last",
   "settings revert × reincarnate × timeout",
   "settings revert × reincarnate × timeout, last",
-  "settings save rejected × epoch × 500",
-  "settings save rejected × epoch × 500, last",
-  "settings save rejected × epoch × refused",
-  "settings save rejected × epoch × refused, last",
-  "settings save rejected × epoch × timeout",
-  "settings save rejected × epoch × timeout, last",
   "settings save rejected × membership × 500",
   "settings save rejected × membership × refused",
   "settings save rejected × membership × timeout",
@@ -6096,12 +6401,6 @@ const R4_KNOWN = new Set([
   "settings save rejected × schema × 500",
   "settings save rejected × schema × refused",
   "settings save rejected × schema × timeout",
-  "settings save × epoch × 500",
-  "settings save × epoch × 500, last",
-  "settings save × epoch × success",
-  "settings save × epoch × success, last",
-  "settings save × epoch × timeout",
-  "settings save × epoch × timeout, last",
   "settings save × membership × 500",
   "settings save × membership × success",
   "settings save × membership × timeout",

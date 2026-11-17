@@ -59,7 +59,7 @@
 import { ApiError, request } from "../api.js";
 import { esc, grouped } from "../format.js";
 import { icon, setAttr, setClass, setHtml } from "../dom.js";
-import { busy as slotBusy, clearNote, drop, failureText, follow, op, start } from "../ops.js";
+import { busy as slotBusy, capture, clearNote, drop, failureText, follow, op, owned, start } from "../ops.js";
 import { applyAnswer, getState } from "../store.js";
 import { createDraftBook } from "../view/drafts.js";
 
@@ -278,6 +278,7 @@ export function retryEnd(view, scene, session) {
  * @property {boolean} queued a preview step waits in the lane; it sends the newest draft when its turn comes
  * @property {boolean} previewed a preview of this scope was sent: pixdcon may hold one for this page
  * @property {boolean} left the form shows another scope now, or was left
+ * @property {import("../ops.js").Ownership} owner identities captured when this scope began; queued cleanup inherits them
  */
 
 /**
@@ -287,6 +288,7 @@ export function retryEnd(view, scene, session) {
  */
 function newScope(scene, life) {
   return {
+    owner: capture(),
     scene,
     epoch: life?.epoch ?? null,
     incarnation: Number(life?.incarnation ?? 0),
@@ -383,6 +385,7 @@ export function createSettingsForm(host, options) {
     if (!id || !of.scene || of.scene.startsWith("builtin:")) return Promise.resolve();
     const held = of === scope && current?.preview?.session === id;
     return enqueue(laneOf(of), async () => {
+      if (!owned(of.owner, ["epoch"])) return;
       if (!of.previewed && !held && !op(endKey(of)).failure) return;
       try {
         await follow(endKey(of), async () =>
@@ -391,6 +394,7 @@ export function createSettingsForm(host, options) {
               resource: resource(of),
             }),
           ),
+          { owner: of.owner },
         );
       } catch {
         // Kept in the slot; the device page says it with Retry.
@@ -413,6 +417,7 @@ export function createSettingsForm(host, options) {
       loadKey(mine),
       async () => applyAnswer(await request("GET", base(mine), { resource: resource(mine) })),
       {
+        owner: mine.owner,
         failed: (error) => {
           if (!shown(mine) || phase === "ready") return;
           phase = "failed";
@@ -437,6 +442,7 @@ export function createSettingsForm(host, options) {
     const id = session();
     // Left while it waited: nothing is sent, and the end is behind it.
     if (of.left || !id) return;
+    if (!owned(of.owner, ["epoch"])) return;
     const plan = of.book.previewPlan(id);
     of.previewed = true;
     try {
@@ -446,6 +452,7 @@ export function createSettingsForm(host, options) {
         body: plan.body,
       });
       applyAnswer(answer);
+      if (!owned(of.owner, ["epoch"])) return;
       of.book.rejected(plan.sent, answer.body?.rejected);
       of.previewFailure = null;
       drop(endKey(of));
@@ -453,6 +460,7 @@ export function createSettingsForm(host, options) {
       of.previewFailure = failureText(error);
     }
     if (!shown(of)) return;
+    if (!owned(of.owner, ["epoch"])) return;
     report();
     render();
   }
@@ -479,6 +487,7 @@ export function createSettingsForm(host, options) {
         return answer;
       },
       {
+        owner: mine.owner,
         value: "save",
         label: "Saving…",
         done: (answer) => {
@@ -516,8 +525,9 @@ export function createSettingsForm(host, options) {
     mine.book.clear();
     start(
       key,
-      () =>
+      (current) =>
         enqueue(laneOf(mine), async () => {
+          if (!current()) return;
           applyAnswer(
             await request("DELETE", `${base(mine)}/preview${id ? `?session=${encodeURIComponent(id)}` : ""}`, {
               resource: resource(mine),
@@ -527,6 +537,7 @@ export function createSettingsForm(host, options) {
           drop(endKey(mine));
         }),
       {
+        owner: mine.owner,
         value: "revert",
         label: "Reverting…",
         done: () => {
@@ -550,6 +561,7 @@ export function createSettingsForm(host, options) {
         return answer;
       },
       {
+        owner: mine.owner,
         value: "clear",
         label: "Clearing…",
         done: (answer) => {
