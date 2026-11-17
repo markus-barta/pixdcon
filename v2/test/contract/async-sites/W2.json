@@ -89,30 +89,30 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/components/settings-form.js:746",
+      "site": "web/js/components/settings-form.js:888",
       "id": "listener:host.addEventListener(\"input\")#1",
       "input": "a setting value typed",
       "metadata": "a command of the user (a click, a key, a form); every edit takes the next number of the page's draft counter (view/drafts.js), its identity",
-      "fence": "the preview carries the newest draft and every edit that parses, one request at a time per form (the newest edits are sent again when it is answered); the answer goes through store.applyAnswer (decideView); the fields show the form's own edits until they are saved or reverted. Everything that comes back belongs to the scope it was sent from (scene, epoch and incarnation of the device): an answer for a scope that is no longer shown goes to the store and changes no edit, busy label, outcome or status line; another scope drops the edits and loads again, and the preview this page holds of the scope it leaves ends, before the next preview of that scene is sent. A rejection marks only the edit that was sent (its draft); the draft number is the page's counter, rising across forms.",
-      "test": "test/contract/client.test.js: r2 finding 5, settings form:",
+      "fence": "the edit gets the page's next draft; its preview is a step in the scene's lane (settings-form.js enqueue): after every PUT and DELETE of the scene started before it, from this form or the next one, each bounded in time; the step sends the newest draft and every edit that parses; the answer through decideView; a rejection marks only the drafts that were sent; the outcome changes only the scope it was sent for",
+      "test": "test/contract/client.test.js: r3 gate Q4 (Revert):",
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:747",
+      "site": "web/js/components/settings-form.js:889",
       "id": "listener:host.addEventListener(\"change\")#1",
       "input": "a checkbox, choice or colour changed",
       "metadata": "a command of the user (a click, a key, a form); every edit takes the next number of the page's draft counter",
-      "fence": "as for a typed value: newest draft, one preview request at a time, the answer through decideView; bound to the form's scope like a typed value",
-      "test": "test/contract/client.test.js: r2 finding 5, settings form:",
+      "fence": "as for a typed value: the next draft, one preview step in the scene's lane, the answer through decideView, the outcome bound to the scope",
+      "test": "test/contract/client.test.js: r3 gate Q4 (Revert):",
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:748",
+      "site": "web/js/components/settings-form.js:890",
       "id": "listener:host.addEventListener(\"click\")#1",
       "input": "Save, Revert, Clear N overlays, Reset to default, Retry",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position); Save names the draft it commits, and what was typed after the click stays as a newer preview; Save commits the edits by their draft numbers, so an edit typed after the click stays whatever it reads, and a Save that comes back after the scope changed touches nothing of the scope shown; a failed Save, Revert or Clear is said beside it, before anything else (B-175)",
-      "test": "test/contract/client.test.js: r2 finding 4, settings form:",
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); Save, Revert and Clear share the slot settings:<device>/<scene>@<epoch>/<incarnation> (one busy owner, also for a form opened while one runs); Revert's end is a step in the scene's lane, so a preview typed during Revert leaves after it; Retry is the load of the scope (slot load:…), which values of the scope that arrive by another way make obsolete",
+      "test": "test/contract/client.test.js: r3 gate 2.1 (settings load):",
       "was": "components/settings-form.createSettingsForm"
     },
     {
@@ -287,15 +287,15 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/pages/device.js:685",
+      "site": "web/js/pages/device.js:741",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "scene options, Mode, Brightness Auto/Override, Return to …, Recovery steps, Add to config.json",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position); the busy label stands in the control's reserved place, a failure beside it",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); slots <control>:<device>@<epoch>/<incarnation> for scene, mode, brightness, restore (Return to your choice; the Devices page's Restore is the same slot), adopt (shared with Config); Retry of a failed end of a preview (settings-form.js retryEnd) in the slot end:<device>/<scene>@<epoch>/<incarnation>, as a step in the scene's lane",
+      "test": "test/contract/client.test.js: r3 sweep (device controls):"
     },
     {
-      "site": "web/js/pages/device.js:686",
+      "site": "web/js/pages/device.js:742",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "the brightness slider moving",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -304,36 +304,36 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/device.js:687",
+      "site": "web/js/pages/device.js:743",
       "id": "listener:root.addEventListener(\"change\")#1",
       "input": "the brightness slider let go",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); slot brightness:<device>@<epoch>/<incarnation>; the slider's level is kept until that operation's own outcome",
+      "test": "test/contract/client.test.js: r3 sweep (device controls):"
     },
     {
-      "site": "web/js/pages/device.js:688",
+      "site": "web/js/pages/device.js:744",
       "id": "listener:root.addEventListener(\"submit\")#1",
       "input": "Create copy (Separate copy of this scene)",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time (copy:<scene>); the answer is said beside the button; the new scene arrives with the scenes event through decideEvent",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); slot copy:<scene>; what was made, or why not, is said beside the button from the slot; the new scene arrives with the scenes event through decideEvent",
+      "test": "test/contract/client.test.js: r3 sweep (device controls):"
     },
     {
-      "site": "web/js/pages/device.js:689",
+      "site": "web/js/pages/device.js:745",
       "id": "listener:root.addEventListener(\"keydown\")#1",
       "input": "arrow keys in the scene radio group",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); the arrow keys choose a scene in the slot scene:<device>@<epoch>/<incarnation>, shared with the Devices page",
+      "test": "test/contract/client.test.js: r3 sweep (device controls):"
     },
     {
-      "site": "web/js/pages/device.js:690",
+      "site": "web/js/pages/device.js:746",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Device page",
       "metadata": "none: the store calls it after a change it applied",
-      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply. The settings form is handed the scene with the epoch and incarnation of the device view, so a restart or another life of the device is another scope of the form",
-      "test": "test/contract/client.test.js: r2 finding 2, settings form:"
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply. The settings form is handed the scene with the epoch and incarnation of the device view, so a restart or another life of the device is another scope of the form. The form's scope follows the view (scene, epoch, incarnation); a scope that is left ends its preview as a step in the scene's lane, bounded in time; an end that fails is kept in the slot end:<device>/<scene>@<epoch>/<incarnation> and said in the title status line with Retry; a newer preview of the scene replaces it",
+      "test": "test/contract/client.test.js: r3 gate 2.2 (finding 6, failed cleanup):"
     },
     {
       "site": "web/js/pages/devices.js:436",

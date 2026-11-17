@@ -1654,3 +1654,156 @@ test("r3 api (rule 4): a request that gets no answer fails after 15 s with code 
   assert.equal(isBusy("mode:test"), false, "the key is free again");
   await drain(calls);
 });
+
+test("r3 gate 2.1 (settings load): a load that fails after newer values of its scene arrived changes nothing; the values stay on screen", async () => {
+  const calls = heldFetch();
+  const boot = bootPages((e) => [view("d1", { epoch: e })]);
+  const root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  try {
+    const get = pending(calls, "GET", "/settings/clock");
+    live(boot, "settings", 20, sceneSettings("d1", "clock", { epoch: boot.epoch, rev: 2, effective: { n: 7 } }));
+    await settle();
+    assert.equal(field(root, "n")?.value, "7", "the live values are shown");
+    get.answer(500, {});
+    await settle();
+    assert.equal(field(root, "n")?.value, "7", "the late failure of the load leaves them");
+    assert.doesNotMatch(root.querySelector(".set-body").textContent, /could not be loaded/);
+  } finally {
+    devicePage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r3 gate 2.2 (finding 6, failed cleanup): an end of a preview that fails is kept and said in the title status line with Retry; Retry ends it", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  const root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  try {
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch }), `${epoch}-11`);
+    await settle();
+    typeInto(field(root, "n"), "5");
+    await settle();
+    pending(calls, "PUT", "/settings/clock/preview").answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 2, preview: { session: "s1", draft: 1 } }), rejected: {}, applied: true }, `${epoch}-12`);
+    await settle();
+    applyDefaultAnswer({ body: view("d1", { epoch, rev: 2, scene: "weather" }), resource: "device:d1", generation: 0, epoch, seq: 13 });
+    await settle();
+    pending(calls, "GET", "/settings/weather").answer(200, sceneSettings("d1", "weather", { epoch }), `${epoch}-14`);
+    pending(calls, "DELETE", "/settings/clock/preview").answer(500, {});
+    await settle();
+    assert.match(titleLine(root).textContent, /Settings preview of Clock not ended: pixdcon failed to answer \(500\)\./, "the failed end is said");
+    const retry = titleLine(root).querySelector('[data-act="end-retry"]');
+    assert.ok(retry, "with Retry beside it");
+    assert.equal(click(retry), true);
+    await settle();
+    const again = calls.filter((c) => c.method === "DELETE" && c.url.includes("/settings/clock/preview"));
+    assert.equal(again.length, 2, "Retry sends the end again");
+    again[1].answer(200, sceneSettings("d1", "clock", { epoch, rev: 3 }), `${epoch}-15`);
+    await settle();
+    assert.doesNotMatch(titleLine(root).textContent, /not ended/, "an end that worked takes the line away");
+  } finally {
+    devicePage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r3 gate Q4 (Revert): Revert ends the preview in the scene's lane; an edit typed meanwhile is previewed after the end, so the end cannot remove it", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  const root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  try {
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch }), `${epoch}-11`);
+    await settle();
+    typeInto(field(root, "n"), "2");
+    await settle();
+    const first = pending(calls, "PUT", "/settings/clock/preview");
+    first.answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 2, effective: { n: 2 }, preview: { session: "s1", draft: first.body.draft } }), rejected: {}, applied: true }, `${epoch}-12`);
+    await settle();
+    assert.equal(click(root.querySelector('.set-h [data-act="revert"]')), true);
+    await settle();
+    const end = pending(calls, "DELETE", "/settings/clock/preview");
+    typeInto(field(root, "n"), "3");
+    await settle();
+    assert.equal(previewOf(calls).length, 1, "no preview leaves while Revert's end is on its way");
+    end.answer(200, sceneSettings("d1", "clock", { epoch, rev: 3 }), `${epoch}-13`);
+    await settle();
+    const next = pending(calls, "PUT", "/settings/clock/preview");
+    assert.deepEqual(next.body.values, { n: 3 }, "the edit typed during Revert is previewed after the end");
+    next.answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 4, effective: { n: 3 }, preview: { session: "s1", draft: next.body.draft } }), rejected: {}, applied: true }, `${epoch}-14`);
+    await settle();
+    assert.deepEqual(calls.filter((c) => c.url.includes("/settings/clock")).map((c) => c.method), ["GET", "PUT", "DELETE", "PUT"]);
+    assert.match(statusText(root), /^Previewing 1 change/);
+  } finally {
+    devicePage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r3 gate Q5 (time bound): an end that gets no answer fails after 15 s with Retry, and the next preview of the scene leaves after it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  let root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  let mounted = true;
+  try {
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch }), `${epoch}-11`);
+    await settle();
+    typeInto(field(root, "n"), "5");
+    await settle();
+    pending(calls, "PUT", "/settings/clock/preview").answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 2, preview: { session: "s1", draft: 1 } }), rejected: {}, applied: true }, `${epoch}-12`);
+    await settle();
+    devicePage.unmount();
+    mounted = false;
+    await settle();
+    pending(calls, "DELETE", "/settings/clock/preview"); // held: no answer
+    root = pageRoot();
+    devicePage.mount(root, { name: "d1" });
+    mounted = true;
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch, rev: 3 }), `${epoch}-13`);
+    await settle();
+    typeInto(field(root, "n"), "6");
+    await settle();
+    assert.equal(previewOf(calls).length, 1, "the new preview waits for the end");
+    t.mock.timers.tick(120_000);
+    await settle();
+    const next = previewOf(calls)[1];
+    assert.ok(next, "after the time bound the waiting preview leaves");
+    assert.deepEqual(next.body.values, { n: 6 });
+    assert.match(titleLine(root).textContent, /Settings preview of Clock not ended: pixdcon did not answer within 15 s\./);
+    assert.ok(titleLine(root).querySelector('[data-act="end-retry"]'), "with Retry");
+    next.answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 4, effective: { n: 6 }, preview: { session: "s1", draft: next.body.draft } }), rejected: {}, applied: true }, `${epoch}-14`);
+    await settle();
+    assert.doesNotMatch(titleLine(root).textContent, /not ended/, "the newer preview is the one the page holds now");
+    assert.match(statusText(root), /^Previewing 1 change/);
+  } finally {
+    if (mounted) devicePage.unmount();
+    t.mock.timers.tick(120_000);
+    await drain(calls);
+  }
+});
+
+test("r3 sweep (device controls): a control's outcome belongs to its device; device A's late failure is not said on device B's page", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e }), view("d2", { epoch: e })]);
+  let root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  try {
+    assert.equal(click(root.querySelector('[data-act="mode"][data-mode="pause"]')), true);
+    await settle();
+    const put = pending(calls, "PUT", "/devices/d1/mode");
+    devicePage.unmount();
+    root = pageRoot();
+    devicePage.mount(root, { name: "d2" });
+    put.answer(500, {});
+    await settle();
+    assert.doesNotMatch(root.querySelector(".mode-hint").textContent, /Not changed/, "d1's failure is not said on d2");
+    assert.equal(root.querySelector('[data-act="mode"][data-mode="pause"]').disabled, false);
+  } finally {
+    devicePage.unmount();
+    await drain(calls);
+  }
+  void epoch;
+});

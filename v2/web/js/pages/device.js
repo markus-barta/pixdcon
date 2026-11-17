@@ -22,13 +22,14 @@
  * Owner: UI worker.
  */
 
-import { ApiError, request } from "../api.js";
+import { request } from "../api.js";
 import { createPixelPreview } from "../components/pixel-preview.js";
 import { openRecoveryDialog } from "../components/recovery-dialog.js";
-import { createSettingsForm } from "../components/settings-form.js";
+import { createSettingsForm, failedEnds, retryEnd } from "../components/settings-form.js";
 import { dot, icon, setAttr, setClass, setHtml } from "../dom.js";
 import { esc, percent, topicHtml } from "../format.js";
 import { getSession } from "../session.js";
+import { deviceSlot, forgetIdle, op, start } from "../ops.js";
 import { applyAnswer, getState, subscribe } from "../store.js";
 import {
   deviceCondition,
@@ -61,11 +62,16 @@ let form = null;
 /** @type {{update: (device: any) => void, close: () => void}|null} */
 let dialog = null;
 let wantRecovery = false;
-/** The control whose request runs: "mode", "brightness", "scene", "return", "adopt", "copy". @type {Map<string, string>} */
-const running = new Map();
-/** The last failure per control, said beside it (build rule 4). @type {Map<string, string>} */
-const failures = new Map();
-/** Brightness typed on the slider, until its request was answered. @type {number|null} */
+/**
+ * The slots of this device's controls (ops.js), in the device's life:
+ * `scene`, `mode`, `brightness`, `restore` (Return to your choice; the
+ * Devices page's Restore is the same slot), `adopt` (shared with Config).
+ * Copy is `copy:<scene>`. Busy labels, failures and notes are read from
+ * the slots, so another device, another life of this one, or another page
+ * never shows what belongs to a different operation.
+ */
+const SLOTS = { scene: "scene", mode: "mode", brightness: "brightness", return: "restore", adopt: "adopt" };
+/** Brightness typed on the slider, until its own request was answered: the slot it belongs to and the level. @type {{key: string, level: number}|null} */
 let sliding = null;
 /** Why the settings form's last preview failed (B-175: said in the title status line and on the Display line); null when it worked. @type {string|null} */
 let previewFailure = null;
@@ -73,26 +79,40 @@ let previewFailure = null;
 let rendering = false;
 let renderAgain = false;
 
-/** @param {string} key @param {string} [label] */
-const busyLabel = (key, label) => running.get(key) ?? label;
+/**
+ * The slot of one of this page's controls, in the life of the device shown.
+ *
+ * @param {keyof typeof SLOTS} control
+ * @param {any} [view]
+ * @returns {string|null} null: the device is not listed
+ */
+function slotOf(control, view = getState().devices.get(name)) {
+  return view ? deviceSlot(SLOTS[control], view) : null;
+}
+
+/** @param {keyof typeof SLOTS} control @param {any} view */
+const opOf = (control, view) => op(slotOf(control, view) ?? "");
 
 /**
- * @param {string} control
- * @param {() => Promise<import("../api.js").Answer>} send
+ * Start a control's operation (ops.js): ignored while its slot is busy,
+ * from this page or another (B-176); its outcome is said only while it is
+ * the slot's current operation.
+ *
+ * @param {keyof typeof SLOTS} control
+ * @param {(key: string) => Promise<import("../api.js").Answer>} send the request, with the slot as its control key
  * @param {string} busyText
  */
-async function act(control, send, busyText) {
-  if (running.has(control)) return;
-  running.set(control, busyText);
-  failures.delete(control);
-  render(getState());
-  try {
-    applyAnswer(await send());
-  } catch (error) {
-    failures.set(control, error instanceof ApiError ? error.message : "The request failed.");
-  }
-  running.delete(control);
-  if (control === "brightness") sliding = null;
+function act(control, send, busyText) {
+  const key = slotOf(control);
+  if (!key) return;
+  const settled = () => {
+    if (sliding?.key === key) sliding = null;
+  };
+  start(key, async () => applyAnswer(await send(key)), {
+    label: busyText,
+    done: settled,
+    failed: settled,
+  });
   render(getState());
 }
 
@@ -103,12 +123,12 @@ const path = (/** @type {string} */ tail) =>
 function chooseScene(scene) {
   const state = getState();
   const view = state.devices.get(name);
-  void act(
+  act(
     "scene",
-    () =>
+    (key) =>
       request("PUT", path("/scene"), {
         resource: `device:${name}`,
-        key: `scene:${name}`,
+        key,
         body: { scene },
       }),
     `Switching to ${sceneName(state, scene, view?.type)}…`,
@@ -117,12 +137,12 @@ function chooseScene(scene) {
 
 /** @param {string} mode */
 function setMode(mode) {
-  void act(
+  act(
     "mode",
-    () =>
+    (key) =>
       request("PUT", path("/mode"), {
         resource: `device:${name}`,
-        key: `mode:${name}`,
+        key,
         body: { mode },
       }),
     mode === "play" ? "Starting play…" : mode === "pause" ? "Pausing…" : "Stopping…",
@@ -131,12 +151,12 @@ function setMode(mode) {
 
 /** @param {number|null} override */
 function setBrightness(override) {
-  void act(
+  act(
     "brightness",
-    () =>
+    (key) =>
       request("PUT", path("/brightness"), {
         resource: `device:${name}`,
-        key: `brightness:${name}`,
+        key,
         body: { override },
       }),
     override === null ? "Back to Auto…" : `Setting ${override} %…`,
@@ -144,59 +164,62 @@ function setBrightness(override) {
 }
 
 function returnToChoice() {
-  void act(
+  act(
     "return",
-    () =>
+    (key) =>
       request("DELETE", path("/scene-overlay"), {
         resource: `device:${name}`,
-        key: `restore:${name}`,
+        key,
       }),
     "Clearing the overlay…",
   );
 }
 
 function adopt() {
-  void act(
+  act(
     "adopt",
-    () =>
+    (key) =>
       request("POST", path("/adopt"), {
         resource: `device:${name}`,
-        key: `adopt:${name}`,
+        key,
         body: {},
       }),
     "Adding…",
   );
 }
 
-/** @param {HTMLFormElement} copyForm */
-async function copyScene(copyForm) {
-  const state = getState();
-  const view = state.devices.get(name);
+/**
+ * Create copy: an operation in the slot of the scene (`copy:<scene>`);
+ * what it made, or why it failed, is said beside the button from the slot.
+ *
+ * @param {HTMLFormElement} copyForm
+ */
+function copyScene(copyForm) {
+  const view = getState().devices.get(name);
   const key = view?.desired?.scene?.scene;
   if (!key) return;
   const data = new FormData(copyForm);
-  running.set("copy", "Creating…");
-  failures.delete("copy");
-  render(state);
-  const slot = /** @type {HTMLElement} */ (copyForm.querySelector(".slot"));
-  try {
-    const answer = await request("POST", `/api/v2/scenes/${encodeURIComponent(key)}/copy`, {
-      resource: `scene-copy:${key}`,
-      key: `copy:${key}`,
-      body: {
-        targetKey: String(data.get("targetKey") ?? "") || undefined,
-        name: String(data.get("name") ?? "") || undefined,
-        replace: data.get("replace") === "on",
-      },
-    });
-    const made = answer.body?.scene?.key ?? "";
-    slot.textContent = data.get("replace") === "on"
-      ? `${key} now uses the copy; the original file was backed up${answer.body?.backup ? ` to ${answer.body.backup}` : ""}.`
-      : `Created ${made} at ${answer.body?.path ?? ""}.`;
-  } catch (error) {
-    failures.set("copy", error instanceof ApiError ? error.message : "The request failed.");
-  }
-  running.delete("copy");
+  const replace = data.get("replace") === "on";
+  start(
+    `copy:${key}`,
+    () =>
+      request("POST", `/api/v2/scenes/${encodeURIComponent(key)}/copy`, {
+        resource: `scene-copy:${key}`,
+        key: `copy:${key}`,
+        body: {
+          targetKey: String(data.get("targetKey") ?? "") || undefined,
+          name: String(data.get("name") ?? "") || undefined,
+          replace,
+        },
+      }),
+    {
+      label: "Creating…",
+      done: (answer) =>
+        replace
+          ? `${key} now uses the copy; the original file was backed up${answer.body?.backup ? ` to ${answer.body.backup}` : ""}.`
+          : `Created ${answer.body?.scene?.key ?? ""} at ${answer.body?.path ?? ""}.`,
+    },
+  );
   render(getState());
 }
 
@@ -271,23 +294,36 @@ function draw(state) {
   const stCls = status.kind === "shadow" ? "st shadow" : `st ${status.dot === "idle" ? "" : status.dot}`.trim();
   setHtml(q(".dev-head .st-slot"), `<span class="${stCls}">${dot(status.dot)}${esc(status.label)}</span>`);
 
-  // Title status line (Tick, item 8; item 11)
-  const condition = deviceCondition(state, view, { previewFailure });
+  // Title status line: an end of a settings preview that failed comes
+  // first, with Retry (the operation rule, 3 and 4); then the page
+  // conditions (Tick, item 8; section 13, item 11).
+  const ended = failedEnds(view)[0];
   const sub = q(".dev-head .sub");
-  if (!condition) {
-    setClass(sub, "sub");
-    setHtml(sub, "");
-    setAttr(sub, "title", null);
+  if (ended) {
+    const text = `Settings preview of ${sceneName(state, ended.scene, view.type)} not ended: ${ended.failure}`;
+    setClass(sub, "sub warn");
+    setHtml(
+      sub,
+      `${icon("alert")}<span class="sub-text">${esc(text)}</span> <button class="btn" type="button" data-act="end-retry" data-scene="${esc(ended.scene)}"${ended.busy ? " disabled" : ""}>${ended.busy ? `${icon("spinner")}Retrying…` : `${icon("reload")}Retry`}</button>`,
+    );
+    setAttr(sub, "title", text);
   } else {
-    setClass(sub, `sub${condition.cls ? ` ${condition.cls}` : ""}`);
-    const lead = condition.dot ? dot(condition.dot) : condition.icon ? icon(condition.icon) : "";
-    let actionHtml = "";
-    if (condition.action) {
-      const failure = failures.get("adopt");
-      actionHtml = ` <button class="btn" type="button" data-act="adopt"${running.has("adopt") || frozen ? " disabled" : ""}>${running.has("adopt") ? `${icon("spinner")}${esc(busyLabel("adopt"))}` : esc(condition.action.label)}</button>${failure ? ` <span style="color:var(--bad)">${esc(failure)}</span>` : ""}`;
+    const condition = deviceCondition(state, view, { previewFailure });
+    if (!condition) {
+      setClass(sub, "sub");
+      setHtml(sub, "");
+      setAttr(sub, "title", null);
+    } else {
+      setClass(sub, `sub${condition.cls ? ` ${condition.cls}` : ""}`);
+      const lead = condition.dot ? dot(condition.dot) : condition.icon ? icon(condition.icon) : "";
+      let actionHtml = "";
+      if (condition.action) {
+        const adopting = opOf("adopt", view);
+        actionHtml = ` <button class="btn" type="button" data-act="adopt"${adopting.busy || frozen ? " disabled" : ""}>${adopting.busy ? `${icon("spinner")}${esc(adopting.label)}` : esc(condition.action.label)}</button>${adopting.failure ? ` <span class="fail">${esc(adopting.failure)}</span>` : ""}`;
+      }
+      setHtml(sub, `${lead}<span class="sub-text">${esc(condition.text)}</span>${actionHtml}`);
+      setAttr(sub, "title", condition.title ?? condition.text);
     }
-    setHtml(sub, `${lead}<span class="sub-text">${esc(condition.text)}</span>${actionHtml}`);
-    setAttr(sub, "title", condition.title ?? condition.text);
   }
 
   // Facts
@@ -322,7 +358,8 @@ function draw(state) {
 
   // Mode
   const mode = view.desired?.mode ?? {};
-  const modeDisabled = frozen || mqttBlocked || running.has("mode");
+  const moding = opOf("mode", view);
+  const modeDisabled = frozen || mqttBlocked || moding.busy;
   for (const button of root.querySelectorAll('[data-act="mode"]')) {
     const value = button.getAttribute("data-mode");
     setAttr(button, "aria-pressed", String(mode.value === value));
@@ -330,12 +367,12 @@ function draw(state) {
     setAttr(button, "title", mqttBlocked ? "Mode needs MQTT; it waits for the broker" : value === "play" ? "Pressing Play while playing re-initialises the display" : null);
   }
   const modeHint = q(".mode-hint");
-  if (running.has("mode")) {
+  if (moding.busy) {
     setClass(modeHint, "hint mode-hint");
-    setHtml(modeHint, `${icon("spinner")} ${esc(busyLabel("mode"))}`);
-  } else if (failures.has("mode")) {
+    setHtml(modeHint, `${icon("spinner")} ${esc(moding.label)}`);
+  } else if (moding.failure) {
     setClass(modeHint, "hint mode-hint");
-    setHtml(modeHint, `<span style="color:var(--bad)">Not changed: ${esc(failures.get("mode") ?? "")}</span>`);
+    setHtml(modeHint, `<span style="color:var(--bad)">Not changed: ${esc(moding.failure)}</span>`);
   } else if (mode.source === "mqtt") {
     setClass(modeHint, "hint mode-hint ovr");
     setHtml(modeHint, `Set by an MQTT overlay since ${esc(new Date(mode.since).toTimeString().slice(0, 8))}. Pause holds the current frame; Stop blanks the display.`);
@@ -348,7 +385,8 @@ function draw(state) {
   const brightness = view.desired?.brightness ?? {};
   const override = brightness.override ?? null;
   const last = view.effective?.lastBrightness ?? null;
-  const briDisabled = frozen || mqttBlocked || running.has("brightness");
+  const briOp = opOf("brightness", view);
+  const briDisabled = frozen || mqttBlocked || briOp.busy;
   for (const button of root.querySelectorAll('[data-act="bri-mode"]')) {
     const value = button.getAttribute("data-value");
     setAttr(button, "aria-pressed", String(value === (override === null ? "auto" : "override")));
@@ -357,18 +395,19 @@ function draw(state) {
   }
   const range = /** @type {HTMLInputElement} */ (q('input[type="range"]'));
   range.disabled = override === null || briDisabled;
-  const shownLevel = sliding ?? override ?? last ?? 50;
+  const slid = sliding && sliding.key === slotOf("brightness", view) ? sliding.level : null;
+  const shownLevel = slid ?? override ?? last ?? 50;
   if (document.activeElement !== range && range.value !== String(shownLevel)) range.value = String(shownLevel);
   const val = q(".range .val");
   setClass(val, `val num${override === null ? " off" : ""}`);
-  setHtml(val, esc(sliding !== null ? percent(sliding) : override !== null ? percent(override) : percent(last)));
+  setHtml(val, esc(slid !== null ? percent(slid) : override !== null ? percent(override) : percent(last)));
   const briHint = q(".bri-hint");
-  if (running.has("brightness")) {
+  if (briOp.busy) {
     setClass(briHint, "hint bri-hint");
-    setHtml(briHint, `${icon("spinner")} ${esc(busyLabel("brightness"))}`);
-  } else if (failures.has("brightness")) {
+    setHtml(briHint, `${icon("spinner")} ${esc(briOp.label)}`);
+  } else if (briOp.failure) {
     setClass(briHint, "hint bri-hint");
-    setHtml(briHint, `<span style="color:var(--bad)">Not changed: ${esc(failures.get("brightness") ?? "")}</span>`);
+    setHtml(briHint, `<span style="color:var(--bad)">Not changed: ${esc(briOp.failure)}</span>`);
   } else if (override !== null) {
     setClass(briHint, "hint bri-hint ovr");
     setHtml(
@@ -425,13 +464,14 @@ function draw(state) {
   if (now.action) {
     const actionIcon = now.action.kind === "return" ? "undo" : now.action.kind === "recovery" ? "info" : "file";
     const cls = now.action.kind === "return" ? "btn primary" : "btn";
-    const busy = now.action.kind === "return" && running.has("return");
+    const returning = opOf("return", view);
+    const busy = now.action.kind === "return" && returning.busy;
     if (now.action.kind === "fixconfig")
       actions = `<a class="btn" href="#/config/raw">${icon("file")}Fix config.json</a>`;
     else
-      actions = `<button class="${cls}" type="button" data-act="${now.action.kind}"${now.action.disabled || busy ? " disabled" : ""}${now.action.title ? ` title="${esc(now.action.title)}"` : ""}>${busy ? `${icon("spinner")}${esc(busyLabel("return"))}` : `${icon(actionIcon)}${esc(now.action.label)}`}</button>`;
-    if (failures.has("return"))
-      actions += `<span style="color:var(--bad);font-size:12px">${esc(failures.get("return") ?? "")}</span>`;
+      actions = `<button class="${cls}" type="button" data-act="${now.action.kind}"${now.action.disabled || busy ? " disabled" : ""}${now.action.title ? ` title="${esc(now.action.title)}"` : ""}>${busy ? `${icon("spinner")}${esc(returning.label || "Clearing the overlay…")}` : `${icon(actionIcon)}${esc(now.action.label)}`}</button>`;
+    if (now.action.kind === "return" && returning.failure && !busy)
+      actions += `<span style="color:var(--bad);font-size:12px">${esc(returning.failure)}</span>`;
   }
   setHtml(q(".why .acts"), actions);
 
@@ -452,7 +492,8 @@ function draw(state) {
   setAttr(q(".opts"), "aria-label", `Scene for ${title}`);
   const choices = sceneChoices(state, view);
   const showing = scene.scene ?? "";
-  const pendingTarget = running.has("scene") ? null : view.pending?.op === "scene" ? view.pending.target : null;
+  const switching = opOf("scene", view);
+  const pendingTarget = switching.busy ? null : view.pending?.op === "scene" ? view.pending.target : null;
   const optionHtml = (/** @type {{value: string, label: string}} */ option) => {
     const checked = option.value === showing;
     let tag = "";
@@ -466,7 +507,7 @@ function draw(state) {
       tag = "your choice";
       tagCls = "tag mine";
     }
-    return `<button class="opt${checked && overlaid && !shadow ? " ovr" : ""}" type="button" role="radio" aria-checked="${checked}" data-act="scene" data-scene="${esc(option.value)}"${frozen || running.has("scene") ? " disabled" : ""}><span class="rd" aria-hidden="true"></span><span class="on" title="${esc(option.label)}">${esc(option.label)}</span><span class="${tagCls}">${tag}</span></button>`;
+    return `<button class="opt${checked && overlaid && !shadow ? " ovr" : ""}" type="button" role="radio" aria-checked="${checked}" data-act="scene" data-scene="${esc(option.value)}"${frozen || switching.busy ? " disabled" : ""}><span class="rd" aria-hidden="true"></span><span class="on" title="${esc(option.label)}">${esc(option.label)}</span><span class="${tagCls}">${tag}</span></button>`;
   };
   const [scenesGroup, builtinGroup, noneGroup] = choices.groups;
   setHtml(
@@ -476,9 +517,9 @@ function draw(state) {
   );
   const meta = sceneMeta(state, showing);
   let below = "";
-  if (running.has("scene")) below = `${icon("spinner")}${esc(busyLabel("scene"))}`;
-  else if (failures.has("scene"))
-    below = `<span style="color:var(--bad);display:flex;align-items:center;gap:6px">${icon("alert")}Not switched: ${esc(failures.get("scene") ?? "")}</span>`;
+  if (switching.busy) below = `${icon("spinner")}${esc(switching.label)}`;
+  else if (switching.failure)
+    below = `<span style="color:var(--bad);display:flex;align-items:center;gap:6px">${icon("alert")}Not switched: ${esc(switching.failure)}</span>`;
   else if (scene.source === "ui" && choice.persisted === false && choice.notSavedReason === "config_invalid")
     below = `<span style="color:var(--warn);display:flex;align-items:center;gap:6px">${icon("alert")}Not saved: ${esc(state.config?.error?.message ?? "config.json is not valid JSON")}. The display switched anyway.</span>`;
   else if (!showing) below = "Choose a scene to start drawing on this display.";
@@ -515,11 +556,17 @@ function draw(state) {
       `Creates a new scene file and key, so one device can diverge from ${esc(sceneName(state, showing, view.type))}.`,
     );
     setHtml(q(".adv .replace-label"), `Replace ${esc(showing)} with the copy (the original file is backed up on disk first)`);
+    const copying = op(`copy:${showing}`);
     const copyButton = /** @type {HTMLButtonElement} */ (q(".adv [data-act='copy']"));
-    copyButton.disabled = frozen || running.has("copy");
-    setHtml(copyButton, running.has("copy") ? `${icon("spinner")}Creating…` : `${icon("copy")}Create copy`);
+    copyButton.disabled = frozen || copying.busy;
+    setHtml(copyButton, copying.busy ? `${icon("spinner")}Creating…` : `${icon("copy")}Create copy`);
     const slot = q(".adv .slot");
-    if (failures.has("copy")) setHtml(slot, `<span style="color:var(--bad)">Not copied: ${esc(failures.get("copy") ?? "")}</span>`);
+    setHtml(
+      slot,
+      copying.failure
+        ? `<span style="color:var(--bad)">Not copied: ${esc(copying.failure)}</span>`
+        : esc(copying.note ?? ""),
+    );
   }
 
   // Recovery dialog
@@ -569,6 +616,12 @@ function onClick(event) {
     case "adopt":
       adopt();
       break;
+    case "end-retry": {
+      const view = getState().devices.get(name);
+      if (view) retryEnd(view, String(button.dataset.scene), getSession());
+      render(getState());
+      break;
+    }
   }
 }
 
@@ -576,7 +629,8 @@ function onClick(event) {
 function onInput(event) {
   const target = event.target;
   if (target instanceof HTMLInputElement && target.type === "range") {
-    sliding = Number(target.value);
+    const key = slotOf("brightness");
+    if (key) sliding = { key, level: Number(target.value) };
     render(getState());
   }
 }
@@ -593,7 +647,7 @@ function onSubmit(event) {
   const target = event.target;
   if (!(target instanceof HTMLFormElement) || !target.classList.contains("copyf")) return;
   event.preventDefault();
-  void copyScene(target);
+  copyScene(target);
 }
 
 /** @param {KeyboardEvent} event the scene radio group: arrows move and apply (approved spec 8) */
@@ -617,8 +671,10 @@ export const page = {
     root = target;
     name = params.name;
     wantRecovery = params.recovery === "1";
-    running.clear();
-    failures.clear();
+    // A fresh opening: what this device's idle controls said before is gone;
+    // an operation that runs keeps its slot, and its outcome is said when it
+    // comes. A failed end of a preview stays until it is retried or replaced.
+    forgetIdle((key) => /^(scene|mode|brightness|restore|adopt):/.test(key) && key.slice(key.indexOf(":") + 1).startsWith(`${name}@`));
     sliding = null;
     previewFailure = null;
     root.className = "p-device";

@@ -466,6 +466,10 @@ canvas.pv {
   flex: none;
   margin-left: 6px;
 }
+.p-device .dh-line .sub .fail {
+  flex: none;
+  color: var(--bad);
+}
 .p-device .st-slot {
   margin-left: auto;
   margin-top: 4px;

@@ -35,16 +35,38 @@
  * editing: the fields show the form's own edits until the store holds a
  * state whose preview draft is at least theirs.
  *
+ * Operations (ops.js, the operation rule):
+ *  - Save, Revert and Clear are user actions in the slot of the form's
+ *    scope, `settings:<device>/<scene>@<epoch>/<incarnation>`: one busy
+ *    owner, also for a form that opens while one runs; the outcome is kept
+ *    in the slot and said beside Save, and the action stays to try again
+ *  - the load of the values is `load:…` of the scope; values of the scope
+ *    that arrive by another way (the live channel) make it obsolete, so a
+ *    late failure of the load cannot take them off the screen
+ *  - every preview request of a scene, from this form or the next one,
+ *    runs in that scene's lane, one after the other in the order they
+ *    were started: a preview (PUT), Revert's end and the end on leaving
+ *    (DELETE). So an end never overtakes a newer preview, and a preview
+ *    typed during Revert leaves after Revert's end. Each request is
+ *    bounded in time (api.js); one that runs out fails and frees the lane
+ *  - an end that fails is kept in the slot `end:<device>/<scene>`; the
+ *    device page says it with Retry (failedEnds, retryEnd). A newer
+ *    preview of the scene, or an end that works, replaces it
+ *
  * Owner: UI worker.
  */
 
 import { ApiError, request } from "../api.js";
 import { esc, grouped } from "../format.js";
 import { icon, setAttr, setClass, setHtml } from "../dom.js";
-import { applyAnswer } from "../store.js";
+import { busy as slotBusy, clearNote, drop, failureText, follow, op, start } from "../ops.js";
+import { applyAnswer, getState } from "../store.js";
 import { createDraftBook } from "../view/drafts.js";
 
 let ids = 0;
+
+/** What a Save that worked says. */
+const SAVED = "Saved to config.json";
 
 /**
  * Parse what was typed into a field, by its type.
@@ -136,14 +158,106 @@ export function groupsOf(schema) {
 }
 
 /**
- * Ends of previews on their way, per "<device>/<scene>": a preview of the
- * same scene, from this form or from the next one (the page was left and
- * opened again), is sent only after the end, so the end can never overtake
- * it and end the newer preview.
+ * The preview lanes, per "<device>/<scene>": the tail of the steps started
+ * so far, from any form of the page (the page was left and opened again).
  *
  * @type {Map<string, Promise<void>>}
  */
-const ending = new Map();
+const lanes = new Map();
+
+/**
+ * Run a step in a scene's lane: after every step started before it was
+ * answered or ran out of time, and before every step started after it.
+ * pixdcon gets the preview requests of a scene in the order the page
+ * started them: an end (DELETE) before the next preview (PUT).
+ *
+ * @template T
+ * @param {string} lane "<device>/<scene>"
+ * @param {() => Promise<T>} step
+ * @returns {Promise<T>}
+ */
+function enqueue(lane, step) {
+  const before = lanes.get(lane);
+  const result = (async () => {
+    if (before) await before;
+    return step();
+  })();
+  /** @type {Promise<void>} */
+  const tail = (async () => {
+    try {
+      await result;
+    } catch {
+      // The step's own operation keeps its failure; the lane moves on.
+    }
+    if (lanes.get(lane) === tail) lanes.delete(lane);
+  })();
+  lanes.set(lane, tail);
+  return result;
+}
+
+/** @param {string} device @param {string} scene */
+const previewPath = (device, scene) =>
+  `/api/v2/devices/${encodeURIComponent(device)}/settings/${encodeURIComponent(scene)}/preview`;
+
+/**
+ * The slot of the end of this page's preview of a scene, in one life of
+ * the device: a restart of pixdcon or another incarnation of the device
+ * ends every preview anyway, so an end that failed before it is moot.
+ *
+ * @param {string} device
+ * @param {string} scene
+ * @param {{epoch?: string|null, incarnation?: number|string|null}} life
+ */
+const endSlot = (device, scene, life) =>
+  `end:${device}/${scene}@${life.epoch ?? ""}/${Number(life.incarnation ?? 0)}`;
+
+/**
+ * The ends of this page's previews that failed, for one life of a device:
+ * what the device page says in its title status line, with Retry.
+ *
+ * @param {{name: string, epoch?: string|null, incarnation?: number|string|null}} view
+ * @returns {Array<{scene: string, failure: string, busy: boolean}>}
+ */
+export function failedEnds(view) {
+  const prefix = `end:${view.name}/`;
+  const life = `@${view.epoch ?? ""}/${Number(view.incarnation ?? 0)}`;
+  /** @type {Array<{scene: string, failure: string, busy: boolean}>} */
+  const list = [];
+  for (const [key, slot] of getState().ops) {
+    if (!key.startsWith(prefix) || !key.endsWith(life)) continue;
+    const scene = key.slice(prefix.length, key.length - life.length);
+    if (slot.failure) list.push({ scene, failure: slot.failure, busy: false });
+    else if (slot.busy && slot.value === "retry") list.push({ scene, failure: slot.label, busy: true });
+  }
+  return list;
+}
+
+/**
+ * Retry a failed end (a person asked): in the scene's lane, and not sent
+ * when a newer preview of the scene took its place meanwhile.
+ *
+ * @param {{name: string, epoch?: string|null, incarnation?: number|string|null}} view the device, in the life the end belongs to
+ * @param {string} scene
+ * @param {string|null} session
+ */
+export function retryEnd(view, scene, session) {
+  if (!session) return;
+  const device = view.name;
+  const key = endSlot(device, scene, view);
+  start(
+    key,
+    (current) =>
+      enqueue(`${device}/${scene}`, async () => {
+        if (!current()) return;
+        applyAnswer(
+          await request("DELETE", `${previewPath(device, scene)}?session=${encodeURIComponent(session)}`, {
+            resource: `settings:${device}/${scene}`,
+          }),
+        );
+      }),
+    { value: "retry", label: op(key).failure ?? "" },
+  );
+}
 
 /**
  * What the form shows, and everything that belongs to it: the scene, the
@@ -160,11 +274,8 @@ const ending = new Map();
  * @property {string|null} epoch null: not said
  * @property {number} incarnation 0: not said
  * @property {ReturnType<typeof createDraftBook>} book what the user typed, numbered by the page's draft counter
- * @property {string|null} busy "save" | "revert" | "clear" while that request runs
- * @property {{text: string, cls: string, failed: boolean}|null} outcome the last outcome of Save, Revert or Clear
  * @property {string|null} previewFailure why the last preview failed; null when it worked
- * @property {Promise<void>|null} running the preview request on its way
- * @property {boolean} previewAgain an edit came while a preview ran: send the newest draft after it
+ * @property {boolean} queued a preview step waits in the lane; it sends the newest draft when its turn comes
  * @property {boolean} previewed a preview of this scope was sent: pixdcon may hold one for this page
  * @property {boolean} left the form shows another scope now, or was left
  */
@@ -180,11 +291,8 @@ function newScope(scene, life) {
     epoch: life?.epoch ?? null,
     incarnation: Number(life?.incarnation ?? 0),
     book: createDraftBook(),
-    busy: null,
-    outcome: null,
     previewFailure: null,
-    running: null,
-    previewAgain: false,
+    queued: false,
     previewed: false,
     left: false,
   };
@@ -238,6 +346,13 @@ export function createSettingsForm(host, options) {
   const resource = (/** @type {Scope} */ of) => `settings:${device}/${of.scene}`;
   const base = (/** @type {Scope} */ of) =>
     `/api/v2/devices/${encodeURIComponent(device)}/settings/${encodeURIComponent(String(of.scene))}`;
+  /** The scope as a slot key: the scene in one life of the device. */
+  const scopeKey = (/** @type {Scope} */ of) => `${device}/${of.scene}@${of.epoch ?? ""}/${of.incarnation}`;
+  /** Save, Revert and Clear: one busy owner per scope. */
+  const actionKey = (/** @type {Scope} */ of) => `settings:${scopeKey(of)}`;
+  const loadKey = (/** @type {Scope} */ of) => `load:${scopeKey(of)}`;
+  const laneOf = (/** @type {Scope} */ of) => `${device}/${of.scene}`;
+  const endKey = (/** @type {Scope} */ of) => endSlot(device, String(of.scene), of);
   /** Whether what came back for this scope may change the form: it is the one shown. */
   const shown = (/** @type {Scope} */ of) => !destroyed && of === scope;
 
@@ -252,8 +367,12 @@ export function createSettingsForm(host, options) {
   /**
    * The scope is no longer shown. When this page may hold a preview of it,
    * the preview ends (approved spec 8: switching away and leaving revert
-   * what this page previewed), after the scope's own preview request and
-   * after an end of the same scene that is on its way.
+   * what this page previewed): a step in the scene's lane, after the
+   * scope's own preview requests. Whether there is anything to end is
+   * decided when its turn comes: a preview of the scope was sent, the store
+   * showed one of this page, or an earlier end of the scene failed. Its
+   * failure is kept in `end:<device>/<scene>` (the device page says it,
+   * with Retry); the lane moves on either way.
    *
    * @param {Scope} of
    * @returns {Promise<void>}
@@ -263,58 +382,63 @@ export function createSettingsForm(host, options) {
     const id = session();
     if (!id || !of.scene || of.scene.startsWith("builtin:")) return Promise.resolve();
     const held = of === scope && current?.preview?.session === id;
-    if (!of.previewed && !of.running && !held) return Promise.resolve();
-    const key = `${device}/${of.scene}`;
-    const before = [of.running, ending.get(key)];
-    /** @type {Promise<void>} */
-    const done = (async () => {
-      await Promise.all(before);
+    return enqueue(laneOf(of), async () => {
+      if (!of.previewed && !held && !op(endKey(of)).failure) return;
       try {
-        applyAnswer(
-          await request("DELETE", `${base(of)}/preview?session=${encodeURIComponent(id)}`, {
-            resource: resource(of),
-          }),
+        await follow(endKey(of), async () =>
+          applyAnswer(
+            await request("DELETE", `${base(of)}/preview?session=${encodeURIComponent(id)}`, {
+              resource: resource(of),
+            }),
+          ),
         );
       } catch {
-        // The server ends it 5 s after the page's stream is gone (preview rule 2).
+        // Kept in the slot; the device page says it with Retry.
       }
-      if (ending.get(key) === done) ending.delete(key);
-    })();
-    ending.set(key, done);
-    return done;
-  }
-
-  /** The settings of the scene that is chosen now, from pixdcon (build rule 1). */
-  async function load() {
-    const mine = scope;
-    phase = "loading";
-    render();
-    try {
-      // The store's fence decides; the form shows what the store holds for
-      // its scope, and the page hands that to update().
-      applyAnswer(await request("GET", base(mine), { resource: resource(mine) }));
-    } catch (error) {
-      if (!shown(mine)) return;
-      phase = "failed";
-      loadError = error instanceof ApiError ? error.message : "The request failed.";
-      render();
-    }
+    });
   }
 
   /**
-   * One preview request: the newest draft with every edit that parses.
-   * What the answer rejects is marked on the edits that were sent, not on
-   * ones typed since (finding 5).
+   * The settings of the scene that is chosen now, from pixdcon (build rule
+   * 1); Retry runs it again. The answer goes to the store, whose fence
+   * decides; the page hands the store's state of the scope to update(),
+   * which also makes the load obsolete once values of the scope are there.
+   */
+  function load() {
+    const mine = scope;
+    phase = "loading";
+    loadError = "";
+    render();
+    follow(
+      loadKey(mine),
+      async () => applyAnswer(await request("GET", base(mine), { resource: resource(mine) })),
+      {
+        failed: (error) => {
+          if (!shown(mine) || phase === "ready") return;
+          phase = "failed";
+          loadError = failureText(error);
+          render();
+        },
+      },
+    );
+  }
+
+  /**
+   * One preview step, when its turn in the lane comes: the newest draft
+   * with every edit that parses. What the answer rejects is marked on the
+   * edits that were sent, not on ones typed since (finding 5). A preview
+   * that worked is the one the page holds now: a failed end of the scene
+   * is replaced by it.
    *
    * @param {Scope} of
-   * @param {string} id
    */
-  async function sendPreview(of, id) {
-    of.previewed = true;
-    await ending.get(`${device}/${of.scene}`);
-    // Left while it waited: its end is queued behind it, so nothing is sent.
-    if (of.left) return;
+  async function sendPreview(of) {
+    of.queued = false;
+    const id = session();
+    // Left while it waited: nothing is sent, and the end is behind it.
+    if (of.left || !id) return;
     const plan = of.book.previewPlan(id);
+    of.previewed = true;
     try {
       const answer = await request("PUT", `${base(of)}/preview`, {
         resource: resource(of),
@@ -324,126 +448,117 @@ export function createSettingsForm(host, options) {
       applyAnswer(answer);
       of.book.rejected(plan.sent, answer.body?.rejected);
       of.previewFailure = null;
+      drop(endKey(of));
     } catch (error) {
-      of.previewFailure =
-        error instanceof ApiError ? error.message : "The request failed.";
+      of.previewFailure = failureText(error);
     }
-  }
-
-  /** Send the form's edits as the preview, with the newest draft. One request at a time. */
-  async function preview() {
-    const mine = scope;
-    if (mine.running) {
-      mine.previewAgain = true;
-      return;
-    }
-    const id = session();
-    if (!id || !mine.scene || mine.left) return;
-    mine.previewAgain = false;
-    mine.running = sendPreview(mine, id);
-    await mine.running;
-    mine.running = null;
-    if (!shown(mine)) return;
+    if (!shown(of)) return;
     report();
     render();
-    if (mine.previewAgain) void preview();
   }
 
-  async function save() {
+  /** Preview the form's edits: one step in the lane; edits typed while it waits go with it. */
+  function preview() {
     const mine = scope;
-    if (mine.busy) return;
+    if (!session() || !mine.scene || mine.left || mine.queued) return;
+    mine.queued = true;
+    void enqueue(laneOf(mine), () => sendPreview(mine));
+  }
+
+  function save() {
+    const mine = scope;
+    const key = actionKey(mine);
+    if (slotBusy(key)) return;
     const plan = mine.book.saveBody(session());
     if (!plan) return;
-    mine.busy = "save";
-    mine.outcome = null;
-    render();
-    try {
-      const answer = await request("PUT", base(mine), {
-        resource: resource(mine),
-        key: `save:${device}/${mine.scene}`,
-        body: plan.body,
-      });
-      applyAnswer(answer);
-      // What was saved leaves the form; what was typed after the click stays.
-      mine.book.saved(plan.committed, plan.body.reset);
-      const notCleared = answer.body?.overlaysNotCleared ?? [];
-      mine.outcome = notCleared.length
-        ? {
-            text: `Saved · ${notCleared.length} MQTT ${notCleared.length === 1 ? "overlay" : "overlays"} could not be cleared`,
-            cls: "warn",
-            failed: true,
-          }
-        : { text: "Saved to config.json", cls: "", failed: false };
-    } catch (error) {
-      const message = error instanceof ApiError ? error.message : "The request failed.";
-      mine.outcome = {
-        text:
+    start(
+      key,
+      async () => {
+        const answer = await request("PUT", base(mine), { resource: resource(mine), key, body: plan.body });
+        applyAnswer(answer);
+        return answer;
+      },
+      {
+        value: "save",
+        label: "Saving…",
+        done: (answer) => {
+          // What was saved leaves the form; what was typed after the click stays.
+          mine.book.saved(plan.committed, plan.body.reset);
+          if (shown(mine) && mine.book.edits.size > 0) preview();
+          const notCleared = answer.body?.overlaysNotCleared ?? [];
+          return notCleared.length
+            ? `Saved · ${notCleared.length} MQTT ${notCleared.length === 1 ? "overlay" : "overlays"} could not be cleared`
+            : SAVED;
+        },
+        describe: (error) =>
           error instanceof ApiError && error.code === "overlay_only_device"
             ? "Not saved: this device is not in config.json. Add it to config.json first."
-            : `Not saved: ${message}`,
-        cls: "warn",
-        failed: true,
-      };
-    }
-    mine.busy = null;
-    if (!shown(mine)) return;
+            : `Not saved: ${failureText(error)}`,
+        // The display keeps showing what is typed: preview it again.
+        failed: () => {
+          if (shown(mine) && mine.book.edits.size > 0) preview();
+        },
+      },
+    );
     render();
-    if (mine.book.edits.size > 0) void preview();
   }
 
-  async function revert() {
+  /**
+   * Revert: what was typed goes, and the preview ends, in the scene's lane:
+   * after the preview on its way, before any preview typed after the click
+   * (which then leaves after the end and stays).
+   */
+  function revert() {
     const mine = scope;
-    if (mine.busy) return;
+    const key = actionKey(mine);
+    if (slotBusy(key)) return;
     const id = session();
-    mine.busy = "revert";
     mine.book.clear();
-    mine.outcome = null;
-    render();
-    try {
-      const answer = await request(
-        "DELETE",
-        `${base(mine)}/preview${id ? `?session=${encodeURIComponent(id)}` : ""}`,
-        { resource: resource(mine), key: `revert:${device}/${mine.scene}` },
-      );
-      applyAnswer(answer);
-      mine.previewFailure = null;
-    } catch (error) {
-      mine.outcome = {
-        text: `Not reverted: ${error instanceof ApiError ? error.message : "the request failed."}`,
-        cls: "warn",
-        failed: true,
-      };
-    }
-    mine.busy = null;
-    if (!shown(mine)) return;
-    report();
+    start(
+      key,
+      () =>
+        enqueue(laneOf(mine), async () => {
+          applyAnswer(
+            await request("DELETE", `${base(mine)}/preview${id ? `?session=${encodeURIComponent(id)}` : ""}`, {
+              resource: resource(mine),
+              key,
+            }),
+          );
+          drop(endKey(mine));
+        }),
+      {
+        value: "revert",
+        label: "Reverting…",
+        done: () => {
+          mine.previewFailure = null;
+          if (shown(mine)) report();
+        },
+        describe: (error) => `Not reverted: ${failureText(error)}`,
+      },
+    );
     render();
   }
 
-  async function clearOverlays() {
+  function clearOverlays() {
     const mine = scope;
-    if (mine.busy) return;
-    mine.busy = "clear";
-    mine.outcome = null;
-    render();
-    try {
-      const answer = await request("DELETE", `${base(mine)}/overlays`, {
-        resource: resource(mine),
-        key: `clear:${device}/${mine.scene}`,
-      });
-      applyAnswer(answer);
-      const failed = answer.body?.failed ?? [];
-      if (failed.length)
-        mine.outcome = { text: `${failed.length} could not be cleared`, cls: "warn", failed: true };
-    } catch (error) {
-      mine.outcome = {
-        text: `Not cleared: ${error instanceof ApiError ? error.message : "the request failed."}`,
-        cls: "warn",
-        failed: true,
-      };
-    }
-    mine.busy = null;
-    if (!shown(mine)) return;
+    const key = actionKey(mine);
+    start(
+      key,
+      async () => {
+        const answer = await request("DELETE", `${base(mine)}/overlays`, { resource: resource(mine), key });
+        applyAnswer(answer);
+        return answer;
+      },
+      {
+        value: "clear",
+        label: "Clearing…",
+        done: (answer) => {
+          const failed = answer.body?.failed ?? [];
+          return failed.length ? `${failed.length} could not be cleared` : null;
+        },
+        describe: (error) => `Not cleared: ${failureText(error)}`,
+      },
+    );
     render();
   }
 
@@ -538,11 +653,36 @@ export function createSettingsForm(host, options) {
     }
   }
 
+  /**
+   * Why an edit is not taken, beside its field.
+   *
+   * @param {{error?: string}} edit
+   * @returns {string}
+   */
+  function errorText(edit) {
+    return edit.error ?? "";
+  }
+
+  /**
+   * The status line for the first edit that is not taken.
+   *
+   * @param {string} key
+   * @param {{error?: string}} _edit
+   * @returns {string}
+   */
+  function errorLine(key, _edit) {
+    return `${current?.schema?.[key]?.label ?? key} is not valid JSON, so it is not previewed and nothing can be saved yet`;
+  }
+
   function render() {
     if (destroyed) return;
     const frozen = Boolean(context.frozen);
-    const { book, busy, outcome } = scope;
+    const { book } = scope;
     const edits = book.edits;
+    // Save, Revert and Clear of this scope, from its slot (ops.js): a form
+    // that opens while one runs shows it busy; the outcome is kept there.
+    const action = op(actionKey(scope));
+    const busy = action.busy ? /** @type {string} */ (action.value) : null;
     // Heading
     if (phase === "none") {
       title.textContent = "Settings";
@@ -584,17 +724,19 @@ export function createSettingsForm(host, options) {
           const field = current.schema[key];
           const layer = current.values?.[key] ?? {};
           const edit = edits.get(key);
-          const shown = edit && !edit.error ? edit.value : edit ? undefined : layer.effective;
+          /** The edit is not taken: it does not parse, or pixdcon refused it (also without a reason). */
+          const bad = edit !== undefined && edit.error !== undefined;
+          const shown = edit && !bad ? edit.value : edit ? undefined : layer.effective;
           writeInput(parts.input, field, shown, edit?.raw);
           if (parts.check) parts.check.textContent = (edit ? Boolean(edit.value) : Boolean(layer.effective)) ? "On" : "Off";
           if (parts.hex && document.activeElement !== parts.hex) parts.hex.value = String(shown ?? "");
           /** @type {HTMLInputElement} */ (parts.input).disabled = frozen;
-          if (parts.error) setHtml(parts.error, edit?.error ? `${icon("alert")}<span>${esc(edit.error)}</span>` : "");
-          if (parts.input instanceof HTMLTextAreaElement) setAttr(parts.input, "aria-invalid", edit?.error ? "true" : null);
+          if (parts.error) setHtml(parts.error, bad && edit ? `${icon("alert")}<span>${esc(errorText(edit))}</span>` : "");
+          setAttr(parts.input, "aria-invalid", bad ? "true" : null);
           const was = "saved" in layer ? layer.saved : layer.default;
           let marker;
           let changed = false;
-          if (edit?.error) marker = `<span class="bad">not previewed, not saved</span>`;
+          if (bad) marker = `<span class="bad">not previewed, not saved</span>`;
           else if (edit || "preview" in layer) {
             changed = true;
             marker = `<span class="chg">previewing · was ${esc(markValue(field, "overlay" in layer ? layer.overlay : was))}</span>`;
@@ -607,7 +749,7 @@ export function createSettingsForm(host, options) {
                 : `<span class="saved">saved</span>`;
           else marker = `<span class="dflt">default</span>`;
           setHtml(parts.marker, marker);
-          setClass(parts.row, `fr${changed ? " changed" : ""}${field.type === "json" ? " tall" : ""}${edit?.error ? " err" : ""}`);
+          setClass(parts.row, `fr${changed ? " changed" : ""}${field.type === "json" ? " tall" : ""}${bad ? " err" : ""}`);
         }
       }
     }
@@ -615,7 +757,7 @@ export function createSettingsForm(host, options) {
     const overlays = current
       ? Object.values(current.values ?? {}).filter((layer) => layer && "overlay" in layer).length
       : 0;
-    const jsonError = book.errors()[0];
+    const firstError = book.errors()[0];
     const changes = book.changes();
     const serverPreview =
       current?.preview && current.preview.session === session()
@@ -643,7 +785,7 @@ export function createSettingsForm(host, options) {
     saveButton.disabled =
       phase !== "ready" ||
       changes === 0 ||
-      Boolean(jsonError) ||
+      Boolean(firstError) ||
       blocked ||
       Boolean(context.overlayOnly) ||
       frozen ||
@@ -664,17 +806,16 @@ export function createSettingsForm(host, options) {
     else if (current && Object.keys(current.schema ?? {}).length === 0)
       line = { text: "This scene has no settings", cls: "" };
     // Every failure is said beside the action (B-175), also while edits
-    // are unsaved: a failed Save, Revert or Clear, then a failed preview.
-    else if (outcome?.failed) line = outcome;
+    // are unsaved: a failed Save, Revert or Clear (kept in the scope's
+    // slot until the next one), then a failed preview.
+    else if (action.failure && !action.busy) line = { text: action.failure, cls: "warn" };
+    else if (action.note && action.note !== SAVED && !action.busy) line = { text: action.note, cls: "warn" };
     else if (scope.previewFailure)
       line = { text: `Not previewed: ${scope.previewFailure}`, cls: "warn" };
-    else if (jsonError)
-      line = {
-        text: `${current?.schema?.[jsonError[0]]?.label ?? jsonError[0]} is not valid JSON, so it is not previewed and nothing can be saved yet`,
-        cls: "chg warn",
-      };
+    else if (firstError)
+      line = { text: errorLine(firstError[0], firstError[1]), cls: "chg warn" };
     else if (blocked) line = { text: "Saving is blocked until config.json is valid JSON again", cls: "warn" };
-    else if (outcome && changes === 0) line = outcome;
+    else if (action.note && changes === 0) line = { text: action.note, cls: "" };
     else if (changes > 0 || serverPreview > 0) {
       const n = Math.max(changes, serverPreview);
       line = {
@@ -704,9 +845,10 @@ export function createSettingsForm(host, options) {
     const raw = input.value ?? "";
     const parsed = parseField(field, raw, input.checked);
     scope.book.edit(key, raw, parsed);
-    if (!scope.outcome?.failed) scope.outcome = null;
+    // A new edit: what the last success said goes; a failure stays (rule 3).
+    clearNote(actionKey(scope));
     render();
-    if (!parsed.error) void preview();
+    if (!parsed.error) preview();
   }
 
   /** @param {Event} event */
@@ -715,16 +857,16 @@ export function createSettingsForm(host, options) {
     if (!(button instanceof HTMLButtonElement) || button.disabled) return;
     switch (button.dataset.act) {
       case "save":
-        void save();
+        save();
         break;
       case "revert":
-        void revert();
+        revert();
         break;
       case "clear":
-        void clearOverlays();
+        clearOverlays();
         break;
       case "retry":
-        void load();
+        load();
         break;
       case "reset": {
         const key = String(button.dataset.key);
@@ -737,7 +879,7 @@ export function createSettingsForm(host, options) {
           field.type === "json" ? JSON.stringify(layer.default) : showValue(field, layer.default),
         );
         render();
-        void preview();
+        preview();
         break;
       }
     }
@@ -767,6 +909,7 @@ export function createSettingsForm(host, options) {
         return;
       }
       void leave(scope);
+      drop(loadKey(scope));
       scope = newScope(next, { epoch, incarnation });
       sceneLabel = label;
       current = null;
@@ -795,11 +938,15 @@ export function createSettingsForm(host, options) {
       ) {
         current = settingsState;
         phase = "ready";
+        // Values of the scope are here: its load is no longer wanted, and
+        // a late failure of it changes nothing (the operation rule, 2).
+        drop(loadKey(scope));
       }
       render();
     },
     destroy() {
       destroyed = true;
+      drop(loadKey(scope));
       host.removeEventListener("input", onEdit);
       host.removeEventListener("change", onEdit);
       host.removeEventListener("click", onClick);
