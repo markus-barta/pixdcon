@@ -12,6 +12,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { ConfigStore } from "../../src/config/config-store.js";
 import {
   DEFAULTS,
@@ -33,7 +34,7 @@ import {
   resolveOutput,
 } from "../../src/state/precedence.js";
 import { buildEffectiveConfig } from "../../src/state/runtime-config.js";
-import { requireNetGuard, startStack } from "../helpers/harness.js";
+import { requireNetGuard, startStack, stopApp } from "../helpers/harness.js";
 
 test("output policy: shadow as soon as one reason for it exists, and unknown ownership is a reason", () => {
   requireNetGuard();
@@ -328,11 +329,62 @@ test("N7 shutdown: a scene import that is still running when the wait for the re
 });
 
 // --- Phase 3 ---------------------------------------------------------------------------------------
-// Blocker: W4 StatusPublisher.start and W3 telemetry are skeletons here.
-// The namespace, CONNECT will and route-health portions are tested above.
-test.todo(
-  "namespace: with mqtt.statusBaseTopic set in config.json, health, state, config and the last will use it from the first connect; overlays, controls and telemetry stay under baseTopic",
-);
+test("namespace: with mqtt.statusBaseTopic set in config.json, health, state, config and the last will use it from the first connect; overlays, controls and telemetry stay under baseTopic", async (t) => {
+  const clock = manualClock();
+  const topics = createTopics({
+    baseTopic: "contract/base",
+    statusBaseTopic: "contract/status",
+  });
+  const stack = await startStack(t, {
+    clock,
+    config: (raw) => {
+      raw.devices = [raw.devices[1]];
+      raw.mqtt = { baseTopic: topics.base, statusBaseTopic: topics.statusBase };
+    },
+    prepare: async ({ broker }) => {
+      await broker.inject(
+        topics.v1ConfigEffective,
+        JSON.stringify({ devices: [] }),
+        { retain: true },
+      );
+      await broker.inject(topics.mode("ulanzi-t"), "pause", { retain: true });
+      await broker.inject(
+        topics.overlayDeviceScene("ulanzi-t"),
+        "test-pattern",
+        { retain: true },
+      );
+    },
+  });
+  const { mqtt, state } = stack.app.modules;
+  assert.ok(mqtt);
+  assert.equal(mqtt.options.will?.topic, topics.health);
+  assert.equal(mqtt.options.will?.retain, true);
+  await until(
+    () => stack.broker.retained()[topics.telemetry("ulanzi-t")] !== undefined,
+  );
+  await until(() =>
+    [topics.health, topics.state, topics.config, topics.configEffective].every(
+      (topic) => stack.broker.retained()[topic] !== undefined,
+    ),
+  );
+  const retained = stack.broker.retained();
+  for (const suffix of ["health", "state", "config", "config/effective"])
+    assert.equal(
+      retained[`${topics.base}/${suffix}`],
+      suffix === "config/effective"
+        ? JSON.stringify({ devices: [] })
+        : undefined,
+    );
+  assert.equal(state.view("ulanzi-t").desired.mode.value, "pause");
+  assert.equal(state.view("ulanzi-t").desired.scene.scene, "test-pattern");
+  assert.equal(retained[topics.mode("ulanzi-t")], "pause");
+  assert.equal(retained[topics.overlayDeviceScene("ulanzi-t")], "test-pattern");
+  assert.equal(retained[`${topics.statusBase}/ulanzi-t/telemetry`], undefined);
+  assert.equal(
+    (await stack.api("/api/health")).body.mqttNamespace.statusBaseTopic,
+    topics.statusBase,
+  );
+});
 test("namespace: an invalid config.json at start leaves MQTT off for the run (nothing is published under any base); repairing the file reports restartRequired", async (t) => {
   const stack = await startStack(t, { configText: "{broken", mqtt: false });
   assert.equal(stack.app.modules.mqtt, null);
@@ -364,11 +416,138 @@ test("namespace change: editing mqtt.* in config.json while running moves nothin
   assert.equal(app.topics.base, "another/base");
   assert.equal(app.controller().restartRequired, null);
 });
-// Blocker: integration of W3 drivers/telemetry, W4 publications and W5
-// scene adapter. W1's output decisions and no-clear paths are real tests.
-test.todo(
-  "output policy: driver choice, overlay clears, controls, telemetry, discovery, availability, status lists, the plug and scene state files all follow the same answer for a device",
-);
+test("output policy: driver choice, overlay clears, controls, telemetry, discovery, availability, status lists, the plug and scene state files all follow the same answer for a device", async (t) => {
+  const clock = manualClock();
+  const topics = createTopics();
+  const stack = await startStack(t, {
+    clock,
+    prepare: async ({ config, dataDir, broker }) => {
+      const file = join(dataDir, "policy.mjs");
+      await writeFile(
+        file,
+        `import { writeFile } from 'node:fs/promises';
+        export default { _boilerStatePath: new URL('./history.json', import.meta.url),
+          async init(ctx) { await writeFile(this._boilerStatePath, ctx.deviceName); },
+          async render(surface) { if (surface.buf) { surface.buf.fill(7); await surface.push(); }
+            else await surface.drawCustom({text: 'policy'}); return 1000; } };`,
+      );
+      config.scenes = { policy: { path: file } };
+      config.devices.forEach((/** @type {any} */ device) => {
+        device.scene = "policy";
+        device.powerCyclePlugin = {
+          topic: `test-plug/${device.name}`,
+          offWaitMs: 1,
+          onWaitMs: 1,
+        };
+      });
+      config.devices[0].output = "shadow";
+      for (const device of config.devices)
+        await broker.inject(topics.overlayDeviceScene(device.name), "policy", {
+          retain: true,
+        });
+    },
+  });
+  const { state, scheduler, runtime } = stack.app.modules;
+  await until(
+    () =>
+      state.view("pixoo-t").effective.frameCount >= 1 &&
+      state.view("ulanzi-t").effective.frameCount >= 1,
+  );
+  assert.equal(scheduler.runtimes.get("pixoo-t")?.driver.info.drives, false);
+  assert.equal(scheduler.runtimes.get("ulanzi-t")?.driver.info.drives, true);
+  assert.equal(runtime.outputOf("pixoo-t"), "shadow");
+  assert.equal(runtime.outputOf("ulanzi-t"), "drive");
+  assert.equal(
+    await readFile(join(stack.dataDir, "history.json"), "utf8"),
+    "ulanzi-t",
+  );
+  assert.equal(
+    await readFile(
+      join(
+        stack.dataDir,
+        ".pixdcon2/shadow-state/pixoo-t/policy-_boilerStatePath.json",
+      ),
+      "utf8",
+    ),
+    "pixoo-t",
+  );
+  for (const name of ["pixoo-t", "ulanzi-t"]) {
+    await state.chooseScene(name, "policy");
+    await state.setMode(name, "pause");
+    await state.setBrightness(name, 42);
+  }
+  await until(
+    () =>
+      stack.broker.retained()[topics.overlayDeviceScene("ulanzi-t")] ===
+      undefined,
+  );
+  await until(
+    () => stack.broker.retained()[topics.telemetry("ulanzi-t")] !== undefined,
+  );
+  await until(
+    () =>
+      JSON.parse(stack.broker.retained()[topics.state] ?? "{}").devices
+        ?.length === 1,
+  );
+  const retained = stack.broker.retained();
+  assert.equal(retained[topics.overlayDeviceScene("pixoo-t")], "policy");
+  assert.equal(retained[topics.mode("pixoo-t")], undefined);
+  assert.equal(retained[topics.brightnessOverride("pixoo-t")], undefined);
+  assert.equal(retained[topics.mode("ulanzi-t")], "pause");
+  assert.equal(retained[topics.brightnessOverride("ulanzi-t")], "42");
+  assert.equal(retained[topics.telemetry("pixoo-t")], undefined);
+  assert.equal(retained[topics.availability("pixoo-t")], undefined);
+  assert.equal(retained[topics.availability("ulanzi-t")], "online");
+  assert.ok(
+    Object.keys(retained).some((topic) =>
+      topic.startsWith(`${topics.discoveryPrefix}/sensor/pixdcon_ulanzi-t_`),
+    ),
+  );
+  assert.ok(
+    Object.keys(retained).every(
+      (topic) =>
+        !topic.startsWith(`${topics.discoveryPrefix}/sensor/pixdcon_pixoo-t_`),
+    ),
+  );
+  for (const topic of [topics.health, topics.state, topics.configEffective])
+    assert.deepEqual(
+      JSON.parse(retained[topic]).devices.map(
+        (/** @type {any} */ device) => device.name,
+      ),
+      ["ulanzi-t"],
+    );
+  const shadow = scheduler.loop("pixoo-t"),
+    driven = scheduler.loop("ulanzi-t");
+  assert.ok(shadow && driven);
+  await until(
+    () =>
+      driven.status().phase === "paused" &&
+      stack.awtrix.state().brightness === Math.round((42 * 255) / 100),
+  );
+  assert.equal(await shadow.powerCycle(), false);
+  const cycle = driven.powerCycle();
+  await until(
+    () =>
+      driven.plugOnOwed &&
+      driven.nextWakeAt === new Date(clock.now() + 1).toISOString(),
+  );
+  await clock.advance(1);
+  await until(() => !driven.plugOnOwed);
+  await clock.advance(1);
+  assert.equal(await cycle, true);
+  assert.equal(
+    stack.broker
+      .published()
+      .some((entry) => entry.topic === "test-plug/pixoo-t"),
+    false,
+  );
+  assert.ok(
+    stack.broker
+      .published()
+      .some((entry) => entry.topic === "test-plug/ulanzi-t"),
+  );
+  assert.equal(stack.pixoo.state().requests.length, 0);
+});
 test("interlock: ownership unknown keeps a device in shadow; v1's list naming it keeps it in shadow with 'still driven by pixdcon v1'; a list without it releases it within a second", async (t) => {
   const clock = manualClock();
   const stack = await startStack(t, {
@@ -575,16 +754,177 @@ test("saved choice from outside: editing only a device's scene in config.json sw
   assert.equal(stack.app.factories.changeImpact("savedScene"), "view");
   assert.equal(state.view("ulanzi-t").incarnation, 2);
 });
-// Blocker: W5 SceneRegistry.load/refresh/sync bodies. The finished lane's
-// order is tested in ordering.test.js; shutdown is exercised above.
-test.todo(
-  "registry lane: a path overlay whose import is slow, then a newer path for the same key: the registry ends on the newer one; a change during the first load is applied after it; shutdown waits for the import that runs",
-);
-// Blocker: W3 Scheduler.start is a skeleton. State/settings/main reject
-// stale revisions; the complete four-consumer case awaits integration.
-test.todo(
-  "effective revision: runtime config, state store, scheduler and settings service apply a runtime change only when its rev is higher than the one they hold",
-);
+test("registry lane: a path overlay whose import is slow, then a newer path for the same key: the registry ends on the newer one; a change during the first load is applied after it; shutdown waits for the import that runs", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, {
+    clock,
+    config: (raw) => {
+      raw.devices = [];
+      raw.scenes = {};
+    },
+  });
+  await stopApp(stack.app, clock);
+  const slot = "__pixdconIntRegistry";
+  const globals = /** @type {any} */ (globalThis);
+  const first = importGate(),
+    slow = importGate(),
+    shutdown = importGate();
+  globals[slot] = { first, slow, shutdown };
+  const source = (
+    /** @type {string} */ name,
+    /** @type {string|undefined} */ gate = undefined,
+  ) =>
+    `${gate ? `globalThis['${slot}'].${gate}.entered(); await globalThis['${slot}'].${gate}.wait;` : ""}
+     export default { name: '${name}', render() { return 1000; } };`;
+  for (const [name, gate] of /** @type {const} */ ([
+    ["first", "first"],
+    ["second", undefined],
+    ["slow", "slow"],
+    ["latest", undefined],
+    ["shutdown", "shutdown"],
+  ]))
+    await writeFile(join(stack.dataDir, `${name}.mjs`), source(name, gate));
+  const raw = JSON.parse(await readFile(stack.configPath, "utf8"));
+  raw.scenes = { phase: { path: "first.mjs" } };
+  await writeFile(stack.configPath, JSON.stringify(raw));
+  const app = await createApp(
+    {
+      PIXDCON_CONFIG_PATH: stack.configPath,
+      WEB_PORT: "0",
+      MOSQUITTO_HOST: stack.broker.host,
+      MQTT_PORT: String(stack.broker.port),
+      PIXDCON2_MQTT_ANONYMOUS: "1",
+    },
+    { clock, logger: stack.app.logger },
+  );
+  stack.cleanup.add("registry app", async () => {
+    for (const gate of [first, slow, shutdown]) gate.release();
+    await stopApp(app, clock);
+    delete globals[slot];
+  });
+  const starting = app.start();
+  await first.started;
+  await app.modules.config.update((raw) => {
+    raw.scenes = { phase: { path: "second.mjs" } };
+  });
+  assert.ok(
+    app.modules.registryLane.pending() >= 2,
+    "the startup change queues behind the running import",
+  );
+  first.release();
+  await starting;
+  const { scenes, registryLane, overlays } = app.modules;
+  assert.equal(scenes.get("phase")?.name, "second");
+  const pathTopic = app.topics.overlayScenePath("phase");
+  await stack.broker.inject(pathTopic, "slow.mjs", { retain: true });
+  await until(() => overlays.get("scene-path:phase")?.value === "slow.mjs");
+  await clock.advance(300);
+  await slow.started;
+  await stack.broker.inject(pathTopic, "latest.mjs", { retain: true });
+  await until(() => overlays.get("scene-path:phase")?.value === "latest.mjs");
+  await clock.advance(300);
+  assert.equal(
+    scenes.get("phase")?.name,
+    "second",
+    "uncommitted import is invisible",
+  );
+  assert.ok(registryLane.pending() >= 2);
+  slow.release();
+  await registryLane.drain();
+  assert.equal(scenes.get("phase")?.name, "latest");
+  assert.equal(scenes.get("phase")?.pathSource, "overlay");
+  await stack.broker.inject(pathTopic, "shutdown.mjs", { retain: true });
+  await until(() => overlays.get("scene-path:phase")?.value === "shutdown.mjs");
+  await clock.advance(300);
+  await shutdown.started;
+  let stopped = false;
+  const stopping = app.stop().then(() => {
+    stopped = true;
+  });
+  await clock.advance(100);
+  assert.equal(stopped, false, "shutdown waits for the running import");
+  shutdown.release();
+  await stopping;
+  assert.equal(
+    scenes.get("phase")?.name,
+    "latest",
+    "the aborted import commits nothing",
+  );
+  assert.equal(registryLane.pending(), 0);
+});
+
+function importGate() {
+  let entered = () => {},
+    release = () => {};
+  const started = new Promise((resolve) => {
+    entered = () => resolve(undefined);
+  });
+  const wait = new Promise((resolve) => {
+    release = () => resolve(undefined);
+  });
+  return { entered, release, started, wait };
+}
+test("effective revision: runtime config, state store, scheduler and settings service apply a runtime change only when its rev is higher than the one they hold", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, {
+    clock,
+    mqtt: false,
+    config: (raw) => {
+      raw.devices = [raw.devices[1]];
+    },
+  });
+  const { config, runtime, state, scheduler, settings, scenes } =
+    stack.app.modules;
+  const old = runtime.get();
+  await config.updateDevice("ulanzi-t", (raw) => {
+    raw.displayName = "Newest";
+    raw.sceneSettings = { clock: { refresh_ms: 2500 } };
+  });
+  const current = runtime.get();
+  assert.ok(current.rev > old.rev);
+  assert.equal(state.view("ulanzi-t").displayName, "Newest");
+  assert.equal(
+    settings.state("ulanzi-t", "clock").values.refresh_ms.effective,
+    2500,
+  );
+  const before = state.view("ulanzi-t").rev;
+  const sync = t.mock.method(scenes, "sync");
+  for (const effective of [old, current, old]) {
+    runtime.emit("changed", {
+      effective,
+      previous: current,
+      diff: {
+        devicesAdded: [],
+        devicesRemoved: ["ulanzi-t"],
+        devicesChanged: {},
+        scenesAdded: [],
+        scenesRemoved: ["clock"],
+        scenesChanged: [],
+        globalChanged: [],
+      },
+    });
+  }
+  // Even a delayed config notification reads current saved inputs; it cannot
+  // manufacture an older effective config from the event's stale payload.
+  config.emit("changed", { config: {}, rev: 0 });
+  await stack.app.modules.registryLane.drain();
+  assert.equal(runtime.get(), current);
+  assert.equal(state.runtimeRev, current.rev);
+  assert.equal(scheduler.rev, current.rev);
+  assert.equal(settings.runtimeRev, current.rev);
+  assert.equal(state.view("ulanzi-t").rev, before);
+  assert.equal(state.view("ulanzi-t").displayName, "Newest");
+  assert.equal(
+    settings.state("ulanzi-t", "clock").values.refresh_ms.effective,
+    2500,
+  );
+  assert.equal(scheduler.expected.get("ulanzi-t"), current.devices[0]);
+  assert.equal(
+    sync.mock.callCount(),
+    0,
+    "stale scene diffs never reach the registry lane",
+  );
+});
 test("config store order: an own write is not an outside edit; a file read that began before a write of this process finished is dropped and repeated; a file event alone changes nothing", async (t) => {
   const stack = await startStack(t, { mqtt: false });
   const { config } = stack.app.modules;
