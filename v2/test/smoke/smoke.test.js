@@ -643,7 +643,7 @@ function asyncFile(path) {
   // Access is observed once per event-loop turn without changing loop time.
   return () => { if (!present) void access(path).then(() => { present = true; }, () => {}); return present; };
 }
-// Blocked W1/W5: effective output construction and the real scene path are skeletons.
+// Blocked W1: RuntimeConfig effective output policy and composition; the W5 scene path is implemented.
 test.todo(
   "PIXDCON2_FORCE_SHADOW=1: no fake receives a request although config.json says drive",
 );

@@ -536,7 +536,7 @@ function telemetryAnswer(client, topic) {
     client.on("message", listener);
   });
 }
-// Blocker: W1 gateway/overlay/state and W3 scheduler/loops remain skeletons.
+// Blocker: W1 MqttGateway, OverlayService, RuntimeConfig and StateStore retained bootstrap.
 test.todo(
   "retained bootstrap: devices start with mode and brightness already applied, without a fixed sleep",
 );
