@@ -31,8 +31,11 @@
  *    instance is released; when import or init failed, only the
  *    replacement's subscriptions are released and the old instance never
  *    notices.
- *    Only instances handed out by acquire belong to a loop. A replacement
- *    superseded before acquisition is released by the runtime itself. Loads
+ *    Each entry tracks handed-out, unreleased instances. Loops acquire the
+ *    replacement before releasing their old instance. When the last holder
+ *    leaves, the runtime retires any unacquired current replacement and
+ *    fences pending init, including on scene switch, disable or removal.
+ *    A replacement superseded before acquisition is released by the runtime. Loads
  *    and supersede follows keep their captured output mode; a caller from a
  *    retired mode cannot acquire the rebuilt loop's instance.
  *  - only the changed file is imported again; the file token is per file (S-18)
@@ -52,13 +55,14 @@ import { createV1Instance } from "./v1-scene-adapter.js";
 import { installSharedResolution } from "./v1-shared.js";
 
 /** Cancellation by a newer load, output mode, release or shutdown is not a scene failure. */
-class SupersededLoadError extends SceneError {
+export class SupersededLoadError extends SceneError {
   /** @param {import("../types.js").InstanceRef} ref */
   constructor(ref) {
     super(`Scene ${ref.scene} load was superseded`, {
       ...ref,
       phase: "import",
     });
+    this.superseded = true;
   }
 }
 
@@ -83,6 +87,11 @@ class SupersededLoadError extends SceneError {
  */
 
 /**
+ * @typedef {object} SceneAcquireOptions
+ * @property {import("../types.js").OutputMode} [output] caller's captured output mode; a retired mode rejects as SupersededLoadError
+ */
+
+/**
  * @typedef {object} SceneRuntimeDeps
  * @property {import("./scene-registry.js").SceneRegistry} registry
  * @property {import("./settings-service.js").SettingsService} settings runtimeContext(ref) and releaseContext(ref)
@@ -101,6 +110,8 @@ class SupersededLoadError extends SceneError {
  * @property {number} generation
  * @property {SceneInstance|null} current
  * @property {Promise<SceneInstance>|null} pending
+ * @property {Set<SceneInstance>} holders handed-out instances not yet released; one loop per (scene, device), acquire before release
+ * @property {number} acquiring admitted acquire calls; failed/cancelled first callers cannot strand a replacement
  */
 
 export class SceneRuntime {
@@ -111,8 +122,6 @@ export class SceneRuntime {
     this.entries = new Map();
     /** @type {Set<SceneInstance>} */
     this.instances = new Set();
-    /** @type {WeakSet<SceneInstance>} Instances actually handed to render loops. */
-    this.handedOut = new WeakSet();
     /** @type {Set<Promise<SceneInstance>>} */
     this.pending = new Set();
     this.closed = false;
@@ -131,10 +140,11 @@ export class SceneRuntime {
    *
    * @param {string} scene
    * @param {string} device
+   * @param {SceneAcquireOptions} [options]
    * @returns {Promise<SceneInstance>}
    * @throws {import("../core/errors.js").SceneError} unknown scene, import failed, no render(), init failed
    */
-  async acquire(scene, device) {
+  async acquire(scene, device, options = {}) {
     if (this.closed)
       throw new SceneError("Scene runtime is stopped", {
         scene,
@@ -143,6 +153,8 @@ export class SceneRuntime {
       });
     const key = JSON.stringify([scene, device]);
     const output = this.deps.outputOf(device);
+    if (options.output !== undefined && options.output !== output)
+      throw new SupersededLoadError({ scene, device, token: "" });
     let entry = this.entries.get(key);
     if (!entry) {
       entry = {
@@ -152,26 +164,51 @@ export class SceneRuntime {
         generation: 0,
         current: null,
         pending: null,
+        holders: new Set(),
+        acquiring: 0,
       };
       this.entries.set(key, entry);
     } else {
       this.refreshOutput(entry, output);
     }
-    for (;;) {
-      const instance = await (entry.current ??
-        entry.pending ??
-        this.load(entry));
-      // This also covers callers following a superseding load. An output
-      // rebuild may have retired its result before this continuation ran.
+    entry.acquiring++;
+    try {
+      for (;;) {
+        const instance = await (entry.current ??
+          entry.pending ??
+          this.load(entry));
+        // This also covers callers following a superseding load. An output
+        // rebuild may have retired its result before this continuation ran.
+        if (
+          this.closed ||
+          this.entries.get(key) !== entry ||
+          entry.output !== output ||
+          this.deps.outputOf(device) !== output
+        ) {
+          if (!entry.holders.has(instance)) await this.release(instance);
+          throw new SupersededLoadError(instance.ref);
+        }
+        if (entry.current !== instance) continue;
+        entry.holders.add(instance);
+        return instance;
+      }
+    } finally {
+      entry.acquiring--;
+      // invalidate may prepare another mode while the very first acquire
+      // is pending. If every caller then rejects, there was no holder to
+      // trigger release: retire that preparation here as well.
       if (
-        this.closed ||
-        this.entries.get(key) !== entry ||
-        entry.output !== output
-      )
-        throw new SupersededLoadError(instance.ref);
-      if (entry.current !== instance) continue;
-      this.handedOut.add(instance);
-      return instance;
+        entry.acquiring === 0 &&
+        entry.holders.size === 0 &&
+        this.entries.get(key) === entry
+      ) {
+        entry.generation++;
+        this.entries.delete(key);
+        const replacement = entry.current;
+        entry.current = null;
+        entry.pending = null;
+        if (replacement) await this.release(replacement);
+      }
     }
   }
 
@@ -184,13 +221,14 @@ export class SceneRuntime {
     const previous = entry.current;
     entry.current = null;
     entry.pending = null;
-    if (previous && !this.handedOut.has(previous)) void this.release(previous);
+    if (previous && !entry.holders.has(previous)) void this.release(previous);
   }
 
   /**
-   * Release this instance, and no other instance of the same scene and
-   * device: unsubscribe immediately, then destroy after its frame finishes
-   * or the drain budget expires. The loop passes its remaining stop budget.
+   * Release this exact holder. When the last holder leaves, also retire
+   * its entry's unacquired replacement and fence pending init. Loops must
+   * acquire before releasing on reload. Unsubscribe immediately, then
+   * destroy after frame drain or the loop's remaining stop budget expires.
    *
    * @param {SceneInstance} instance
    * @param {SceneReleaseOptions} [options]
@@ -198,13 +236,28 @@ export class SceneRuntime {
   async release(instance, options) {
     const key = JSON.stringify([instance.scene, instance.device]);
     const entry = this.entries.get(key);
-    if (entry?.current === instance) {
-      entry.generation++;
-      entry.current = null;
-      this.entries.delete(key);
+    const wasHeld = entry?.holders.delete(instance) ?? false;
+    let replacement = null;
+    if (entry && (wasHeld || entry.current === instance)) {
+      if (entry.current === instance) {
+        entry.generation++;
+        entry.current = null;
+        entry.pending = null;
+      }
+      if (entry.holders.size === 0) {
+        entry.generation++;
+        this.entries.delete(key);
+        replacement = entry.current;
+        entry.current = null;
+        entry.pending = null;
+      }
     }
+    // Start both releases before yielding, so every retired MQTT owner is
+    // fenced immediately. Internal retirement of an unheld older instance
+    // cannot evict a newer entry or its still-pending first acquire.
+    const retiring = replacement ? this.release(replacement, options) : null;
     try {
-      await instance.release(options);
+      await Promise.all([instance.release(options), retiring]);
     } finally {
       this.instances.delete(instance);
       this.deps.settings.releaseContext(instance.ref);
@@ -276,7 +329,8 @@ export class SceneRuntime {
     const current = () =>
       !this.closed &&
       this.entries.get(key) === entry &&
-      entry.generation === generation;
+      entry.generation === generation &&
+      this.deps.outputOf(device) === output;
     /** @type {Promise<SceneInstance>} */
     const promise = (async () => {
       /** @type {SceneInstance|null} */
@@ -320,7 +374,7 @@ export class SceneRuntime {
         const previous = entry.current;
         entry.current = instance;
         this.instances.add(instance);
-        if (previous && !this.handedOut.has(previous))
+        if (previous && !entry.holders.has(previous))
           void this.release(previous);
         return instance;
       } catch (error) {
@@ -332,7 +386,8 @@ export class SceneRuntime {
           if (
             !this.closed &&
             this.entries.get(key) === entry &&
-            entry.output === output
+            entry.output === output &&
+            this.deps.outputOf(device) === output
           ) {
             if (entry.pending) return entry.pending;
             if (entry.current) return entry.current;
@@ -351,7 +406,17 @@ export class SceneRuntime {
     // Register cleanup without creating an unhandled rejected finally() promise.
     const settled = () => {
       this.pending.delete(promise);
-      if (entry.pending === promise) entry.pending = null;
+      if (entry.pending === promise) {
+        entry.pending = null;
+        if (
+          !entry.current &&
+          entry.holders.size === 0 &&
+          this.entries.get(key) === entry
+        ) {
+          entry.generation++;
+          this.entries.delete(key);
+        }
+      }
     };
     void promise.then(settled, settled);
     return promise;

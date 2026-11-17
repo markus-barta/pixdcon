@@ -12,6 +12,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renameSync } from "node:fs";
+import { registerHooks } from "node:module";
 import {
   mkdir,
   mkdtemp,
@@ -673,6 +674,501 @@ test("scene reload ownership: consecutive reloads release replacements no loop a
   await runtime.release(old);
   assert.equal(runtime.instances.size, 1);
   assert.deepEqual([...contexts.subscriptions.keys()], [replacement.ref.token]);
+});
+
+let virtualSceneId = 0;
+
+/** A real imported scene, served from memory; timers and MQTT write to a path ledger.
+ * @param {import('node:test').TestContext} t */
+async function virtualRuntimePeer(t) {
+  await mkdir(OUT_DIR, { recursive: true });
+  const dataDir = await mkdtemp(join(OUT_DIR, "scene-walk-"));
+  const file = join(dataDir, "virtual.mjs");
+  const url = pathToFileURL(file).href;
+  const slot = `__scene_walk_${++virtualSceneId}`;
+  const control = {
+    next: 0,
+    failNext: false,
+    failed: 0,
+    started: 0,
+    /** @type {ReturnType<typeof Promise.withResolvers<void>>|null} */
+    gate: null,
+    /** @type {Set<ReturnType<typeof Promise.withResolvers<void>>>} */
+    gates: new Set(),
+    /** @type {Map<number, {device: string, path: string}>} */
+    live: new Map(),
+    /** @type {Map<number, number>} */
+    destroyed: new Map(),
+    /** @type {Array<{id: number, device: string, path: string, kind: string}>} */
+    writes: [],
+  };
+  /** @type {any} */ (globalThis)[slot] = control;
+  const source = `
+    const control = globalThis[${JSON.stringify(slot)}];
+    export default {
+      async init(ctx) {
+        this.id = ++control.next;
+        this._boilerStatePath ??= 'v1/.state/home3-boiler.json';
+        const record = { device: ctx.deviceName, path: this._boilerStatePath };
+        control.live.set(this.id, record);
+        const write = kind => control.writes.push({id: this.id, ...record, kind});
+        this.timer = setInterval(() => write('timer'), 2);
+        ctx.mqtt.subscribe('input', () => write('mqtt'));
+        ctx.settings.subscribe(() => {});
+        control.started++;
+        if (control.failNext) { control.failNext = false; control.failed++; throw Error('seeded init failure'); }
+        if (control.gate) { control.gates.add(control.gate); await control.gate.promise; }
+      },
+      render(surface) { surface.record(this.id); },
+      destroy() {
+        clearInterval(this.timer);
+        control.live.delete(this.id);
+        control.destroyed.set(this.id, (control.destroyed.get(this.id) ?? 0) + 1);
+      }
+    };
+  `;
+  const hook = registerHooks({
+    resolve(specifier, context, next) {
+      if (specifier.split("?")[0] === url)
+        return { url: specifier, shortCircuit: true };
+      return next(specifier, context);
+    },
+    load(specifier, context, next) {
+      if (specifier.split("?")[0] === url)
+        return { format: "module", source, shortCircuit: true };
+      return next(specifier, context);
+    },
+  });
+  /** @type {Map<string, {output: import('../../src/types.js').OutputMode, exists: boolean, enabled: boolean}>} */
+  const devices = new Map();
+  for (const device of ["first", "second"])
+    devices.set(device, { output: "drive", exists: true, enabled: true });
+  const contexts = sceneContexts();
+  const peer = {
+    runtime: new SceneRuntime({
+      registry: /** @type {any} */ ({
+        fileOf: () => file,
+        get: () => ({ resources: { assetDirs: [], stateFields: [] } }),
+      }),
+      settings: /** @type {any} */ ({
+        runtimeContext: contexts.settingsContext,
+        releaseContext: contexts.releaseContext,
+      }),
+      mqttContext: contexts.mqttContext,
+      settingsTopic: () => "settings",
+      outputOf: (device) => devices.get(device)?.output ?? "shadow",
+      dataDir,
+      logger: silentLogger,
+    }),
+    control,
+    contexts,
+    devices,
+  };
+  t.after(async () => {
+    control.gate?.resolve();
+    for (const gate of control.gates) gate.resolve();
+    await peer.runtime.releaseAll();
+    hook.deregister();
+    delete (/** @type {any} */ (globalThis)[slot]);
+  });
+  return peer;
+}
+
+for (const flip of ["none", "before", "after"]) {
+  test(`scene last holder: release old instance without reacquire; output flip ${flip}`, async (t) => {
+    const { runtime, control, contexts, devices } = await virtualRuntimePeer(t);
+    const policy = devices.get("first");
+    assert.ok(policy);
+    const old = await runtime.acquire("scene", "first");
+    await runtime.invalidate(["scene"]);
+    await waitFor(() => runtime.pending.size === 0);
+    assert.equal(
+      runtime.instances.size,
+      2,
+      "D held, R prepared but unacquired",
+    );
+    if (flip === "before") policy.output = "shadow";
+    await runtime.release(old);
+    if (flip === "after") policy.output = "shadow";
+    const before = control.writes.length;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await contexts.deliver("input", "late");
+    assert.equal(
+      control.writes.length,
+      before,
+      "no timer or MQTT state-path writes after release",
+    );
+    assert.equal(runtime.instances.size, 0);
+    assert.equal(runtime.entries.size, 0);
+    assert.equal(control.live.size, 0);
+    assert.equal(contexts.subscriptions.size, 0);
+    assert.equal(contexts.settings.size, 0);
+    assert.deepEqual([...control.destroyed.values()], [1, 1]);
+  });
+}
+
+test("scene last holder: a pending replacement is fenced; late init and repeated old release cannot evict a fresh entry", async (t) => {
+  const { runtime, control, contexts } = await virtualRuntimePeer(t);
+  const old = await runtime.acquire("scene", "first");
+  const gate = Promise.withResolvers();
+  control.gate = gate;
+  await runtime.invalidate(["scene"]);
+  await waitFor(() => control.started === 2);
+  await runtime.release(old);
+  assert.equal(runtime.entries.size, 0);
+  assert.equal(runtime.instances.size, 0);
+  // The admitted init is uncancellable. A new entry must not follow it.
+  control.gate = null;
+  const fresh = await runtime.acquire("scene", "first");
+  gate.resolve(undefined);
+  await waitFor(() => runtime.pending.size === 0);
+  await runtime.release(old);
+  assert.equal(runtime.instances.size, 1);
+  assert.equal(runtime.isCurrent(fresh), true);
+  assert.equal(control.live.size, 1);
+  assert.deepEqual([...contexts.subscriptions.keys()], [fresh.ref.token]);
+  assert.deepEqual([...contexts.settings.keys()], [fresh.ref.token]);
+});
+
+test("scene last holder: several unreleased generations retain one prepared current until the final holder leaves", async (t) => {
+  const { runtime, control, contexts } = await virtualRuntimePeer(t);
+  const first = await runtime.acquire("scene", "first");
+  await runtime.invalidate(["scene"]);
+  await waitFor(() => runtime.pending.size === 0);
+  const second = await runtime.acquire("scene", "first");
+  await runtime.invalidate(["scene"]);
+  await waitFor(() => runtime.pending.size === 0);
+  assert.equal(runtime.instances.size, 3);
+  await runtime.release(first);
+  await runtime.release(first);
+  assert.equal(
+    runtime.instances.size,
+    2,
+    "second holder still owns the prepared replacement",
+  );
+  assert.equal(runtime.entries.size, 1);
+  await runtime.release(second);
+  assert.equal(runtime.instances.size, 0);
+  assert.equal(runtime.entries.size, 0);
+  assert.equal(control.live.size, 0);
+  assert.equal(contexts.subscriptions.size, 0);
+});
+
+test("scene last holder: releasing current before an older holder keeps the remaining entry usable", async (t) => {
+  const { runtime, control } = await virtualRuntimePeer(t);
+  const old = await runtime.acquire("scene", "first");
+  await runtime.invalidate(["scene"]);
+  await waitFor(() => runtime.pending.size === 0);
+  const current = await runtime.acquire("scene", "first");
+  await runtime.release(current);
+  assert.equal(
+    runtime.entries.size,
+    1,
+    "old holder still belongs to the entry",
+  );
+  await runtime.invalidate(["scene"]);
+  await waitFor(() => runtime.pending.size === 0);
+  const next = await runtime.acquire("scene", "first");
+  await runtime.release(old);
+  assert.equal(runtime.isCurrent(next), true);
+  assert.equal(control.live.size, 1);
+  await runtime.release(next);
+  assert.equal(runtime.entries.size, 0);
+});
+
+test("scene acquire output guard: exported superseded error marks stale callers without handing out or retiring the new mode", async (t) => {
+  const { SupersededLoadError } =
+    await import("../../src/scenes/scene-runtime.js");
+  assert.equal(typeof SupersededLoadError, "function");
+  const { runtime, control, devices } = await virtualRuntimePeer(t);
+  const policy = devices.get("first");
+  assert.ok(policy);
+  const stale = (/** @type {unknown} */ error) =>
+    error instanceof SupersededLoadError && error.superseded === true;
+  await assert.rejects(
+    runtime.acquire("scene", "first", { output: "shadow" }),
+    stale,
+  );
+  assert.equal(runtime.entries.size, 0, "reject before creating an entry");
+  assert.equal(control.started, 0);
+  const drive = await runtime.acquire("scene", "first", { output: "drive" });
+  policy.output = "shadow";
+  await assert.rejects(
+    runtime.acquire("scene", "first", { output: "drive" }),
+    stale,
+  );
+  assert.equal(control.started, 1, "retired caller cannot start a shadow init");
+  const shadow = await runtime.acquire("scene", "first", { output: "shadow" });
+  await runtime.release(drive);
+  await assert.rejects(
+    runtime.acquire("scene", "first", { output: "drive" }),
+    stale,
+  );
+  await runtime.release(drive);
+  assert.equal(runtime.isCurrent(shadow), true);
+  assert.equal(runtime.instances.size, 1);
+  assert.equal(control.started, 2);
+});
+
+test("scene init policy fence: output change during init rejects without another acquire or invalidate", async (t) => {
+  const { runtime, control, contexts, devices } = await virtualRuntimePeer(t);
+  const gate = Promise.withResolvers();
+  control.gate = gate;
+  const stale = assert.rejects(runtime.acquire("scene", "first"), /superseded/);
+  await waitFor(() => control.started === 1);
+  const policy = devices.get("first");
+  assert.ok(policy);
+  policy.output = "shadow";
+  gate.resolve(undefined);
+  await stale;
+  assert.equal(runtime.entries.size, 0);
+  assert.equal(runtime.instances.size, 0);
+  assert.equal(control.live.size, 0);
+  assert.equal(contexts.subscriptions.size, 0);
+  assert.equal(contexts.settings.size, 0);
+});
+
+test("scene first caller: cancelling every acquire retires a cross-mode invalidate replacement, ready or pending", async (t) => {
+  for (const ready of [false, true]) {
+    const { runtime, control, contexts, devices } = await virtualRuntimePeer(t);
+    const drive = Promise.withResolvers();
+    const shadow = Promise.withResolvers();
+    control.gate = drive;
+    const stale = assert.rejects(
+      runtime.acquire("scene", "first"),
+      /superseded/,
+    );
+    await waitFor(() => control.started === 1);
+    const policy = devices.get("first");
+    assert.ok(policy);
+    policy.output = "shadow";
+    control.gate = ready ? null : shadow;
+    await runtime.invalidate(["scene"]);
+    await waitFor(() => control.started === 2);
+    if (ready) await waitFor(() => runtime.instances.size === 1);
+    drive.resolve(undefined);
+    await stale;
+    assert.equal(
+      runtime.entries.size,
+      0,
+      "no current or future caller remains",
+    );
+    shadow.resolve(undefined);
+    await waitFor(() => runtime.pending.size === 0);
+    assert.equal(runtime.instances.size, 0);
+    assert.equal(control.live.size, 0);
+    assert.equal(contexts.subscriptions.size, 0);
+    assert.equal(contexts.settings.size, 0);
+  }
+});
+
+test("scene ownership model: seeded lifecycle walks preserve owners, state paths and a bounded instance set", async (t) => {
+  const started = performance.now();
+  // Only intervals are virtual: real imports/init/adapter cleanup still run.
+  // Advancing these timers makes path-write checks deterministic after each step.
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const peer = await virtualRuntimePeer(t);
+  const { control, contexts, devices } = peer;
+  /** @type {Map<string, import('../../src/scenes/scene-runtime.js').SceneInstance>} */
+  const held = new Map();
+  /** @type {Map<import('../../src/scenes/scene-runtime.js').SceneInstance, number>} */
+  const identities = new Map();
+  const coverage = new Set();
+  const operations = [
+    "acquire",
+    "acquire",
+    "invalidate",
+    "invalidate",
+    "release",
+    "flip",
+    "remove",
+    "disable",
+    "fail",
+    "shutdown",
+  ];
+  /** @param {string} device */
+  const releaseDevice = async (device) => {
+    for (const [key, instance] of held) {
+      if (instance.device !== device) continue;
+      held.delete(key);
+      await peer.runtime.release(instance);
+    }
+  };
+  /** @param {string} evidence */
+  const check = async (evidence) => {
+    const { runtime } = peer;
+    const holders = new Set(held.values());
+    const expected = new Set(holders);
+    for (const [key, entry] of runtime.entries) {
+      const owners = [...holders].filter(
+        (instance) => JSON.stringify([instance.scene, instance.device]) === key,
+      );
+      assert.ok(
+        owners.length > 0,
+        `entry has no remaining holder: ${evidence}`,
+      );
+      if (entry.current) expected.add(entry.current);
+    }
+    assert.deepEqual(
+      runtime.instances,
+      expected,
+      `every installed instance has a holder or is their current replacement: ${evidence}`,
+    );
+    assert.ok(
+      runtime.instances.size <= held.size * 2,
+      `at most held + one replacement per key: ${evidence}`,
+    );
+    assert.equal(
+      control.live.size,
+      runtime.instances.size,
+      `timers match installed instances: ${evidence}`,
+    );
+    assert.equal(
+      contexts.subscriptions.size,
+      runtime.instances.size,
+      `MQTT owners match instances: ${evidence}`,
+    );
+    assert.equal(
+      contexts.settings.size,
+      runtime.instances.size,
+      `settings owners match instances: ${evidence}`,
+    );
+    for (const instance of runtime.instances) {
+      if (!identities.has(instance)) {
+        await instance.renderFrame({
+          deviceName: instance.device,
+          record: (/** @type {number} */ id) => identities.set(instance, id),
+        });
+      }
+      const id = identities.get(instance);
+      assert.notEqual(id, undefined);
+      const record = control.live.get(/** @type {number} */ (id));
+      const device = devices.get(instance.device);
+      assert.ok(record && device);
+      assert.ok(
+        device.exists && device.enabled,
+        `no instance after removal/disable: ${evidence}`,
+      );
+      assert.equal(
+        record.path.startsWith("v1/"),
+        device.output === "drive",
+        `state path agrees with outputOf: ${evidence}`,
+      );
+    }
+    const before = control.writes.length;
+    t.mock.timers.tick(4);
+    await contexts.deliver("input", "pulse");
+    const writes = control.writes.slice(before);
+    assert.equal(
+      writes.filter((write) => write.kind === "timer").length,
+      runtime.instances.size * 2,
+      evidence,
+    );
+    assert.equal(
+      writes.filter((write) => write.kind === "mqtt").length,
+      runtime.instances.size,
+      evidence,
+    );
+    for (const write of writes) {
+      const device = devices.get(write.device);
+      assert.ok(device);
+      assert.ok(
+        control.live.has(write.id) && device.exists && device.enabled,
+        `no retired timer/MQTT writer: ${evidence}`,
+      );
+      assert.equal(
+        write.path.startsWith("v1/"),
+        device.output === "drive",
+        `no drive writes in shadow: ${evidence}`,
+      );
+    }
+    assert.ok(
+      [...control.destroyed.values()].every((count) => count === 1),
+      `destroy exactly once: ${evidence}`,
+    );
+  };
+  for (const seed of [0x89, 0x427b3b08, 0x15ed48c9, 0xb797f284]) {
+    let random = seed >>> 0;
+    const next = () => {
+      random ^= random << 13;
+      random ^= random >>> 17;
+      random ^= random << 5;
+      return random >>> 0;
+    };
+    const trace = [];
+    for (let step = 0; step < 160; step++) {
+      const operation = operations[next() % operations.length];
+      const device = ["first", "second"][next() % 2];
+      const scene = ["one", "two"][next() % 2];
+      const key = JSON.stringify([scene, device]);
+      const policy = devices.get(device);
+      assert.ok(policy);
+      coverage.add(operation);
+      trace.push(`${operation}(${scene},${device})`);
+      const evidence = `seed=${seed.toString(16)} step=${step} ${trace.slice(-16).join(" → ")}`;
+      if (operation === "acquire") {
+        // An acquire may begin a fresh enabled device runtime after removal.
+        policy.exists = policy.enabled = true;
+        const old = held.get(key);
+        const instance = await peer.runtime.acquire(scene, device);
+        held.set(key, instance);
+        if (old && old !== instance) await peer.runtime.release(old);
+      } else if (operation === "release") {
+        const instance = held.get(key);
+        if (instance) {
+          held.delete(key);
+          await peer.runtime.release(instance);
+        }
+      } else if (operation === "invalidate") {
+        await peer.runtime.invalidate([scene]);
+      } else if (
+        operation === "flip" ||
+        operation === "remove" ||
+        operation === "disable"
+      ) {
+        if (operation === "flip")
+          policy.output = policy.output === "drive" ? "shadow" : "drive";
+        if (operation === "remove") policy.exists = false;
+        if (operation === "disable") policy.enabled = false;
+        // Scheduler's documented stop/rebuild boundary; deliberately no reacquire.
+        await releaseDevice(device);
+      } else if (operation === "fail") {
+        if (policy.exists && policy.enabled) {
+          control.failNext = true;
+          if (held.has(key)) {
+            await peer.runtime.invalidate([scene]);
+          } else {
+            await assert.rejects(
+              peer.runtime.acquire(scene, device),
+              /seeded init failure/,
+              evidence,
+            );
+          }
+        }
+      } else {
+        await peer.runtime.releaseAll();
+        held.clear();
+      }
+      await waitFor(() => peer.runtime.pending.size === 0);
+      await check(evidence);
+      control.failNext = false;
+      if (peer.runtime.closed)
+        peer.runtime = new SceneRuntime(peer.runtime.deps);
+    }
+    await peer.runtime.releaseAll();
+    held.clear();
+    await check(`seed=${seed.toString(16)} final shutdown`);
+    peer.runtime = new SceneRuntime(peer.runtime.deps);
+  }
+  assert.deepEqual(
+    coverage,
+    new Set(operations),
+    "every operation was generated",
+  );
+  assert.ok(control.writes.some((write) => write.kind === "timer"));
+  assert.ok(control.writes.some((write) => write.kind === "mqtt"));
+  assert.ok(control.failed > 0, "failing init actually ran and cleaned up");
+  assert.ok(performance.now() - started < 5000, "model stays inside 5 s");
 });
 
 test("instance tokens: a replacement instance and the instance it replaces have different tokens, MQTT owners and settings subscribers", async (t) => {

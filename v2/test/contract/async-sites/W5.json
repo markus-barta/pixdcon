@@ -26,27 +26,27 @@
       "test": "test/contract/scenes.test.js: registry order:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:163",
+      "site": "src/scenes/scene-runtime.js:179",
       "id": "work:this.load#1",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
-      "fence": "only the current entry generation installs; acquire hands ownership to a loop only in its captured output mode; unacquired replacements are released on retirement; supersede follows stay in the same mode; only the latest reload reports a failure",
+      "fence": "only the current entry generation and resolved output mode install; acquire records a per-entry unreleased holder and checks optional caller output before load and handoff; the last holder or last cancelled first acquire deletes the entry, fences pending init and releases unacquired current; supersede follows stay in the same mode; only the latest reload reports a failure",
       "test": "test/contract/scenes.test.js: first load output supersede:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:250",
+      "site": "src/scenes/scene-runtime.js:303",
       "id": "work:this.load#2",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
-      "fence": "only the current entry generation installs; acquire hands ownership to a loop only in its captured output mode; unacquired replacements are released on retirement; supersede follows stay in the same mode; only the latest reload reports a failure",
-      "test": "test/contract/scenes.test.js: scene reload ownership:"
+      "fence": "only the current entry generation and resolved output mode install; acquire records a per-entry unreleased holder and checks optional caller output before load and handoff; the last holder or last cancelled first acquire deletes the entry, fences pending init and releases unacquired current; supersede follows stay in the same mode; only the latest reload reports a failure",
+      "test": "test/contract/scenes.test.js: scene ownership model:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:295",
+      "site": "src/scenes/scene-runtime.js:349",
       "id": "import:import#1",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
-      "fence": "only the current entry generation installs; acquire hands ownership to a loop only in its captured output mode; unacquired replacements are released on retirement; supersede follows stay in the same mode; only the latest reload reports a failure",
+      "fence": "only the current entry generation and resolved output mode install; acquire records a per-entry unreleased holder and checks optional caller output before load and handoff; the last holder or last cancelled first acquire deletes the entry, fences pending init and releases unacquired current; supersede follows stay in the same mode; only the latest reload reports a failure",
       "test": "test/contract/scenes.test.js: scene runtime order:"
     },
     {
