@@ -84,7 +84,9 @@ export class PlugRecovery {
       try {
         const on = await mqtt.publish(plug.topic, plug.onPayload ?? '{"state":"ON"}', { qos: 1, retain: false, timeoutMs });
         if (on.outcome === "confirmed") this.clear();
-        logger[this.owed ? "warn" : "info"](`[PlugRecovery] ${name}: plug ON ${on.outcome}`);
+        const message = `[PlugRecovery] ${name}: plug ON ${on.outcome}`;
+        if (this.owed) logger.warn(message);
+        else logger.info(message);
       } catch (error) { logger.warn(`[PlugRecovery] ${name}: plug ON failed: ${String(error)}`); }
       this.nextWakeAt = null;
       if (!this.owed) return true;

@@ -48,7 +48,7 @@ export class StubMqtt extends EventEmitter {
 
 /** @param {string} name @param {'pixoo'|'ulanzi'} type @param {string} address @param {Partial<import('../../src/types.js').EffectiveDevice>} [patch] @returns {import('../../src/types.js').EffectiveDevice} */
 export function deviceEntry(name, type, address, patch = {}) {
-  return { name, type, address, origin: "config", addressSource: "config", enabled: true, enabledSource: "config", savedScene: "red", output: { mode: "drive", requested: "drive", reason: null }, displayName: name, comment: "", preview: { pollMs: 2000, showGrid: false }, minFrameMs: 500, maxPowerCycles: 10, powerCyclePlugin: null, cleanupLegacyApps: false, sceneSettings: {}, blobKeys: [], ...patch };
+  return { name, type, address, origin: "config", addressSource: "config", enabled: true, held: false, enabledSource: "config", savedScene: "red", output: { mode: "drive", requested: "drive", reason: null }, displayName: name, comment: "", preview: { pollMs: 2000, showGrid: false }, minFrameMs: 500, maxPowerCycles: 10, powerCyclePlugin: null, cleanupLegacyApps: false, sceneSettings: {}, blobKeys: [], ...patch };
 }
 /** @param {import('../../src/types.js').EffectiveDevice} device @returns {import('../../src/types.js').DesiredState} */
 export function desiredOf(device) {

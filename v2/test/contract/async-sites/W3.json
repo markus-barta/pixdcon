@@ -7,7 +7,8 @@
       "input": "unfinished legacy app cleanup retry, every five minutes",
       "metadata": "driver lifetime, cleanup completion, one abortable retry identity",
       "fence": "closed and timer identity checked before queueing; closed/completed checked again in serialized transport queue; cleanup never changes readiness or brightness; close aborts timer",
-      "test": "test/smoke/drivers-render.test.js: AWTRIX cleanup has one slow retry timer"
+      "test": "test/smoke/drivers-render.test.js: AWTRIX cleanup has one slow retry timer",
+      "was": "createAwtrixDriver"
     },
     {
       "site": "src/drivers/http-transport.js:40",
@@ -47,7 +48,8 @@
       "input": "1 s health derivation tick",
       "metadata": "registered device facts measured by current runtime views",
       "fence": "deriveHealth ages measured facts within the current play/contact window; quiet-to-play alone sets the window baseline once; repeated expect never refreshes it; scheduler whileCurrent fences runtime reports",
-      "test": "test/smoke/drivers-render.test.js: health timers:"
+      "test": "test/smoke/drivers-render.test.js: health timers:",
+      "was": "HealthModel.start"
     },
     {
       "site": "src/health/telemetry.js:63",
@@ -55,7 +57,8 @@
       "input": "gateway reconnect",
       "metadata": "poller object identity, active flag and last measured snapshot",
       "fence": "current() checked after every read and before each publish; stop invalidates the poller; reconnect repeats measured data; timer only paces reads",
-      "test": "test/smoke/drivers-render.test.js: telemetry on fake displays publishes native snapshots"
+      "test": "test/smoke/drivers-render.test.js: telemetry on fake displays publishes native snapshots",
+      "was": "TelemetryCollector.start"
     },
     {
       "site": "src/health/telemetry.js:80",
@@ -87,7 +90,8 @@
       "input": "poll timer and screen read-back",
       "metadata": "active feed identity and AbortSignal; one read at a time",
       "fence": "feed cancellation invalidates reads before they can put; scheduler whileCurrent fences runtime frame puts",
-      "test": "test/smoke/drivers-render.test.js: previews in order:"
+      "test": "test/smoke/drivers-render.test.js: previews in order:",
+      "was": "PreviewStore.feedFromDevice"
     },
     {
       "site": "src/render/render-loop.js:172",
@@ -119,7 +123,8 @@
       "input": "effective config change",
       "metadata": "effective revision, per-device lane position and runtime token",
       "fence": "decideStamp on revision; device lane reads expected again after retirement; build checks current object; reports use whileCurrent; synchronous previewFrame returns null when retired",
-      "test": "test/smoke/drivers-render.test.js: queued drive then shadow changes and additions"
+      "test": "test/smoke/drivers-render.test.js: queued drive then shadow changes and additions",
+      "was": "Scheduler.start"
     },
     {
       "site": "src/render/scheduler.js:170",
@@ -178,7 +183,7 @@
       "test": "test/smoke/drivers-render.test.js: owed ON reports each publish deadline"
     },
     {
-      "site": "src/render/plug-recovery.js:99",
+      "site": "src/render/plug-recovery.js:101",
       "id": "timer:clock.sleep#1",
       "input": "owed ON retry or shutdown deadline",
       "metadata": "scheduler-owned per-device debt; captured original plug; one shared restore task; owner shutdown deadline",
@@ -192,7 +197,124 @@
       "metadata": "scheduler-owned per-device debt; captured original plug; one shared restore task; owner shutdown deadline",
       "fence": "OFF settles before ON; certain OFF error or confirmed ON alone clears debt; replacement/retired runtimes share one publisher; reconnect aborts only ON retry; deadlines fence attempts and bound shutdown; publish deadline/heartbeat prevents false watchdog restarts",
       "test": "test/smoke/drivers-render.test.js: a dead runtime rebuilt by watchdog keeps its pending ON"
+    },
+    {
+      "site": "src/drivers/awtrix-driver.js:64",
+      "id": "then:options.clock.sleep().then#1",
+      "input": "cleanup retry timer completion",
+      "metadata": "driver lifetime and captured cleanup timer",
+      "fence": "elapsed, closed and cleanupTimer identity are checked before enqueue; queue rechecks closed and cleanupDone",
+      "test": "test/smoke/drivers-render.test.js: AWTRIX cleanup has one slow retry timer"
+    },
+    {
+      "site": "src/drivers/awtrix-driver.js:68",
+      "id": "then:options.clock.sleep().then().catch#1",
+      "input": "cleanup retry rejection",
+      "metadata": "driver lifetime",
+      "fence": "closed suppresses logging and rearming after close; scheduleCleanup rejects closed, completed or already armed work",
+      "test": "test/smoke/drivers-render.test.js: AWTRIX cleanup has one slow retry timer"
+    },
+    {
+      "site": "src/drivers/http-transport.js:14",
+      "id": "then:tail.then#1",
+      "input": "previous HTTP operation settlement",
+      "metadata": "driver lifetime and FIFO queue position",
+      "fence": "queue waits for predecessor, checks closed before task, and clears readiness on failure",
+      "test": "test/smoke/drivers-render.test.js: fake drivers close queued work"
+    },
+    {
+      "site": "src/drivers/http-transport.js:26",
+      "id": "then:result.then#1",
+      "input": "HTTP operation success or rejection",
+      "metadata": "this queue operation promise",
+      "fence": "both branches settle only the private queue tail; no device or readiness mutation",
+      "test": "test/smoke/drivers-render.test.js: fake drivers keep compound frame writes serialized"
+    },
+    {
+      "site": "src/drivers/http-transport.js:42",
+      "id": "then:options.clock.sleep().then#1",
+      "input": "request deadline completion or cancellation",
+      "metadata": "request-local deadline and abort controllers",
+      "fence": "cancelled sleep cannot expire; Promise.race settles once, aborting transport on deadline; late body cannot restore readiness",
+      "test": "test/smoke/drivers-render.test.js: drivers in order:"
+    },
+    {
+      "site": "src/health/telemetry.js:51",
+      "id": "then:poller.replay().catch#1",
+      "input": "reconnect replay rejection",
+      "metadata": "poller closure for this replay",
+      "fence": "only logs the replay failure; publish checks poller active and map identity before each outward call",
+      "test": "test/smoke/drivers-render.test.js: telemetry on fake displays publishes native snapshots"
+    },
+    {
+      "site": "src/health/telemetry.js:122",
+      "id": "then:pace().catch#1",
+      "input": "poll timer failure",
+      "metadata": "poller active flag and map identity",
+      "fence": "current() suppresses errors of retired pollers; pace rechecks current after each sleep",
+      "test": "test/smoke/drivers-render.test.js: telemetry in order:"
+    },
+    {
+      "site": "src/render/plug-recovery.js:69",
+      "id": "then:this.retry().finally#1",
+      "input": "shared ON restore task settlement",
+      "metadata": "scheduler-owned per-device debt and task promise",
+      "fence": "one task is shared until settlement; finally only clears that task, never forgives plug debt",
+      "test": "test/smoke/drivers-render.test.js: owed original ON survives shadow"
+    },
+    {
+      "site": "src/render/render-loop.js:151",
+      "id": "then:this.run().catch#1",
+      "input": "loop task rejection",
+      "metadata": "this runtime loop object",
+      "fence": "only logs this loop failure; scheduler whileCurrent fences all runtime reports",
+      "test": "test/smoke/drivers-render.test.js: watchdog restarts a dead runtime only",
+      "was": "RenderLoop.start"
+    },
+    {
+      "site": "src/render/render-loop.js:153",
+      "id": "then:this.run().catch().finally#1",
+      "input": "loop task settlement",
+      "metadata": "this runtime loop object",
+      "fence": "sets only this loop alive flag; replaced loops cannot change the replacement object",
+      "test": "test/smoke/drivers-render.test.js: watchdog restarts a dead runtime only"
+    },
+    {
+      "site": "src/render/render-loop.js:171",
+      "id": "then:this.task.then#1",
+      "input": "loop task completion during stop",
+      "metadata": "stop call and this loop task",
+      "fence": "Promise.race settles this stop result once; no state mutation in completion callback",
+      "test": "test/smoke/drivers-render.test.js: stop retries an owed ON within its deadline"
+    },
+    {
+      "site": "src/render/render-loop.js:172",
+      "id": "then:this.deps.clock.sleep().then#1",
+      "input": "stop deadline or cancellation",
+      "metadata": "stop-local AbortController",
+      "fence": "Promise.race settles once; post-race code retires only this loop and closes its own driver",
+      "test": "test/smoke/drivers-render.test.js: stop retries an owed ON within its deadline"
+    },
+    {
+      "site": "src/render/render-loop.js:183",
+      "id": "then:this.deps.scenes.release().catch#1",
+      "input": "release rejection after stop deadline",
+      "metadata": "captured retired instance",
+      "fence": "only logs; instance detached before release, so no replacement is touched",
+      "test": "test/smoke/drivers-render.test.js: mode changes during a stop request"
     }
   ],
-  "none": []
+  "none": [],
+  "resolved": {
+    "createPixooDriver": "Factory synchronously builds a driver. HTTP answers, deadlines and FIFO completions are consumed by createTransport in http-transport.js, inventoried there.",
+    "HealthModel.frameOk": "Synchronous fact update, no listener or asynchronous callback; scheduler hands callers a whileCurrent view fenced by runtime token.",
+    "HealthModel.contactOk": "Synchronous fact update, no listener or asynchronous callback; scheduler hands callers a whileCurrent view fenced by runtime token.",
+    "HealthModel.renderFailed": "Synchronous fact update, no listener or asynchronous callback; scheduler hands callers a whileCurrent view fenced by runtime token.",
+    "HealthModel.expect": "Synchronous fact update, no listener or asynchronous callback; scheduler hands callers a whileCurrent view fenced by runtime token.",
+    "HealthModel.powerCycles": "Synchronous fact update, no listener or asynchronous callback; scheduler hands callers a whileCurrent view fenced by runtime token.",
+    "PreviewStore.put": "Synchronous frame copy; runtime callers use the scheduler whileCurrent view; device-feed completion checks its active flag before calling put.",
+    "RenderLoop.apply": "Synchronous target/flag update and sleeper abort; asynchronous wakes and reports are consumed by the inventoried run/sleep sites.",
+    "RenderLoop.retryNow": "Synchronous target/flag update and sleeper abort; asynchronous wakes and reports are consumed by the inventoried run/sleep sites.",
+    "RenderLoop.reloadScene": "Synchronous target/flag update and sleeper abort; asynchronous wakes and reports are consumed by the inventoried run/sleep sites."
+  }
 }
