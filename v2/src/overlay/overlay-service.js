@@ -266,7 +266,22 @@
  */
 
 import { EventEmitter } from "node:events";
-import { todo } from "../core/todo.js";
+import { randomBytes } from "node:crypto";
+import { NAME_PATTERN, address, validateDevice } from "../config/schema.js";
+import { HttpError } from "../core/errors.js";
+import { decideStamp, mayCause } from "../core/ordering.js";
+import { freeze, object } from "../core/values.js";
+import { normalizeSettingValue } from "../state/precedence.js";
+import { overlayDevicePatch } from "../state/runtime-config.js";
+import {
+  blobView,
+  createLayers,
+  layersView,
+  planChoice,
+  reduce,
+  sceneInputs,
+} from "./scene-layers.js";
+import { createMirror, reduceMirror, topicView } from "./topic-fence.js";
 
 /** @typedef {import("../types.js").OverlayRecord} OverlayRecord */
 /** @typedef {import("../types.js").PlaybackMode} PlaybackMode */
@@ -310,6 +325,26 @@ export class OverlayService extends EventEmitter {
   constructor(deps) {
     super();
     this.deps = deps;
+    this.layers = createLayers({ blobWriter: deps.blobWriter });
+    this.mirror = createMirror();
+    this.active = false;
+    this.started = false;
+    this.writes = 0;
+    /** @type {Map<string, {topic: string, device: string|null, scene: string|null, key: string|null, kind: import("../types.js").OverlayKind, receivedAt: string}>} */
+    this.metadata = new Map();
+    /** @type {Map<string, {requestedAt: string, attempts: number}>} */
+    this.clears = new Map();
+    /** @type {Set<string>} Only names supplied by the reducers' changed effects, accumulated for debounce. */
+    this.changedDevices = new Set();
+    /** @type {Set<string>} */
+    this.changedScenes = new Set();
+    this.notice = false;
+    /** @type {AbortController|null} */
+    this.debounce = null;
+    /** @type {{cancel: () => void}|null} */
+    this.tick = null;
+    /** @type {Array<() => void>} */
+    this.unwire = [];
   }
 
   /**
@@ -323,12 +358,73 @@ export class OverlayService extends EventEmitter {
    * @returns {Promise<{settled: boolean}>}
    */
   async start(options) {
-    return todo("OverlayService.start", options);
+    if (this.started)
+      return { settled: this.deps.mqtt?.status().settled ?? true };
+    this.started = true;
+    this.active = true;
+    this.layers = createLayers({
+      saved: this.deps.savedSuppressions(),
+      secret: randomBytes(16).toString("hex"),
+      blobWriter: this.deps.blobWriter,
+    });
+    const mqtt = this.deps.mqtt;
+    if (!mqtt) return { settled: true };
+    /** @param {{connection: number}} event */
+    const connect = ({ connection }) => {
+      if (!this.active) return;
+      this.feed({ type: "connect", connection });
+      this.feedMirror({ type: "connect", connection });
+    };
+    /** @param {{connection: number}} event */
+    const disconnect = ({ connection }) => {
+      if (!this.active) return;
+      this.feed({ type: "disconnect", connection });
+      this.feedMirror({ type: "disconnect", connection });
+    };
+    /** @param {{connection: number, complete: boolean}} event */
+    const settled = (event) => {
+      if (!this.active) return;
+      const decision = this.feed({ type: "settled", ...event });
+      if (decision.action === "apply") this.emit("settled", event);
+    };
+    mqtt.on("connect", connect);
+    mqtt.on("disconnect", disconnect);
+    mqtt.on("settled", settled);
+    this.unwire.push(
+      () => mqtt.off("connect", connect),
+      () => mqtt.off("disconnect", disconnect),
+      () => mqtt.off("settled", settled),
+    );
+    if (mqtt.status().state === "connected")
+      connect({ connection: mqtt.status().connection });
+    for (const filter of [
+      ...this.deps.topics.overlayFilters,
+      this.deps.topics.settingsFilter,
+      `${this.deps.topics.base}/+/mode`,
+      `${this.deps.topics.base}/+/brightness_override`,
+    ]) {
+      this.unwire.push(
+        mqtt.subscribe("overlays", filter, (message) => this.accept(message)),
+      );
+    }
+    this.tick = this.deps.clock.every(() => {
+      if (!this.active) return;
+      this.feed({ type: "tick" });
+    }, 1000);
+    const hint = await mqtt.settle({ timeoutMs: options?.timeoutMs ?? 5000 });
+    if (this.active) this.flushChanged();
+    return { settled: hint.complete };
   }
 
   /** Unsubscribe and cancel timers. Pending clears are dropped; retained state on the broker is left as it is. */
   async stop() {
-    return todo("OverlayService.stop");
+    this.active = false;
+    this.tick?.cancel();
+    this.debounce?.abort();
+    for (const off of this.unwire.splice(0)) off();
+    this.changedDevices.clear();
+    this.changedScenes.clear();
+    this.notice = false;
   }
 
   /**
@@ -350,7 +446,15 @@ export class OverlayService extends EventEmitter {
    * @param {Array<{name: string, output: import("../types.js").OutputMode}>} devices every device of the effective config, also disabled ones
    */
   applyOutputs(devices) {
-    return todo("OverlayService.applyOutputs", devices);
+    if (!this.active) return;
+    const outputs = new Map(
+      devices.map((device) => [device.name, device.output]),
+    );
+    for (const name of this.layers.outputs.keys())
+      if (!outputs.has(name)) this.feed({ type: "removed", device: name });
+    for (const [device, output] of outputs)
+      if (this.layers.outputs.get(device) !== output)
+        this.feed({ type: "output", device, output });
   }
 
   // -------------------------------------------------------------------------
@@ -359,7 +463,136 @@ export class OverlayService extends EventEmitter {
 
   /** @returns {OverlayRecord[]} every stored overlay, also invalid and superseded ones */
   list() {
-    return todo("OverlayService.list");
+    /** @type {OverlayRecord[]} */
+    const records = [];
+    for (const [device, topic] of this.layers.granular) {
+      if (topic.value === null) continue;
+      const id = `device-scene:${device}`;
+      const view = layersView(this.layers, device);
+      const value = view.granular;
+      if (!value) continue;
+      const valid = this.sceneKnown(value.scene);
+      const suppression = view.suppressions.granular;
+      records.push(
+        this.record(
+          id,
+          "device-scene",
+          this.deps.topics.overlayDeviceScene(device),
+          value.scene,
+          value.scene,
+          valid,
+          !valid
+            ? "unknown scene"
+            : suppression
+              ? "replaced by your choice"
+              : !value.confirmed
+                ? "waiting for the broker"
+                : null,
+          value.confirmed,
+          valid && value.inEffect,
+          null,
+          value.origin,
+          value.connection,
+          device,
+          null,
+          null,
+          suppression
+            ? { generation: suppression.generation, at: suppression.at }
+            : null,
+          view.writing.granular,
+        ),
+      );
+    }
+    const blob = blobView(this.layers);
+    if (blob) {
+      let value = null,
+        valid = blob.valid,
+        problem = valid ? null : "invalid blob JSON";
+      if (valid) {
+        value = JSON.parse(blob.text);
+        const problems = this.blobProblems(value);
+        if (problems.length) {
+          valid = false;
+          problem = problems.join("; ");
+        } else {
+          const ignored = Array.isArray(value?.devices)
+            ? value.devices.flatMap((/** @type {unknown} */ entry) =>
+                object(entry) ? overlayDevicePatch(entry).ignored : [],
+              )
+            : [];
+          if (ignored.length)
+            problem = `ignored keys: ${[...new Set(ignored)].join(", ")}`;
+        }
+      }
+      const entries = Array.isArray(value?.devices) ? value.devices : [];
+      const off = entries.some(
+        (/** @type {unknown} */ entry) =>
+          object(entry) &&
+          overlayDevicePatch(entry, { confirmed: blob.confirmed }).patch
+            .enabled === false,
+      );
+      const held =
+        !blob.confirmed &&
+        entries.some(
+          (/** @type {unknown} */ entry) =>
+            object(entry) && typeof entry.ip === "string" && entry.ip.trim(),
+        );
+      records.push(
+        this.record(
+          "blob",
+          "blob",
+          this.deps.topics.overlayBlob,
+          blob.text,
+          value,
+          valid,
+          problem ?? (!blob.confirmed ? "waiting for the broker" : null),
+          blob.confirmed,
+          valid && blob.confirmed,
+          off ? "off" : held ? "held" : null,
+          blob.origin,
+          blob.connection,
+          null,
+          null,
+          null,
+          null,
+          this.layers.blob.outstanding.length > 0,
+        ),
+      );
+    }
+    for (const [id, entry] of this.mirror.topics) {
+      const view = topicView(this.mirror, id);
+      if (!view || view.value === null) continue;
+      const meta = this.metadata.get(id);
+      if (!meta) continue;
+      const parsed = this.parseValue(
+        entry.kind,
+        view.value,
+        meta.scene,
+        meta.key,
+      );
+      records.push(
+        this.record(
+          id,
+          entry.kind,
+          meta.topic,
+          view.value,
+          parsed.value,
+          parsed.valid,
+          parsed.problem ?? (!view.confirmed ? "waiting for the broker" : null),
+          view.confirmed,
+          parsed.valid && view.command !== null && view.confirmed,
+          parsed.valid ? view.restriction : null,
+          view.origin === "own" ? "live" : view.origin,
+          view.connection,
+          meta.device,
+          meta.scene,
+          meta.key,
+          null,
+          entry.record.outstanding.some((payload) => payload === ""),
+        ),
+      );
+    }
+    return freeze(records);
   }
 
   /**
@@ -367,7 +600,7 @@ export class OverlayService extends EventEmitter {
    * @returns {OverlayRecord|undefined}
    */
   get(id) {
-    return todo("OverlayService.get", id);
+    return this.list().find((record) => record.id === id);
   }
 
   /**
@@ -380,7 +613,22 @@ export class OverlayService extends EventEmitter {
    * @returns {{granular: import("../state/precedence.js").LayerScene|null, blob: import("../state/precedence.js").LayerScene|null}}
    */
   sceneInputs(device) {
-    return todo("OverlayService.sceneInputs", device);
+    const inputs = sceneInputs(this.layers, device);
+    /** @param {"granular"|"blob"} layer */
+    const value = (layer) => {
+      const entry = inputs[layer];
+      if (!entry) return null;
+      const id = layer === "granular" ? `device-scene:${device}` : "blob";
+      return {
+        scene: entry.scene,
+        inEffect: entry.inEffect && this.sceneKnown(entry.scene),
+        since:
+          this.metadata.get(id)?.receivedAt ??
+          new Date(this.deps.clock.now()).toISOString(),
+        overlayId: id,
+      };
+    };
+    return { granular: value("granular"), blob: value("blob") };
   }
 
   /**
@@ -391,7 +639,7 @@ export class OverlayService extends EventEmitter {
    * @returns {{granular: (SceneSuppression & {confirmed: boolean})|null, blob: (SceneSuppression & {confirmed: boolean})|null}}
    */
   suppressions(device) {
-    return todo("OverlayService.suppressions", device);
+    return freeze(layersView(this.layers, device).suppressions);
   }
 
   /**
@@ -412,7 +660,61 @@ export class OverlayService extends EventEmitter {
    * @returns {import("../types.js").StructuralOverlays}
    */
   structural() {
-    return todo("OverlayService.structural");
+    /** @type {import("../types.js").StructuralOverlays} */
+    const structural = {
+      blobDevices: [],
+      blobScenes: {},
+      scenePaths: {},
+      deviceIps: {},
+      deviceEnabled: {},
+      deviceHeld: [],
+    };
+    const blob = blobView(this.layers);
+    if (blob?.valid) {
+      const value = JSON.parse(blob.text);
+      for (const entry of Array.isArray(value.devices) ? value.devices : []) {
+        if (
+          !object(entry) ||
+          typeof entry.name !== "string" ||
+          !NAME_PATTERN.test(entry.name)
+        )
+          continue;
+        const allowed = overlayDevicePatch(entry, {
+          confirmed: blob.confirmed,
+        });
+        if (allowed.held) structural.deviceHeld.push(entry.name);
+        if (blob.confirmed)
+          structural.blobDevices.push({ ...entry, name: entry.name });
+        else if (allowed.patch.enabled === false)
+          structural.blobDevices.push({ name: entry.name, enabled: false });
+      }
+      if (blob.confirmed && object(value.scenes))
+        structural.blobScenes = value.scenes;
+    }
+    for (const [id, meta] of this.metadata) {
+      const view = topicView(this.mirror, id);
+      if (!view || view.value === null) continue;
+      const parsed = this.parseValue(
+        view.kind,
+        view.value,
+        meta.scene,
+        meta.key,
+      );
+      if (!parsed.valid) continue;
+      if (view.restriction === "off" && meta.device)
+        structural.deviceEnabled[meta.device] = false;
+      if (view.restriction === "held" && meta.device)
+        structural.deviceHeld.push(meta.device);
+      if (view.command !== null && view.kind === "device-ip" && meta.device)
+        structural.deviceIps[meta.device] = /** @type {string} */ (
+          parsed.value
+        );
+      if (view.command !== null && view.kind === "scene-path" && meta.scene)
+        structural.scenePaths[meta.scene] = /** @type {string} */ (
+          parsed.value
+        );
+    }
+    return freeze(structural);
   }
 
   /**
@@ -425,7 +727,17 @@ export class OverlayService extends EventEmitter {
    * @returns {Record<string, unknown>}
    */
   settingValues(device, scene) {
-    return todo("OverlayService.settingValues", device, scene);
+    return Object.fromEntries(
+      this.list()
+        .filter(
+          (record) =>
+            record.kind === "setting" &&
+            record.device === device &&
+            record.scene === scene &&
+            record.inEffect,
+        )
+        .map((record) => [record.key, record.value]),
+    );
   }
 
   /**
@@ -437,7 +749,19 @@ export class OverlayService extends EventEmitter {
    * @returns {{mode: {value: PlaybackMode, record: OverlayRecord}|null, brightness: {percent: number, record: OverlayRecord}|null}}
    */
   controls(device) {
-    return todo("OverlayService.controls", device);
+    const mode = this.get(`mode:${device}`);
+    const brightness = this.get(`brightness:${device}`);
+    return {
+      mode: mode?.inEffect
+        ? { value: /** @type {PlaybackMode} */ (mode.value), record: mode }
+        : null,
+      brightness: brightness?.inEffect
+        ? {
+            percent: /** @type {number} */ (brightness.value),
+            record: brightness,
+          }
+        : null,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -455,7 +779,20 @@ export class OverlayService extends EventEmitter {
    * @returns {SupersedePlan}
    */
   planSupersede(device, at) {
-    return todo("OverlayService.planSupersede", device, at);
+    if (!this.deps.mqtt)
+      return {
+        device,
+        generation: (this.layers.generations.get(device) ?? 0) + 1,
+        at,
+        granular: null,
+        blob: null,
+      };
+    return freeze(
+      planChoice(this.layers, device, {
+        at,
+        output: this.deps.outputOf(device),
+      }),
+    );
   }
 
   /**
@@ -468,7 +805,16 @@ export class OverlayService extends EventEmitter {
    * @returns {{superseded: string[], clearPending: boolean}} ids of the records it replaced
    */
   applySupersede(plan) {
-    return todo("OverlayService.applySupersede", plan);
+    const superseded = this.list()
+      .filter(
+        (record) =>
+          (record.device === plan.device && record.kind === "device-scene") ||
+          (record.kind === "blob" && this.layers.blob.scenes.has(plan.device)),
+      )
+      .map((record) => record.id);
+    this.feed({ type: "choice", plan });
+    const writing = layersView(this.layers, plan.device).writing;
+    return { superseded, clearPending: writing.granular || writing.blob };
   }
 
   /**
@@ -479,7 +825,25 @@ export class OverlayService extends EventEmitter {
    * @throws {import("../core/errors.js").HttpError} 404 unknown_overlay, 503 mqtt_offline, 409 shadow_output for a device that is not driven and for a scene path when this instance drives nothing, 409 blob_not_writer for the blob when this instance is not its writer (W1)
    */
   async clear(id) {
-    return todo("OverlayService.clear", id);
+    if (id === "blob" && !this.deps.blobWriter)
+      throw new HttpError(
+        409,
+        "blob_not_writer",
+        "This instance is not the blob writer",
+      );
+    const record = this.get(id);
+    if (!record)
+      throw new HttpError(404, "unknown_overlay", `Unknown overlay: ${id}`);
+    this.requirePublish(record.device);
+    if (record.kind === "blob" || record.kind === "device-scene") {
+      const result = await this.deps.mqtt.publish(record.topic, "", {
+        retain: true,
+        qos: 1,
+      });
+      return { confirmed: result.outcome === "confirmed", pending: !result.ok };
+    }
+    const result = await this.writeMirror(record.topic, "");
+    return { confirmed: result.outcome === "confirmed", pending: !result.ok };
   }
 
   /**
@@ -493,7 +857,30 @@ export class OverlayService extends EventEmitter {
    * @returns {Promise<{cleared: string[], failed: string[]}>}
    */
   async clearSettings(device, scene, keys) {
-    return todo("OverlayService.clearSettings", device, scene, keys);
+    const selected =
+      keys ??
+      this.list()
+        .filter(
+          (record) =>
+            record.kind === "setting" &&
+            record.device === device &&
+            record.scene === scene,
+        )
+        .map((record) => record.key)
+        .filter((key) => key !== null);
+    /** @type {string[]} */
+    const cleared = [],
+      failed = [];
+    for (const key of selected) {
+      const id = `setting:${device}:${scene}:${key}`;
+      if (!this.get(id)) continue;
+      try {
+        (await this.clear(id)).confirmed ? cleared.push(key) : failed.push(key);
+      } catch {
+        failed.push(key);
+      }
+    }
+    return { cleared, failed };
   }
 
   /**
@@ -507,7 +894,29 @@ export class OverlayService extends EventEmitter {
    * @returns {Promise<{applied: string[], rejected: string[], failed: string[]}>}
    */
   async publishSettings(device, scene, values) {
-    return todo("OverlayService.publishSettings", device, scene, values);
+    this.requirePublish(device);
+    const schema = this.deps.schemaOf(scene) ?? {};
+    /** @type {string[]} */
+    const applied = [];
+    const rejected = Object.keys(values).filter(
+      (key) => !Object.hasOwn(schema, key),
+    );
+    /** @type {string[]} */
+    const failed = [];
+    for (const [key, field] of Object.entries(schema)) {
+      if (!Object.hasOwn(values, key)) continue;
+      const value = normalizeSettingValue(values[key], field);
+      if (value === undefined) {
+        rejected.push(key);
+        continue;
+      }
+      const result = await this.writeMirror(
+        this.deps.topics.setting(device, scene, key),
+        field.type === "json" ? JSON.stringify(value) : String(value),
+      );
+      (result.ok ? applied : failed).push(key);
+    }
+    return { applied, rejected, failed };
   }
 
   /**
@@ -522,7 +931,15 @@ export class OverlayService extends EventEmitter {
    * @throws {import("../core/errors.js").HttpError} 503 mqtt_offline, 409 shadow_output
    */
   async publishSceneOverlay(device, scene) {
-    return todo("OverlayService.publishSceneOverlay", device, scene);
+    this.requirePublish(device);
+    if (scene && !this.sceneKnown(scene))
+      throw new HttpError(400, "unknown_scene", `Unknown scene: ${scene}`);
+    const result = await this.deps.mqtt.publish(
+      this.deps.topics.overlayDeviceScene(device),
+      scene ?? "",
+      { retain: true, qos: 1 },
+    );
+    return { confirmed: result.outcome === "confirmed", pending: !result.ok };
   }
 
   /**
@@ -534,6 +951,380 @@ export class OverlayService extends EventEmitter {
    * @throws {import("../core/errors.js").HttpError} 503 mqtt_offline, 409 shadow_output
    */
   async publishControl(device, control) {
-    return todo("OverlayService.publishControl", device, control);
+    if (!this.deps.mqtt || this.deps.outputOf(device) === "shadow")
+      return { confirmed: false };
+    this.requirePublish(device);
+    const topic =
+      "mode" in control
+        ? this.deps.topics.mode(device)
+        : this.deps.topics.brightnessOverride(device);
+    const payload =
+      "mode" in control
+        ? control.mode
+        : control.brightness === null
+          ? ""
+          : String(control.brightness);
+    const result = await this.writeMirror(topic, payload);
+    if (result.outcome === "offline")
+      throw new HttpError(503, "mqtt_offline", "MQTT is offline");
+    return { confirmed: result.outcome === "confirmed" };
   }
+
+  /** @param {import("../mqtt/mqtt-gateway.js").MqttMessage} message */
+  accept(message) {
+    if (!this.active) return;
+    const parsed = this.deps.topics.parse(message.topic);
+    if (!parsed) return;
+    const id = recordId(parsed);
+    const meta = {
+      ...parsed,
+      topic: message.topic,
+      receivedAt: message.receivedAt,
+    };
+    if (parsed.kind === "blob" || parsed.kind === "device-scene") {
+      const input =
+        parsed.kind === "blob"
+          ? { type: /** @type {const} */ ("blob"), ...message }
+          : {
+              type: /** @type {const} */ ("granular"),
+              ...message,
+              device: parsed.device ?? "",
+            };
+      const result = reduce(this.layers, input);
+      this.layers = result.state;
+      if (result.effects.some((effect) => effect.type === "changed"))
+        this.metadata.set(id, meta);
+      this.effects(result.effects);
+    } else {
+      // PIXD-93: use the frozen mirror unchanged; its M26 regression is a
+      // separate coordinator ticket.
+      const result = reduceMirror(this.mirror, {
+        type: "message",
+        key: id,
+        kind: parsed.kind,
+        ...message,
+      });
+      this.mirror = result.state;
+      if (result.effects.length) this.metadata.set(id, meta);
+      this.mirrorEffects(result.effects);
+    }
+  }
+
+  /** @param {import("./scene-layers.js").LayersInput} input */
+  feed(input) {
+    const result = reduce(this.layers, input);
+    this.layers = result.state;
+    this.effects(result.effects);
+    return result.decision;
+  }
+
+  /** @param {import("./topic-fence.js").MirrorInput} input */
+  feedMirror(input) {
+    const result = reduceMirror(this.mirror, input);
+    this.mirror = result.state;
+    this.mirrorEffects(result.effects);
+    return result.decision;
+  }
+
+  /** @param {import("./scene-layers.js").LayersEffect[]} effects */
+  effects(effects) {
+    for (const effect of effects) {
+      if (effect.type === "retire") {
+        this.emit("suppression", effect);
+        continue;
+      }
+      if (effect.type === "warn") {
+        this.deps.logger.warn(`[Overlays] ${effect.message}`);
+        continue;
+      }
+      if (effect.type === "changed") {
+        const devices = [...effect.devices];
+        const scenes = [];
+        if (effect.blob) {
+          devices.push(...this.layers.outputs.keys());
+          const blob = blobView(this.layers);
+          if (blob?.valid) {
+            const value = JSON.parse(blob.text);
+            for (const entry of Array.isArray(value.devices)
+              ? value.devices
+              : [])
+              if (typeof entry?.name === "string") devices.push(entry.name);
+            if (object(value.scenes)) scenes.push(...Object.keys(value.scenes));
+          }
+        }
+        this.announce(devices, scenes);
+        continue;
+      }
+      if (
+        !this.active ||
+        !mayCause("publish", effect.evidence, { repeatOf: "command" })
+      )
+        continue;
+      const topic =
+        effect.type === "publish-clear"
+          ? this.deps.topics.overlayDeviceScene(effect.device)
+          : this.deps.topics.overlayBlob;
+      if (effect.type === "publish-blob" && !this.deps.blobWriter) continue;
+      const payload = effect.type === "publish-clear" ? "" : effect.payload;
+      this.clears.set(
+        effect.type === "publish-clear"
+          ? `device-scene:${effect.device}`
+          : "blob",
+        {
+          requestedAt: new Date(this.deps.clock.now()).toISOString(),
+          attempts:
+            (this.clears.get(
+              effect.type === "publish-clear"
+                ? `device-scene:${effect.device}`
+                : "blob",
+            )?.attempts ?? 0) + 1,
+        },
+      );
+      const connection = this.layers.connection;
+      void this.deps.mqtt
+        ?.publish(topic, payload, { retain: true, qos: 1 })
+        .then((result) => {
+          if (
+            !this.active ||
+            decideStamp(
+              { source: this.layers.connection },
+              { source: connection },
+            ).action !== "apply" ||
+            result.outcome === "offline"
+          )
+            return;
+          this.feed({
+            type: "published",
+            write: effect.write,
+            outcome:
+              result.outcome === "confirmed"
+                ? "confirmed"
+                : result.outcome === "error"
+                  ? "failed"
+                  : "unknown",
+          });
+        });
+    }
+  }
+
+  /** @param {import("./topic-fence.js").MirrorEffect[]} effects */
+  mirrorEffects(effects) {
+    for (const effect of effects) {
+      const devices = [],
+        scenes = [];
+      for (const key of effect.keys) {
+        const meta = this.metadata.get(key);
+        if (meta?.device) devices.push(meta.device);
+        if (meta?.scene) scenes.push(meta.scene);
+      }
+      this.announce(devices, scenes);
+    }
+  }
+
+  /** @param {string[]} devices @param {string[]} scenes */
+  announce(devices, scenes) {
+    for (const name of devices) this.changedDevices.add(name);
+    for (const key of scenes) this.changedScenes.add(key);
+    this.notice = true;
+    this.debounce?.abort();
+    const mine = (this.debounce = new AbortController());
+    void this.deps.clock.sleep(300, mine.signal).then((elapsed) => {
+      if (!this.active || !elapsed || mine.signal.aborted) return;
+      this.flushChanged();
+    });
+  }
+
+  flushChanged() {
+    if (!this.notice || !this.active) return;
+    this.debounce?.abort();
+    const devices = [...this.changedDevices].sort(),
+      scenes = [...this.changedScenes].sort();
+    this.changedDevices.clear();
+    this.changedScenes.clear();
+    this.notice = false;
+    this.emit("changed", { records: this.list(), devices, scenes });
+  }
+
+  /** @param {string|null} device @returns {asserts this is this & {deps: OverlayServiceDeps & {mqtt: import("../mqtt/mqtt-gateway.js").MqttGateway}}} */
+  requirePublish(device) {
+    if (!this.active)
+      throw new HttpError(503, "stopping", "Overlay service is stopped");
+    if (this.deps.outputOf(device) !== "drive")
+      throw new HttpError(
+        409,
+        "shadow_output",
+        "This device is in shadow output",
+      );
+    if (!this.deps.mqtt || this.deps.mqtt.status().state !== "connected")
+      throw new HttpError(503, "mqtt_offline", "MQTT is offline");
+  }
+
+  /** @param {string} topic @param {string} payload */
+  async writeMirror(topic, payload) {
+    const parsed = this.deps.topics.parse(topic);
+    if (!parsed || parsed.kind === "blob" || parsed.kind === "device-scene")
+      throw new Error("Expected a mirror topic");
+    this.requirePublish(parsed.device);
+    const id = recordId(parsed),
+      write = ++this.writes;
+    this.metadata.set(id, {
+      ...parsed,
+      topic,
+      receivedAt: new Date(this.deps.clock.now()).toISOString(),
+    });
+    const decision = this.feedMirror({
+      type: "own-write",
+      key: id,
+      kind: parsed.kind,
+      payload,
+      write,
+    });
+    if (decision.action === "drop")
+      throw new HttpError(503, "mqtt_offline", "MQTT is offline");
+    const connection = this.mirror.connection;
+    const result = await this.deps.mqtt.publish(topic, payload, {
+      retain: true,
+      qos: 1,
+    });
+    if (
+      this.active &&
+      decideStamp({ source: this.mirror.connection }, { source: connection })
+        .action === "apply" &&
+      (result.outcome === "confirmed" || result.outcome === "error")
+    )
+      this.feedMirror({
+        type: "published",
+        key: id,
+        write,
+        outcome: result.outcome === "confirmed" ? "confirmed" : "failed",
+      });
+    return result;
+  }
+
+  /** @param {string} scene @returns {boolean} */
+  sceneKnown(scene) {
+    return scene.startsWith("builtin:") || this.deps.schemaOf(scene) !== null;
+  }
+
+  /** @param {import("./topic-fence.js").OverrideKind} kind @param {string} raw @param {string|null} scene @param {string|null} key @returns {{valid: boolean, value: unknown, problem: string|null}} */
+  parseValue(kind, raw, scene, key) {
+    try {
+      let value;
+      if (kind === "device-ip") value = address(raw);
+      else if (kind === "device-enabled") {
+        if (!["true", "false"].includes(raw.trim().toLowerCase()))
+          throw new Error("expected true or false");
+        value = raw.trim().toLowerCase() === "true";
+      } else if (kind === "scene-path") {
+        if (!raw.trim()) throw new Error("empty path");
+        value = raw.trim();
+      } else if (kind === "mode") {
+        if (!["play", "pause", "stop"].includes(raw))
+          throw new Error("invalid mode");
+        value = raw;
+      } else if (kind === "brightness") {
+        value = Number(raw);
+        if (!raw.trim() || !Number.isFinite(value) || value < 1 || value > 100)
+          throw new Error("expected 1 to 100");
+      } else {
+        const schema = scene ? this.deps.schemaOf(scene) : null;
+        const field =
+          key && schema && Object.hasOwn(schema, key) ? schema[key] : null;
+        if (!field) throw new Error("no schema for this key yet");
+        value = normalizeSettingValue(raw, field);
+        if (value === undefined) throw new Error("invalid setting value");
+      }
+      return { valid: true, value, problem: null };
+    } catch (error) {
+      return {
+        valid: false,
+        value: null,
+        problem: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /** @param {any} value @returns {string[]} */
+  blobProblems(value) {
+    const problems = [];
+    if (value.devices !== undefined && !Array.isArray(value.devices))
+      problems.push("devices must be an array");
+    for (const entry of Array.isArray(value.devices) ? value.devices : []) {
+      if (!object(entry)) {
+        problems.push("invalid device entry");
+        continue;
+      }
+      try {
+        validateDevice({
+          type: "pixoo",
+          ip: "localhost",
+          ...overlayDevicePatch(entry).patch,
+          name: entry.name,
+        });
+      } catch (error) {
+        problems.push(String(error));
+      }
+    }
+    if (value.scenes !== undefined && !object(value.scenes))
+      problems.push("scenes must be an object");
+    return problems;
+  }
+
+  /** @param {string} id @param {OverlayRecord["kind"]} kind @param {string} topic @param {string} raw @param {unknown} value @param {boolean} valid @param {string|null} problem @param {boolean} confirmed @param {boolean} inEffect @param {OverlayRecord["restricts"]} restricts @param {"replay"|"live"|null} origin @param {number} connection @param {string|null} device @param {string|null} scene @param {string|null} key @param {OverlayRecord["supersededBy"]} supersededBy @param {boolean} pending @returns {OverlayRecord} */
+  record(
+    id,
+    kind,
+    topic,
+    raw,
+    value,
+    valid,
+    problem,
+    confirmed,
+    inEffect,
+    restricts,
+    origin,
+    connection,
+    device,
+    scene,
+    key,
+    supersededBy,
+    pending,
+  ) {
+    const clear = this.clears.get(id);
+    return {
+      id,
+      kind,
+      topic,
+      raw,
+      value,
+      valid,
+      problem,
+      confirmed,
+      inEffect,
+      restricts,
+      origin: origin ?? "live",
+      connection,
+      device,
+      scene,
+      key,
+      supersededBy,
+      receivedAt:
+        this.metadata.get(id)?.receivedAt ??
+        new Date(this.deps.clock.now()).toISOString(),
+      clear: {
+        pending,
+        requestedAt: clear?.requestedAt ?? null,
+        attempts: clear?.attempts ?? 0,
+      },
+    };
+  }
+}
+
+/** @param {{kind: import("../types.js").OverlayKind, device: string|null, scene: string|null, key: string|null}} parsed @returns {string} */
+function recordId(parsed) {
+  if (parsed.kind === "blob") return "blob";
+  if (parsed.kind === "setting")
+    return `setting:${parsed.device}:${parsed.scene}:${parsed.key}`;
+  if (parsed.kind === "scene-path") return `scene-path:${parsed.scene}`;
+  return `${parsed.kind}:${parsed.device}`;
 }

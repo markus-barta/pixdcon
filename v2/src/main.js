@@ -92,7 +92,7 @@ import { ConfigStore } from "./config/config-store.js";
 import { DEFAULTS, changeImpact } from "./config/schema.js";
 import { systemClock } from "./core/clock.js";
 import { createLogger } from "./core/logger.js";
-import { createLane } from "./core/ordering.js";
+import { createLane, decideStamp } from "./core/ordering.js";
 import { NotImplementedError, runStep } from "./core/todo.js";
 import { rasterizeAwtrixApp } from "./drivers/awtrix-raster.js";
 import { BUILTIN_MODES, findBuiltin } from "./drivers/builtin-modes.js";
@@ -116,9 +116,11 @@ import {
 } from "./scenes/v1-device-facade.js";
 import {
   V2_ROOT,
+  ensureDataLinks,
   installSharedResolution,
   loadV1Font,
   readVersion,
+  sharedPaths,
 } from "./scenes/v1-shared.js";
 import {
   normalizeSettingValue,
@@ -205,6 +207,7 @@ export async function createApp(env = process.env, overrides = {}) {
   const startedAt = clock.now();
 
   installSharedResolution({ extraDirs: [dataDir] });
+  await runStep("data.links", () => ensureDataLinks(dataDir, logger), logger);
 
   // --- 3. saved state: loaded before anything is built from its content ----
   const config = new ConfigStore({ path: configPath, logger, clock });
@@ -222,7 +225,12 @@ export async function createApp(env = process.env, overrides = {}) {
     ...(configBuilt ? config.get().mqtt : DEFAULTS.mqtt),
   });
   const topics = createTopics(mqttConfig);
-  const will = StatusPublisher.lastWill(topics);
+  // The broker publishes a CONNECT will without consulting outputOf. A
+  // forced-shadow instance sharing v1's namespace must register none.
+  const will =
+    !forceShadow || topics.statusBase !== topics.base
+      ? StatusPublisher.lastWill(topics)
+      : undefined;
   const mqtt = namespaceKnown
     ? orSkeleton(
         () =>
@@ -264,6 +272,7 @@ export async function createApp(env = process.env, overrides = {}) {
    * while the process runs.
    */
   const blobWriter = Object.freeze(
+    // PIXD-92: keep the frozen run policy; singleton enforcement is separate.
     resolveBlobWriter({
       mqtt: mqtt !== null,
       forceShadow,
@@ -427,7 +436,15 @@ export async function createApp(env = process.env, overrides = {}) {
       orSkeleton(
         () => [
           ...new Set(
-            scenes.list().map((meta) => dirname(scenes.fileOf(meta.key) ?? "")),
+            scenes.list().flatMap((meta) => {
+              const parent = dirname(scenes.fileOf(meta.key) ?? "");
+              return [
+                parent,
+                ...meta.resources.assetDirs.map((asset) =>
+                  resolve(parent, asset),
+                ),
+              ];
+            }),
           ),
         ],
         [],
@@ -492,6 +509,7 @@ export async function createApp(env = process.env, overrides = {}) {
 
   /** @returns {import("./types.js").ControllerStatus} */
   const controller = () => {
+    checkRestartRequired();
     // Measured as soon as the scheduler and the health model are built. A
     // skeleton is said to be one (`measured: false`) instead of claiming ok.
     const measured = orSkeleton(() => {
@@ -551,8 +569,9 @@ export async function createApp(env = process.env, overrides = {}) {
     // published: seq 0.
     position: () => `${epoch}-${orSkeleton(() => live.seq(), 0)}`,
   });
-  /** @type {import("./api/routes-v1.js").ApiDeps} */
+  /** @type {import("./api/routes-v1.js").ApiDeps & {versioningDir: string}} */
   const apiDeps = {
+    versioningDir: sharedPaths().versioningDir,
     epoch,
     config,
     runtime,
@@ -598,6 +617,9 @@ export async function createApp(env = process.env, overrides = {}) {
   registerV2Routes(server, apiDeps);
 
   let stopping = false;
+  /** @type {Promise<void>|null} */
+  let stopPromise = null;
+  let runtimeRev = 0;
   /** @type {() => void} */
   let unwireLive = () => {};
   /** @type {{cancel: () => void}|null} */
@@ -653,6 +675,15 @@ export async function createApp(env = process.env, overrides = {}) {
    * @param {{effective: import("./types.js").EffectiveConfig, diff: import("./types.js").EffectiveDiff}} change
    */
   const onRuntimeChanged = ({ effective, diff }) => {
+    if (
+      stopping ||
+      decideStamp(
+        { source: epoch, position: runtimeRev },
+        { source: epoch, position: effective.rev },
+      ).action !== "apply"
+    )
+      return;
+    runtimeRev = effective.rev;
     tellOutputs(effective);
     if (
       diff.scenesAdded.length + diff.scenesRemoved.length === 0 &&
@@ -765,39 +796,78 @@ export async function createApp(env = process.env, overrides = {}) {
     },
 
     async stop() {
-      if (stopping) return;
+      if (stopPromise) return stopPromise;
       stopping = true;
       logger.info("[pixdcon2] Stopping...");
       controllerTicker?.cancel();
       runtime.off("changed", onRuntimeChanged);
       unwireLive();
-      await runStep("scenes.unwatch", () => scenesWatcher.stop(), logger);
-      await runStep("config.stop", () => config.stop(), logger);
-      await runStep("live.stop", () => live.stop(), logger);
-      await server.stop();
       // No new scene work starts, and the piece that is running is told:
       // the lane's signal is aborted, so whatever it still awaits commits
       // nothing and is followed by nothing (see the header). The wait below
       // lets a short import end before the scenes are released; it is not
       // what keeps a long one from touching them.
       registryLane.close();
-      const drainLimit = new AbortController();
-      await Promise.race([
-        registryLane.drain(),
-        clock.sleep(REGISTRY_DRAIN_LIMIT_MS, drainLimit.signal),
-      ]);
-      drainLimit.abort(); // the limit's timer does not outlive the wait
-      await runStep("scheduler.stop", () => scheduler.stop(), logger);
-      await runStep("scenes.release", () => sceneRuntime.releaseAll(), logger);
-      await runStep("health.stop", () => health.stop(), logger);
-      await runStep("settings.stop", () => settings.stop(), logger);
-      await runStep("state.stop", () => state.stop(), logger);
-      await runStep("status.stop", () => statusPublisher?.stop(), logger);
-      await runStep("runtime.stop", () => runtime.stop(), logger);
-      await runStep("overlays.stop", () => overlays.stop(), logger);
-      await runStep("ownership.stop", () => ownership.stop(), logger);
-      await runStep("mqtt.stop", () => mqtt?.stop(), logger);
-      logger.info("[pixdcon2] Stopped");
+      const deadlineAt = clock.now() + SHUTDOWN_LIMIT_MS;
+      const remaining = () => Math.max(0, deadlineAt - clock.now());
+      /** @param {string} name @param {() => unknown} action @param {number} [budget] */
+      const bounded = async (name, action, budget = remaining()) => {
+        const work = runStep(name, action, logger).catch((error) =>
+          logger.error(`[pixdcon2] Shutdown failed: ${name}`, error),
+        );
+        if (budget <= 0) {
+          void work;
+          return;
+        }
+        const limit = new AbortController();
+        await Promise.race([
+          work,
+          clock.sleep(Math.min(budget, remaining()), limit.signal),
+        ]);
+        limit.abort();
+      };
+      stopPromise = (async () => {
+        await bounded("scenes.unwatch", () => scenesWatcher.stop(), 500);
+        await bounded("config.stop", () => config.stop(), 500);
+        await bounded("live.stop", () => live.stop(), 500);
+        await bounded("http.stop", () => server.stop(), 500);
+        await bounded(
+          "registry.drain",
+          () => registryLane.drain(),
+          REGISTRY_DRAIN_LIMIT_MS,
+        );
+        const renderBudget = Math.max(0, Math.min(6000, remaining() - 500));
+        await bounded(
+          "scheduler.stop",
+          () => scheduler.stop({ deadlineMs: renderBudget }),
+          renderBudget,
+        );
+        // W5's additive options are accepted by the frozen no-argument
+        // skeleton too; the adapter keeps this commit independently typed.
+        const releaseAll =
+          /** @type {(options?: {deadlineMs: number}) => Promise<void>} */ (
+            sceneRuntime.releaseAll.bind(sceneRuntime)
+          );
+        await bounded(
+          "scenes.release",
+          () => releaseAll({ deadlineMs: Math.max(0, remaining() - 500) }),
+          Math.max(0, remaining() - 500),
+        );
+        await bounded("health.stop", () => health.stop(), 0);
+        await bounded("settings.stop", () => settings.stop(), 0);
+        await bounded("state.stop", () => state.stop(), 0);
+        await bounded(
+          "status.stop",
+          () => statusPublisher?.stop(),
+          Math.min(250, remaining()),
+        );
+        await bounded("runtime.stop", () => runtime.stop(), 0);
+        await bounded("overlays.stop", () => overlays.stop(), 0);
+        await bounded("ownership.stop", () => ownership.stop(), 0);
+        await bounded("mqtt.stop", () => mqtt?.stop(), remaining());
+        logger.info("[pixdcon2] Stopped");
+      })();
+      return stopPromise;
     },
   };
 }

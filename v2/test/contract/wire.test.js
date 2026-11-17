@@ -12,6 +12,10 @@ import test from "node:test";
 import mqtt from "mqtt";
 import { startMemoryBroker } from "../../dev/memory-broker.js";
 import { BUILTIN_MODES } from "../../src/drivers/builtin-modes.js";
+import { manualClock, systemClock } from "../../src/core/clock.js";
+import { createLogger } from "../../src/core/logger.js";
+import { MqttGateway } from "../../src/mqtt/mqtt-gateway.js";
+import { StatusPublisher } from "../../src/mqtt/status-publisher.js";
 import { createTopics } from "../../src/mqtt/topics.js";
 import { requireNetGuard } from "../helpers/harness.js";
 
@@ -291,32 +295,254 @@ test("broker premise 2: a replay can arrive after the SUBACK, after a sync echo 
 });
 
 // --- Phase 3: what the gateway guarantees (mqtt-gateway.js) ------------------------------------
-test.todo(
-  "gateway: every message carries the retain flag as delivered and the number of its connection; nothing is derived from arrival order",
-);
-test.todo(
-  "gateway settle: a pacing hint only; a replay held back past it (holdRetained) is still delivered to the owner, flag set",
-);
-test.todo(
-  "gateway publish: a QoS 1 publish cut off by a disconnect answers offline and is not sent again on the next connection",
-);
-test.todo(
-  "gateway owners: a second owner of a filter gets the retained replay (C-036); removing one owner leaves the other's handlers and the wire subscription",
-);
-test.todo(
-  "gateway instance tokens: the scene contexts of a running instance and of its replacement are two owners; releasing the replacement leaves the running one subscribed",
-);
-test.todo(
-  "gateway last will: the will of the CONNECT packet is the health topic of the status base the process started with",
-);
+test("gateway: every message carries the retain flag as delivered and the number of its connection; nothing is derived from arrival order", async (t) => {
+  const { gateway, broker } = await gatewayStack(t);
+  await broker.inject("test/value", "stored", { retain: true });
+  /** @type {import("../../src/mqtt/mqtt-gateway.js").MqttMessage[]} */
+  const seen = [];
+  gateway.subscribe("test", "test/+", (message) => seen.push(message));
+  await until(() => seen.length === 1);
+  await broker.inject("test/value", "live", { retain: true });
+  await until(() => seen.length === 2);
+  assert.deepEqual(
+    seen.map(({ payload, retain, connection }) => ({
+      payload,
+      retain,
+      connection,
+    })),
+    [
+      { payload: "stored", retain: true, connection: 1 },
+      { payload: "live", retain: false, connection: 1 },
+    ],
+  );
+});
+test("gateway settle: a pacing hint only; a replay held back past it (holdRetained) is still delivered to the owner, flag set", async (t) => {
+  const { gateway, broker } = await gatewayStack(t);
+  await broker.inject("test/value", "stored", { retain: true });
+  const release = broker.holdRetained();
+  /** @type {import("../../src/mqtt/mqtt-gateway.js").MqttMessage[]} */
+  const seen = [];
+  gateway.subscribe("test", "test/value", (message) => seen.push(message));
+  const hint = await gateway.settle();
+  assert.deepEqual(hint, { connection: 1, complete: true });
+  assert.equal(seen.length, 0);
+  release();
+  await until(() => seen.length === 1);
+  assert.equal(seen[0].retain, true);
+});
+test("gateway publish: a QoS 1 publish cut off by a disconnect answers offline and is not sent again on the next connection", async (t) => {
+  const clock = manualClock();
+  const { gateway, broker } = await gatewayStack(t, { clock });
+  const original = gateway.client;
+  assert.ok(original);
+  original.on("packetsend", (packet) => {
+    if (packet.cmd === "publish" && packet.topic === "test/cut")
+      original.stream.destroy();
+  });
+  const pending = gateway.publish("test/cut", "old", { retain: true });
+  assert.equal((await pending).outcome, "offline");
+  await until(() => gateway.status().state === "offline");
+  await clock.advance(5000);
+  await until(() => gateway.status().connection === 2);
+  assert.notEqual(gateway.client, original);
+  assert.deepEqual(
+    broker.published().filter((entry) => entry.topic === "test/cut"),
+    [],
+  );
+  assert.equal((await gateway.publish("test/new", "new")).outcome, "confirmed");
+});
+test("gateway owners: a second owner of a filter gets the retained replay (C-036); removing one owner leaves the other's handlers and the wire subscription", async (t) => {
+  const { gateway, broker } = await gatewayStack(t);
+  await broker.inject("test/value", "stored", { retain: true });
+  /** @type {string[]} */
+  const first = [];
+  /** @type {string[]} */
+  const second = [];
+  gateway.subscribe("first", "test/+", (message) =>
+    first.push(message.payload),
+  );
+  await until(() => first.length === 1);
+  gateway.subscribe("second", "test/+", (message) =>
+    second.push(message.payload),
+  );
+  await until(() => second.length === 1);
+  gateway.unsubscribeAll("second");
+  gateway.subscribe("throws", "test/+", () => {
+    throw new Error("handler failure");
+  });
+  gateway.subscribe("rejects", "test/+", () =>
+    Promise.reject(new Error("handler rejection")),
+  );
+  await gateway.settle();
+  first.length = 0;
+  await broker.inject("test/value", "new");
+  await until(() => first.includes("new"));
+  assert.deepEqual(second, ["stored"]);
+  assert.equal(first.at(-1), "new");
+});
+test("gateway instance tokens: the scene contexts of a running instance and of its replacement are two owners; releasing the replacement leaves the running one subscribed", async (t) => {
+  const { gateway, broker } = await gatewayStack(t);
+  const running = gateway.sceneContext({
+    scene: "A",
+    device: "D",
+    token: "old",
+  });
+  const replacement = gateway.sceneContext({
+    scene: "A",
+    device: "D",
+    token: "new",
+  });
+  /** @type {string[]} */
+  const old = [];
+  /** @type {string[]} */
+  const fresh = [];
+  running.subscribe("test/value", (payload) => old.push(payload));
+  replacement.subscribe("test/value", (payload) => fresh.push(payload));
+  await gateway.settle();
+  replacement.unsubscribeAll();
+  replacement.subscribe("test/value", () =>
+    assert.fail("released context subscribed"),
+  );
+  running.subscribe("test/+", () =>
+    assert.fail("exact subscription accepted a filter"),
+  );
+  await broker.inject("test/value", "current");
+  await until(() => old.length === 1);
+  assert.deepEqual(old, ["current"]);
+  assert.deepEqual(fresh, []);
+});
+test("gateway last will: the will of the CONNECT packet is the health topic of the status base the process started with", async (t) => {
+  const topics = createTopics({ statusBaseTopic: "shadow/status" });
+  const { gateway, broker } = await gatewayStack(t, {
+    will: StatusPublisher.lastWill(topics),
+  });
+  const observer = await mqtt.connectAsync(broker.url);
+  t.after(() => observer.endAsync(true));
+  /** @type {Array<{topic: string, value: any}>} */
+  const seen = [];
+  observer.on("message", (topic, payload) =>
+    seen.push({ topic, value: JSON.parse(payload.toString()) }),
+  );
+  await observer.subscribeAsync(topics.health);
+  gateway.client?.stream.destroy();
+  await until(() => seen.length === 1);
+  assert.equal(seen[0].topic, "shadow/status/health");
+  assert.equal(seen[0].value.status, "offline");
+});
 
 // --- Ordering (knowledge entry, section 3.0) ---
-test.todo(
-  "gateway order: connect is emitted before the first message of a connection and disconnect after its last; a handler is called synchronously, in the order the packets arrived; connection numbers only rise",
-);
-test.todo(
-  "gateway publish outcome: no acknowledgement in time on a connection that stays up answers timeout; error only when the message was certainly not sent; the own echo arrives on the connection it was published on",
-);
-test.todo(
-  "gateway timers: the reconnect, the connect timeout and the settle timeout change the status and the hint only; no subscriber is called because one of them fired",
-);
+test("gateway order: connect is emitted before the first message of a connection and disconnect after its last; a handler is called synchronously, in the order the packets arrived; connection numbers only rise", async (t) => {
+  const clock = manualClock();
+  const { gateway, broker } = await gatewayStack(t, { clock });
+  /** @type {string[]} */
+  const log = [];
+  gateway.on("connect", ({ connection }) => log.push(`connect:${connection}`));
+  gateway.on("disconnect", ({ connection }) =>
+    log.push(`disconnect:${connection}`),
+  );
+  gateway.subscribe("test", "test/value", (message) =>
+    log.push(`${message.connection}:${message.payload}`),
+  );
+  await gateway.settle();
+  const original = gateway.client;
+  await broker.inject("test/value", "one", { retain: true });
+  await until(() => log.length === 1);
+  await broker.dropClients();
+  await until(() => log.length === 2);
+  await clock.advance(5000);
+  await until(() => log.length === 4);
+  assert.deepEqual(log, ["1:one", "disconnect:1", "connect:2", "2:one"]);
+  original?.emit("message", "test/value", Buffer.from("late"), {
+    cmd: "publish",
+    qos: 0,
+    dup: false,
+    topic: "test/value",
+    payload: Buffer.from("late"),
+    retain: false,
+  });
+  assert.equal(
+    log.length,
+    4,
+    "old transport cannot deliver on a new connection",
+  );
+});
+test("gateway publish outcome: no acknowledgement in time on a connection that stays up answers timeout; error only when the message was certainly not sent; the own echo arrives on the connection it was published on", async (t) => {
+  const clock = manualClock();
+  const { gateway } = await gatewayStack(t, { clock });
+  /** @type {import("../../src/mqtt/mqtt-gateway.js").MqttMessage[]} */
+  const seen = [];
+  gateway.subscribe("test", "test/echo", (message) => seen.push(message));
+  await gateway.settle();
+  assert.equal(
+    (await gateway.publish("test/echo", "value")).outcome,
+    "confirmed",
+  );
+  await until(() => seen.length === 1);
+  assert.equal(seen[0].connection, 1);
+  assert.equal(seen[0].retain, false);
+  assert.equal((await gateway.publish("bad/#", "value")).outcome, "error");
+  const client = gateway.client;
+  assert.ok(client);
+  t.mock.method(client, "publish", () => client);
+  const unanswered = gateway.publish("test/no-ack", "value", { timeoutMs: 20 });
+  await clock.advance(20);
+  assert.equal((await unanswered).outcome, "timeout");
+  t.mock.method(client, "publish", () => {
+    throw new Error("transport failed after entry");
+  });
+  assert.equal(
+    (await gateway.publish("test/uncertain", "value")).outcome,
+    "timeout",
+  );
+});
+test("gateway timers: the reconnect, the connect timeout and the settle timeout change the status and the hint only; no subscriber is called because one of them fired", async (t) => {
+  const clock = manualClock();
+  const { gateway, broker } = await gatewayStack(t, { clock });
+  /** @type {import("../../src/mqtt/mqtt-gateway.js").MqttMessage[]} */
+  const seen = [];
+  gateway.subscribe("test", "test/absent", (message) => seen.push(message));
+  await gateway.settle();
+  await broker.dropClients();
+  await until(() => gateway.status().state === "offline");
+  assert.deepEqual(await gateway.settle(), { connection: 1, complete: false });
+  await clock.advance(5000);
+  await until(() => gateway.status().connection === 2);
+  await gateway.settle();
+  assert.deepEqual(seen, []);
+});
+
+/** @param {import("node:test").TestContext} t @param {{clock?: import("../../src/types.js").Clock, will?: import("../../src/mqtt/mqtt-gateway.js").LastWill}} [options] */
+async function gatewayStack(t, options = {}) {
+  requireNetGuard();
+  const broker = await startMemoryBroker();
+  const gateway = MqttGateway.fromEnv(
+    {
+      MOSQUITTO_HOST: broker.host,
+      MQTT_PORT: String(broker.port),
+      PIXDCON2_MQTT_ANONYMOUS: "1",
+    },
+    {
+      instance: "contract",
+      syncTopic: (nonce) => `test/_sync/${nonce}`,
+      clock: options.clock ?? systemClock(),
+      logger: createLogger({ sink: { out() {}, err() {} } }),
+      will: options.will,
+    },
+  );
+  assert.ok(gateway);
+  t.after(async () => {
+    await gateway.stop();
+    await broker.stop();
+  });
+  assert.equal(await gateway.start(), true);
+  return { gateway, broker };
+}
+
+/** @param {() => boolean} predicate */
+async function until(predicate) {
+  const deadline = Date.now() + 2000;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, "gateway condition timed out");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
