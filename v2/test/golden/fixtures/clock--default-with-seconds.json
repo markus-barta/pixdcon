@@ -1,0 +1,12 @@
+{
+  "name": "clock--default-with-seconds",
+  "scene": "clock",
+  "deviceType": "ulanzi",
+  "now": "2026-11-16T12:42:07+01:00",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [],
+  "http": [],
+  "frames": 1,
+  "note": "Green 12:42:07 fills the black display with seconds visible."
+}

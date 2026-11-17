@@ -41,11 +41,13 @@ import { fileURLToPath } from "node:url";
 import { startFakeAwtrix } from "./fake-awtrix.js";
 import { startFakePixoo } from "./fake-pixoo.js";
 import { startMemoryBroker } from "./memory-broker.js";
+import { rasterizeAwtrixApp } from "../src/drivers/awtrix-raster.js";
+import { sharedPaths } from "../src/scenes/v1-shared.js";
 import "./net-guard.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const v2Root = resolve(here, "..");
-const repoRoot = resolve(v2Root, "..");
+const repoRoot = sharedPaths().root;
 const once = process.argv.includes("--once");
 const uiPort = Number(process.env.PIXDCON2_DEV_PORT ?? (once ? 0 : 8090));
 const controlPort = Number(
@@ -125,6 +127,10 @@ async function acquire(starting, stop) {
 const broker = await acquire(startMemoryBroker(), (started) => started.stop());
 const pixoo = await acquire(startFakePixoo(), (started) => started.stop());
 const awtrix = await acquire(startFakeAwtrix(), (started) => started.stop());
+awtrix.setRaster(
+  (app) =>
+    rasterizeAwtrixApp(/** @type {Record<string, unknown>} */ (app)).frame.rgb,
+);
 const fakes = { pixoo, awtrix };
 
 const dataDir = await acquire(mkdtemp(join(tmpdir(), "pixdcon2-dev-")), (dir) =>

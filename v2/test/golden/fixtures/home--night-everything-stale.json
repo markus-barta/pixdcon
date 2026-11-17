@@ -1,0 +1,126 @@
+{
+  "name": "home--night-everything-stale",
+  "scene": "home",
+  "deviceType": "pixoo",
+  "now": "2026-11-16T23:42:07+01:00",
+  "timeZone": "Europe/Vienna",
+  "settings": {
+    "temp_stale_ms": 60000,
+    "uv_stale_ms": 60000
+  },
+  "mqtt": [
+    {
+      "topic": "nuki/463F8F47/state",
+      "payload": "1"
+    },
+    {
+      "topic": "nuki/4A5D18FF/state",
+      "payload": "1"
+    },
+    {
+      "topic": "nuki/463F8F47/connected",
+      "payload": "true"
+    },
+    {
+      "topic": "nuki/4A5D18FF/connected",
+      "payload": "true"
+    },
+    {
+      "topic": "z2m/wz/contact/te-door",
+      "payload": {
+        "contact": true
+      }
+    },
+    {
+      "topic": "z2m/wz/contact/te-door/availability",
+      "payload": {
+        "state": "online"
+      }
+    },
+    {
+      "topic": "z2m/vk/contact/w13",
+      "payload": {
+        "contact": true
+      }
+    },
+    {
+      "topic": "z2m/vk/contact/w13/availability",
+      "payload": {
+        "state": "online"
+      }
+    },
+    {
+      "topic": "z2m/vr/contact/w14",
+      "payload": {
+        "contact": true
+      }
+    },
+    {
+      "topic": "z2m/vr/contact/w14/availability",
+      "payload": {
+        "state": "online"
+      }
+    },
+    {
+      "topic": "homeassistant/sun/sun/elevation",
+      "payload": "30"
+    },
+    {
+      "topic": "z2m/dt/motion/hueoutdoor",
+      "payload": {
+        "temperature": 18.5
+      }
+    },
+    {
+      "topic": "z2m/te/temp/pool",
+      "payload": {
+        "temperature": 23.1
+      }
+    },
+    {
+      "topic": "home/ke/sonnenbattery/status",
+      "payload": {
+        "USOC": 72,
+        "BatteryCharging": true,
+        "Production_W": 2800,
+        "Consumption_W": 650
+      }
+    },
+    {
+      "topic": "z2m/wz/plug/zisp08",
+      "payload": {
+        "power": 130
+      }
+    },
+    {
+      "topic": "z2m/wz/plug/zisp28",
+      "payload": {
+        "power": 3
+      }
+    },
+    {
+      "topic": "z2m/wz/plug/zisp05",
+      "payload": {
+        "power": 60
+      }
+    },
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "connected": true
+      }
+    },
+    {
+      "topic": "homeassistant/sun/sun/elevation",
+      "payload": "-10"
+    }
+  ],
+  "http": [],
+  "frames": 1,
+  "note": "The night dashboard keeps the last temperature and energy readings while red crosses mark stale sensor and UV data.",
+  "ping": {
+    "192.168.1.186": true,
+    "192.168.1.244": true
+  },
+  "elapsedMs": 360001
+}

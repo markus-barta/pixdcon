@@ -1,0 +1,13 @@
+{
+  "name": "home3--no-data-after-start",
+  "scene": "home3",
+  "deviceType": "pixoo",
+  "now": "2026-11-16T12:42:07+01:00",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [],
+  "http": [],
+  "frames": 1,
+  "note": "Grey lock and car icons, empty battery outlines and dash placeholders show that no sensor data has arrived yet.",
+  "ping": {}
+}

@@ -1,0 +1,12 @@
+{
+  "name": "test-pattern--frame-17",
+  "scene": "test-pattern",
+  "deviceType": "ulanzi",
+  "now": "2026-11-16T12:42:07+01:00",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [],
+  "http": [],
+  "frames": 17,
+  "note": "The two red pixels have moved to x17 on rows 3 and 4 while the rest of the display stays black."
+}

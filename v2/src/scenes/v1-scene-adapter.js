@@ -20,8 +20,10 @@
  *     mqtt: { deviceName, subscribe(topic, cb(payload)), subscribeWildcard(pattern, cb(payload, topic)), unsubscribeAll() },
  *   }
  *   A fresh ctx object is built for init and for destroy, as in v1. Both
- *   belong to the same instance (InstanceRef): what init subscribed, destroy
- *   and the release after it remove, and nothing of another instance.
+ *   belong to the same instance (InstanceRef): release removes only that
+ *   instance's subscriptions before draining its admitted frames. Destroy
+ *   follows frame settlement or the remaining stop budget (default 6 s),
+ *   with a warning when a hung frame outlives that budget.
  *
  *   device = the v1 driver surface, see v1-device-facade.js
  *
@@ -57,13 +59,16 @@
  * fields come from the content of the scene file (scene-registry.js), not
  * from its key: an alias of home3 under another key and a copy of home3 are
  * redirected exactly like home3 itself (B-183). STATE_FIELD_PATTERNS is the
- * complete list of what the registry looks for. A driven device keeps the
+ * complete list of what the registry looks for; shadow also sets these
+ * fields if metadata missed them. A driven device keeps the
  * scene's own path, so the history continues across the switch-over.
  *
  * Owner: fixtures + edge lane worker.
  */
 
-import { todo } from "../core/todo.js";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { DeviceError, SceneError } from "../core/errors.js";
 
 /** @typedef {import("./scene-runtime.js").SceneInstance} SceneInstance */
 
@@ -122,7 +127,30 @@ export const ASSET_DIR_PATTERN = /["'`]([A-Za-z0-9._-]+-assets)\//g;
  * @returns {{ok: true, exported: Record<string, unknown>} | {ok: false, problem: string}}
  */
 export function checkV1Module(moduleNamespace) {
-  return todo("checkV1Module", moduleNamespace);
+  if (
+    moduleNamespace === null ||
+    (typeof moduleNamespace !== "object" &&
+      typeof moduleNamespace !== "function")
+  ) {
+    return {
+      ok: false,
+      problem: "Scene module must export an object with render()",
+    };
+  }
+  const namespace = /** @type {Record<string, unknown>} */ (moduleNamespace);
+  const exported = namespace.default || namespace;
+  if (
+    exported === null ||
+    (typeof exported !== "object" && typeof exported !== "function") ||
+    typeof (/** @type {Record<string, unknown>} */ (exported).render) !==
+      "function"
+  ) {
+    return { ok: false, problem: "Scene module must export render()" };
+  }
+  return {
+    ok: true,
+    exported: /** @type {Record<string, unknown>} */ (exported),
+  };
 }
 
 /**
@@ -134,5 +162,187 @@ export function checkV1Module(moduleNamespace) {
  * @throws {import("../core/errors.js").SceneError} phase "contract" or "init"
  */
 export async function createV1Instance(target, deps) {
-  return todo("createV1Instance", target, deps);
+  const { ref } = target;
+  const checked = checkV1Module(target.moduleNamespace);
+  if (!checked.ok)
+    throw new SceneError(checked.problem, { ...ref, phase: "contract" });
+  const scene = Object.create(checked.exported);
+  let active = true;
+  /** @type {Promise<void>|null} */
+  let releasing = null;
+  /** @type {Set<Promise<number|null>>} */
+  const frames = new Set();
+  /** @type {Set<() => void>} */
+  const unsubscribers = new Set();
+  const settings = deps.settingsContext(ref);
+  const mqtt = deps.mqttContext(ref);
+  /** @param {unknown} error */
+  const log = (error) =>
+    deps.logger.warn(
+      `[scene:${ref.scene}:${ref.device}] ${error instanceof Error ? error.message : String(error)}`,
+    );
+  /** @param {() => unknown} callback */
+  const invoke = async (callback) => {
+    if (!active) return;
+    try {
+      await callback();
+    } catch (error) {
+      log(error);
+    }
+  };
+  /** @returns {V1SceneContext} */
+  const context = () => ({
+    logger: deps.logger,
+    deviceName: ref.device,
+    sceneName: ref.scene,
+    settingsTopic: deps.settingsTopic(ref.device, ref.scene),
+    settings: {
+      get schema() {
+        return structuredClone(settings.schema);
+      },
+      get values() {
+        return structuredClone(settings.values);
+      },
+      get: (key) => structuredClone(settings.get(key)),
+      all: () => structuredClone(settings.all()),
+      subscribe(callback) {
+        if (!active) return () => {};
+        const unsubscribe = settings.subscribe((values) =>
+          invoke(() => callback(structuredClone(values))),
+        );
+        unsubscribers.add(unsubscribe);
+        return () => {
+          unsubscribers.delete(unsubscribe);
+          unsubscribe();
+        };
+      },
+    },
+    mqtt: {
+      deviceName: mqtt.deviceName,
+      subscribe(topic, callback) {
+        if (active)
+          mqtt.subscribe(topic, (payload) => invoke(() => callback(payload)));
+      },
+      subscribeWildcard(pattern, callback) {
+        if (active)
+          mqtt.subscribeWildcard(pattern, (payload, topic) =>
+            invoke(() => callback(payload, topic)),
+          );
+      },
+      unsubscribeAll: () => mqtt.unsubscribeAll(),
+    },
+  });
+  /** @param {unknown} error @param {"init"|"render"} phase */
+  const classify = (error, phase) =>
+    error instanceof DeviceError
+      ? error
+      : new SceneError(
+          `Scene ${ref.scene} ${phase}: ${error instanceof Error ? error.message : String(error)}`,
+          { ...ref, phase, cause: error },
+        );
+  /** @param {import("./scene-runtime.js").SceneReleaseOptions} [options] */
+  const release = (options = {}) => {
+    if (releasing) return releasing;
+    active = false;
+    const deadlineMs = Number.isFinite(options.deadlineMs)
+      ? Math.max(0, options.deadlineMs ?? 6000)
+      : 6000;
+    const deadlineAt = Date.now() + deadlineMs;
+    // Store the promise before invoking unsubscribe/destroy hooks; even a
+    // hook that reenters release gets the same teardown operation.
+    releasing = Promise.resolve().then(async () => {
+      try {
+        if (frames.size) {
+          /** @type {ReturnType<typeof setTimeout>|undefined} */
+          let timer;
+          try {
+            const drained = await Promise.race([
+              Promise.allSettled([...frames]).then(() => true),
+              new Promise((resolve) => {
+                timer = setTimeout(
+                  () => resolve(false),
+                  Math.max(0, deadlineAt - Date.now()),
+                );
+              }),
+            ]);
+            if (!drained)
+              log(
+                `frame drain timed out after ${deadlineMs}ms; destroying with ${frames.size} frame(s) still in flight`,
+              );
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+        if (typeof scene.destroy === "function") await scene.destroy(context());
+      } catch (error) {
+        log(error);
+      }
+    });
+    for (const unsubscribe of unsubscribers) {
+      try {
+        unsubscribe();
+      } catch (error) {
+        log(error);
+      }
+    }
+    unsubscribers.clear();
+    try {
+      mqtt.unsubscribeAll();
+    } catch (error) {
+      log(error);
+    }
+    return releasing;
+  };
+  try {
+    if (deps.shadowStateDir) {
+      await mkdir(deps.shadowStateDir, { recursive: true });
+      for (const field of new Set([
+        ...STATE_FIELD_PATTERNS,
+        ...deps.resources.stateFields,
+      ])) {
+        // Keys may come from mounted files; encode path components rather than trusting them.
+        scene[field] = join(
+          deps.shadowStateDir,
+          `${encodeURIComponent(ref.scene)}-${encodeURIComponent(field)}.json`,
+        );
+      }
+    }
+    if (typeof scene.init === "function") await scene.init(context());
+  } catch (error) {
+    await release();
+    throw classify(error, "init");
+  }
+  return {
+    ref,
+    scene: ref.scene,
+    device: ref.device,
+    release,
+    async renderFrame(surface) {
+      if (!active)
+        throw new SceneError(`Scene ${ref.scene} was released`, {
+          ...ref,
+          phase: "render",
+        });
+      // Register before invoking scene code, including a synchronous render
+      // that asks its caller to release. Release sees every admitted frame.
+      const frame = Promise.resolve().then(async () => {
+        try {
+          const delay = await scene.render(surface);
+          return typeof delay === "number" &&
+            Number.isFinite(delay) &&
+            delay > 0
+            ? delay
+            : null;
+        } catch (error) {
+          throw classify(error, "render");
+        }
+      });
+      frames.add(frame);
+      try {
+        return await frame;
+      } finally {
+        frames.delete(frame);
+      }
+    },
+  };
 }
