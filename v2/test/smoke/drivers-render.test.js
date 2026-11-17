@@ -590,15 +590,27 @@ test("mode changes during a stop request and scene failures cannot strand the ne
 });
 
 test("a paused runtime applies brightness without another frame and adopts a ready replacement at the next probe boundary", async (t) => {
-  const r = await rig(t, { start: false });
-  const p = /** @type {any} */ (r.states.get("p")); p.desired.mode.value = "pause";
-  const u = /** @type {any} */ (r.states.get("u")); u.desired.scene.scene = "blue";
-  await r.scheduler.start(); await until(() => r.previews.get("p"));
-  r.choose("p", { brightness: { override: 88 } }); await until(() => r.pixoo.state().brightness === 88);
-  assert.equal(r.pixoo.state().frames, 1);
-  r.generations.red = 1;
-  await r.clock.advance(10000); await until(() => r.pixoo.state().frames === 2 && r.scheduler.loop("p")?.status().phase === "paused");
-  assert.equal(r.released.length, 1); assert.equal(r.scheduler.loop("p")?.status().phase, "paused");
+  const r = loopRig(t, { target: { mode: "pause" } });
+  await flush();
+  assert.equal(r.loop.status().phase, "paused");
+  r.loop.apply({ brightnessOverride: 88 });
+  await flush();
+  assert.equal(r.calls.filter((call) => call.op === "brightness").at(-1)?.value, 88);
+  assert.equal(r.renders(), 1);
+  const old = r.loop.instance;
+  assert.ok(old);
+  const replacement = { ...old, ref: { ...old.ref, token: "replacement" } };
+  r.loop.deps.scenes.acquire = async () => replacement;
+  r.loop.deps.scenes.isCurrent = (instance) => instance === replacement;
+  await r.clock.advance(9999);
+  assert.equal(r.renders(), 1);
+  assert.equal(r.calls.filter((call) => call.op === "release").length, 0);
+  await r.clock.advance(1);
+  await flush();
+  assert.equal(r.renders(), 2);
+  assert.equal(r.loop.instance, replacement);
+  assert.equal(r.calls.filter((call) => call.op === "release").length, 1);
+  assert.equal(r.loop.status().phase, "paused");
 });
 
 test("an interrupted power cycle still sends ON and a broker outage consumes no cycle attempt", async (t) => {
