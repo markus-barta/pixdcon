@@ -2136,6 +2136,13 @@ test("r3 Tick (M1, Q1, Q2, default 7): overlay-only texts; 'not previewed · was
 //    of time gets its answer after all;
 //  - an audit: every identity of the model has data of its own in the
 //    stand-in, and is a change of the matrix or a step of a story that runs.
+//
+// Revision r5 (phase A5, guard-removal closure):
+//  - named boundary stories for preview lanes, inherited callbacks, Raw's
+//    overlapping loads, live generations, bootstrap and operation ownership;
+//  - each story has an in-memory removal that must fail beside its control;
+//  - separately named invariant probes justify equivalent/unreachable guards;
+//    the sweep reruns them, never counting a source-anchor failure as a kill.
 // ---------------------------------------------------------------------------
 
 const configPage = await loadPage("config");
@@ -3925,6 +3932,1627 @@ const R4_GATE = {
   "settings save × scene × 500, last": "sweep r5b, an old Save's failure after Weather's preview was answered",
 };
 
+// r5: guard stories. Real module code, held transports, and observations at
+// the boundary a guard protects. No source-text assertion counts as a catch.
+
+/** @param {string} file @param {Array<[string, string]>} [edits] @param {Record<string, string>} [replace] */
+async function r5Module(file, edits = [], replace = {}) {
+  return import(await r4Mutant(file, edits, replace));
+}
+
+/**
+ * A form without a Device page subscriber: the story delivers the values
+ * explicitly, just as the page's subscription does. Requests still use the
+ * real API, store and operation slots and the existing server stand-in.
+ * @param {any} t @param {any} module @param {(ctx: any) => Promise<void>} story
+ * @param {{ready?: boolean, session?: () => string|null}} [options]
+ */
+async function r5Form(t, module, story, options = {}) {
+  const world = r4World({ devices: [{ name: "d1" }] });
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  /** @type {any[]} */
+  const reports = [];
+  let session = "s1";
+  const form = module.createSettingsForm(root, {
+    device: "d1",
+    session: options.session ?? (() => session),
+    onPreviewFailure: (/** @type {any} */ value) => reports.push(value),
+  });
+  const values = (/** @type {string} */ scene, /** @type {any} */ extra = {}) =>
+    r4Settings(world, r4Now(world), "d1", scene, extra);
+  const show = (/** @type {string|null} */ scene) =>
+    form.setScene(scene, scene, { epoch: world.epoch, incarnation: 1 });
+  const edit = async (/** @type {string} */ n) => {
+    typeInto(root.querySelector('[data-key="n"]'), n);
+    await settle();
+  };
+  const ctx = {
+    world,
+    calls,
+    root,
+    form,
+    reports,
+    values,
+    show,
+    edit,
+    module,
+    session: (/** @type {string} */ value) => {
+      session = value;
+    },
+  };
+  try {
+    show("clock");
+    if (options.ready !== false) {
+      pending(calls, "GET", "/settings/clock").ok();
+      await settle();
+      form.update(values("clock"));
+    }
+    await story(ctx);
+  } finally {
+    form.destroy();
+    root.remove();
+    await r4AnswerAll(ctx);
+  }
+}
+
+/** @param {any[]} calls @param {string} [scene] */
+const r5Previews = (calls, scene = "clock") =>
+  calls.filter((c) => c.method === "PUT" && c.path.endsWith(`/settings/${scene}/preview`));
+
+/** @type {Array<{name: string, file: string, edits: Array<[string, string]>, run: (t: any, module: any) => Promise<void>, other?: {file: string, spec: string, edits: Array<[string, string]>}}>} */
+const R5_STORIES = [
+  {
+    name: "unkeyed API cleanup cannot announce a control it never owned",
+    file: "api.js",
+    edits: [["if (key !== undefined) {\n      busy.delete(key);", "if (true) {\n      busy.delete(key);"]],
+    run: async (_t, api) => {
+      /** @type {any[]} */
+      const notices = [];
+      const stop = api.onBusy((/** @type {string} */ key, /** @type {boolean} */ busy) => notices.push([key, busy]));
+      fakeFetch(() => new Response("{}", { status: 200 }));
+      try {
+        await api.request("GET", "/r5-unkeyed", { resource: "r5" });
+        assert.deepEqual(notices, [], "an unkeyed request owns no control");
+      } finally {
+        stop();
+      }
+    },
+  },
+  {
+    name: "lane tail of preview one cannot free preview two's lane before preview three",
+    file: "components/settings-form.js",
+    edits: [["if (lanes.get(lane) === tail) lanes.delete(lane);", "if (true) lanes.delete(lane);"]],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ calls, edit }) => {
+        await edit("2");
+        await edit("3");
+        assert.equal(r5Previews(calls).length, 1, "preview two waits");
+        r5Previews(calls)[0].ok();
+        await settle();
+        assert.equal(r5Previews(calls).length, 2, "preview two now runs");
+        await edit("4");
+        assert.equal(
+          r5Previews(calls).length,
+          2,
+          "preview three waits for preview two, even after preview one's tail ended",
+        );
+        r5Previews(calls)[1].ok();
+        await settle();
+        assert.equal(r5Previews(calls).length, 3);
+        assert.equal(r5Previews(calls)[2].body.values.n, 4);
+      }),
+  },
+  {
+    name: "queued retry of an end replaced by a successful preview sends no DELETE",
+    file: "components/settings-form.js",
+    edits: [["if (!current()) return;", "if (false) return;"]],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ world, calls, edit }) => {
+        await edit("2");
+        const key = `end:d1/clock@${world.epoch}/1`;
+        r4SetOp(key, { token: 500, busy: false, label: "", value: undefined, note: null, failure: "end failed" });
+        m.retryEnd({ name: "d1", epoch: world.epoch, incarnation: 1 }, "clock", "s1");
+        await settle();
+        assert.equal(
+          calls.filter((/** @type {any} */ c) => c.method === "DELETE").length,
+          0,
+          "Retry waits in the lane",
+        );
+        r5Previews(calls)[0].ok();
+        await settle();
+        assert.equal(
+          calls.filter((/** @type {any} */ c) => c.method === "DELETE").length,
+          0,
+          "the successful preview replaced Retry's token",
+        );
+      }),
+  },
+  {
+    name: "unchanged preview failure is reported once across repeated updates",
+    file: "components/settings-form.js",
+    edits: [["if (failure === reported) return;", "if (false) return;"]],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ calls, edit, form, values, reports }) => {
+        await edit("2");
+        r5Previews(calls)[0].answer(500, {});
+        await settle();
+        const before = [...reports];
+        assert.equal(before.length, 1, "the first failure is reported once");
+        form.update(values("clock"));
+        form.update(values("clock"));
+        assert.deepEqual(reports, before, "rendering unchanged values repeats no callback");
+      }),
+  },
+  {
+    name: "leave ends a server-held preview even when this opening sent none",
+    file: "components/settings-form.js",
+    edits: [["!of.previewed && !held && !op(endKey(of)).failure", "!of.previewed && true && !op(endKey(of)).failure"]],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ form, values, calls }) => {
+        form.update(values("clock", { preview: { session: "s1", draft: 200 }, effective: { n: 7 } }));
+        const ending = form.end();
+        await settle();
+        const end = pending(calls, "DELETE", "/settings/clock/preview");
+        end.ok();
+        await ending;
+      }),
+  },
+  {
+    name: "leave retries a failed end even with no locally sent or held preview",
+    file: "components/settings-form.js",
+    edits: [["!of.previewed && !held && !op(endKey(of)).failure", "!of.previewed && !held && true"]],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ world, form, calls }) => {
+        r4SetOp(`end:d1/clock@${world.epoch}/1`, {
+          token: 501,
+          busy: false,
+          label: "",
+          value: undefined,
+          note: null,
+          failure: "previous end failed",
+        });
+        const ending = form.end();
+        await settle();
+        pending(calls, "DELETE", "/settings/clock/preview").ok();
+        await ending;
+      }),
+  },
+  {
+    name: "queued preview of a scene left while preview one runs is never sent",
+    file: "components/settings-form.js",
+    edits: [["if (of.left || !id) return;", "if (false || !id) return;"]],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ calls, edit, show, form, values }) => {
+        await edit("2");
+        await edit("3");
+        show("weather");
+        form.update(values("weather"));
+        r5Previews(calls)[0].ok();
+        await settle();
+        assert.equal(r5Previews(calls).length, 1, "the queued draft belongs to the scene that was left");
+        assert.ok(
+          calls.some((/** @type {any} */ c) => c.method === "DELETE" && c.path.endsWith("/clock/preview")),
+          "its end follows the old preview",
+        );
+      }),
+  },
+  {
+    name: "queued preview rechecks the session when its lane becomes free",
+    file: "components/settings-form.js",
+    edits: [["if (of.left || !id) return;", "if (of.left || false) return;"]],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ calls, edit, session }) => {
+        await edit("2");
+        await edit("3");
+        session("");
+        r5Previews(calls)[0].ok();
+        await settle();
+        assert.equal(r5Previews(calls).length, 1, "a session lost while waiting cannot own a new preview");
+      }),
+  },
+  {
+    name: "old preview failure cannot repeat the new scene's failure callback",
+    file: "components/settings-form.js",
+    edits: [
+      ["if (!shown(of)) return;", "if (false) return;"],
+      ["if (failure === reported) return;", "if (false) return;"],
+    ],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ calls, edit, show, form, values, reports }) => {
+        await edit("2");
+        show("weather");
+        form.update(values("weather"));
+        await edit("9");
+        r5Previews(calls, "weather")[0].answer(500, {});
+        await settle();
+        const before = [...reports];
+        r5Previews(calls)[0].answer(500, {});
+        await settle();
+        assert.deepEqual(reports, before, "an unrelated old completion does not report Weather again");
+      }),
+  },
+  {
+    name: "coalesced queued previews send the newest draft once",
+    file: "components/settings-form.js",
+    edits: [
+      ["!session() || !mine.scene || mine.left || mine.queued", "!session() || !mine.scene || mine.left || false"],
+    ],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ calls, edit }) => {
+        await edit("2");
+        await edit("3");
+        await edit("4");
+        r5Previews(calls)[0].ok();
+        await settle();
+        const next = r5Previews(calls)[1];
+        assert.ok(next);
+        assert.equal(next.body.values.n, 4);
+        next.ok();
+        await settle();
+        assert.equal(r5Previews(calls).length, 2, "the same newest draft is sent only once");
+      }),
+  },
+  {
+    name: "old Save success cannot re-preview the new scene's draft",
+    file: "components/settings-form.js",
+    edits: [
+      ["if (shown(mine) && mine.book.edits.size > 0) preview();", "if (true && mine.book.edits.size > 0) preview();"],
+    ],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ calls, edit, root, show, form, values }) => {
+        await edit("2");
+        r5Previews(calls)[0].ok();
+        await settle();
+        assert.equal(click(root.querySelector('[data-act="save"]')), true);
+        await settle();
+        const saving = pending(calls, "PUT", "/settings/clock");
+        await edit("3");
+        r5Previews(calls)[1].ok();
+        await settle();
+        show("weather");
+        form.update(values("weather"));
+        await edit("9");
+        r5Previews(calls, "weather")[0].ok();
+        await settle();
+        const count = r5Previews(calls, "weather").length;
+        saving.ok();
+        await settle();
+        assert.equal(
+          r5Previews(calls, "weather").length,
+          count,
+          "Clock's submitted edit leaves another Clock edit, not work for Weather",
+        );
+      }),
+  },
+  {
+    name: "old Revert success cannot report the new scene's failure again",
+    file: "components/settings-form.js",
+    edits: [
+      ["if (shown(mine)) report();", "if (true) report();"],
+      ["if (failure === reported) return;", "if (false) return;"],
+    ],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ calls, edit, root, show, form, values, reports }) => {
+        await edit("2");
+        r5Previews(calls)[0].ok();
+        await settle();
+        click(root.querySelector('[data-act="revert"]'));
+        await settle();
+        const reverting = pending(calls, "DELETE", "/settings/clock/preview");
+        show("weather");
+        form.update(values("weather"));
+        await edit("9");
+        r5Previews(calls, "weather")[0].answer(500, {});
+        await settle();
+        const count = reports.length;
+        reverting.ok();
+        await settle();
+        assert.equal(reports.length, count, "Revert's old scope reports nothing on the new one");
+      }),
+  },
+  {
+    name: "opening Raw preserves another page's idle outcome",
+    file: "ops.js",
+    edits: [["!slot.busy && mine(key)", "!slot.busy && true"]],
+    run: async (_t, ops) => {
+      const key = "r5-other-page";
+      const slot = { token: 502, busy: false, label: "", value: undefined, note: "Saved elsewhere", failure: null };
+      r4SetOp(key, slot);
+      ops.forgetIdle((/** @type {string} */ name) => name.startsWith("raw-"));
+      assert.deepEqual(r4State().ops.get(key), slot, "only the opening page's own idle outcomes are forgotten");
+      r4SetOp(key, null);
+    },
+  },
+  {
+    name: "typing with no success note cannot manufacture an idle operation slot",
+    file: "ops.js",
+    edits: [["if (slot?.note) setOp(key, { ...slot, note: null });", "if (true) setOp(key, { ...slot, note: null });"]],
+    run: async (_t, ops) => {
+      const key = "r5-absent-note";
+      r4SetOp(key, null);
+      ops.clearNote(key);
+      assert.equal(r4State().ops.has(key), false, "editing owns no operation before one exists");
+    },
+  },
+  {
+    name: "superseded successful operation cannot call its done callback",
+    file: "ops.js",
+    edits: [["(result) => {\n      if (!current()) return;", "(result) => {\n      if (false) return;"]],
+    run: async (_t, ops) => {
+      /** @type {any} */
+      let finish;
+      /** @type {any[]} */
+      const done = [];
+      const old = ops.follow(
+        "r5-superseded",
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+        {
+          done: () => {
+            done.push("old");
+          },
+        },
+      );
+      await ops.follow("r5-superseded", async () => "new", {
+        done: () => {
+          done.push("new");
+        },
+      });
+      await settle();
+      finish("old");
+      await old;
+      await settle();
+      assert.deepEqual(done, ["new"], "the second token check cannot undo a done callback's effects");
+      ops.drop("r5-superseded");
+    },
+  },
+  {
+    name: "saving d1 then visiting d2 cannot close d2's edited row",
+    file: "pages/config.js",
+    edits: [["mine === openings && open === name", "mine === openings && true"]],
+    run: async (_t, m) => {
+      const world = r4World({ devices: [{ name: "d1" }, { name: "d2" }] });
+      const calls = r4Server(world);
+      r4NewEpoch(world);
+      const root = pageRoot();
+      m.page.mount(root, {});
+      try {
+        click(root.querySelector('[data-act="edit"][data-device="d1"]'));
+        typeInto(root.querySelector('.ct-edit [name="displayName"]'), "d1 saved");
+        click(root.querySelector('[data-act="patch"]'));
+        await settle();
+        click(root.querySelector('[data-act="cancel"]'));
+        click(root.querySelector('[data-act="edit"][data-device="d2"]'));
+        typeInto(root.querySelector('.ct-edit [name="displayName"]'), "d2 draft");
+        pending(calls, "PATCH", "/devices/d1").ok();
+        await settle();
+        assert.equal(
+          root.querySelector(".ct-edit form")?.getAttribute("data-device"),
+          "d2",
+          "the old Save closes only d1's row",
+        );
+        assert.equal(root.querySelector('.ct-edit [name="displayName"]')?.value, "d2 draft");
+      } finally {
+        m.page.unmount();
+        root.remove();
+        await r4AnswerAll({ calls });
+      }
+    },
+  },
+];
+
+/**
+ * A browser timer queue keeps callbacks that were already queued when
+ * clearTimeout ran. The test can deliver one such callback after replacement.
+ * @param {any} t @param {any} m @param {(ctx: any) => void} story
+ */
+async function r5Live(t, m, story) {
+  /** @type {any[]} */
+  const timers = [];
+  /** @type {any[]} */
+  const sources = [];
+  /** @type {any[]} */
+  const states = [];
+  /** @type {any[]} */
+  const events = [];
+  t.mock.method(globalThis, "setTimeout", (/** @type {any} */ callback, /** @type {number} */ ms) => {
+    const timer = { callback, ms, canceled: false };
+    timers.push(timer);
+    return timer;
+  });
+  t.mock.method(globalThis, "clearTimeout", (/** @type {any} */ timer) => {
+    if (timer) timer.canceled = true;
+  });
+  const saved = globalThis.EventSource;
+  globalThis.EventSource = /** @type {any} */ (
+    class extends FakeEventSource {
+      constructor(/** @type {string} */ url) {
+        super(url);
+        sources.push(this);
+      }
+    }
+  );
+  const live = m.connectLive(
+    {
+      onEvent: (/** @type {any} */ event) => events.push(event),
+      onState: (/** @type {any} */ state) => states.push(state),
+    },
+    { fence: createStore().fence() },
+  );
+  try {
+    story({ timers, sources, states, events, live });
+  } finally {
+    live.close();
+    globalThis.EventSource = saved;
+    t.mock.restoreAll();
+  }
+}
+
+R5_STORIES.push(
+  {
+    name: "live state reports no duplicate transition on a ping",
+    file: "live.js",
+    edits: [
+      [
+        "next.state === current.state &&\n      next.lastEventAt === current.lastEventAt &&\n      next.lostSince === current.lostSince",
+        "false",
+      ],
+    ],
+    run: async (t, m) =>
+      r5Live(t, m, ({ sources, states }) => {
+        sources[0].onopen();
+        const count = states.length;
+        sources[0].emit("ping", `${A}-20`, {});
+        assert.equal(states.length, count, "updating the event time does not report another live transition");
+      }),
+  },
+  {
+    name: "queued error after live close cannot report lost or arm retry",
+    file: "live.js",
+    edits: [["stopStream();\n    if (closed) return;", "stopStream();\n    if (false) return;"]],
+    run: async (t, m) =>
+      r5Live(t, m, ({ sources, states, timers, live }) => {
+        sources[0].onopen();
+        live.close();
+        const count = states.length;
+        const made = timers.length;
+        sources[0].onerror();
+        assert.equal(states.length, count, "the closed session has no new state");
+        assert.equal(timers.length, made, "the closed session has no new retry");
+      }),
+  },
+  {
+    name: "queued silence timeout of the replaced stream cannot close its successor",
+    file: "live.js",
+    edits: [["if (mine === generation) lose();", "if (true) lose();"]],
+    run: async (t, m) =>
+      r5Live(t, m, ({ sources, timers, states }) => {
+        sources[0].onopen();
+        const queued = timers.at(-1);
+        sources[0].onerror();
+        timers.at(-1).callback();
+        sources[1].onopen();
+        assert.equal(queued.canceled, true, "the old watchdog was canceled, but its task was queued");
+        const count = states.length;
+        queued.callback();
+        assert.equal(sources[1].closed, false, "old watchdog does not close the replacement");
+        assert.equal(states.length, count);
+      }),
+  },
+  {
+    name: "queued open of the replaced stream cannot claim the new stream is live",
+    file: "live.js",
+    edits: [
+      [
+        "stream.onopen = () => {\n      if (mine !== generation) return;",
+        "stream.onopen = () => {\n      if (false) return;",
+      ],
+    ],
+    run: async (t, m) =>
+      r5Live(t, m, ({ sources, timers, live, states }) => {
+        sources[0].onerror();
+        timers.at(-1).callback();
+        const before = live.state();
+        const count = states.length;
+        sources[0].onopen();
+        assert.deepEqual(live.state(), before, "the new connection has not opened yet");
+        assert.equal(states.length, count);
+      }),
+  },
+  {
+    name: "queued error of the replaced stream cannot lose the new live stream",
+    file: "live.js",
+    edits: [["if (mine !== generation) return;\n      lose();", "if (false) return;\n      lose();"]],
+    run: async (t, m) =>
+      r5Live(t, m, ({ sources, timers, states }) => {
+        sources[0].onerror();
+        timers.at(-1).callback();
+        sources[1].onopen();
+        const count = states.length;
+        sources[0].onerror();
+        assert.equal(sources[1].closed, false, "the successor is still open");
+        assert.equal(states.length, count);
+      }),
+  },
+);
+
+let r5MainId = 0;
+/**
+ * Run all of main.js with stand-ins only at its module boundaries. The
+ * bootstrap promise is held while the stream loads the store; subscriptions
+ * and loadFrame's requests run exactly as main.js writes them.
+ * @param {any} t @param {Array<[string, string]>} edits @param {string} story
+ */
+async function r5Main(t, edits, story) {
+  const state = { loaded: false, epoch: A, devices: new Map(), previews: new Map(), controller: null };
+  /** @type {any[]} */
+  const subscriptions = [];
+  /** @type {any[]} */
+  const requests = [];
+  /** @type {any[]} */
+  const errors = [];
+  /** @type {any} */ let rejectBoot;
+  const bootstrap = new Promise((_resolve, reject) => {
+    rejectBoot = reject;
+  });
+  const bridge = {
+    state,
+    subscriptions,
+    requests,
+    errors,
+    request: () => bootstrap,
+    requestFrame: (/** @type {string} */ name) => {
+      requests.push(name);
+      return Promise.resolve({ generation: 1, frame: null });
+    },
+    subscribe: (/** @type {any} */ select, /** @type {any} */ render) => {
+      subscriptions.push({ select, render });
+      render(select(state));
+    },
+    setLoadError: (/** @type {any} */ error) => errors.push(error),
+  };
+  const global = /** @type {any} */ (globalThis);
+  const saved = global.__r5Main;
+  global.__r5Main = bridge;
+  const nodes = new Map(
+    ["app", "version", "overlay-count", "restart", "mqtt-dot", "mqtt-text"].map((id) => [id, makeElement("div")]),
+  );
+  Object.assign(fakeDocument, { getElementById: (/** @type {string} */ id) => nodes.get(id) });
+  const oldWindow = global.window;
+  global.window = { addEventListener() {} };
+  t.mock.method(globalThis, "setInterval", () => 1);
+  const stub = (/** @type {string} */ code) =>
+    `data:text/javascript;base64,${Buffer.from(`const b = globalThis.__r5Main;\n${code}\n// ${++r5MainId}`).toString("base64")}`;
+  const replace = {
+    "./api.js": stub(
+      "export class ApiError extends Error {} export const request=b.request, requestFrame=b.requestFrame;",
+    ),
+    "./store.js": stub(
+      "export const getState=()=>b.state, subscribe=b.subscribe, setLoadError=b.setLoadError; export const applyAnswer=()=>{}, applyEvent=()=>{}, applyFrameAnswer=()=>{}, fence=()=>({}), setLive=()=>{}, tick=()=>{}, toPreview=()=>null;",
+    ),
+    "./live.js": stub('export const connectLive=()=>({session:"r5-main"});'),
+    "./router.js": stub("export const startRouter=()=>{};"),
+    "./theme.js": stub('export const applyTheme=()=>{}, versionDisplay=()=>"semver";'),
+    "./view/model.js": stub(
+      'export const header=()=>({overlayCount:0,restart:{shown:false,title:""},mqtt:{dot:"ok",text:"connected",cls:""}});',
+    ),
+    "./session.js": stub("export const setSession=()=>{};"),
+  };
+  try {
+    const loading = r5Module("main.js", edits, replace);
+    await settle();
+    state.loaded = true;
+    state.devices = new Map([["d1", view("d1")]]);
+    rejectBoot(new Error("old bootstrap failed"));
+    await loading;
+    await settle();
+    if (story === "bootstrap") {
+      assert.deepEqual(errors, [], "the stream loaded the page before bootstrap failed");
+      return;
+    }
+    assert.deepEqual(requests, ["d1"], "one frame for the first life");
+    const deviceSub = subscriptions.find((/** @type {any} */ sub) => sub.select(state) === state.devices);
+    assert.ok(deviceSub);
+    if (story === "asked") {
+      deviceSub.render(state.devices);
+      assert.deepEqual(requests, ["d1"], "another device revision does not ask again for the same life");
+      state.devices = new Map([["d1", view("d1", { incarnation: 2 })]]);
+      deviceSub.render(state.devices);
+      assert.deepEqual(requests, ["d1", "d1"], "a new life has its own first frame");
+    } else {
+      state.previews.set("d2", { frameSeq: 99 });
+      state.devices = new Map([...state.devices, ["d2", view("d2")]]);
+      deviceSub.render(state.devices);
+      assert.deepEqual(requests, ["d1"], "a frame already received on the stream needs no HTTP load");
+    }
+  } finally {
+    global.__r5Main = saved;
+    global.window = oldWindow;
+    t.mock.restoreAll();
+  }
+}
+
+R5_STORIES.push(
+  {
+    name: "late bootstrap failure leaves the stream-loaded page alone",
+    file: "main.js",
+    edits: [["if (!getState().loaded)", "if (true)"]],
+    run: (t, m) => r5Main(t, m.__r5Edits ?? [], "bootstrap"),
+  },
+  {
+    name: "first-frame requests remember each device life",
+    file: "main.js",
+    edits: [["asked.has(key) || state.previews.has(view.name)", "false || state.previews.has(view.name)"]],
+    run: (t, m) => r5Main(t, m.__r5Edits ?? [], "asked"),
+  },
+  {
+    name: "stream frame arriving before first-frame subscription needs no HTTP request",
+    file: "main.js",
+    edits: [["asked.has(key) || state.previews.has(view.name)", "asked.has(key) || false"]],
+    run: (t, m) => r5Main(t, m.__r5Edits ?? [], "preview"),
+  },
+);
+
+/** @param {any} t @param {any} api @param {"json"|"frame"} kind @param {boolean} body */
+async function r5Timeout(t, api, kind, body) {
+  globalThis.fetch = /** @type {any} */ (
+    () =>
+      body
+        ? Promise.resolve({
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            text: () => new Promise(() => {}),
+            arrayBuffer: () => new Promise(() => {}),
+          })
+        : new Promise(() => {})
+  );
+  const result =
+    kind === "json" ? api.request("GET", "/r5-body-timeout", { resource: "r5" }) : api.requestFrame("r5-timeout");
+  const checked = assert.rejects(result, (/** @type {any} */ error) => {
+    assert.equal(error.code, "timeout");
+    return true;
+  });
+  await settle();
+  t.mock.timers.tick(15_000);
+  await checked;
+}
+
+R5_STORIES.push(
+  {
+    name: "501 has its own failure sentence after an identity change",
+    file: "api.js",
+    edits: [["if (status === 501) return", "if (false) return"]],
+    run: async (_t, api) => {
+      const calls = heldFetch();
+      const outcome = api.request("GET", "/r5-501", { resource: "r5" });
+      const checked = assert.rejects(outcome, { message: "pixdcon cannot do this yet." });
+      bootPages((e) => [view("d2", { epoch: e })]);
+      calls[0].answer(501, {});
+      await checked;
+    },
+  },
+  {
+    name: "external cancellation remains cancellation after the page identity changes",
+    file: "api.js",
+    edits: [["if (signal?.aborted)", "if (false)"]],
+    run: async (_t, api) => {
+      const controller = new AbortController();
+      /** @type {any} */
+      let fail;
+      globalThis.fetch = /** @type {any} */ (
+        () =>
+          new Promise((_resolve, reject) => {
+            fail = reject;
+          })
+      );
+      const outcome = api.request("GET", "/r5-abort", { resource: "r5", signal: controller.signal });
+      const checked = assert.rejects(outcome, (/** @type {any} */ error) => {
+        assert.equal(error.code, "aborted");
+        return true;
+      });
+      bootPages((e) => [view("d2", { epoch: e })]);
+      controller.abort();
+      fail(new Error("aborted"));
+      await checked;
+    },
+  },
+  {
+    name: "JSON body timeout keeps its timeout classification",
+    file: "api.js",
+    edits: [
+      [
+        "text = await time.race(response.text());\n    } catch {\n      if (time.timedOut())",
+        "text = await time.race(response.text());\n    } catch {\n      if (false)",
+      ],
+    ],
+    run: (t, api) => r5Timeout(t, api, "json", true),
+  },
+  {
+    name: "frame transport timeout keeps its timeout classification",
+    file: "api.js",
+    edits: [
+      [
+        '    } catch {\n      if (time.timedOut()) throw timeoutError();\n      throw new ApiError("No answer from pixdcon.", {\n        status: 0,\n        code: "unreachable",\n      });\n    }\n    if (response.status === 204)',
+        '    } catch {\n      if (false) throw timeoutError();\n      throw new ApiError("No answer from pixdcon.", {\n        status: 0,\n        code: "unreachable",\n      });\n    }\n    if (response.status === 204)',
+      ],
+    ],
+    run: (t, api) => r5Timeout(t, api, "frame", false),
+  },
+  {
+    name: "frame body timeout keeps its timeout classification",
+    file: "api.js",
+    edits: [
+      [
+        "bytes = new Uint8Array(await time.race(response.arrayBuffer()));\n    } catch {\n      if (time.timedOut())",
+        "bytes = new Uint8Array(await time.race(response.arrayBuffer()));\n    } catch {\n      if (false)",
+      ],
+    ],
+    run: (t, api) => r5Timeout(t, api, "frame", true),
+  },
+  {
+    name: "empty successful API answer is a null body",
+    file: "api.js",
+    edits: [['if (text !== "" && payload === null)', "if (true && payload === null)"]],
+    run: async (_t, api) => {
+      fakeFetch(() => new Response(null, { status: 204 }));
+      assert.equal((await api.request("DELETE", "/r5-empty", { resource: "r5" })).body, null);
+    },
+  },
+  {
+    name: "nonempty malformed API answer is refused",
+    file: "api.js",
+    edits: [['if (text !== "" && payload === null)', "if (false)"]],
+    run: async (_t, api) => {
+      fakeFetch(() => new Response("{not json", { status: 200 }));
+      await assert.rejects(api.request("GET", "/r5-malformed", { resource: "r5" }), (/** @type {any} */ error) => {
+        assert.equal(error.code, "invalid_answer");
+        return true;
+      });
+    },
+  },
+  {
+    name: "204 frame answer leaves the preview slot empty",
+    file: "api.js",
+    edits: [["if (response.status === 204) return", "if (false) return"]],
+    run: async (_t, api) => {
+      fakeFetch(() => new Response(null, { status: 204 }));
+      assert.equal((await api.requestFrame("r5-no-frame")).frame, null);
+    },
+  },
+  {
+    name: "failed frame answer cannot become a preview",
+    file: "api.js",
+    edits: [["if (!response.ok)\n      throw", "if (false)\n      throw"]],
+    run: async (_t, api) => {
+      fakeFetch(() => new Response("", { status: 503 }));
+      await assert.rejects(api.requestFrame("r5-failed-frame"), (/** @type {any} */ error) => {
+        assert.equal(error.code, "http_503");
+        return true;
+      });
+    },
+  },
+);
+
+/** @param {any} module @param {(ctx: any) => Promise<void>} story */
+async function r5Raw(module, story) {
+  const world = r4World({ devices: [{ name: "d1" }] });
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  module.page.mount(root, {});
+  try {
+    await story({ world, calls, root, module });
+  } finally {
+    module.page.unmount();
+    root.remove();
+    await r4AnswerAll({ calls });
+  }
+}
+
+R5_STORIES.push(
+  {
+    name: "Raw's superseded opening load cannot schedule another load after Reload",
+    file: "pages/config-raw.js",
+    edits: [['if (decision.reason === "superseded_source") return;', "if (false) return;"]],
+    run: async (_t, m) =>
+      r5Raw(m, async ({ calls, root }) => {
+        const old = pending(calls, "GET", "/config/raw");
+        click(root.querySelector('[data-act="reload"]'));
+        await settle();
+        old.ok();
+        await settle();
+        pending(calls, "POST", "/config/reload").ok();
+        await settle();
+        for (const call of calls.filter((/** @type {any} */ c) => !c.answered)) call.ok();
+        await settle();
+        assert.equal(
+          calls.filter((/** @type {any} */ c) => c.method === "GET").length,
+          2,
+          "the opening load and Reload's load are the only two",
+        );
+      }),
+  },
+  {
+    name: "Raw Reload cannot put text in the editor when the fence drops its answer",
+    file: "pages/config-raw.js",
+    edits: [
+      [
+        'applyAnswer(answer).action === "apply" && base.opened === opened && root',
+        "true && base.opened === opened && root",
+      ],
+    ],
+    run: async (_t, m) =>
+      r5Raw(m, async ({ calls, world, root }) => {
+        pending(calls, "GET", "/config/raw").ok();
+        await settle();
+        const editor = root.querySelector("textarea");
+        typeInto(editor, '{"keep":"current edit"}');
+        click(root.querySelector('[data-act="reload"]'));
+        await settle();
+        pending(calls, "POST", "/config/reload").ok();
+        await settle();
+        const load = pending(calls, "GET", "/config/raw");
+        world.rev += 10;
+        r4Live(world, "config", { ...CONFIG_STATE, rev: world.rev });
+        load.answer(200, { text: '{"from":"dropped answer"}', state: { ...CONFIG_STATE, rev: load.rev } });
+        await settle();
+        assert.equal(editor.value, '{"keep":"current edit"}', "text and state must both pass the fence");
+      }),
+  },
+);
+
+R5_STORIES.push(
+  {
+    name: "no session means no preview even when both entry and send checks are removed separately",
+    file: "components/settings-form.js",
+    edits: [
+      ["!session() || !mine.scene || mine.left || mine.queued", "false || !mine.scene || mine.left || mine.queued"],
+      ["if (of.left || !id) return;", "if (of.left || false) return;"],
+    ],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ calls, edit, session }) => {
+        session("");
+        await edit("2");
+        assert.equal(r5Previews(calls).length, 0, "entry and send independently require the preview's session");
+      }),
+  },
+  {
+    name: "old Save cannot start a preview after the display has no scene",
+    file: "components/settings-form.js",
+    edits: [
+      ["if (shown(mine) && mine.book.edits.size > 0) preview();", "if (true && mine.book.edits.size > 0) preview();"],
+      ["!session() || !mine.scene || mine.left || mine.queued", "!session() || false || mine.left || mine.queued"],
+    ],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ calls, edit, root, show }) => {
+        await edit("2");
+        r5Previews(calls)[0].ok();
+        await settle();
+        click(root.querySelector('[data-act="save"]'));
+        await settle();
+        const saving = pending(calls, "PUT", "/settings/clock");
+        await edit("3");
+        r5Previews(calls)[1].ok();
+        await settle();
+        show(null);
+        saving.ok();
+        await settle();
+        assert.equal(
+          calls.some((/** @type {any} */ c) => c.path.includes("/settings/null")),
+          false,
+          "the absent scene owns no draft",
+        );
+      }),
+  },
+);
+
+/**
+ * These are reachability/equivalence proofs, not mutation kills. They are
+ * excluded from the sweep's caught count. Each disposition names one and
+ * the sweep reruns that probe on the removed-guard module as well.
+ * @type {Array<{name: string, run: (t: any) => Promise<void>}>}
+ */
+const R5_PROBES = [
+  {
+    name: "awaiting an absent lane predecessor changes no owner or request order",
+    run: async () => {
+      const m = await r5Module("components/settings-form.js", [
+        ["function enqueue(lane, step)", "export function enqueue(lane, step)"],
+      ]);
+      for (const fail of [false, true]) {
+        /** @type {any[]} */
+        const trace = [];
+        /** @type {any} */ let finish;
+        const first = m.enqueue("r5-probe", async () => {
+          trace.push("first");
+          await new Promise((resolve) => {
+            finish = resolve;
+          });
+          if (fail) throw new Error("failed");
+        });
+        const checked = first.catch(() => trace.push("failed"));
+        const next = m.enqueue("r5-probe", async () => {
+          trace.push("second");
+        });
+        await settle();
+        assert.deepEqual(trace, ["first"], "a real predecessor is awaited");
+        finish();
+        await checked;
+        await next;
+        await settle();
+        assert.deepEqual(
+          trace,
+          fail ? ["first", "failed", "second"] : ["first", "second"],
+          "only awaiting undefined is added by the removal",
+        );
+      }
+    },
+  },
+  {
+    name: "parsing an empty body is equivalent to leaving payload null",
+    run: async () => {
+      const api = await r5Module("api.js");
+      for (const text of ["", "{}", "[]", "0", "false", "null", "{bad json"]) {
+        // JSON.parse('') throws and the existing catch writes null. The
+        // removed branch adds only that caught parse, with no identity read.
+        const expected =
+          text === ""
+            ? null
+            : (() => {
+                try {
+                  return JSON.parse(text);
+                } catch {
+                  return null;
+                }
+              })();
+        fakeFetch(() => new Response(text || null, { status: 200 }));
+        const result = api.request("GET", "/r5-parse-probe", { resource: "r5" });
+        if (text !== "" && expected === null)
+          await assert.rejects(result, (/** @type {any} */ error) => error.code === "invalid_answer");
+        else assert.deepEqual((await result).body, expected);
+      }
+    },
+  },
+  {
+    name: "live state timestamp operands add no independent transition identity",
+    run: async (t) => {
+      const m = await r5Module("live.js", [
+        ["export function connectLive", "export const __r5States = [];\nexport function connectLive"],
+        [
+          "const next = { ...current, ...patch };",
+          "const next = { ...current, ...patch };\n    __r5States.push({patch, current, next});",
+        ],
+      ]);
+      await r5Live(t, m, ({ sources, timers, live }) => {
+        sources[0].onopen();
+        sources[0].onopen();
+        sources[0].emit("ping", `${A}-1`, {});
+        sources[0].onerror();
+        sources[0].onerror();
+        timers.at(-1).callback();
+        sources[1].onopen();
+        sources[1].emit("ping", `${B}-1`, {});
+        sources[1].onerror();
+        timers.at(-1).callback();
+        sources[2].onopen();
+        live.close();
+        sources[2].onerror();
+      });
+      assert.ok(m.__r5States.length >= 9, "live, lost, repeated state and reconnect paths ran");
+      for (const { patch, current, next } of m.__r5States) {
+        assert.equal(
+          Object.hasOwn(patch, "lastEventAt"),
+          false,
+          "setState never patches lastEventAt; receive writes it before setState",
+        );
+        assert.equal(next.lastEventAt, current.lastEventAt, "this operand is always true");
+        if (next.state === current.state)
+          assert.equal(next.lostSince, current.lostSince, "within one state the loss time is kept, or is already null");
+      }
+    },
+  },
+  {
+    name: "form preview entry cannot outlive its scene and opening",
+    run: async (t) => {
+      const { readFileSync } = await import("node:fs");
+      const device = readFileSync(new URL("../../web/js/pages/device.js", import.meta.url), "utf8");
+      assert.match(
+        device,
+        /void form\.end\(\);\s*form\.destroy\(\);/,
+        "the only page end destroys the form in the same synchronous call",
+      );
+      assert.equal([...device.matchAll(/form\.end\(\)/g)].length, 1, "the page has exactly one end call");
+      const formSource = readFileSync(new URL("../../web/js/components/settings-form.js", import.meta.url), "utf8");
+      assert.equal(
+        [...formSource.matchAll(/\bpreview\(\)/g)].length,
+        5,
+        "the four preview callers and declaration are all accounted for",
+      );
+      const m = await r5Module("components/settings-form.js", [
+        ["let ids = 0;", "let ids = 0;\nexport const __r5Entries = [];"],
+        [
+          "function preview() {\n    const mine = scope;",
+          "function preview() {\n    const mine = scope;\n    __r5Entries.push({left: mine.left, scene: mine.scene});",
+        ],
+      ]);
+      await r5Form(t, m, async ({ calls, edit, form, show, values, root }) => {
+        await edit("2");
+        await edit("3");
+        const oldInput = root.querySelector('[data-key="n"]');
+        show("weather");
+        form.update(values("weather"));
+        await edit("9");
+        r5Previews(calls)[0].ok();
+        await settle();
+        void form.end();
+        form.destroy();
+        const count = m.__r5Entries.length;
+        typeInto(oldInput, "4");
+        await settle();
+        assert.equal(m.__r5Entries.length, count, "a retained old field has no listener after end/destroy");
+      });
+      assert.ok(m.__r5Entries.length >= 3);
+      for (const entry of m.__r5Entries) {
+        assert.equal(entry.left, false);
+        assert.ok(entry.scene, "every reachable entry has a scene");
+      }
+    },
+  },
+  {
+    name: "failed Save of the shown scope always retains at least its submitted edits",
+    run: async (t) => {
+      const { readFileSync } = await import("node:fs");
+      const src = readFileSync(new URL("../../web/js/components/settings-form.js", import.meta.url), "utf8");
+      assert.equal([...src.matchAll(/\.book\.saved\(/g)].length, 1, "only success acknowledges edits");
+      assert.equal([...src.matchAll(/\.book\.clear\(/g)].length, 1, "only Revert clears edits");
+      const m = await r5Module("components/settings-form.js");
+      for (const draft of [null, "3", "not a number"]) {
+        await r5Form(t, m, async ({ calls, edit, root, form, values }) => {
+          await edit("2");
+          r5Previews(calls)[0].ok();
+          await settle();
+          click(root.querySelector('[data-act="save"]'));
+          await settle();
+          const saving = pending(calls, "PUT", "/settings/clock");
+          assert.equal(
+            click(root.querySelector('[data-act="revert"]')),
+            false,
+            "Save owns the action slot, so Revert cannot clear it",
+          );
+          if (draft !== null) await edit(draft);
+          form.update(values("clock"));
+          assert.equal(form.hasEdits(), true);
+          saving.answer(500, {});
+          await settle();
+          assert.equal(form.hasEdits(), true, "failure never acknowledges any edit");
+        });
+      }
+    },
+  },
+  {
+    name: "Raw failure classification reads only the API error envelope",
+    run: async () => {
+      const api = await r5Module("api.js");
+      for (const [status, body] of [
+        [422, { code: "invalid_config", error: "Invalid config", line: 2 }],
+        [500, { code: "disk_full", error: "Disk full", line: 2 }],
+        [400, {}],
+      ]) {
+        fakeFetch(() => new Response(JSON.stringify(body), { status: Number(status) }));
+        await assert.rejects(api.request("PUT", "/r5-envelope", { resource: "config" }), (/** @type {any} */ error) => {
+          assert.ok(error instanceof api.ApiError, "HTTP and parsing failures are API error envelopes");
+          assert.equal(error.status, status);
+          assert.equal(error.code, /** @type {any} */ (body).code ?? `http_${status}`);
+          return true;
+        });
+      }
+      globalThis.fetch = /** @type {any} */ (
+        async () => {
+          throw new TypeError("network failed");
+        }
+      );
+      await assert.rejects(api.request("PUT", "/r5-envelope", { resource: "config" }), (/** @type {any} */ error) => {
+        assert.ok(error instanceof api.ApiError);
+        assert.equal(error.code, "unreachable");
+        return true;
+      });
+    },
+  },
+  {
+    name: "Raw root and editor are consequences of the opening, not separate identities",
+    run: async () => r5RawLifecycle(false),
+  },
+  {
+    name: "Raw takeText inherits the opening checks of both callers",
+    run: async () => r5RawLifecycle(true),
+  },
+  {
+    name: "Raw retry branches retain the same base and observable work",
+    run: async () => {
+      // An immediate retry and `again=base` both start a load before the
+      // previous slot settles: setOp synchronously calls render, which takes
+      // `again` once Save/Reload are idle. The counter changes, not its base.
+      const m = await r5Module("pages/config-raw.js", [
+        [
+          "function load(base = { opened, revision }, tries = 0) {",
+          "export const __r5Bases = [];\nfunction load(base = { opened, revision }, tries = 0) {\n  __r5Bases.push({...base});",
+        ],
+      ]);
+      await r5Raw(m, async ({ calls, world, root }) => {
+        const typed = '{"devices":[],"keep":"typed before retry"}';
+        typeInto(root.querySelector("textarea"), typed);
+        for (let n = 0; n < 6; n += 1) {
+          const old = pending(calls, "GET", "/config/raw");
+          world.rev += 10;
+          r4Live(world, "config", { ...CONFIG_STATE, rev: world.rev });
+          old.ok();
+          await settle();
+          assert.equal(
+            calls.filter((/** @type {any} */ c) => c.method === "GET").length,
+            n + 2,
+            "one retry per older answer, including the counter boundary",
+          );
+          assert.equal(root.querySelector("textarea").value, typed, "every retry retains the typed revision");
+        }
+        assert.equal(m.__r5Bases.length, 7);
+        for (const base of m.__r5Bases)
+          assert.deepEqual(base, m.__r5Bases[0], "retry and fallback inherit the original base");
+      });
+    },
+  },
+];
+
+/**
+ * Check the lifecycle invariant at every relevant late callback, including
+ * while unmounted. The observation hook records values; it changes no guard.
+ * @param {boolean} textOnly
+ */
+async function r5RawLifecycle(textOnly) {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../../web/js/pages/config-raw.js", import.meta.url), "utf8");
+  const writes = [...src.matchAll(/\broot\s*=(?!=)\s*([^;]+);/g)].map((m) => m[1].trim());
+  assert.deepEqual(
+    writes,
+    ["null", "target", "null"],
+    "root has exactly its declaration, mount and unmount writers; both lifecycle writers also advance opened",
+  );
+  assert.match(src, /mount\(target, _params\)\s*\{\s*opened \+= 1;\s*root = target;/);
+  assert.match(src, /unmount\(\)\s*\{\s*opened \+= 1;/);
+  if (textOnly) {
+    assert.equal([...src.matchAll(/\btakeText\(/g)].length, 3, "exactly the two callers and declaration");
+    assert.match(
+      src,
+      /done: \(\{ answer, decision \}\) => \{\s*if \(base\.opened !== opened \|\| !root\) return;/,
+      "load inherits the opening and root checks",
+    );
+    assert.match(
+      src,
+      /applyAnswer\(answer\)\.action === "apply" && base\.opened === opened && root\) takeText\(answer, base\)/,
+      "Reload inherits the same opening and root checks",
+    );
+  }
+  const m = await r5Module("pages/config-raw.js", [
+    [
+      "let revision = 0;",
+      "let revision = 0;\nexport const __r5Observed = [];\nexport const __r5Read = () => ({root, opened});",
+    ],
+    [
+      "done: ({ answer, decision }) => {",
+      "done: ({ answer, decision }) => {\n        __r5Observed.push({at:'load done', base:base.opened, opened, root:!!root});",
+    ],
+    [
+      "failed: () => {",
+      "failed: () => {\n        __r5Observed.push({at:'load failed', base:base.opened, opened, root:!!root});",
+    ],
+    [
+      "function takeText(answer, base) {",
+      "function takeText(answer, base) {\n  __r5Observed.push({at:'takeText', base:base.opened, opened, root:!!root, editor:!!editorOf()});",
+    ],
+    [
+      "done: (answer) => {",
+      "done: (answer) => {\n        __r5Observed.push({at:'save done', base:mine, opened, root:!!root});",
+    ],
+    [
+      "failed: (error) => {",
+      "failed: (error) => {\n        __r5Observed.push({at:'save failed', base:mine, opened, root:!!root});",
+    ],
+    [
+      "if (applyAnswer(answer).action",
+      "__r5Observed.push({at:'reload text', base:base.opened, opened, root:!!root});\n      if (applyAnswer(answer).action",
+    ],
+  ]);
+  for (const action of ["load", "save", "reload"])
+    for (const reopen of [false, true])
+      for (const fail of [false, true]) {
+        const world = r4World({ devices: [{ name: "d1" }] });
+        const calls = r4Server(world);
+        r4NewEpoch(world);
+        let root = pageRoot();
+        m.page.mount(root, {});
+        try {
+          let old = pending(calls, "GET", "/config/raw");
+          if (action !== "load") {
+            old.ok();
+            await settle();
+            typeInto(root.querySelector("textarea"), '{"devices":[],"draft":2}');
+            click(root.querySelector(`[data-act="${action}"]`));
+            await settle();
+            if (action === "reload") {
+              pending(calls, "POST", "/config/reload").ok();
+              await settle();
+              old = pending(calls, "GET", "/config/raw");
+            } else old = pending(calls, "PUT", "/config/raw");
+          }
+          const before = m.__r5Read();
+          m.page.unmount();
+          root.remove();
+          assert.equal(m.__r5Read().root, null);
+          assert.equal(m.__r5Read().opened, before.opened + 1);
+          if (reopen) {
+            root = pageRoot();
+            m.page.mount(root, {});
+            await r4AnswerAll({ calls }, old);
+          }
+          if (fail) old.answer(422, { code: "invalid_config", error: "invalid", line: 2 });
+          else old.ok();
+          await settle();
+        } finally {
+          m.page.unmount();
+          root.remove();
+          await r4AnswerAll({ calls });
+        }
+      }
+  assert.ok(
+    m.__r5Observed.some((/** @type {any} */ at) => !at.root),
+    "late callbacks ran while the page was unmounted",
+  );
+  assert.ok(
+    m.__r5Observed.some((/** @type {any} */ at) => at.at === "takeText"),
+    "both accepted loads and late callbacks were exercised",
+  );
+  for (const at of m.__r5Observed) {
+    if (at.base === at.opened) assert.equal(at.root, true, `${at.at}: same opening implies a root`);
+    if (textOnly && at.at === "takeText") {
+      assert.equal(at.editor, true);
+      assert.equal(at.base, at.opened);
+    }
+  }
+}
+
+R5_STORIES.push(
+  {
+    name: "an operation whose done starts its successor cannot clear the successor's busy state",
+    file: "ops.js",
+    edits: [
+      [
+        "if (!current()) return;\n      setOp(key, { ...op(key), busy: false, failure: null, note });",
+        "if (false) return;\n      setOp(key, { ...op(key), busy: false, failure: null, note });",
+      ],
+    ],
+    run: async (_t, ops) => {
+      /** @type {any} */ let finish;
+      /** @type {any} */ let successor;
+      await ops.follow("r5-reentrant", async () => "old", {
+        done: () => {
+          successor = ops.follow(
+            "r5-reentrant",
+            () =>
+              new Promise((resolve) => {
+                finish = resolve;
+              }),
+            { label: "new operation" },
+          );
+          return "old outcome";
+        },
+      });
+      await settle();
+      try {
+        assert.equal(ops.op("r5-reentrant").busy, true, "the successor still owns a busy slot");
+        assert.equal(ops.op("r5-reentrant").note, null);
+      } finally {
+        finish();
+        await successor;
+        await settle();
+        ops.drop("r5-reentrant");
+      }
+    },
+  },
+  {
+    name: "dropping an absent operation emits no store update",
+    file: "ops.js",
+    edits: [["if (getState().ops.has(key)) setOp(key, null);", "if (true) setOp(key, null);"]],
+    run: async (_t, ops) => {
+      const store = await import(new URL("../../web/js/store.js", import.meta.url).href);
+      const key = "r5-absent-drop";
+      r4SetOp(key, null);
+      let updates = 0;
+      const stop = store.subscribe(
+        (/** @type {any} */ state) => state.ops,
+        () => {
+          updates += 1;
+        },
+      );
+      try {
+        const before = updates;
+        ops.drop(key);
+        assert.equal(updates, before, "there is no slot to remove and no render to notify");
+      } finally {
+        stop();
+      }
+    },
+  },
+  {
+    name: "superseded Raw load starts no retry while Reload is still pending",
+    file: "pages/config-raw.js",
+    edits: [
+      ['if (decision.reason === "superseded_source") return;', "if (false) return;"],
+      ['decision.reason === "not_newer" && tries < 3', "true && tries < 3"],
+    ],
+    run: async (_t, m) =>
+      r5Raw(m, async ({ calls, root }) => {
+        const old = pending(calls, "GET", "/config/raw");
+        click(root.querySelector('[data-act="reload"]'));
+        await settle();
+        old.ok();
+        await settle();
+        assert.equal(
+          calls.filter((/** @type {any} */ c) => c.method === "GET").length,
+          1,
+          "superseded_source is not the not_newer retry branch",
+        );
+      }),
+  },
+  {
+    name: "reopened Raw load never retries a late answer from its old opening",
+    file: "pages/config-raw.js",
+    edits: [
+      ["if (base.opened !== opened || !root) return;", "if (false) return;"],
+      ['if (decision.reason === "superseded_source") return;', "if (false) return;"],
+    ],
+    other: {
+      file: "ops.js",
+      spec: "../ops.js",
+      edits: [["(result) => {\n      if (!current()) return;", "(result) => {\n      if (false) return;"]],
+    },
+    run: async (_t, m) => {
+      const world = r4World({ devices: [{ name: "d1" }] });
+      const calls = r4Server(world);
+      r4NewEpoch(world);
+      let root = pageRoot();
+      m.page.mount(root, {});
+      const old = pending(calls, "GET", "/config/raw");
+      try {
+        m.page.unmount();
+        root.remove();
+        root = pageRoot();
+        m.page.mount(root, {});
+        await r4AnswerAll({ calls }, old);
+        const before = calls.length;
+        old.ok();
+        await settle();
+        world.rev += 1;
+        r4Live(world, "device", r4View(world, "d1", world.epoch, 1, world.rev));
+        await settle();
+        assert.equal(calls.length, before, "the old opening cannot put its retry base into the new opening");
+      } finally {
+        m.page.unmount();
+        root.remove();
+        await r4AnswerAll({ calls });
+      }
+    },
+  },
+  {
+    name: "old settings load failure cannot replace the new scene's pending load",
+    file: "components/settings-form.js",
+    edits: [['if (!shown(mine) || phase === "ready") return;', 'if (false || phase === "ready") return;']],
+    other: {
+      file: "ops.js",
+      spec: "../ops.js",
+      edits: [["(error) => {\n      if (!current()) return;", "(error) => {\n      if (false) return;"]],
+    },
+    run: async (t, m) =>
+      r5Form(
+        t,
+        m,
+        async ({ calls, show, root }) => {
+          const old = pending(calls, "GET", "/settings/clock");
+          show("weather");
+          old.answer(500, {});
+          await settle();
+          assert.doesNotMatch(
+            r4Text(root.querySelector(".set-body")),
+            /could not be loaded/,
+            "Weather's load has not failed",
+          );
+          assert.match(r4Text(root.querySelector(".set-body")), /Loading settings for weather/i);
+        },
+        { ready: false },
+      ),
+  },
+);
+
+R5_STORIES.push(
+  {
+    name: "Raw load with no position waits for the pending Reload instead of retrying",
+    file: "pages/config-raw.js",
+    edits: [['decision.reason === "not_newer" && tries < 3', "true && tries < 3"]],
+    run: async (_t, m) => {
+      const boot = bootPages((e) => [view("d1", { epoch: e })]);
+      const calls = heldFetch();
+      const root = pageRoot();
+      m.page.mount(root, {});
+      try {
+        const old = pending(calls, "GET", "/config/raw");
+        click(root.querySelector('[data-act="reload"]'));
+        await settle();
+        old.answer(200, { text: "{}", state: CONFIG_STATE });
+        await settle();
+        assert.equal(
+          calls.filter((/** @type {any} */ c) => c.method === "GET").length,
+          1,
+          "no_position is not the not_newer immediate retry branch",
+        );
+        pending(calls, "POST", "/config/reload").answer(
+          200,
+          { state: { ...CONFIG_STATE, rev: 2 } },
+          `${boot.epoch}-20`,
+        );
+        await settle();
+      } finally {
+        m.page.unmount();
+        root.remove();
+        await drain(calls);
+      }
+    },
+  },
+  {
+    name: "Raw non-validation failure with a line number cannot mark the editor gutter",
+    file: "pages/config-raw.js",
+    edits: [
+      ['if (error instanceof ApiError && error.code === "invalid_config")', "if (error instanceof ApiError && true)"],
+    ],
+    run: async (_t, m) =>
+      r5Raw(m, async ({ calls, root, world }) => {
+        pending(calls, "GET", "/config/raw").ok();
+        await settle();
+        typeInto(root.querySelector("textarea"), '{"devices":[],\n"edit":2}');
+        click(root.querySelector('[data-act="save"]'));
+        await settle();
+        pending(calls, "PUT", "/config/raw").answer(500, { code: "disk_full", error: "Disk is full", line: 2 });
+        await settle();
+        world.rev += 1;
+        r4Live(world, "device", r4View(world, "d1", world.epoch, 1, world.rev));
+        await settle();
+        assert.equal(
+          root.querySelectorAll(".gut b.err").length,
+          0,
+          "a transport/storage failure is not config validation",
+        );
+        assert.match(r4Text(root.querySelector(".errline")), /Disk is full/);
+      }),
+  },
+  {
+    name: "Save success with no newer edit sends no empty duplicate preview",
+    file: "components/settings-form.js",
+    edits: [["if (shown(mine) && mine.book.edits.size > 0) preview();", "if (shown(mine) && true) preview();"]],
+    run: async (t, m) =>
+      r5Form(t, m, async ({ calls, edit, root }) => {
+        await edit("2");
+        r5Previews(calls)[0].ok();
+        await settle();
+        click(root.querySelector('[data-act="save"]'));
+        await settle();
+        pending(calls, "PUT", "/settings/clock").ok();
+        await settle();
+        assert.equal(r5Previews(calls).length, 1, "the Save committed every edit and no newer draft exists");
+      }),
+  },
+  {
+    name: "settings values received while their load is pending survive its late failure",
+    file: "components/settings-form.js",
+    edits: [['if (!shown(mine) || phase === "ready") return;', "if (!shown(mine) || false) return;"]],
+    other: {
+      file: "ops.js",
+      spec: "../ops.js",
+      edits: [["(error) => {\n      if (!current()) return;", "(error) => {\n      if (false) return;"]],
+    },
+    run: async (t, m) =>
+      r5Form(
+        t,
+        m,
+        async ({ calls, form, values, root }) => {
+          const old = pending(calls, "GET", "/settings/clock");
+          form.update(values("clock"));
+          old.answer(500, {});
+          await settle();
+          assert.ok(root.querySelector('[data-key="n"]'), "the received values remain ready");
+          assert.doesNotMatch(r4Text(root), /could not be loaded/);
+        },
+        { ready: false },
+      ),
+  },
+  {
+    name: "live open reports the live transition",
+    file: "live.js",
+    edits: [["next.state === current.state &&", "true &&"]],
+    run: async (t, m) =>
+      r5Live(t, m, ({ sources, states }) => {
+        sources[0].onopen();
+        assert.equal(states.at(-1)?.state, "live");
+      }),
+  },
+  {
+    name: "queued event of a replaced stream never reaches the current page",
+    file: "live.js",
+    edits: [
+      [
+        "stream.addEventListener(type, (/** @type {any} */ message) => {\n        if (mine !== generation) return;",
+        "stream.addEventListener(type, (/** @type {any} */ message) => {\n        if (false) return;",
+      ],
+    ],
+    run: async (t, m) =>
+      r5Live(t, m, ({ sources, timers, events }) => {
+        sources[0].onopen();
+        sources[0].onerror();
+        timers.at(-1).callback();
+        sources[1].onopen();
+        sources[1].emit("device", `${B}-2`, view("d2", { epoch: B }));
+        const before = [...events];
+        sources[0].emit("device", `${A}-30`, view("d1"));
+        assert.deepEqual(events, before, "the replaced stream cannot send to the page");
+      }),
+  },
+  {
+    name: "live event without a readable position is ignored without a callback error",
+    file: "live.js",
+    edits: [["if (!position) return;", "if (false) return;"]],
+    run: async (t, m) =>
+      r5Live(t, m, ({ sources, events }) => {
+        assert.doesNotThrow(() => sources[0].emit("device", "broken-position", view("d1")));
+        assert.deepEqual(events, []);
+      }),
+  },
+  {
+    name: "a busy operation slot admits no competing start",
+    file: "ops.js",
+    edits: [["if (busy(key)) return false;", "if (false) return false;"]],
+    run: async (_t, ops) => {
+      /** @type {any} */ let finish;
+      const work = new Promise((resolve) => {
+        finish = resolve;
+      });
+      let sent = 0;
+      try {
+        assert.equal(
+          ops.start("r5-busy", () => work, { value: "first" }),
+          true,
+        );
+        assert.equal(
+          ops.start(
+            "r5-busy",
+            async () => {
+              sent += 1;
+            },
+            { value: "second" },
+          ),
+          false,
+        );
+        assert.equal(sent, 0);
+        assert.equal(ops.op("r5-busy").value, "first");
+      } finally {
+        finish();
+        await settle();
+        ops.drop("r5-busy");
+      }
+    },
+  },
+);
+
 /** Cases that fail at fbf3f61: phase B makes each one pass and takes it off this list. */
 /** @type {Set<string>} */
 const R4_KNOWN = new Set([
@@ -4159,7 +5787,7 @@ test("r4 harness: the matrix covers every operation kind, change and end; every 
   assert.equal(names.length, r4Count);
   for (const name of Object.keys(R4_GATE)) assert.ok(names.includes(name) || r4Last.includes(name), `${name} is a case of the matrix`);
   // The known failures are cases of the matrix too: a name that matches no case would hide nothing, and is a mistake.
-  for (const name of R4_KNOWN) assert.ok(names.includes(name) || r4CompositeNames.includes(name) || r4Last.includes(name), `${name} (R4_KNOWN) is a case of the matrix`);
+  for (const name of R4_KNOWN) assert.ok(names.includes(name) || r4CompositeNames.includes(name) || r4Last.includes(name) || R5_STORIES.some((story) => `guard story: ${story.name}` === name), `${name} (R4_KNOWN) is a case of the matrix`);
   t_log(
     `r4 harness: ${R4_KINDS.length} kinds × ${Object.keys(R4_CHANGES).length} changes × ends (${R4_ENDS.join(", ")}; raw save also refused; settings preview rejected: success only; settings save rejected: refused in place of success): ${combinations} combinations, ${r4Count} cases run, ${r4Probes.length} combinations (${excluded} with their ends) unreachable, each a probe that runs; ${r4Last.length} cases with the old operation ending last (reopen, epoch, reincarnate, scene, where the change is inside the kind's projection); ${r4Composites} cases of two changes; ${R4_KNOWN.size} known failures:\n  ${r4Probes.join("\n  ")}`,
   );
@@ -4328,6 +5956,46 @@ test("r4 audit: every identity of the model has data of its own in the stand-in,
   }
   t_log(`r4 audit, identity × data:\n  ${lines.join("\n  ")}`);
 });
+
+
+for (const probe of R5_PROBES)
+  test(`r4 guard probe: ${probe.name}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await probe.run(t);
+  });
+
+// Each new interleaving has a normal named case and a must-fail in-memory
+// guard removal beside the passing control. Main is loaded by its story.
+for (const story of R5_STORIES) {
+  const name = `guard story: ${story.name}`;
+  test(
+    `r4 harness: ${name}`,
+    { todo: !R4_STRICT && R4_KNOWN.has(name) ? `fails at fbf3f61: ${name}` : undefined },
+    async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const module = story.file === "main.js" ? {} : await r5Module(story.file);
+      try {
+        await story.run(t, module);
+      } catch (error) {
+        r4Report(name, [String(error)]);
+        throw error;
+      }
+    },
+  );
+  test(`r4 harness self-test: guard story: ${story.name}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const control = story.file === "main.js" ? {} : await r5Module(story.file);
+    await story.run(t, control);
+    const replace = story.other ? { [story.other.spec]: await r4Mutant(story.other.file, story.other.edits) } : {};
+    const mutant =
+      story.file === "main.js" ? { __r5Edits: story.edits } : await r5Module(story.file, story.edits, replace);
+    await assert.rejects(
+      story.run(t, mutant),
+      (/** @type {any} */ error) => error.name === "AssertionError" || error.name === "ApiError",
+      "the removed guard must violate the same observation the control passed",
+    );
+  });
+}
 
 // --- self-tests: product mutations the harness must catch (gate r4 §3, §4) ---
 
