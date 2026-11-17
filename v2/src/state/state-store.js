@@ -92,6 +92,7 @@ import { resolveScene } from "./precedence.js";
 /** @typedef {import("../types.js").DeviceHealth} DeviceHealth */
 /** @typedef {import("../types.js").EffectiveState} EffectiveState */
 /** @typedef {import("../types.js").PlaybackMode} PlaybackMode */
+/** @typedef {{device: string, layer: import("../types.js").SceneLayer, generation: number}} SuppressionEvent */
 
 /**
  * @typedef {object} StateStoreDeps
@@ -126,6 +127,13 @@ export class StateStore extends EventEmitter {
     this.queues = new Map();
     /** @type {Array<() => void>} */
     this.unwire = [];
+    this.ended = false;
+    /** @type {SuppressionEvent[]} Authoritative retirements can precede state.start. */
+    this.earlySuppressions = [];
+    /** @param {SuppressionEvent} event */
+    const suppression = (event) => this.retireSuppression(event);
+    this.deps.overlays.on("suppression", suppression);
+    this.unwire.push(() => this.deps.overlays.off("suppression", suppression));
   }
 
   /**
@@ -135,7 +143,7 @@ export class StateStore extends EventEmitter {
    * "changed".
    */
   start() {
-    if (this.active) return;
+    if (this.active || this.ended) return;
     this.active = true;
     /** @param {{effective: import("../types.js").EffectiveConfig}} event */
     const runtimeChanged = ({ effective }) => {
@@ -159,49 +167,55 @@ export class StateStore extends EventEmitter {
       if (!this.active) return;
       for (const name of this.states.keys()) this.compute(name);
     };
-    /** @param {{device: string, layer: import("../types.js").SceneLayer, generation: number}} event */
-    const suppression = ({ device, layer, generation }) => {
-      if (!this.active || !this.states.has(device)) return;
-      void this.command(device, async () => {
-        if (
-          !this.deps.config.file().valid ||
-          this.require(device).runtime.origin !== "config"
-        )
-          return;
-        await this.deps.config.updateDevice(device, (raw) => {
-          const saved =
-            /** @type {import("../types.js").DeviceConfig["supersedes"]} */ (
-              raw.supersedes
-            );
-          if (saved?.[layer]?.generation !== generation) return;
-          delete saved[layer];
-          if (Object.keys(saved).length === 0) delete raw.supersedes;
-        });
-      }).catch((error) =>
-        this.deps.logger.error(
-          "[State] Cannot retire saved suppression",
-          error,
-        ),
-      );
-    };
     this.deps.runtime.on("changed", runtimeChanged);
     this.deps.overlays.on("changed", overlayChanged);
-    this.deps.overlays.on("suppression", suppression);
     this.deps.scenes.on("changed", registryChanged);
     this.unwire.push(
       () => this.deps.runtime.off("changed", runtimeChanged),
       () => this.deps.overlays.off("changed", overlayChanged),
-      () => this.deps.overlays.off("suppression", suppression),
       () => this.deps.scenes.off("changed", registryChanged),
     );
     runtimeChanged({ effective: this.deps.runtime.get() });
+    for (const event of this.earlySuppressions.splice(0))
+      this.retireSuppression(event);
   }
 
   stop() {
     this.active = false;
+    this.ended = true;
+    this.earlySuppressions.length = 0;
     this.tokens.clear();
     for (const lane of this.queues.values()) lane.close();
     for (const off of this.unwire.splice(0)) off();
+  }
+
+  /** @param {SuppressionEvent} event */
+  retireSuppression(event) {
+    if (this.ended) return;
+    if (!this.active) {
+      this.earlySuppressions.push({ ...event });
+      return;
+    }
+    const { device, layer, generation } = event;
+    if (!this.states.has(device)) return;
+    void this.command(device, async () => {
+      if (
+        !this.deps.config.file().valid ||
+        this.require(device).runtime.origin !== "config"
+      )
+        return;
+      await this.deps.config.updateDevice(device, (raw) => {
+        const saved =
+          /** @type {import("../types.js").DeviceConfig["supersedes"]} */ (
+            raw.supersedes
+          );
+        if (saved?.[layer]?.generation !== generation) return;
+        delete saved[layer];
+        if (Object.keys(saved).length === 0) delete raw.supersedes;
+      });
+    }).catch((error) =>
+      this.deps.logger.error("[State] Cannot retire saved suppression", error),
+    );
   }
 
   /** @returns {DeviceState[]} config order, then blob-only devices */

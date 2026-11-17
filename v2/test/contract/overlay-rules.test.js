@@ -18,7 +18,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { manualClock } from "../../src/core/clock.js";
 import { createApp } from "../../src/main.js";
 import { startStack } from "../helpers/harness.js";
@@ -703,6 +703,10 @@ test("held setting overlay: a setting overlay whose scene has no schema yet is k
   assert.equal(world.settings.state(D, "A").values.n.effective, 9);
   assert.equal(world.overlays.get("setting:" + D + ":A:n")?.valid, true);
 });
+// Blocker: the frozen LayersInput has no explicit scene/blob own-write
+// input. Mirror writes are fenced; arbitrary scene writes/whole-blob clears
+// still need that core decision (w1-to-coordinator-1.md). Do not invent one
+// in the shell or silently treat their echoes as outside commands.
 test.todo(
   "explicit clears and the v1 overlay route: an own write through clear, clearSettings, publishSettings, publishSceneOverlay or publishControl is remembered until its echo; what arrives on its topic before that is older",
 );
@@ -1264,4 +1268,30 @@ test("restore a device: returning to its saved choice strips only its blob scene
   await assert.rejects(world.state.clearSceneOverlay(D), {
     code: "shadow_output",
   });
+});
+
+test("startup retirements: a saved shadow suppression dropped before state.start is removed from the same generation in config.json", async (t) => {
+  const world = await serviceWorld(t);
+  await world.config.updateDevice(D, (raw) => {
+    raw.output = "shadow";
+  });
+  await world.inject(world.topics.overlayDeviceScene(D), "B");
+  await world.state.chooseScene(D, "C");
+  await world.flush();
+  await world.app.stop();
+  const raw = JSON.parse(await readFile(world.configPath, "utf8"));
+  assert.ok(raw.devices[0].supersedes.granular);
+  raw.devices[0].output = "drive";
+  await writeFile(world.configPath, JSON.stringify(raw));
+  await world.restart();
+  await world.flush();
+  assert.equal(world.state.view(D).desired.scene.scene, "B");
+  await until(
+    () =>
+      !world.config.get().devices.find((device) => device.name === D)
+        ?.supersedes.blob,
+  );
+  const saved = JSON.parse(await readFile(world.configPath, "utf8"));
+  assert.equal(saved.devices[0].supersedes, undefined);
+  assert.equal(world.overlays.suppressions(D).granular, null);
 });

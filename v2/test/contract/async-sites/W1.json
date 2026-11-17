@@ -642,7 +642,15 @@
       "was": "RuntimeConfig.start"
     },
     {
-      "site": "src/state/state-store.js:151",
+      "site": "src/state/state-store.js:135",
+      "id": "listener:this.deps.overlays.on(\"suppression\")#1",
+      "input": "runtime/overlay/registry/suppression event or per-device command admission",
+      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
+      "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
+      "test": "test/contract/composition.test.js: device lives and reports:"
+    },
+    {
+      "site": "src/state/state-store.js:159",
       "id": "work:this.sync#1",
       "input": "synchronous reconciliation or completion of a command",
       "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
@@ -651,16 +659,7 @@
       "why": "synchronous work already admitted by the runtime handler, error logging, or queue barrier; no separate state input"
     },
     {
-      "site": "src/state/state-store.js:180",
-      "id": "then:this.command().catch#1",
-      "input": "synchronous reconciliation or completion of a command",
-      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
-      "fence": "none",
-      "test": "test/contract/composition.test.js: device lives and reports:",
-      "why": "synchronous work already admitted by the runtime handler, error logging, or queue barrier; no separate state input"
-    },
-    {
-      "site": "src/state/state-store.js:187",
+      "site": "src/state/state-store.js:170",
       "id": "listener:this.deps.runtime.on(\"changed\")#1",
       "input": "runtime/overlay/registry/suppression event or per-device command admission",
       "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
@@ -669,7 +668,7 @@
       "was": "StateStore.start"
     },
     {
-      "site": "src/state/state-store.js:188",
+      "site": "src/state/state-store.js:171",
       "id": "listener:this.deps.overlays.on(\"changed\")#1",
       "input": "runtime/overlay/registry/suppression event or per-device command admission",
       "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
@@ -677,20 +676,21 @@
       "test": "test/contract/composition.test.js: device lives and reports:"
     },
     {
-      "site": "src/state/state-store.js:189",
-      "id": "listener:this.deps.overlays.on(\"suppression\")#1",
+      "site": "src/state/state-store.js:172",
+      "id": "listener:this.deps.scenes.on(\"changed\")#1",
       "input": "runtime/overlay/registry/suppression event or per-device command admission",
       "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
       "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
       "test": "test/contract/composition.test.js: device lives and reports:"
     },
     {
-      "site": "src/state/state-store.js:190",
-      "id": "listener:this.deps.scenes.on(\"changed\")#1",
-      "input": "runtime/overlay/registry/suppression event or per-device command admission",
+      "site": "src/state/state-store.js:216",
+      "id": "then:this.command().catch#1",
+      "input": "synchronous reconciliation or completion of a command",
       "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
-      "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
-      "test": "test/contract/composition.test.js: device lives and reports:"
+      "fence": "none",
+      "test": "test/contract/composition.test.js: device lives and reports:",
+      "why": "synchronous work already admitted by the runtime handler, error logging, or queue barrier; no separate state input"
     },
     {
       "site": "src/state/v1-ownership.js:219",

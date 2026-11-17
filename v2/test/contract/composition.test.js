@@ -313,6 +313,8 @@ test("N7 shutdown: a scene import that is still running when the wait for the re
 });
 
 // --- Phase 3 ---------------------------------------------------------------------------------------
+// Blocker: W4 StatusPublisher.start and W3 telemetry are skeletons here.
+// The namespace, CONNECT will and route-health portions are tested above.
 test.todo(
   "namespace: with mqtt.statusBaseTopic set in config.json, health, state, config and the last will use it from the first connect; overlays, controls and telemetry stay under baseTopic",
 );
@@ -347,6 +349,8 @@ test("namespace change: editing mqtt.* in config.json while running moves nothin
   assert.equal(app.topics.base, "another/base");
   assert.equal(app.controller().restartRequired, null);
 });
+// Blocker: integration of W3 drivers/telemetry, W4 publications and W5
+// scene adapter. W1's output decisions and no-clear paths are real tests.
 test.todo(
   "output policy: driver choice, overlay clears, controls, telemetry, discovery, availability, status lists, the plug and scene state files all follow the same answer for a device",
 );
@@ -554,9 +558,13 @@ test("saved choice from outside: editing only a device's scene in config.json sw
   assert.equal(stack.app.factories.changeImpact("savedScene"), "view");
   assert.equal(state.view("ulanzi-t").incarnation, 2);
 });
+// Blocker: W5 SceneRegistry.load/refresh/sync bodies. The finished lane's
+// order is tested in ordering.test.js; shutdown is exercised above.
 test.todo(
   "registry lane: a path overlay whose import is slow, then a newer path for the same key: the registry ends on the newer one; a change during the first load is applied after it; shutdown waits for the import that runs",
 );
+// Blocker: W3 Scheduler.start is a skeleton. State/settings/main reject
+// stale revisions; the complete four-consumer case awaits integration.
 test.todo(
   "effective revision: runtime config, state store, scheduler and settings service apply a runtime change only when its rev is higher than the one they hold",
 );
