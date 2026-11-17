@@ -307,7 +307,12 @@ export class SettingsService extends EventEmitter {
     let draftKey = "";
     if (scoped) {
       checkDraft(change.session, change.draft);
-      draftKey = JSON.stringify([change.session, device, scene]);
+      draftKey = JSON.stringify([
+        change.session,
+        device,
+        scene,
+        before.incarnation,
+      ]);
       if ((change.draft ?? 0) <= (this.committed.get(draftKey) ?? -1))
         return { state: before, rejected: {}, overlaysNotCleared: [] };
       this.drafts.set(
@@ -328,7 +333,12 @@ export class SettingsService extends EventEmitter {
       const settings = object(raw.sceneSettings) ? raw.sceneSettings : {};
       const saved = object(settings[scene]) ? { ...settings[scene] } : {};
       for (const [key, value] of Object.entries(checked.values))
-        saved[key] = value;
+        Object.defineProperty(saved, key, {
+          value,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
       for (const key of change.reset ?? []) delete saved[key];
       Object.defineProperty(settings, scene, {
         value: saved,
@@ -395,7 +405,12 @@ export class SettingsService extends EventEmitter {
     if (!this.active)
       throw new HttpError(503, "stopping", "Settings service is stopped");
     checkDraft(preview.session, preview.draft);
-    const key = JSON.stringify([preview.session, device, scene]);
+    const key = JSON.stringify([
+      preview.session,
+      device,
+      scene,
+      this.deps.runtime.incarnationOf(device),
+    ]);
     if (
       decideStamp(
         { source: preview.session, position: this.drafts.get(key) ?? -1 },

@@ -262,8 +262,10 @@ export function validateDevice(raw) {
       structuredClone(suppression)
     );
   }
+  const fields = structuredClone(raw);
+  delete fields.scenes;
   return {
-    ...structuredClone(raw),
+    ...fields,
     name: deviceName,
     type: raw.type,
     ip,

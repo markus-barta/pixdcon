@@ -2,7 +2,7 @@
   "owner": "W1",
   "rows": [
     {
-      "site": "src/config/config-store.js:294",
+      "site": "src/config/config-store.js:293",
       "id": "timer:this.options.clock.sleep#1",
       "input": "file event, timer, or admission of a config read/write",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -10,7 +10,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:295",
+      "site": "src/config/config-store.js:294",
       "id": "then:this.options.clock.sleep().then#1",
       "input": "file event, timer, or admission of a config read/write",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -18,7 +18,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:297",
+      "site": "src/config/config-store.js:296",
       "id": "work:this.reload#1",
       "input": "file event, timer, or admission of a config read/write",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -26,7 +26,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:299",
+      "site": "src/config/config-store.js:298",
       "id": "then:this.options.clock.sleep().then().catch#1",
       "input": "completion of a file operation or failure of a queued read",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -35,7 +35,7 @@
       "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
     },
     {
-      "site": "src/config/config-store.js:304",
+      "site": "src/config/config-store.js:303",
       "id": "watch:watch#1",
       "input": "file event, timer, or admission of a config read/write",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -44,7 +44,7 @@
       "was": "ConfigStore.start"
     },
     {
-      "site": "src/config/config-store.js:309",
+      "site": "src/config/config-store.js:308",
       "id": "listener:this.watcher.on(\"error\")#1",
       "input": "file event, timer, or admission of a config read/write",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -52,7 +52,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:324",
+      "site": "src/config/config-store.js:323",
       "id": "timer:this.options.clock.every#1",
       "input": "file event, timer, or admission of a config read/write",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -60,7 +60,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:326",
+      "site": "src/config/config-store.js:325",
       "id": "work:this.reload#2",
       "input": "file event, timer, or admission of a config read/write",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -68,7 +68,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:326",
+      "site": "src/config/config-store.js:325",
       "id": "then:this.reload().catch#1",
       "input": "completion of a file operation or failure of a queued read",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -77,7 +77,7 @@
       "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
     },
     {
-      "site": "src/config/config-store.js:423",
+      "site": "src/config/config-store.js:428",
       "id": "work:backup.sync#1",
       "input": "completion of a file operation or failure of a queued read",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -86,7 +86,7 @@
       "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
     },
     {
-      "site": "src/config/config-store.js:432",
+      "site": "src/config/config-store.js:437",
       "id": "work:file.sync#1",
       "input": "completion of a file operation or failure of a queued read",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -95,7 +95,7 @@
       "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
     },
     {
-      "site": "src/config/config-store.js:439",
+      "site": "src/config/config-store.js:444",
       "id": "work:dir.sync#1",
       "input": "completion of a file operation or failure of a queued read",
       "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
@@ -356,7 +356,7 @@
       "was": "MqttGateway.publish"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:424",
+      "site": "src/mqtt/mqtt-gateway.js:429",
       "id": "subscribe:this.subscribe#1",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -365,7 +365,7 @@
       "was": "MqttGateway.settle"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:433",
+      "site": "src/mqtt/mqtt-gateway.js:438",
       "id": "timer:this.options.clock.sleep#4",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -373,7 +373,7 @@
       "test": "test/contract/wire.test.js: gateway order:"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:445",
+      "site": "src/mqtt/mqtt-gateway.js:450",
       "id": "work:this.publish#1",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -381,7 +381,7 @@
       "test": "test/contract/wire.test.js: gateway publish outcome:"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:483",
+      "site": "src/mqtt/mqtt-gateway.js:488",
       "id": "subscribe:this.subscribe#2",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -390,7 +390,7 @@
       "was": "MqttGateway.sceneContext"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:489",
+      "site": "src/mqtt/mqtt-gateway.js:494",
       "id": "subscribe:this.subscribe#3",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -398,7 +398,7 @@
       "test": "test/contract/wire.test.js: gateway owners:"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:541",
+      "site": "src/mqtt/mqtt-gateway.js:546",
       "id": "listener:client.on(\"connect\")#1",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -406,7 +406,7 @@
       "test": "test/contract/wire.test.js: gateway order:"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:551",
+      "site": "src/mqtt/mqtt-gateway.js:556",
       "id": "listener:client.on(\"message\")#1",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -414,7 +414,7 @@
       "test": "test/contract/wire.test.js: gateway order:"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:566",
+      "site": "src/mqtt/mqtt-gateway.js:571",
       "id": "then:Promise.resolve().catch#1",
       "input": "handler failure or SUBACK promise completion",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -423,7 +423,7 @@
       "why": "logging or removing a settled SUBACK promise only; no controller state or subscriber is changed"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:574",
+      "site": "src/mqtt/mqtt-gateway.js:579",
       "id": "listener:client.on(\"error\")#1",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -431,7 +431,7 @@
       "test": "test/contract/wire.test.js: gateway order:"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:590",
+      "site": "src/mqtt/mqtt-gateway.js:595",
       "id": "listener:client.on(\"close\")#1",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -439,7 +439,7 @@
       "test": "test/contract/wire.test.js: gateway order:"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:595",
+      "site": "src/mqtt/mqtt-gateway.js:600",
       "id": "timer:this.options.clock.sleep#5",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -447,7 +447,7 @@
       "test": "test/contract/wire.test.js: gateway order:"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:595",
+      "site": "src/mqtt/mqtt-gateway.js:600",
       "id": "then:this.options.clock.sleep().then#2",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -455,7 +455,7 @@
       "test": "test/contract/wire.test.js: gateway order:"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:630",
+      "site": "src/mqtt/mqtt-gateway.js:635",
       "id": "subscribe:client.subscribe#1",
       "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -464,7 +464,7 @@
       "was": "MqttGateway.subscribe"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:633",
+      "site": "src/mqtt/mqtt-gateway.js:638",
       "id": "then:ack.then#1",
       "input": "handler failure or SUBACK promise completion",
       "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
@@ -607,7 +607,7 @@
       "test": "test/contract/overlay-rules.test.js: preview rule 2:"
     },
     {
-      "site": "src/scenes/settings-service.js:457",
+      "site": "src/scenes/settings-service.js:472",
       "id": "timer:this.deps.clock.sleep#1",
       "input": "runtime/overlay/registry change notice or page disconnect grace deadline",
       "metadata": "effective revision; InstanceRef and device incarnation; page session and exact disconnect AbortController",
@@ -616,7 +616,7 @@
       "was": "SettingsService.sessionConnection"
     },
     {
-      "site": "src/scenes/settings-service.js:458",
+      "site": "src/scenes/settings-service.js:473",
       "id": "then:this.deps.clock.sleep().then#1",
       "input": "runtime/overlay/registry change notice or page disconnect grace deadline",
       "metadata": "effective revision; InstanceRef and device incarnation; page session and exact disconnect AbortController",
@@ -624,7 +624,7 @@
       "test": "test/contract/overlay-rules.test.js: preview rule 2:"
     },
     {
-      "site": "src/scenes/settings-service.js:608",
+      "site": "src/scenes/settings-service.js:623",
       "id": "then:entry.lane.run().catch#1",
       "input": "failure of an instance subscriber",
       "metadata": "effective revision; InstanceRef and device incarnation; page session and exact disconnect AbortController",
@@ -642,7 +642,7 @@
       "was": "RuntimeConfig.start"
     },
     {
-      "site": "src/state/state-store.js:149",
+      "site": "src/state/state-store.js:151",
       "id": "work:this.sync#1",
       "input": "synchronous reconciliation or completion of a command",
       "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
@@ -651,7 +651,7 @@
       "why": "synchronous work already admitted by the runtime handler, error logging, or queue barrier; no separate state input"
     },
     {
-      "site": "src/state/state-store.js:178",
+      "site": "src/state/state-store.js:180",
       "id": "then:this.command().catch#1",
       "input": "synchronous reconciliation or completion of a command",
       "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
@@ -660,7 +660,7 @@
       "why": "synchronous work already admitted by the runtime handler, error logging, or queue barrier; no separate state input"
     },
     {
-      "site": "src/state/state-store.js:185",
+      "site": "src/state/state-store.js:187",
       "id": "listener:this.deps.runtime.on(\"changed\")#1",
       "input": "runtime/overlay/registry/suppression event or per-device command admission",
       "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
@@ -669,7 +669,7 @@
       "was": "StateStore.start"
     },
     {
-      "site": "src/state/state-store.js:186",
+      "site": "src/state/state-store.js:188",
       "id": "listener:this.deps.overlays.on(\"changed\")#1",
       "input": "runtime/overlay/registry/suppression event or per-device command admission",
       "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
@@ -677,7 +677,7 @@
       "test": "test/contract/composition.test.js: device lives and reports:"
     },
     {
-      "site": "src/state/state-store.js:187",
+      "site": "src/state/state-store.js:189",
       "id": "listener:this.deps.overlays.on(\"suppression\")#1",
       "input": "runtime/overlay/registry/suppression event or per-device command admission",
       "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
@@ -685,7 +685,7 @@
       "test": "test/contract/composition.test.js: device lives and reports:"
     },
     {
-      "site": "src/state/state-store.js:188",
+      "site": "src/state/state-store.js:190",
       "id": "listener:this.deps.scenes.on(\"changed\")#1",
       "input": "runtime/overlay/registry/suppression event or per-device command admission",
       "metadata": "effective revision, device incarnation, runtime token, and suppression generation",

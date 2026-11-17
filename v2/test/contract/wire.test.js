@@ -487,6 +487,13 @@ test("gateway publish outcome: no acknowledgement in time on a connection that s
   const unanswered = gateway.publish("test/no-ack", "value", { timeoutMs: 20 });
   await clock.advance(20);
   assert.equal((await unanswered).outcome, "timeout");
+  t.mock.method(client, "publish", () => {
+    throw new Error("transport failed after entry");
+  });
+  assert.equal(
+    (await gateway.publish("test/uncertain", "value")).outcome,
+    "timeout",
+  );
 });
 test("gateway timers: the reconnect, the connect timeout and the settle timeout change the status and the hint only; no subscriber is called because one of them fired", async (t) => {
   const clock = manualClock();

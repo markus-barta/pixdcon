@@ -1166,3 +1166,102 @@ test("settings instance tokens: subscribers get copies in revision order; releas
   assert.deepEqual(old.all(), {});
   assert.equal(world.settings.state(D, "A").values.n.effective, 8);
 });
+
+test("device view revision: a setting-overlay count change raises rev and emits a device view, without a desired frame change", async (t) => {
+  const world = await serviceWorld(t);
+  const before = world.state.view(D);
+  /** @type {any[]} */ const devices = [];
+  /** @type {any[]} */ const desired = [];
+  world.state.on("device", (view) => devices.push(view));
+  world.state.on("desired", (event) => desired.push(event));
+  await world.inject(world.topics.setting(D, "A", "n"), "9");
+  const after = world.state.view(D);
+  assert.equal(after.settingOverlayCount, 1);
+  assert.ok(after.rev > before.rev);
+  assert.equal(devices.at(-1)?.settingOverlayCount, 1);
+  assert.equal(desired.length, 0);
+  await world.inject(world.topics.setting(D, "A", "n"), "");
+  assert.equal(world.state.view(D).settingOverlayCount, 0);
+  assert.ok(world.state.view(D).rev > after.rev);
+});
+
+test("settings device life: a new incarnation accepts a page's first draft again; old contexts and queued subscriber deliveries do not reach it", async (t) => {
+  const world = await serviceWorld(t);
+  const ref = { device: D, scene: "A", token: "old-life" };
+  const context = world.settings.runtimeContext(ref);
+  let release = () => {};
+  const wait = new Promise((resolve) => {
+    release = () => resolve(undefined);
+  });
+  /** @type {unknown[]} */ const seen = [];
+  context.subscribe(async (values) => {
+    seen.push(values.n);
+    await wait;
+  });
+  await until(() => seen.length === 1);
+  world.settings.preview(D, "A", {
+    session: "page",
+    draft: 100,
+    values: { n: 8 },
+  });
+  const identity = world.runtime.device(D);
+  assert.ok(identity);
+  const oldLife = world.settings.state(D, "A").incarnation;
+  await world.config.update((raw) => {
+    raw.devices = /** @type {any[]} */ (raw.devices).filter(
+      (entry) => entry.name !== D,
+    );
+  });
+  await world.config.update((raw) => {
+    /** @type {any[]} */ (raw.devices).push({
+      name: D,
+      type: identity.type,
+      ip: identity.address,
+      scene: "A",
+    });
+  });
+  const result = world.settings.preview(D, "A", {
+    session: "page",
+    draft: 1,
+    values: { n: 3 },
+  });
+  assert.equal(result.applied, true);
+  assert.ok(result.state.incarnation > oldLife);
+  release();
+  await world.flush();
+  assert.deepEqual(seen, [1]);
+  assert.deepEqual(context.all(), {});
+});
+
+test("restore a device: returning to its saved choice strips only its blob scene, keeps sibling scenes and structural fields, and respects shadow output", async (t) => {
+  const world = await serviceWorld(t);
+  await world.inject(
+    world.topics.overlayBlob,
+    JSON.stringify({
+      devices: [
+        { name: D, scene: "B", minFrameMs: 25 },
+        { name: D2, scene: "X", comment: "keep" },
+      ],
+      scenes: { X: { path: "keep.js" } },
+      extra: "keep",
+    }),
+  );
+  const result = await world.state.clearSceneOverlay(D);
+  assert.equal(result.desired.scene.scene, "A");
+  await until(
+    () =>
+      !JSON.parse(world.broker.retained()[world.topics.overlayBlob]).devices[0]
+        .scene,
+  );
+  const blob = JSON.parse(world.broker.retained()[world.topics.overlayBlob]);
+  assert.equal(blob.devices[0].minFrameMs, 25);
+  assert.deepEqual(blob.devices[1], { name: D2, scene: "X", comment: "keep" });
+  assert.deepEqual(blob.scenes, { X: { path: "keep.js" } });
+  assert.equal(blob.extra, "keep");
+  await world.config.updateDevice(D, (raw) => {
+    raw.output = "shadow";
+  });
+  await assert.rejects(world.state.clearSceneOverlay(D), {
+    code: "shadow_output",
+  });
+});

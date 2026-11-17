@@ -114,6 +114,8 @@ export class StateStore extends EventEmitter {
     this.runtimeRev = 0;
     /** @type {Map<string, DeviceState>} */
     this.states = new Map();
+    /** @type {Map<string, number>} Visible count belongs to the device revision. */
+    this.settingOverlayCounts = new Map();
     /** @type {Map<string, import("../types.js").SceneChoice>} */
     this.choices = new Map();
     /** @type {Map<string, {mode?: PlaybackMode, brightness?: number|null, at: string}>} */
@@ -231,12 +233,6 @@ export class StateStore extends EventEmitter {
   view(name) {
     const state = this.require(name);
     const device = state.runtime;
-    let settingOverlayCount = 0;
-    const scene = state.desired.scene.scene;
-    if (scene)
-      settingOverlayCount = Object.keys(
-        skeletonRead(() => this.deps.overlays.settingValues(name, scene), {}),
-      ).length;
     return freeze({
       name,
       epoch: this.deps.epoch,
@@ -256,7 +252,7 @@ export class StateStore extends EventEmitter {
         powerCyclePlugTopic: device.powerCyclePlugin?.topic ?? null,
       },
       blobKeys: device.blobKeys,
-      settingOverlayCount,
+      settingOverlayCount: this.settingOverlayCounts.get(name) ?? 0,
       pending: null,
     });
   }
@@ -296,51 +292,54 @@ export class StateStore extends EventEmitter {
    * @throws {import("../core/errors.js").HttpError} 404 unknown_device, 400 unknown_scene
    */
   async chooseScene(name, scene) {
-    return this.command(name, async () => {
-      const state = this.require(name);
-      if (
-        scene !== null &&
-        (typeof scene !== "string" || this.check(scene, state.type) !== null)
-      )
-        throw new HttpError(400, "unknown_scene", `Scene cannot run: ${scene}`);
-      const at = new Date(this.deps.clock.now()).toISOString();
-      const plan = skeletonRead(
-        () => this.deps.overlays.planSupersede(name, at),
-        { device: name, generation: 1, at, granular: null, blob: null },
-      );
-      const notSavedReason =
-        state.runtime.origin === "blob"
-          ? "overlay_only_device"
-          : !this.deps.config.file().valid
-            ? "config_invalid"
-            : null;
-      const persisted = notSavedReason === null;
-      if (persisted)
-        await this.deps.config.updateDevice(name, (raw) => {
-          raw.scene = scene;
-          delete raw.scenes;
-          raw.supersedes = {
-            ...(plan.granular ? { granular: plan.granular } : {}),
-            ...(plan.blob ? { blob: plan.blob } : {}),
-          };
-        });
-      this.stillCurrent(name, state.incarnation);
-      this.choices.set(name, {
-        scene,
-        chosenAt: at,
-        persisted,
-        notSavedReason,
-        overridden: false,
+    return this.command(name, () => this.chooseSceneNow(name, scene));
+  }
+
+  /** @param {string} name @param {string|null} scene @returns {Promise<{view: DeviceView, persisted: boolean, notSavedReason: import("../types.js").SceneChoice["notSavedReason"]}>} */
+  async chooseSceneNow(name, scene) {
+    const state = this.require(name);
+    if (
+      scene !== null &&
+      (typeof scene !== "string" || this.check(scene, state.type) !== null)
+    )
+      throw new HttpError(400, "unknown_scene", `Scene cannot run: ${scene}`);
+    const at = new Date(this.deps.clock.now()).toISOString();
+    const plan = skeletonRead(
+      () => this.deps.overlays.planSupersede(name, at),
+      { device: name, generation: 1, at, granular: null, blob: null },
+    );
+    const notSavedReason =
+      state.runtime.origin === "blob"
+        ? "overlay_only_device"
+        : !this.deps.config.file().valid
+          ? "config_invalid"
+          : null;
+    const persisted = notSavedReason === null;
+    if (persisted)
+      await this.deps.config.updateDevice(name, (raw) => {
+        raw.scene = scene;
+        delete raw.scenes;
+        raw.supersedes = {
+          ...(plan.granular ? { granular: plan.granular } : {}),
+          ...(plan.blob ? { blob: plan.blob } : {}),
+        };
       });
-      // PIXD-91: the frozen plan crosses the saved-write await. Keep the
-      // prescribed plan/apply interface; the coordinator owns its repair.
-      skeletonRead(() => this.deps.overlays.applySupersede(plan), {
-        superseded: [],
-        clearPending: false,
-      });
-      this.compute(name);
-      return { view: this.view(name), persisted, notSavedReason };
+    this.stillCurrent(name, state.incarnation);
+    this.choices.set(name, {
+      scene,
+      chosenAt: at,
+      persisted,
+      notSavedReason,
+      overridden: false,
     });
+    // PIXD-91: the frozen plan crosses the saved-write await. Keep the
+    // prescribed plan/apply interface; the coordinator owns its repair.
+    skeletonRead(() => this.deps.overlays.applySupersede(plan), {
+      superseded: [],
+      clearPending: false,
+    });
+    this.compute(name);
+    return { view: this.view(name), persisted, notSavedReason };
   }
 
   /**
@@ -364,17 +363,20 @@ export class StateStore extends EventEmitter {
         () => this.deps.overlays.suppressions(name),
         { granular: null, blob: null },
       );
+      /** @type {import("../types.js").DeviceConfig["supersedes"]} */
+      const savedSuppressions = {};
+      for (const layer of /** @type {const} */ (["granular", "blob"])) {
+        const active = supersedes[layer];
+        if (!active || active.confirmed) continue;
+        const { generation, at, value, alsoStale, output } = active;
+        savedSuppressions[layer] = { generation, at, value, alsoStale, output };
+      }
       await this.deps.config.adoptDevice(
         { name, type: state.type, ip: state.runtime.address },
         choice
           ? {
               scene: choice.scene,
-              supersedes: {
-                ...(supersedes.granular
-                  ? { granular: supersedes.granular }
-                  : {}),
-                ...(supersedes.blob ? { blob: supersedes.blob } : {}),
-              },
+              supersedes: savedSuppressions,
             }
           : undefined,
       );
@@ -400,16 +402,17 @@ export class StateStore extends EventEmitter {
   async clearSceneOverlay(name) {
     return this.command(name, async () => {
       const state = this.require(name);
-      const inputs = this.deps.overlays.sceneInputs(name);
-      const id = inputs.granular?.inEffect
-        ? inputs.granular.overlayId
-        : inputs.blob?.inEffect
-          ? inputs.blob.overlayId
-          : `device-scene:${name}`;
-      await this.deps.overlays.clear(id);
-      this.stillCurrent(name, state.incarnation);
-      this.compute(name);
-      return this.view(name);
+      if (state.runtime.output.mode !== "drive")
+        throw new HttpError(
+          409,
+          "shadow_output",
+          "This device is in shadow output",
+        );
+      if (this.deps.overlays.deps.mqtt?.status().state !== "connected")
+        throw new HttpError(503, "mqtt_offline", "MQTT is offline");
+      // Returning one device to its choice uses the same durable plan as a
+      // choice. Clearing the blob topic would erase every device's fields.
+      return (await this.chooseSceneNow(name, state.desired.choice.scene)).view;
     });
   }
 
@@ -606,6 +609,7 @@ export class StateStore extends EventEmitter {
       )
         continue;
       this.states.delete(name);
+      this.settingOverlayCounts.delete(name);
       this.choices.delete(name);
       this.localControls.delete(name);
       this.tokens.delete(name);
@@ -778,7 +782,23 @@ export class StateStore extends EventEmitter {
   /** @param {DeviceState} state */
   put(state) {
     const previous = this.states.get(state.name);
-    if (previous && isDeepStrictEqual(previous, state)) return;
+    const scene = state.desired.scene.scene;
+    const count =
+      scene === null
+        ? 0
+        : Object.keys(
+            skeletonRead(
+              () => this.deps.overlays.settingValues(state.name, scene),
+              {},
+            ),
+          ).length;
+    if (
+      previous &&
+      isDeepStrictEqual(previous, state) &&
+      this.settingOverlayCounts.get(state.name) === count
+    )
+      return;
+    this.settingOverlayCounts.set(state.name, count);
     const next = freeze({ ...state, rev: (previous?.rev ?? 0) + 1 });
     this.states.set(state.name, next);
     if (!previous) this.emit("device-added", this.view(state.name));

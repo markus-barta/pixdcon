@@ -20,6 +20,7 @@ import {
 } from "../../src/config/schema.js";
 import { manualClock } from "../../src/core/clock.js";
 import { createLogger } from "../../src/core/logger.js";
+import { NotImplementedError } from "../../src/core/todo.js";
 import { createApp } from "../../src/main.js";
 import { MqttGateway } from "../../src/mqtt/mqtt-gateway.js";
 import { StatusPublisher } from "../../src/mqtt/status-publisher.js";
@@ -196,6 +197,9 @@ test("composition force-shadow: a shared status namespace registers no controlle
 
 test("composition: the namespace of a run is reported, and an unbuilt health model is said to be unmeasured", async (t) => {
   const stack = await startStack(t, { mqtt: false });
+  stack.app.modules.health.controller = () => {
+    throw new NotImplementedError("unmeasured test peer");
+  };
   const health = await stack.api("/api/health");
   assert.equal(health.status, 200);
   assert.match(health.body.epoch, /^[0-9a-f]{8}$/);
@@ -346,12 +350,71 @@ test("namespace change: editing mqtt.* in config.json while running moves nothin
 test.todo(
   "output policy: driver choice, overlay clears, controls, telemetry, discovery, availability, status lists, the plug and scene state files all follow the same answer for a device",
 );
-test.todo(
-  "interlock: ownership unknown keeps a device in shadow; v1's list naming it keeps it in shadow with 'still driven by pixdcon v1'; a list without it releases it within a second",
-);
-test.todo(
-  "interlock: the broker going away does not blank the displays v2 already drives; v1 taking a display back puts it in shadow at once",
-);
+test("interlock: ownership unknown keeps a device in shadow; v1's list naming it keeps it in shadow with 'still driven by pixdcon v1'; a list without it releases it within a second", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, {
+    clock,
+    config: (raw) => {
+      raw.mqtt = { statusBaseTopic: "shadow/status" };
+    },
+  });
+  const { state, ownership } = stack.app.modules;
+  assert.equal(state.view("pixoo-t").desired.output, "shadow");
+  assert.equal(
+    state.view("pixoo-t").desired.outputProblem,
+    "waiting for pixdcon v1's device list",
+  );
+  await stack.broker.inject(
+    stack.app.topics.v1ConfigEffective,
+    JSON.stringify({ devices: [{ name: "pixoo-t" }] }),
+    { retain: true },
+  );
+  await until(() => ownership.status().known);
+  assert.equal(
+    state.view("pixoo-t").desired.outputProblem,
+    "still driven by pixdcon v1",
+  );
+  assert.equal(state.view("ulanzi-t").desired.output, "drive");
+  await stack.broker.inject(
+    stack.app.topics.v1ConfigEffective,
+    JSON.stringify({ devices: [] }),
+    { retain: true },
+  );
+  await until(() => state.view("pixoo-t").desired.output === "drive");
+});
+test("interlock: the broker going away does not blank the displays v2 already drives; v1 taking a display back puts it in shadow at once", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, {
+    clock,
+    config: (raw) => {
+      raw.mqtt = { statusBaseTopic: "shadow/status" };
+    },
+  });
+  const { state, mqtt } = stack.app.modules;
+  assert.ok(mqtt);
+  await stack.broker.inject(
+    stack.app.topics.v1ConfigEffective,
+    JSON.stringify({ devices: [] }),
+    { retain: true },
+  );
+  await until(() => state.view("pixoo-t").desired.output === "drive");
+  await stack.broker.dropClients();
+  await until(() => mqtt.status().state === "offline");
+  assert.equal(state.view("pixoo-t").desired.output, "drive");
+  await clock.advance(5000);
+  await until(() => mqtt.status().connection === 2);
+  await mqtt.settle();
+  await stack.broker.inject(
+    stack.app.topics.v1ConfigEffective,
+    JSON.stringify({ devices: [{ name: "pixoo-t" }] }),
+    { retain: true },
+  );
+  await until(() => state.view("pixoo-t").desired.output === "shadow");
+  assert.equal(
+    state.view("pixoo-t").desired.outputProblem,
+    "still driven by pixdcon v1",
+  );
+});
 test("effective runtime config: a blob entry that patches minFrameMs, powerCyclePlugin and ip reaches the device runtime; nothing of it is written to config.json", () => {
   const input = effectiveInput();
   input.structural.blobDevices = [
@@ -428,9 +491,40 @@ test("effective runtime config: a blob entry that would make a device unusable l
   assert.deepEqual(result.effective.devices[0].blobKeys, []);
   assert.equal(result.rejected[0].name, "D");
 });
-test.todo(
-  "controller health: the measured status and its reasons are in the snapshot, and a change reaches the live channel as a controller event",
-);
+test("controller health: the measured status and its reasons are in the snapshot, and a change reaches the live channel as a controller event", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, { clock, mqtt: false });
+  const { scheduler, health, live, scenes } = stack.app.modules;
+  let failed = false;
+  /** @type {any[]} */ const events = [];
+  scheduler.status = () => ({
+    devices: 2,
+    loopsAlive: 2,
+    restarts: 0,
+    lastWatchdogAt: new Date(clock.now()).toISOString(),
+    watchdogIntervalMs: 1000,
+  });
+  health.controller = () => ({
+    status: failed ? "failed" : "ok",
+    reasons: failed ? ["watchdog_overdue"] : [],
+  });
+  scenes.list = () => [];
+  live.publish = (type, data) => {
+    events.push({ type, data });
+    return events.length;
+  };
+  const snapshot = live.deps.snapshot();
+  assert.equal(snapshot.controller.measured, true);
+  assert.equal(snapshot.incarnations, 2);
+  await clock.advance(1000);
+  failed = true;
+  await clock.advance(1000);
+  const answer = await stack.api("/api/health");
+  assert.equal(answer.status, 503);
+  assert.deepEqual(answer.body.reasons, ["watchdog_overdue"]);
+  assert.equal(events.at(-1).type, "controller");
+  assert.equal(events.at(-1).data.status, "failed");
+});
 
 // --- Ordering (knowledge entry, section 3.0; the pure fences are run in ordering.test.js) ---
 test("saved choice at boot: a process that starts with a saved scene and no overlay drives that scene on its display (effective device savedScene)", async (t) => {
@@ -505,21 +599,184 @@ test("config store order: an own write is not an outside edit; a file read that 
   );
   assert.ok(config.file().error?.line);
 });
-test.todo(
-  "interlock order: v1's list held back as a replay and delivered after a live list on the same connection releases nothing (holdRetained)",
-);
-test.todo(
-  "restriction survives a reconnect: a device that an enabled overlay switched off does not start while the new connection holds its replay back past the settle hint",
-);
-test.todo(
-  "overlay cannot widen: a blob entry with output drive, or enabled true, for a device that config.json keeps in shadow or disabled changes neither; the record names the ignored keys",
-);
-test.todo(
-  "blob writer of a run: with mqtt.statusBaseTopic different from mqtt.baseTopic the controller status says {writer: false, reason: v1_writes} and no publish reaches <base>/overlay/blob in the whole run; with PIXDCON2_FORCE_SHADOW=1 force_shadow; with both bases equal and a driven display the instance is the writer",
-);
-test.todo(
-  "commands lapse, restrictions stay: after a reconnect whose replay is held back, the effective config is built without the granular ip, the scene paths and the blob's patches, devices and scenes; a display with an ip overlay or a blob ip is held (enabled false, held true), a display that an overlay switched off stays off; the delivered replay puts everything back with one changed event",
-);
+test("interlock order: v1's list held back as a replay and delivered after a live list on the same connection releases nothing (holdRetained)", async (t) => {
+  const stack = await startStack(t, {
+    mqtt: false,
+    config: (raw) => {
+      raw.mqtt = { statusBaseTopic: "shadow/status" };
+    },
+  });
+  await stack.app.stop();
+  await stack.broker.inject(
+    stack.app.topics.v1ConfigEffective,
+    JSON.stringify({ devices: [] }),
+    { retain: true },
+  );
+  const release = stack.broker.holdRetained();
+  const app = await createApp(
+    {
+      PIXDCON_CONFIG_PATH: stack.configPath,
+      WEB_PORT: "0",
+      MOSQUITTO_HOST: stack.broker.host,
+      MQTT_PORT: String(stack.broker.port),
+      PIXDCON2_MQTT_ANONYMOUS: "1",
+    },
+    { logger: stack.app.logger },
+  );
+  t.after(() => app.stop());
+  await app.start();
+  await stack.broker.inject(
+    app.topics.v1ConfigEffective,
+    JSON.stringify({ devices: [{ name: "pixoo-t" }] }),
+    { retain: true },
+  );
+  await until(() => app.modules.ownership.status().known);
+  release();
+  await app.modules.mqtt?.settle();
+  assert.equal(app.modules.state.view("pixoo-t").desired.output, "shadow");
+  assert.equal(
+    app.modules.state.view("pixoo-t").desired.outputProblem,
+    "still driven by pixdcon v1",
+  );
+});
+test("restriction survives a reconnect: a device that an enabled overlay switched off does not start while the new connection holds its replay back past the settle hint", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, { clock });
+  const { mqtt, overlays, runtime } = stack.app.modules;
+  assert.ok(mqtt);
+  await stack.broker.inject(
+    stack.app.topics.overlayDeviceEnabled("pixoo-t"),
+    "false",
+    { retain: true },
+  );
+  await until(() => overlays.get("device-enabled:pixoo-t")?.value === false);
+  await clock.advance(300);
+  assert.equal(runtime.device("pixoo-t")?.enabled, false);
+  const release = stack.broker.holdRetained();
+  await stack.broker.dropClients();
+  await until(() => mqtt.status().state === "offline");
+  await clock.advance(5000);
+  await until(() => mqtt.status().connection === 2);
+  await mqtt.settle();
+  await clock.advance(300);
+  assert.equal(runtime.device("pixoo-t")?.enabled, false);
+  assert.equal(overlays.get("device-enabled:pixoo-t")?.confirmed, false);
+  release();
+});
+test("overlay cannot widen: a blob entry with output drive, or enabled true, for a device that config.json keeps in shadow or disabled changes neither; the record names the ignored keys", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, {
+    clock,
+    config: (raw) => {
+      raw.devices[0].enabled = false;
+      raw.devices[0].output = "shadow";
+    },
+  });
+  const { overlays, runtime } = stack.app.modules;
+  await stack.broker.inject(
+    stack.app.topics.overlayBlob,
+    JSON.stringify({
+      devices: [{ name: "pixoo-t", output: "drive", enabled: true }],
+    }),
+    { retain: true },
+  );
+  await until(() => Boolean(overlays.get("blob")));
+  await clock.advance(300);
+  assert.equal(runtime.device("pixoo-t")?.output.mode, "shadow");
+  assert.equal(runtime.device("pixoo-t")?.enabled, false);
+  assert.match(overlays.get("blob")?.problem ?? "", /output/);
+  assert.match(overlays.get("blob")?.problem ?? "", /enabled/);
+});
+test("blob writer of a run: with mqtt.statusBaseTopic different from mqtt.baseTopic the controller status says {writer: false, reason: v1_writes} and no publish reaches <base>/overlay/blob in the whole run; with PIXDCON2_FORCE_SHADOW=1 force_shadow; with both bases equal and a driven display the instance is the writer", async (t) => {
+  for (const [
+    transition,
+    shadow,
+    writer,
+    reason,
+  ] of /** @type {Array<[boolean,boolean,boolean,string|null]>} */ ([
+    [true, false, false, "v1_writes"],
+    [false, true, false, "force_shadow"],
+    [false, false, true, null],
+  ])) {
+    const clock = manualClock();
+    const stack = await startStack(t, {
+      clock,
+      env: { PIXDCON2_FORCE_SHADOW: shadow ? "1" : "0" },
+      config: (raw) => {
+        if (transition) raw.mqtt = { statusBaseTopic: "shadow/status" };
+      },
+    });
+    assert.deepEqual(stack.app.controller().blobWriter, { writer, reason });
+    const { overlays, state } = stack.app.modules;
+    await stack.broker.inject(
+      stack.app.topics.overlayBlob,
+      JSON.stringify({ devices: [{ name: "pixoo-t", scene: "funkeykid" }] }),
+      { retain: true },
+    );
+    await until(() => Boolean(overlays.get("blob")));
+    await clock.advance(300);
+    await state.chooseScene("pixoo-t", "funkeykid");
+    await clock.advance(300);
+    const writes = stack.broker
+      .published()
+      .filter(
+        (entry) =>
+          entry.topic === stack.app.topics.overlayBlob &&
+          entry.clientId !== "outside",
+      );
+    assert.equal(writes.length > 0, writer);
+  }
+});
+test("commands lapse, restrictions stay: after a reconnect whose replay is held back, the effective config is built without the granular ip, the scene paths and the blob's patches, devices and scenes; a display with an ip overlay or a blob ip is held (enabled false, held true), a display that an overlay switched off stays off; the delivered replay puts everything back with one changed event", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, { clock });
+  const { overlays, runtime, mqtt } = stack.app.modules;
+  assert.ok(mqtt);
+  await stack.broker.inject(
+    stack.app.topics.overlayDeviceIp("pixoo-t"),
+    "127.0.0.8",
+    { retain: true },
+  );
+  await stack.broker.inject(
+    stack.app.topics.overlayBlob,
+    JSON.stringify({
+      devices: [{ name: "ulanzi-t", ip: "127.0.0.9", minFrameMs: 25 }],
+      scenes: { extra: { path: "extra.js" } },
+    }),
+    { retain: true },
+  );
+  await until(
+    () =>
+      Boolean(overlays.get("blob")) &&
+      Boolean(overlays.get("device-ip:pixoo-t")),
+  );
+  await clock.advance(300);
+  assert.equal(runtime.device("ulanzi-t")?.minFrameMs, 25);
+  /** @type {any[]} */ const notices = [];
+  overlays.on("changed", (event) => notices.push(event));
+  const release = stack.broker.holdRetained();
+  await stack.broker.dropClients();
+  await until(() => mqtt.status().state === "offline");
+  await clock.advance(5000);
+  await until(() => mqtt.status().connection === 2);
+  await mqtt.settle();
+  await clock.advance(300);
+  assert.equal(runtime.device("pixoo-t")?.held, true);
+  assert.equal(runtime.device("ulanzi-t")?.held, true);
+  assert.equal(runtime.device("ulanzi-t")?.minFrameMs, 50);
+  assert.equal(runtime.scenes().extra, undefined);
+  assert.equal(notices.length, 1);
+  release();
+  await until(
+    () =>
+      overlays.get("blob")?.confirmed === true &&
+      overlays.get("device-ip:pixoo-t")?.confirmed === true,
+  );
+  await clock.advance(300);
+  assert.equal(notices.length, 2);
+  assert.equal(runtime.device("ulanzi-t")?.minFrameMs, 25);
+  assert.equal(runtime.device("pixoo-t")?.held, false);
+});
 
 /** Config/overlay boundary, shared by the effective-config contract cases. */
 function effectiveInput() {
@@ -558,6 +815,7 @@ test("config contract: v1 normalization, safe identities, duplicate rejection, u
   const result = validateConfig(input);
   assert.equal(result.config.devices[0].name, "D");
   assert.equal(result.config.devices[0].scene, "A");
+  assert.equal(Object.hasOwn(result.config.devices[0], "scenes"), false);
   assert.equal(result.config.devices[0].preview.pollMs, 1000);
   assert.equal(result.config.devices[0].enabled, true);
   assert.equal(result.config.output.default, null);
@@ -708,3 +966,26 @@ test("shutdown deadline: app.stop shares one 8 s budget across a hung scheduler 
     );
   }
 });
+
+test("config contract: a consumer failure propagates without labelling valid disk content invalid", async (t) => {
+  const stack = await startStack(t, { mqtt: false });
+  const config = stack.app.modules.config;
+  const raw = JSON.parse(await readFile(stack.configPath, "utf8"));
+  raw.devices[0].comment = "outside";
+  config.once("changed", () => {
+    throw new Error("consumer failure");
+  });
+  await writeFile(stack.configPath, JSON.stringify(raw));
+  await assert.rejects(config.reload(), /consumer failure/);
+  assert.equal(config.file().valid, true);
+  assert.equal(config.get().devices[0].comment, "outside");
+});
+
+/** @param {() => boolean} predicate */
+async function until(predicate) {
+  const deadline = Date.now() + 2000;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, "composition condition timed out");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}

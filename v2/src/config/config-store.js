@@ -96,7 +96,6 @@ export class ConfigStore extends EventEmitter {
       warnings: [],
     };
     this.text = "";
-    this.ownHash = "";
     this.appliedHash = "";
     this.lane = commandLane();
     this.stopped = false;
@@ -352,14 +351,16 @@ export class ConfigStore extends EventEmitter {
 
   /** @param {"startup"|"file"} origin @returns {Promise<ConfigFileState>} */
   async read(origin) {
+    let text;
+    /** @type {ReturnType<typeof parseConfig>} */
+    let parsed;
     try {
-      const text = await readFile(this.options.path, "utf8");
+      text = await readFile(this.options.path, "utf8");
       if (this.stopped) return this.file();
       this.text = text;
       const hash = digest(text);
       if (hash === this.appliedHash && this.fileState.valid) return this.file();
-      const { config, warnings } = parseConfig(text);
-      this.accept(text, config, warnings, origin);
+      parsed = parseConfig(text);
     } catch (error) {
       if (this.stopped) return this.file();
       const message = error instanceof Error ? error.message : String(error);
@@ -376,7 +377,11 @@ export class ConfigStore extends EventEmitter {
         },
       };
       this.emit("file", this.file());
+      return this.file();
     }
+    // Observer failures are programming errors, not evidence of a bad file.
+    // Propagate them without relabelling valid disk content as invalid.
+    this.accept(text, parsed.config, parsed.warnings, origin);
     return this.file();
   }
 
@@ -440,7 +445,6 @@ export class ConfigStore extends EventEmitter {
     } finally {
       await dir.close();
     }
-    this.ownHash = digest(text);
     // An admitted write finishes before stop returns. It is applied here,
     // never again by the file watcher (appliedHash is the own-write fence).
     this.accept(text, config, warnings, "api");

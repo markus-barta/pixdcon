@@ -396,7 +396,12 @@ export class MqttGateway extends EventEmitter {
       } catch (error) {
         finish({
           ok: false,
-          outcome: "error",
+          // Once the transport was entered even a synchronous throw does
+          // not prove that its bytes never reached the broker.
+          outcome:
+            this.current(attempt) && this.info.state === "connected"
+              ? "timeout"
+              : "offline",
           connection,
           error: error instanceof Error ? error.message : String(error),
         });
