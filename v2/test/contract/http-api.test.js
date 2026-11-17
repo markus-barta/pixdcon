@@ -21,7 +21,7 @@ import { createLogger } from "../../src/core/logger.js";
 import { registerV2Routes } from "../../src/api/routes-v2.js";
 import { V1_ROUTES, registerV1Routes } from "../../src/api/routes-v1.js";
 import { V2_ROUTES } from "../../src/api/routes-v2.js";
-import { REPO_ROOT, startStack } from "../helpers/harness.js";
+import { REPO_ROOT, startStack, waitFor } from "../helpers/harness.js";
 import {
   createClientFence,
   decideSnapshot,
@@ -1804,6 +1804,226 @@ test("overlay records after a reconnect: confirmed, inEffect and restricts pass 
   api.deps.overlays.emit("changed", { keys: ["blob"] });
   assert.deepEqual((await events.next()).data, records);
   assert.equal((await api.api("/api/v2/bootstrap")).body.overlays[1].confirmed, false);
+});
+
+test("integrated device lives: raw config removal and return reach HTTP, snapshots, device events and settings with a fresh incarnation at rev 1", async (t) => {
+  const stack = await startStack(t, {
+    mqtt: false,
+    clock: manualClock(),
+    config: (raw) =>
+      raw.devices.forEach((/** @type {any} */ device) => {
+        device.enabled = false;
+      }),
+  });
+  const name = "ulanzi-t";
+  const events = await stream(t, `${stack.base}/api/v2/events`);
+  const initial = await events.next();
+  assert.equal(initial.type, "snapshot");
+  const old = initial.data.devices.find(
+    (/** @type {any} */ device) => device.name === name,
+  );
+  assert.equal(old.rev, 1);
+  const oldSettings = (
+    await stack.api(`/api/v2/devices/${name}/settings/clock`)
+  ).body;
+  assert.equal(oldSettings.incarnation, old.incarnation);
+  const raw = JSON.parse(await readFile(stack.configPath, "utf8"));
+  const original = raw.devices;
+  raw.devices = original.filter(
+    (/** @type {any} */ device) => device.name !== name,
+  );
+  assert.equal(
+    (
+      await stack.api("/api/v2/config/raw", {
+        method: "PUT",
+        body: { text: JSON.stringify(raw) },
+      })
+    ).status,
+    200,
+  );
+  let event = await events.next();
+  while (event.type !== "device-removed") event = await events.next();
+  assert.deepEqual(event.data, { name, incarnation: old.incarnation });
+  assert.equal((await stack.api(`/api/v2/devices/${name}`)).status, 404);
+  assert.equal(
+    (await stack.api(`/api/v2/devices/${name}/settings/clock`)).status,
+    404,
+  );
+  raw.devices = original;
+  assert.equal(
+    (
+      await stack.api("/api/v2/config/raw", {
+        method: "PUT",
+        body: { text: JSON.stringify(raw) },
+      })
+    ).status,
+    200,
+  );
+  do {
+    event = await events.next();
+  } while (event.type !== "device" || event.data.name !== name);
+  const fresh = (await stack.api(`/api/v2/devices/${name}`)).body;
+  assert.ok(fresh.incarnation > old.incarnation);
+  assert.equal(fresh.rev, 1);
+  assert.equal(event.data.incarnation, fresh.incarnation);
+  assert.equal(event.data.rev, 1);
+  const boot = (await stack.api("/api/v2/bootstrap")).body;
+  assert.equal(boot.incarnations, fresh.incarnation);
+  assert.deepEqual(
+    boot.devices.find((/** @type {any} */ device) => device.name === name),
+    fresh,
+  );
+  const freshSettings = (
+    await stack.api(`/api/v2/devices/${name}/settings/clock`)
+  ).body;
+  assert.equal(freshSettings.incarnation, fresh.incarnation);
+  assert.equal(freshSettings.rev, 1);
+  const answer = await stack.api(`/api/v2/devices/${name}/mode`, {
+    method: "PUT",
+    body: { mode: "pause" },
+  });
+  assert.equal(answer.status, 200);
+  assert.equal(answer.body.incarnation, fresh.incarnation);
+  assert.ok(answer.body.rev > fresh.rev);
+  const preview = await stack.api(
+    `/api/v2/devices/${name}/settings/clock/preview`,
+    {
+      method: "PUT",
+      body: { session: "life-test", draft: 1, values: { refresh_ms: 2000 } },
+    },
+  );
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.state.incarnation, fresh.incarnation);
+  do {
+    event = await events.next();
+  } while (
+    event.type !== "settings" ||
+    event.data.rev !== preview.body.state.rev
+  );
+  assert.equal(event.data.incarnation, fresh.incarnation);
+  assert.equal(event.data.values.refresh_ms.effective, 2000);
+});
+
+test("integrated writer policy: HTTP rejects blob clears with the actual v1_writes and force_shadow decisions and publishes nothing", async (t) => {
+  for (const reason of ["v1_writes", "force_shadow"]) {
+    const clock = manualClock();
+    const stack = await startStack(t, {
+      clock,
+      env: { PIXDCON2_FORCE_SHADOW: reason === "force_shadow" ? "1" : "0" },
+      config: (raw) => {
+        if (reason === "v1_writes")
+          raw.mqtt = { statusBaseTopic: "separate/status" };
+      },
+    });
+    await stack.broker.inject(stack.app.topics.overlayBlob, '{"devices":[]}', {
+      retain: true,
+    });
+    await waitFor(() => stack.app.modules.overlays.get("blob")?.confirmed);
+    await clock.advance(300);
+    assert.deepEqual(
+      (await stack.api("/api/v2/status")).body.controller.blobWriter,
+      { writer: false, reason },
+    );
+    const before = stack.broker
+      .published()
+      .filter((entry) => entry.topic === stack.app.topics.overlayBlob).length;
+    const answer = await stack.api("/api/v2/overlays/blob", {
+      method: "DELETE",
+      body: {},
+    });
+    assert.equal(answer.status, 409);
+    assert.equal(answer.body.code, "blob_not_writer");
+    assert.equal(
+      stack.broker
+        .published()
+        .filter((entry) => entry.topic === stack.app.topics.overlayBlob).length,
+      before,
+    );
+  }
+});
+
+test("integrated broker reconfirmation: HTTP and SSE expose the same standing for every real overlay kind before and after held replay", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, {
+    clock,
+    config: (raw) => {
+      raw.devices = [{ ...raw.devices[1], enabled: false }];
+    },
+  });
+  const { mqtt, overlays, state, settings } = stack.app.modules;
+  assert.ok(mqtt);
+  const topics = stack.app.topics,
+    name = "ulanzi-t";
+  const sceneFile = stack.app.modules.scenes.fileOf("clock");
+  assert.ok(sceneFile);
+  for (const [topic, value] of [
+    [topics.overlayBlob, '{"devices":[]}'],
+    [topics.overlayDeviceScene(name), "test-pattern"],
+    [topics.overlayScenePath("clock"), sceneFile],
+    [topics.overlayDeviceIp(name), stack.awtrix.address],
+    [topics.overlayDeviceEnabled(name), "false"],
+    [topics.setting(name, "clock", "refresh_ms"), "2444"],
+    [topics.mode(name), "pause"],
+    [topics.brightnessOverride(name), "35"],
+  ])
+    await stack.broker.inject(topic, value, { retain: true });
+  await waitFor(() => overlays.list().length === 8);
+  await clock.advance(300);
+  await stack.app.modules.registryLane.drain();
+  assert.ok(
+    (await stack.api("/api/v2/overlays")).body.every(
+      (/** @type {any} */ record) => record.confirmed,
+    ),
+  );
+  const release = stack.broker.holdRetained();
+  stack.cleanup.add("HTTP held replay", release);
+  await stack.broker.dropClients();
+  await waitFor(() => mqtt.status().state === "offline");
+  await clock.advance(5000);
+  await waitFor(() => mqtt.status().connection === 2);
+  await mqtt.settle();
+  await clock.advance(300);
+  const waiting = (await stack.api("/api/v2/overlays")).body;
+  assert.equal(waiting.length, 8);
+  assert.ok(
+    waiting.every(
+      (/** @type {any} */ record) =>
+        record.confirmed === false && record.inEffect === false,
+    ),
+  );
+  assert.equal(
+    waiting.find((/** @type {any} */ record) => record.kind === "device-ip")
+      .restricts,
+    "held",
+  );
+  assert.equal(
+    waiting.find(
+      (/** @type {any} */ record) => record.kind === "device-enabled",
+    ).restricts,
+    "off",
+  );
+  const events = await stream(t, `${stack.base}/api/v2/events`);
+  assert.deepEqual((await events.next()).data.overlays, waiting);
+  release();
+  await waitFor(() => overlays.list().every((record) => record.confirmed));
+  await clock.advance(300);
+  const confirmed = (await stack.api("/api/v2/overlays")).body;
+  assert.ok(
+    confirmed.every(
+      (/** @type {any} */ record) =>
+        record.confirmed && record.connection === 2,
+    ),
+  );
+  let event = await events.next();
+  while (event.type !== "overlays") event = await events.next();
+  assert.deepEqual(event.data, confirmed);
+  assert.deepEqual(
+    (await stack.api("/api/v2/bootstrap")).body.overlays,
+    confirmed,
+  );
+  assert.equal(state.view(name).desired.mode.value, "pause");
+  assert.equal(state.view(name).desired.brightness.override, 35);
+  assert.equal(settings.state(name, "clock").values.refresh_ms.effective, 2444);
 });
 
 test("position: config raw and reload capture their body's position inside the saved-state lane", async (t) => {
