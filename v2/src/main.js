@@ -222,7 +222,12 @@ export async function createApp(env = process.env, overrides = {}) {
     ...(configBuilt ? config.get().mqtt : DEFAULTS.mqtt),
   });
   const topics = createTopics(mqttConfig);
-  const will = StatusPublisher.lastWill(topics);
+  // The broker publishes a CONNECT will without consulting outputOf. A
+  // forced-shadow instance sharing v1's namespace must register none.
+  const will =
+    !forceShadow || topics.statusBase !== topics.base
+      ? StatusPublisher.lastWill(topics)
+      : undefined;
   const mqtt = namespaceKnown
     ? orSkeleton(
         () =>

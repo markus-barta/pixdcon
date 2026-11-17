@@ -11,7 +11,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ConfigStore } from "../../src/config/config-store.js";
+import { DEFAULTS } from "../../src/config/schema.js";
 import { manualClock } from "../../src/core/clock.js";
+import { createLogger } from "../../src/core/logger.js";
+import { createApp } from "../../src/main.js";
+import { MqttGateway } from "../../src/mqtt/mqtt-gateway.js";
 import { StatusPublisher } from "../../src/mqtt/status-publisher.js";
 import { createTopics } from "../../src/mqtt/topics.js";
 import {
@@ -136,6 +141,35 @@ test("last will: the health topic of the status base, retained, status offline i
     createTopics({ statusBaseTopic: "home/hsb1/pixdcon2" }),
   );
   assert.equal(transition.topic, "home/hsb1/pixdcon2/health");
+});
+
+test("composition force-shadow: a shared status namespace registers no controller will; a separate namespace keeps its will", async (t) => {
+  requireNetGuard();
+  const logger = createLogger({ sink: { out() {}, err() {} } });
+  for (const forceShadow of [false, true]) {
+    for (const statusBaseTopic of [DEFAULTS.mqtt.baseTopic, "shadow/status"]) {
+      const config = { mqtt: { ...DEFAULTS.mqtt, statusBaseTopic } };
+      // Keep this composition check independent of unfinished modules.
+      const load = t.mock.method(ConfigStore.prototype, "load", async () => ({}));
+      const file = t.mock.method(ConfigStore.prototype, "file", () => ({ valid: true }));
+      const get = t.mock.method(ConfigStore.prototype, "get", () => config);
+      /** @type {typeof MqttGateway.fromEnv} */
+      const fromEnv = (_env, deps) => {
+        if (forceShadow && statusBaseTopic === DEFAULTS.mqtt.baseTopic)
+          assert.equal(deps.will, undefined);
+        else {
+          assert.ok(deps.will);
+          assert.equal(deps.will.topic, `${statusBaseTopic}/health`);
+          assert.equal(deps.will.retain, true);
+        }
+        return null;
+      };
+      const gateway = t.mock.method(MqttGateway, "fromEnv", fromEnv);
+      await createApp({ PIXDCON2_FORCE_SHADOW: forceShadow ? "1" : "0" }, { logger });
+      assert.equal(gateway.mock.callCount(), 1);
+      for (const method of [load, file, get, gateway]) method.mock.restore();
+    }
+  }
 });
 
 test("composition: the namespace of a run is reported, and an unbuilt health model is said to be unmeasured", async (t) => {

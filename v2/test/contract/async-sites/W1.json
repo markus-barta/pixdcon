@@ -10,7 +10,7 @@
       "test": "test/contract/composition.test.js: namespace: an invalid config.json at start leaves MQTT off for the run"
     },
     {
-      "site": "src/main.js:442",
+      "site": "src/main.js:447",
       "id": "work:scenes.refresh#1",
       "input": "a changed scene file: its metadata is read again, then the instances of its scenes are replaced",
       "metadata": "position in the registry lane; the keys of the file are read inside the piece; the lane's signal, handed to the registry call",
@@ -18,7 +18,7 @@
       "test": "test/contract/ordering.test.js: F9: a scene map change that arrives during the first load"
     },
     {
-      "site": "src/main.js:447",
+      "site": "src/main.js:452",
       "id": "work:sceneRuntime.invalidate#1",
       "input": "a changed scene file: its metadata is read again, then the instances of its scenes are replaced",
       "metadata": "position in the registry lane; the keys of the file are read inside the piece",
@@ -26,7 +26,7 @@
       "test": "test/contract/ordering.test.js: N7: closing the lane aborts its signal"
     },
     {
-      "site": "src/main.js:577",
+      "site": "src/main.js:582",
       "id": "route:server.route#1",
       "input": "an HTTP request for the controller health (GET /api/health)",
       "metadata": "none: a question",
@@ -35,7 +35,7 @@
       "why": "answers from the state of that moment and changes nothing; the answer carries X-Pixdcon-Position"
     },
     {
-      "site": "src/main.js:620",
+      "site": "src/main.js:625",
       "id": "work:live.publish#1",
       "input": "nothing arrives here: the controller status goes out to the pages",
       "metadata": "none",
@@ -44,7 +44,7 @@
       "why": "not an input: LiveChannel.publish is a synchronous fan-out and returns its seq"
     },
     {
-      "site": "src/main.js:665",
+      "site": "src/main.js:670",
       "id": "work:scenes.sync#1",
       "input": "a change of the effective scene map: keys added, removed or pointed to another file",
       "metadata": "position in the registry lane; the registry reads the effective map when the piece runs; the lane's signal, handed to the registry call",
@@ -52,7 +52,7 @@
       "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
-      "site": "src/main.js:674",
+      "site": "src/main.js:679",
       "id": "work:sceneRuntime.invalidate#2",
       "input": "a change of the effective scene map: keys added, removed or pointed to another file",
       "metadata": "position in the registry lane; the registry reads the effective map when the piece runs",
@@ -60,7 +60,7 @@
       "test": "test/contract/ordering.test.js: N7: closing the lane aborts its signal"
     },
     {
-      "site": "src/main.js:728",
+      "site": "src/main.js:733",
       "id": "listener:runtime.on(\"changed\")#1",
       "input": "the runtime config's changed event, with its diff",
       "metadata": "effective rev; only a diff that names scenes leads to work",
@@ -68,7 +68,7 @@
       "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
-      "site": "src/main.js:741",
+      "site": "src/main.js:746",
       "id": "work:scenes.load#1",
       "input": "the first load of every registered scene",
       "metadata": "position 1 in the registry lane; the lane's signal, handed to the registry call",
@@ -76,7 +76,7 @@
       "test": "test/contract/ordering.test.js: F9: a scene map change that arrives during the first load"
     },
     {
-      "site": "src/main.js:757",
+      "site": "src/main.js:762",
       "id": "timer:clock.every#1",
       "input": "the 1 s tick of the controller status",
       "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
@@ -84,7 +84,7 @@
       "test": "test/contract/composition.test.js: controller health: the measured status and its reasons are in the snapshot"
     },
     {
-      "site": "src/main.js:787",
+      "site": "src/main.js:792",
       "id": "timer:clock.sleep#1",
       "input": "the 2 s limit for scene work that still runs at shutdown",
       "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
@@ -92,7 +92,7 @@
       "test": "test/contract/composition.test.js: N7 shutdown: a scene import that is still running"
     },
     {
-      "site": "src/main.js:818",
+      "site": "src/main.js:823",
       "id": "timer:setTimeout#1",
       "input": "the 8 s limit for the whole shutdown",
       "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
@@ -100,7 +100,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:832",
+      "site": "src/main.js:837",
       "id": "listener:process.on(\"SIGINT\")#1",
       "input": "SIGINT of the process",
       "metadata": "none; the first one wins",
@@ -108,7 +108,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:833",
+      "site": "src/main.js:838",
       "id": "listener:process.on(\"SIGTERM\")#1",
       "input": "SIGTERM of the process",
       "metadata": "none; the first one wins",
@@ -116,7 +116,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:834",
+      "site": "src/main.js:839",
       "id": "listener:process.on(\"uncaughtException\")#1",
       "input": "uncaughtException of the process",
       "metadata": "none; the first one wins",
@@ -124,7 +124,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:838",
+      "site": "src/main.js:843",
       "id": "listener:process.on(\"unhandledRejection\")#1",
       "input": "unhandledRejection of the process",
       "metadata": "none; the first one wins",
