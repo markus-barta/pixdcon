@@ -2068,6 +2068,27 @@ test("r3 Tick (M1, Q1, Q2, default 7): overlay-only texts; 'not previewed · was
 //  - every exclusion is a probe that runs; self-tests run mutated pages
 //    (in memory) the harness must catch; the effect inventory is re-run by
 //    the suite (section "r4, phase A revision: the effect inventory").
+//
+// Revision r3 (gate on harness r2, design-note-r4.md "r3 changes"):
+//  - a commuted story ("after") is compared in every piece it shows at the
+//    end, not only in the pieces of the changed identity: an effect the
+//    independence claim promises to keep cannot go missing unseen (M1).
+//    Typing into another form of the Device page is compared both ways:
+//    by the rule, and as a commuted story, so no outcome is lost to it;
+//  - field rejection has its own projection (the scene definition and the
+//    edit that was submitted), apart from Save's acknowledgement. pixdcon
+//    judges each value by the definition it holds when it processes the
+//    request, so answers carry `rejected` maps that are not empty: a preview
+//    (200) and a Save (400 invalid_field), each a kind. The definition of
+//    Clock changes both ways: it narrows in the first world and widens in
+//    the second. After a change of definition, what the form says about each
+//    edit that remains is what the current definition says (revalidation),
+//    checked whatever the reference shows (M2);
+//  - every run of pixdcon has its own log lines: the Health pane holds the
+//    current run's lines and none of an earlier run (M3);
+//  - `config adopt × revisit` is unreachable as one change only: the story
+//    of two changes (membership, then revisit) runs (LOW);
+//  - every mutant a gate used is a self-test that must fail.
 // ---------------------------------------------------------------------------
 
 const configPage = await loadPage("config");
@@ -2151,17 +2172,63 @@ const R4_ENDS = /** @type {const} */ (["success", "500", "timeout"]);
 const R4_POINTS = ["after the change", "after the end", "after everything was answered"];
 /** config.json as pixdcon gives it: distinguishable per run, so a text of another run shows. @param {string} epoch */
 const R4_RAW = (epoch) => `{"devices": [], "run": "${epoch}"}`;
-/** The scene definition of Clock: two fields, so a Save of one with an edit of the other typed meanwhile is a story. */
+/**
+ * The scene definition of Clock: two fields, so a Save of one with an edit
+ * of the other typed meanwhile is a story. n has a range: pixdcon judges a
+ * value of n by the definition it holds when it processes the request.
+ */
 const R4_SCHEMA = {
-  n: { type: "int", label: "N", group: "General", description: "", default: 1, placeholder: "" },
+  n: { type: "int", label: "N", group: "General", description: "", default: 1, min: 0, max: 50, placeholder: "" },
   m: { type: "int", label: "M", group: "General", description: "", default: 1, placeholder: "" },
 };
-/** The definition after pixdcon took a changed scene file (same run, life, scene and draft): n relabelled, a field more. */
+/**
+ * The definition after pixdcon took a changed scene file (same run, life,
+ * scene and draft): n relabelled and its range narrowed, a field more. An
+ * edit of n the first definition took (2, 3, 7) is one this one refuses.
+ */
 const R4_SCHEMA_2 = {
   ...R4_SCHEMA,
-  n: { ...R4_SCHEMA.n, label: "N (new)" },
+  n: { ...R4_SCHEMA.n, label: "N (new)", max: 1 },
   k: { type: "int", label: "K", group: "General", description: "", default: 5, placeholder: "" },
 };
+/**
+ * The other way round (gate note2 M2): a first definition that refuses the
+ * edit n = 2, and the one pixdcon takes after it, which takes n = 2.
+ */
+const R4_DEFINITIONS_WIDENING = [
+  { ...R4_SCHEMA, n: { ...R4_SCHEMA.n, max: 1 } },
+  { ...R4_SCHEMA_2, n: { ...R4_SCHEMA_2.n, max: 50 } },
+];
+/**
+ * Why pixdcon refuses a value, by the field of the scene definition it
+ * holds; null: it takes the value. The reason names the bound, so a reason
+ * of another definition is told apart on screen.
+ *
+ * @param {any} field @param {unknown} value
+ * @returns {string|null}
+ */
+function r4Verdict(field, value) {
+  if (!field || typeof value !== "number") return null;
+  if (field.max !== undefined && value > field.max) return `above the maximum of ${field.max}`;
+  if (field.min !== undefined && value < field.min) return `below the minimum of ${field.min}`;
+  return null;
+}
+/** The values a definition refuses: key → reason (the `rejected` map of pixdcon's answers). @param {any} schema @param {Record<string, unknown>|undefined} values @returns {Record<string, string>} */
+function r4Refused(schema, values) {
+  /** @type {Record<string, string>} */
+  const refused = {};
+  for (const [key, value] of Object.entries(values ?? {})) {
+    const reason = r4Verdict(schema?.[key], value);
+    if (reason) refused[key] = reason;
+  }
+  return refused;
+}
+/** The log of one run of pixdcon: its own lines, numbered from 1 in every run, so a line of another run shows (gate note2 M3). @param {string} epoch */
+const R4_LOG = (epoch) => [1, 2].map((seq) => ({ seq, at: at("18:42:00"), level: "INFO", message: `[pixdcon] line ${seq} of ${epoch}` }));
+/** Why a Save that pixdcon refuses is no commit of a draft. */
+const R4_NO_COMMIT = "pixdcon refuses the Save of a value its scene definition does not take (400 invalid_field): no draft is committed";
+/** Why a blob-only device's row cannot be revisited as one change (gate note2, LOW): after a membership change it can, and that story of two changes runs. */
+const R4_NO_ROW = "a device that is not in config.json has no edit row: unreachable as one change (once its membership changed the row is there: the story of two changes runs as a case)";
 
 /** A change that cannot happen in the story: the stand-in DOM offers no way to do it. */
 class R4Unreachable extends Error {}
@@ -2169,11 +2236,15 @@ class R4Unreachable extends Error {}
 /**
  * The world pixdcon holds in one story: its run (epoch), positions,
  * revisions, the lives and config membership of its devices, the scene
- * definition, the saved settings, and the previews it was sent.
+ * definition (the first of the story's two; the change `schema` brings the
+ * second), the saved settings, the previews it was sent, and per run, life
+ * and scene the preview it holds (`layers`: the draft and the values it
+ * took) and the highest draft it has seen (`drafts`).
  *
- * @param {{devices?: Array<{name: string, o?: any}>, overlays?: (epoch: string) => any[], settingsOverlay?: boolean}} spec
+ * @param {{devices?: Array<{name: string, o?: any}>, overlays?: (epoch: string) => any[], settingsOverlay?: boolean, definitions?: any[]}} spec
  */
 function r4World(spec) {
+  const definitions = spec.definitions ?? [R4_SCHEMA, R4_SCHEMA_2];
   /** @type {any} */
   const world = {
     epoch: "",
@@ -2182,9 +2253,12 @@ function r4World(spec) {
     stream: 0,
     epochs: [],
     lives: new Map(),
-    schema: R4_SCHEMA,
+    definitions,
+    schema: definitions[0],
     saved: {},
     previews: new Set(),
+    layers: new Map(),
+    drafts: new Map(),
     spec: { ...spec, devices: (spec.devices ?? []).map((d) => ({ ...d, o: { ...d.o } })) },
   };
   for (const device of spec.devices ?? []) world.lives.set(device.name, 1);
@@ -2200,6 +2274,9 @@ const r4Now = (world) => ({
   saved: { ...world.saved },
   devices: world.spec.devices.map((/** @type {any} */ d) => ({ ...d, o: { ...d.o } })),
 });
+
+/** A scene in one life of a device in the run pixdcon is in: what a preview it holds, and its memory of the page's drafts, belongs to. @param {any} world @param {string} device @param {string} scene */
+const r4Scope = (world, device, scene) => `${world.epoch}/${device}@${world.lives.get(device) ?? 1}/${scene}`;
 
 /** @param {any} world @param {string} name @param {string} epoch @param {number} life @param {number} rev @param {any[]} [devices] the devices as pixdcon held them */
 function r4View(world, name, epoch, life, rev, devices = world.spec.devices ?? []) {
@@ -2276,16 +2353,21 @@ function r4Answer(world, call) {
   if ((m = /^\/api\/v2\/devices\/([^/]+)\/settings\/([^/]+)(\/preview|\/overlays)?$/.exec(path))) {
     const device = decodeURIComponent(m[1]);
     const scene = decodeURIComponent(m[2]);
+    // The preview as pixdcon held it once it had processed the request: the values it took (a refused one is not among them), and what it refused.
     if (m[3] === "/preview" && method === "PUT")
-      return { state: r4Settings(world, call, device, scene, { effective: call.body?.values, preview: { session: "s1", draft: call.body?.draft } }), rejected: {}, applied: true };
+      return {
+        state: r4Settings(world, call, device, scene, { effective: call.layer?.values, preview: call.layer ? { session: "s1", draft: call.layer.draft } : null }),
+        rejected: call.rejected,
+        applied: call.applied,
+      };
     if (m[3] === "/overlays") return { state: r4Settings(world, call, device, scene), failed: [] };
-    if (!m[3] && method === "PUT") return { state: r4Settings(world, call, device, scene), overlaysNotCleared: [] };
+    if (!m[3] && method === "PUT") return { state: r4Settings(world, call, device, scene), rejected: {}, overlaysNotCleared: [] };
     return r4Settings(world, call, device, scene);
   }
   if (path === "/api/v2/config/raw")
     return method === "GET" ? { text: R4_RAW(call.epoch), state: { ...CONFIG_STATE, rev: call.rev } } : { state: { ...CONFIG_STATE, rev: call.rev }, diff: {} };
   if (path === "/api/v2/config/reload") return { state: { ...CONFIG_STATE, rev: call.rev } };
-  if (path === "/api/v2/log") return [];
+  if (path === "/api/v2/log") return R4_LOG(call.epoch);
   if (/^\/api\/v2\/overlays\/[^/]+$/.test(path)) return { overlays: world.spec.overlays?.(call.epoch) ?? [], pending: false, confirmed: true };
   if (/^\/api\/v2\/scenes\/[^/]+\/copy$/.test(path)) return { scene: { key: "clock-copy" }, path: "./scenes/clock-copy.js" };
   // Add device: what it brings is a device the story does not show; the answer carries no view.
@@ -2304,6 +2386,18 @@ function r4Answer(world, call) {
  * sent in this run and life of the device is marked (old-scope work: the
  * cleanup of an earlier run or life, started after it ended).
  *
+ * It judges values by the scene definition it holds when it processes the
+ * request (r3, gate note2 M2), as the API says (src/api/routes-v2.js):
+ *  - a preview (PUT …/preview) takes the values the definition takes and
+ *    names the others in `rejected` (200). One whose draft is not higher
+ *    than the highest pixdcon has seen for the page, device and scene
+ *    changes nothing: `applied: false`, and the answer shows the preview
+ *    as it is, with nothing judged;
+ *  - a Save that holds a refused value saves nothing and commits no draft:
+ *    400 `invalid_field` with `rejected` (`call.refusal`). A Save that
+ *    works commits its draft: the preview ends unless a newer one is held;
+ *  - the end of a preview (DELETE) ends it.
+ *
  * @param {any} world
  */
 function r4Server(world) {
@@ -2320,18 +2414,47 @@ function r4Server(world) {
         const settings = /^\/api\/v2\/devices\/([^/]+)\/settings\/([^/]+)(\/preview)?$/.exec(path);
         /** @type {string|null} */
         let stray = null;
+        /** What a preview's answer names as not taken. @type {Record<string, string>} */
+        let rejected = {};
+        let applied = false;
+        /** A Save pixdcon refuses: key → reason. @type {Record<string, string>|null} */
+        let refusal = null;
+        /** The preview pixdcon holds once this request is processed. @type {{draft: number, values: Record<string, unknown>}|null} */
+        let layer = null;
         if (settings) {
           const device = decodeURIComponent(settings[1]);
           const scene = decodeURIComponent(settings[2]);
           const life = world.lives.get(device) ?? 1;
-          const held = `${world.epoch}/${device}@${life}/${scene}`;
-          if (settings[3] && method === "PUT") world.previews.add(held);
-          if (settings[3] && method === "DELETE" && !world.previews.has(held))
-            stray = `DELETE …/settings/${scene}/preview in run ${world.epoch}, life ${life} of ${device}: pixdcon was sent no preview of it in this run and life`;
-          if (!settings[3] && method === "PUT") {
-            world.saved = { ...world.saved, ...(body?.set ?? {}) };
-            for (const key of body?.reset ?? []) delete world.saved[key];
+          const held = r4Scope(world, device, scene);
+          const seen = world.drafts.get(held) ?? 0;
+          if (settings[3] && method === "PUT") {
+            world.previews.add(held);
+            const draft = Number(body?.draft);
+            if (draft > seen) {
+              rejected = r4Refused(world.schema, body?.values);
+              applied = true;
+              world.drafts.set(held, draft);
+              world.layers.set(held, { draft, values: Object.fromEntries(Object.entries(body?.values ?? {}).filter(([key]) => !(key in rejected))) });
+            }
           }
+          if (settings[3] && method === "DELETE") {
+            if (!world.previews.has(held)) stray = `DELETE …/settings/${scene}/preview in run ${world.epoch}, life ${life} of ${device}: pixdcon was sent no preview of it in this run and life`;
+            world.layers.delete(held);
+          }
+          if (!settings[3] && method === "PUT") {
+            const refused = r4Refused(world.schema, body?.set);
+            if (Object.keys(refused).length) refusal = refused;
+            else {
+              world.saved = { ...world.saved, ...(body?.set ?? {}) };
+              for (const key of body?.reset ?? []) delete world.saved[key];
+              if (body?.draft !== undefined) {
+                world.drafts.set(held, Math.max(seen, Number(body.draft)));
+                if ((world.layers.get(held)?.draft ?? Infinity) <= Number(body.draft)) world.layers.delete(held);
+              }
+            }
+          }
+          const now = world.layers.get(held);
+          layer = now ? { draft: now.draft, values: { ...now.values } } : null;
         }
         /** @type {any} */
         const call = {
@@ -2342,15 +2465,24 @@ function r4Server(world) {
           ...r4Now(world),
           seq: world.seq,
           stray,
+          rejected,
+          applied,
+          refusal,
+          layer,
           answered: false,
+          /** The status pixdcon answered with; 0: no answer reached the page. */
+          status: 0,
           /** @param {number} status @param {unknown} [answer] */
           answer(status, answer) {
             if (call.answered) return;
             call.answered = true;
+            call.status = status;
             resolve(new Response(answer === undefined ? null : JSON.stringify(answer), { status, headers: { "X-Pixdcon-Position": `${call.epoch}-${call.seq}` } }));
           },
+          /** pixdcon answers in its own words what it did with the request: a Save it refused is a 400. */
           ok() {
-            call.answer(200, r4Answer(world, call));
+            if (call.refusal) call.answer(400, { code: "invalid_field", error: "A value was refused: nothing is saved", rejected: call.refusal });
+            else call.answer(200, r4Answer(world, call));
           },
           /** It ran out of time: its answer never reaches the page. */
           abandon() {
@@ -2388,20 +2520,33 @@ const r4Marker = (root, key) => r4Text(root.querySelector(`.set-body [data-row="
 const r4Unsaved = (root) =>
   root.querySelectorAll(".set-body [data-row]").filter((/** @type {any} */ row) => /^(previewing|not previewed)/.test(r4Text(row.querySelector(".mk")))).map((/** @type {any} */ row) => row.getAttribute("data-row")).join(" ") || "none";
 /**
- * What a row marker depends on, by what it says: "not previewed" is preview
- * feedback (its draft, newest and above the committed one, in its scope and
- * scene definition); the rest (saved, previewing, default) is Save
- * bookkeeping (each submitted edit, and config membership).
+ * The projection of field rejection (gate note2 M2; design note §3): what
+ * pixdcon said about a value belongs to the scene definition it judged it
+ * by and to the edit that was submitted (that key's own draft, in its
+ * opening and scope). It is not Save's acknowledgement: config membership
+ * is no part of it, and another field's newer draft does not make it
+ * obsolete (the rejection kinds name that change as commuting).
+ */
+const R4_REJECTION = ["opening", "epoch", "life", "schema", "draft"];
+/** Why pixdcon refused the edit of a field, as its row says it; "none" when the row says no reason. @param {any} root @param {string} key */
+const r4Refusal = (root, key) => String(root.querySelector(`.set-body [data-row="${key}"] .ferr`)?.textContent ?? "").replace(/\s+/g, " ").trim() || "none";
+/**
+ * What a row marker depends on, by what it says: "not previewed, not saved"
+ * is field rejection (an edit that is not taken: its own projection); "not
+ * previewed" is preview feedback (its draft, newest and above the committed
+ * one, in its scope and scene definition); the rest (saved, previewing,
+ * default) is Save bookkeeping (each submitted edit, and config membership).
  *
  * @param {string} said
  */
-const r4MarkerDeps = (said) => (/^not previewed/.test(said) ? ["opening", "epoch", "life", "draft", "schema"] : ["draft", "membership"]);
+const r4MarkerDeps = (said) => (/^not previewed, not saved/.test(said) ? R4_REJECTION : /^not previewed/.test(said) ? ["opening", "epoch", "life", "draft", "schema"] : ["draft", "membership"]);
 /**
  * What the settings status line depends on, by what it says: an outcome of
  * the action slot (Save, Revert, Clear) depends on the slot identities, and
  * a Save outcome also on config membership (gate r4 §1); preview feedback on
- * its draft, scope and scene definition; the count of unsaved edits on the
- * drafts and membership.
+ * its draft, scope and scene definition; pixdcon's reason for a refused
+ * value on the definition and the submitted edit (field rejection); the
+ * count of unsaved edits on the drafts and membership.
  *
  * @param {string} said
  */
@@ -2409,6 +2554,7 @@ function r4StatusDeps(said) {
   if (/^(Not saved|Saved)/.test(said)) return ["epoch", "life", "membership"];
   if (/^(Not reverted|Not cleared|\d+ could not be cleared)/.test(said)) return ["epoch", "life"];
   if (/^Not previewed/.test(said)) return ["opening", "epoch", "life", "draft", "schema"];
+  if (/^pixdcon refused this value/.test(said)) return R4_REJECTION;
   if (/^(Previewing|No unsaved|Changes are applied)/.test(said)) return ["draft", "membership"];
   return ["draft", "schema"];
 }
@@ -2503,6 +2649,9 @@ const R4_PAGES = {
         ["field m", ["draft", "membership"], r4Value(field(root, "m"))],
         ["row marker of n", r4MarkerDeps, r4Marker(root, "n")],
         ["row marker of m", r4MarkerDeps, r4Marker(root, "m")],
+        // Why pixdcon refused an edit: field rejection, with its own projection (gate note2 M2).
+        ["refusal of n", R4_REJECTION, r4Refusal(root, "n")],
+        ["refusal of m", R4_REJECTION, r4Refusal(root, "m")],
         ["edits the next Save sends", ["draft", "membership"], r4Unsaved(root)],
         ["Create copy fields", ["opening", "revision"], `${r4Value(root.querySelector('.copyf [name="targetKey"]'))} | ${r4Value(root.querySelector('.copyf [name="name"]'))}`],
         ["focus", ["opening", "revision", "draft"], r4Focus(root)],
@@ -2526,6 +2675,7 @@ const R4_PAGES = {
   },
   health: {
     module: () => healthPage,
+    // The pane holds the log of one run: every run has its own lines (gate note2 M3).
     pieces: (root) => [["log pane", ["opening", "epoch"], r4Text(root.querySelector(".log"))]],
   },
 };
@@ -2544,6 +2694,22 @@ function r4Pending(ctx, method, tail) {
   assert.ok(call, `a ${method} …${tail} was sent`);
   return call;
 }
+/**
+ * The settings form with an edit of n that pixdcon's verdict never reached:
+ * the preview got no answer of pixdcon's own (500). The row says "not
+ * previewed", no reason stands beside the field, and Save is still offered.
+ *
+ * @param {any} ctx
+ */
+async function r4Unverified(ctx) {
+  r4Type(field(ctx.root, "n"), "2");
+  await settle();
+  r4Pending(ctx, "PUT", "/settings/clock/preview").answer(500, {});
+  await settle();
+  assert.equal(saveButton(ctx.root).disabled, false, "Save is offered while pixdcon's verdict on the edit is not known");
+}
+/** What the first definition of the widening world says about n = 2. */
+const R4_REFUSED_N = { n: "above the maximum of 1" };
 /** The range of the Device page is disabled while its brightness request runs (gate r4 §5): no slider revision can begin meanwhile. @param {any} ctx */
 function r4RangeHeld(ctx) {
   const range = ctx.root.querySelector('input[type="range"]');
@@ -2557,11 +2723,15 @@ function r4RangeHeld(ctx) {
  *    the operation runs, with the reason the probe must meet (section 4.5);
  *  - `commutes`: changes outside the projection of the operation's effects
  *    (section 3): the case must end where the story ends when the change
- *    comes after the end;
- *  - `ends`: ends beyond success, 500 and timeout;
+ *    comes after the end, in every piece (r3);
+ *  - `ends`: ends beyond success, 500 and timeout; `only`: the ends in
+ *    their place, for a kind that is one answer of pixdcon's (a rejection);
+ *  - `refuse`: how the end `refused` is given, where it is not Raw's 422;
+ *  - `sent`: what the story claims about the request pixdcon processed,
+ *    checked when it begins, so a kind cannot run without its rejection;
  *  - `invariant`: what must hold while the request runs.
  *
- * @typedef {{name: string, site: string, page: string, world: any, request: [string, string], setup?: (ctx: any) => Promise<void>|void, begin?: (ctx: any) => Promise<void>|void, atOpen?: boolean, early?: boolean, commutes?: R4Change[], ends?: R4End[], invariant?: (ctx: any) => string|null}} R4Kind
+ * @typedef {{name: string, site: string, page: string, world: any, request: [string, string], setup?: (ctx: any) => Promise<void>|void, begin?: (ctx: any) => Promise<void>|void, atOpen?: boolean, early?: boolean, commutes?: R4Change[], ends?: R4End[], only?: R4End[], refuse?: (op: any) => void, sent?: (op: any) => void, invariant?: (ctx: any) => string|null}} R4Kind
  * @type {R4Kind[]}
  */
 const R4_KINDS = [
@@ -2643,6 +2813,35 @@ const R4_KINDS = [
     // Pixdcon wrote what was submitted: a changed scene definition does not take that back (remaining edits are revalidated).
     commutes: ["newer draft", "other field", "schema"],
   },
+  // Field rejection (gate note2 M2): the answers that carry a `rejected` map that is not empty. In this world the first
+  // definition refuses n = 2 ("above the maximum of 1") and the second, which the change `schema` brings, takes it.
+  {
+    name: "settings preview rejected", site: "web/js/components/settings-form.js:449 (book.rejected)", page: "device",
+    world: { ...r4d1(), definitions: R4_DEFINITIONS_WIDENING }, request: ["PUT", "/settings/clock/preview"],
+    early: true, begin: (ctx) => r4Type(field(ctx.root, "n"), "2"),
+    // pixdcon answers 200 and names n as not taken.
+    sent: (op) => assert.deepEqual([op.applied, op.rejected], [true, R4_REFUSED_N], "pixdcon took the preview and refused n"),
+    // The kind is that answer. Without an answer of pixdcon's own (500, timeout) no rejection reaches the page: those ends
+    // are `settings preview`'s. Here they could not be compared: a preview's reference is the story where it ended at once,
+    // successfully, and in this world that success leaves pixdcon's verdict on n, which a case without an answer never has
+    // (with an edit of another field typed meanwhile the two differ in the row of n, whatever the page does).
+    only: ["success"],
+    // What pixdcon said about n belongs to the definition and to the edit of n that was sent: config membership and an edit
+    // of another field are outside it.
+    commutes: ["membership", "other field"],
+  },
+  {
+    name: "settings save rejected", site: "web/js/components/settings-form.js:493 (Save, 400 invalid_field)", page: "device",
+    world: { ...r4d1(), definitions: R4_DEFINITIONS_WIDENING }, request: ["PUT", "/settings/clock"],
+    setup: r4Unverified, begin: (ctx) => r4Click(saveButton(ctx.root)),
+    // pixdcon saves nothing and answers 400 invalid_field with `rejected`: this Save has no success. Its reference is the
+    // story without the Save, so the ends without an answer of pixdcon's own run here too (the verdict is lost twice).
+    only: ["refused", "500", "timeout"],
+    sent: (op) => assert.deepEqual(op.refusal, R4_REFUSED_N, "pixdcon refuses the Save of n"),
+    refuse: (op) => op.ok(),
+    // The Save's outcome (the slot's line) is outside a newer draft and the scene definition; the edits that remain are revalidated.
+    commutes: ["newer draft", "other field", "schema"],
+  },
   {
     name: "settings revert", site: "web/js/components/settings-form.js:517", page: "device", world: r4d1(), request: ["DELETE", "/settings/clock/preview"],
     // The click clears the edits (before any answer): its reference clicks too, and ends the Revert at once.
@@ -2698,12 +2897,28 @@ const R4_KINDS = [
 function r4Unreachable(kind, change) {
   if (change === "type" && !R4_PAGES[kind.page].type && !(kind.page === "devices" && !(kind.world.devices ?? []).length)) return `the ${kind.page} page has no field to type into`;
   if ((change === "commit" || change === "newer draft" || change === "other field") && kind.page !== "device") return `the ${kind.page} page has no settings form`;
-  if (change === "commit" && ["settings save", "settings revert", "settings clear overlays"].includes(kind.name))
+  if (change === "commit" && ["settings save", "settings save rejected", "settings revert", "settings clear overlays"].includes(kind.name))
     return "Save, Revert and Clear are one busy slot: Save stays disabled while the operation runs";
+  // The Save is clicked and sent, and pixdcon refuses it by the same definition that refuses the preview: nothing is committed.
+  if (change === "commit" && kind.name === "settings preview rejected") return R4_NO_COMMIT;
   if (change === "revisit" && kind.page !== "config") return `the ${kind.page} page has no edit row`;
-  if (change === "revisit" && kind.world.devices?.[0]?.o?.origin === "blob") return "a device that is not in config.json has no edit row";
+  if (change === "revisit" && kind.world.devices?.[0]?.o?.origin === "blob") return R4_NO_ROW;
   return null;
 }
+
+/**
+ * Stories of two changes, where an exclusion holds for one change only
+ * (gate note2, LOW): `config adopt × revisit` has no row to revisit while
+ * the device is blob-only; once its membership changed (the adoption took
+ * effect, its answer still out) the row is there.
+ *
+ * @type {Record<string, {kind: string, steps: R4Change[]}>}
+ */
+const R4_COMPOSITES = {
+  "membership, then revisit": { kind: "config adopt", steps: ["membership", "revisit"] },
+};
+/** The single changes a change is made of. @param {string|null} change @returns {R4Change[]} */
+const r4Steps = (change) => (change === null ? [] : (R4_COMPOSITES[change]?.steps ?? [/** @type {R4Change} */ (change)]));
 
 /** The page that a person leaves to (and types on there): Config, or Raw when the story is on Config. @param {any} ctx */
 const r4Away = (ctx) => (ctx.kind.page === "config" ? "raw" : "config");
@@ -2831,6 +3046,8 @@ const R4_CHANGE = {
     const save = [...ctx.calls].reverse().find((/** @type {any} */ c) => !c.answered && c !== ctx.op && c.method === "PUT" && /\/settings\/[^/]+$/.test(c.path));
     assert.ok(save, "the commit's Save was sent");
     save.ok();
+    // A Save pixdcon refuses commits nothing: it is no change of the committed draft.
+    if (save.refusal) throw new R4Unreachable(R4_NO_COMMIT);
   },
   async "newer draft"(ctx) {
     await r4FormReady(ctx);
@@ -2842,11 +3059,12 @@ const R4_CHANGE = {
   },
   schema(ctx) {
     // pixdcon took a changed scene file: a newer SettingsState with another
-    // definition, in the same run, life, scene, and with the same draft.
+    // definition, in the same run, life, scene, and with the same draft. From
+    // now on pixdcon judges values by it (the story's second definition).
     const { world } = ctx;
     const name = r4StoryDevice(ctx);
     const entry = world.spec.devices.find((/** @type {any} */ d) => d.name === name);
-    world.schema = R4_SCHEMA_2;
+    world.schema = world.definitions[1];
     world.rev += 1;
     r4Live(world, "settings", r4Settings(world, r4Now(world), name, entry.o.scene ?? "clock"));
   },
@@ -2855,7 +3073,7 @@ const R4_CHANGE = {
     const cancel = ctx.root.querySelector('.ct-edit [data-act="cancel"]');
     if (cancel) r4Click(cancel);
     const edit = ctx.root.querySelector(`[data-act="edit"][data-device="${ctx.world.spec.devices[0]?.name}"]`);
-    if (!edit) throw new R4Unreachable(ctx.page === "config" ? "a device that is not in config.json has no edit row" : `the ${ctx.page} page has no edit row`);
+    if (!edit) throw new R4Unreachable(ctx.page === "config" ? R4_NO_ROW : `the ${ctx.page} page has no edit row`);
     r4Click(edit);
     ctx.root.querySelector('.ct-edit [name="displayName"]')?.focus();
   },
@@ -2868,27 +3086,112 @@ const R4_CHANGE = {
 };
 
 /**
+ * Revalidation (gate note2 M2; design note §3): after the scene definition
+ * changed, what the form says about each edit that remains is what the
+ * definition pixdcon holds now says about it.
+ *  - At every point: a reason beside a field is the current definition's.
+ *    A reason an earlier definition gave is not said in the form of the
+ *    new one, whenever its answer comes.
+ *  - Once everything was answered (`final`): an edit the current definition
+ *    refuses says so, with pixdcon's reason; and an edit the form says it
+ *    previews is one pixdcon holds (it was sent again and taken), so the
+ *    form does not claim a preview the display does not show.
+ *
+ * @param {any} ctx @param {boolean} final
+ * @returns {string[]}
+ */
+function r4Revalidation(ctx, final) {
+  /** @type {string[]} */
+  const out = [];
+  const { world } = ctx;
+  const entry = world.spec.devices[0];
+  if (ctx.page !== "device" || !ctx.root || !entry) return out;
+  const layer = world.layers.get(r4Scope(world, entry.name, entry.o.scene ?? "clock"));
+  for (const row of ctx.root.querySelectorAll(".set-body [data-row]")) {
+    const key = row.getAttribute("data-row");
+    const marker = r4Text(row.querySelector(".mk"));
+    const said = r4Refusal(ctx.root, key);
+    const value = Number(r4Value(row.querySelector("[data-key]")));
+    const edit = /^(previewing|not previewed)/.test(marker);
+    const reason = edit ? r4Verdict(world.schema[key], value) : null;
+    const now = reason ? `the current one says "${reason}"` : "the current one takes the value";
+    if (/^pixdcon refused this value/.test(said) && said !== `pixdcon refused this value: ${reason}`) {
+      out.push(`row ${key} says "${said}" about ${value}: a reason of an earlier scene definition (${now})`);
+      continue;
+    }
+    if (!final || !edit) continue;
+    if (reason && said === "none") out.push(`the edit ${key} = ${value} remains and the row says "${marker.split("·")[0].trim()}", but the current scene definition refuses it ("${reason}") and the form does not say so: the edits that remain were not revalidated`);
+    if (!reason && /^previewing/.test(marker) && layer?.values?.[key] !== value)
+      out.push(`the row says it previews ${key} = ${value}, but pixdcon holds no preview of it under the current scene definition: the edit that remains was not sent again`);
+  }
+  return out;
+}
+
+/**
+ * The Health pane holds the log of the run pixdcon is in (gate note2 M3):
+ * once a load of that run was answered, or a new run began, its lines are
+ * in the pane; a line of an earlier run never is. Asking again is not
+ * enough: what the answer brings must reach the pane.
+ *
+ * @param {any} ctx
+ * @returns {string[]}
+ */
+function r4LogOfTheRun(ctx) {
+  /** @type {string[]} */
+  const out = [];
+  if (ctx.page !== "health" || !ctx.root) return out;
+  const { world } = ctx;
+  const pane = r4Text(ctx.root.querySelector(".log"));
+  const answered = ctx.calls.some((/** @type {any} */ c) => c.method === "GET" && c.path === "/api/v2/log" && c.epoch === world.epoch && c.status === 200);
+  const missing = R4_LOG(world.epoch).filter((line) => !pane.includes(line.message));
+  if ((answered || ctx.changed.has("epoch")) && missing.length)
+    out.push(
+      r4InStory(world, `the log pane does not show the lines of the run pixdcon is in (${missing.map((line) => line.message).join("; ")})${answered ? ", though a load of that run was answered with them" : ": no load of that run was answered"}; it reads "${pane}"`),
+    );
+  for (const epoch of world.epochs.filter((/** @type {string} */ e) => e !== world.epoch))
+    for (const line of R4_LOG(epoch)) if (pane.includes(line.message)) out.push(r4InStory(world, `the log pane shows a line of an earlier run: ${line.message}`));
+  return out;
+}
+
+/**
  * One run of a story.
  *
  * @param {any} t the test (its manual clock)
  * @param {R4Kind} kind
- * @param {R4Change|null} change null: no change (the reference of a reconnect)
+ * @param {string|null} change an R4Change, or a story of two (R4_COMPOSITES); null: no change (the reference of a reconnect)
  * @param {R4End} end
  * @param {"case"|"without"|"early"|"after"|"probe"} mode after: the change comes after the end (the commuted story); probe: only whether the change can be made
  * @param {Record<string, any>} [modules] pages to mount instead of the real ones (the self-tests' mutants)
- * @returns {Promise<{points: Array<Map<string, {deps: R4Deps, value: string}>>, changed: Set<string>, absolute: string[], unreachable?: string}>}
+ * @returns {Promise<{points: Array<Map<string, {deps: R4Deps, value: string}>>, changed: Set<string>, absolute: string[], definition: string[], unreachable?: string}>} definition: what the revalidation found (part of `absolute`)
  */
 async function r4Run(t, kind, change, end, mode, modules) {
   for (const key of [...r4State().ops.keys()]) r4SetOp(key, null);
   fakeDocument.activeElement = null;
   const world = r4World(kind.world);
+  const steps = r4Steps(change);
   /** @type {any} */
-  const ctx = { world, calls: r4Server(world), kind, page: null, root: null, op: null, modules, changed: new Set(change ? R4_CHANGES[change] : []) };
+  const ctx = { world, calls: r4Server(world), kind, page: null, root: null, op: null, modules, changed: new Set(steps.flatMap((step) => R4_CHANGES[step])) };
+  /** The change of the story: its single changes, one after the other. */
+  const make = async () => {
+    for (const step of steps) {
+      await R4_CHANGE[step](ctx);
+      await settle();
+    }
+  };
   r4NewEpoch(world);
   /** @type {Array<Map<string, {deps: R4Deps, value: string}>>} */
   const points = [];
   /** What must hold in the case whatever the reference shows. @type {string[]} */
   const absolute = [];
+  /** What the revalidation found: said for the reference's run too. @type {string[]} */
+  const definition = [];
+  const revalidate = (/** @type {number} */ point) => {
+    if (!ctx.changed.has("schema")) return;
+    for (const found of r4Revalidation(ctx, point === 2)) {
+      definition.push(`${R4_POINTS[point]}: ${found}`);
+      absolute.push(`${R4_POINTS[point]}: ${found}`);
+    }
+  };
   const held = () => {
     const broken = ctx.op && !ctx.op.answered && ctx.page === kind.page ? kind.invariant?.(ctx) : null;
     if (broken) absolute.push(broken);
@@ -2914,6 +3217,8 @@ async function r4Run(t, kind, change, end, mode, modules) {
       await settle();
       ctx.op = ctx.calls.slice(before).find(isOp);
       assert.ok(ctx.op, `${kind.name}: the operation sent ${method} …${tail}`);
+      // The story is the one the kind names: pixdcon did with the request what the kind says (a rejection is there).
+      kind.sent?.(ctx.op);
     }
     if (mode === "early") {
       ctx.op.ok();
@@ -2926,14 +3231,14 @@ async function r4Run(t, kind, change, end, mode, modules) {
     ctx.changeAt = ctx.calls.length;
     if (mode === "probe") {
       try {
-        if (change) await R4_CHANGE[change](ctx);
+        await make();
       } catch (error) {
-        if (error instanceof R4Unreachable) return { points, changed: ctx.changed, absolute, unreachable: error.message };
+        if (error instanceof R4Unreachable) return { points, changed: ctx.changed, absolute, definition, unreachable: error.message };
         throw error;
       }
-      return { points, changed: ctx.changed, absolute };
+      return { points, changed: ctx.changed, absolute, definition };
     }
-    if (change && mode !== "after") await R4_CHANGE[change](ctx);
+    if (mode !== "after") await make();
     await settle();
     if (!ctx.changed.has("epoch") && !ctx.changed.has("life")) held();
     points.push(observe());
@@ -2943,14 +3248,18 @@ async function r4Run(t, kind, change, end, mode, modules) {
       t.mock.timers.tick(5_000);
     } else if (ctx.op) {
       if (end === "success") ctx.op.ok();
-      else if (end === "refused") ctx.op.answer(422, { code: "invalid_config", error: "config.json is not valid", message: "Line 2: a value is missing.", line: 2 });
-      else ctx.op.answer(500, {});
+      else if (end === "refused") {
+        if (kind.refuse) kind.refuse(ctx.op);
+        else ctx.op.answer(422, { code: "invalid_config", error: "config.json is not valid", message: "Line 2: a value is missing.", line: 2 });
+      } else ctx.op.answer(500, {});
     }
     await settle();
     points.push(observe());
-    if (change && mode === "after") {
+    // What the old operation's answer left beside a field belongs to the definition pixdcon holds now (gate note2 M2).
+    if (mode !== "after") revalidate(1);
+    if (mode === "after") {
       ctx.changeAt = ctx.calls.length;
-      await R4_CHANGE[change](ctx);
+      await make();
       await settle();
     }
     if (ctx.awayFrom) {
@@ -2976,7 +3285,11 @@ async function r4Run(t, kind, change, end, mode, modules) {
         absolute.push(`no replacement load of ${load} was sent when the new run's snapshot was taken`);
       if (kind.page === "raw" && /Loading config\.json/.test(r4Text(ctx.root.querySelector(".edbar .state")))) absolute.push("the editor still says it is loading after everything was answered");
     }
-    return { points, changed: ctx.changed, absolute };
+    // The data, not only the request: the pane holds the lines of the run pixdcon is in, and none of an earlier run (gate note2 M3).
+    absolute.push(...r4LogOfTheRun(ctx));
+    // The edits that remain say what the definition pixdcon holds now says about them (gate note2 M2).
+    revalidate(2);
+    return { points, changed: ctx.changed, absolute, definition };
   } finally {
     r4Close(ctx);
     await r4AnswerAll(ctx);
@@ -2987,20 +3300,28 @@ async function r4Run(t, kind, change, end, mode, modules) {
 
 /**
  * The differences between a case and its reference, in the pieces the rule
- * protects: those whose identities include one the change changed (all of
- * them for a reconnect).
+ * protects: those whose identities include one the change changed. For a
+ * reconnect and for a commuted story ("after") it is every piece: the
+ * claim there is that the case ends where the other story ends, so an
+ * effect the claim promises to keep (Save's acknowledgement after a change
+ * of definition) is compared too, and cannot be suppressed unseen (gate
+ * note2 M1).
  *
- * @param {R4Change} change
+ * @param {string} change
  * @param {{points: Array<Map<string, {deps: R4Deps, value: string}>>, changed: Set<string>, absolute: string[]}} got
- * @param {{points: Array<Map<string, {deps: R4Deps, value: string}>>}} want
+ * @param {{points: Array<Map<string, {deps: R4Deps, value: string}>>, definition?: string[]}} want
  * @param {"early"|"without"|"after"|"none"} reference how the reference ran
  * @param {boolean} atOpen the operation is the load the page's opening sent
  * @returns {string[]}
  */
 function r4Differences(change, got, want, reference, atOpen) {
   const changed = got.changed;
+  const story = reference === "none" ? "without the reconnect" : reference === "after" ? "with the change after the end" : "without the old operation";
+  /** Every piece is compared, whatever it depends on. */
+  const whole = reference === "none" || reference === "after";
+  // What the revalidation finds in the reference's story is said too: that story holds the same change of definition.
   /** @type {string[]} */
-  const out = [...got.absolute];
+  const out = [...got.absolute, ...(want.definition ?? []).map((found) => `in the story ${story}, ${found}`)];
   got.points.forEach((pieces, i) => {
     // A reference that ended its operation at once differs from the case
     // while the case's operation still runs; a reconnect is compared where
@@ -3013,30 +3334,41 @@ function r4Differences(change, got, want, reference, atOpen) {
       const value = want.points[i]?.get(name)?.value;
       // A piece whose identities follow what it says is judged by what the case says: a slot outcome there is not draft feedback.
       const deps = typeof piece.deps === "function" ? piece.deps(piece.value) : piece.deps;
-      if (reference !== "none" && !deps.some((d) => changed.has(d))) continue;
-      if (piece.value !== value)
-        out.push(
-          `${R4_POINTS[i]}, ${name} [${deps.join(", ")}]: "${piece.value}" — the story ${reference === "none" ? "without the reconnect" : reference === "after" ? "with the change after the end" : "without the old operation"} reads "${value}"`,
-        );
+      if (!whole && !deps.some((d) => changed.has(d))) continue;
+      if (piece.value !== value) out.push(`${R4_POINTS[i]}, ${name} [${deps.join(", ")}]: "${piece.value}" — the story ${story} reads "${value}"`);
     }
   });
   return out;
 }
 
+/**
+ * Changes that are outside everything a kind's end may change, and that are
+ * compared both ways: by the rule (the pieces of the changed identity read
+ * as without the old operation), and as a commuted story (every piece ends
+ * where it ends when the change comes after the end). On the Device page a
+ * person types into the Create copy form while another operation runs: that
+ * form's revision is no identity of any other operation, so none of their
+ * outcomes may be lost to it. `device copy` is the form's own operation.
+ *
+ * @param {R4Kind} kind
+ * @returns {string[]}
+ */
+const r4Keeps = (kind) => (kind.page === "device" && kind.name !== "device copy" ? ["type"] : []);
+
 /** The ends a kind runs. @param {R4Kind} kind @returns {R4End[]} */
-const r4Ends = (kind) => [...R4_ENDS, ...(kind.ends ?? [])];
+const r4Ends = (kind) => kind.only ?? [...R4_ENDS, ...(kind.ends ?? [])];
 
 /**
  * A case: the story and its reference, compared.
  *
- * @param {any} t @param {R4Kind} kind @param {R4Change} change @param {R4End} end
+ * @param {any} t @param {R4Kind} kind @param {string} change an R4Change, or a story of two (R4_COMPOSITES) @param {R4End} end
  * @param {{modules?: Record<string, any>, references?: Map<string, any>}} [o] modules: mutants instead of the pages (self-tests)
  */
 async function r4Case(t, kind, change, end, o = {}) {
   const references = o.references ?? new Map();
   const early = Boolean(kind.early || kind.atOpen);
   /** @type {"early"|"without"|"after"|"none"} */
-  const reference = change === "reconnect" ? "none" : kind.commutes?.includes(change) ? "after" : early ? "early" : "without";
+  const reference = change === "reconnect" ? "none" : /** @type {string[]} */ (kind.commutes ?? []).includes(change) ? "after" : early ? "early" : "without";
   const key = reference === "none" ? `${kind.name}|none|${end}` : reference === "after" ? `${kind.name}|${change}|after|${end}` : `${kind.name}|${change}`;
   if (!references.has(key))
     references.set(
@@ -3044,7 +3376,15 @@ async function r4Case(t, kind, change, end, o = {}) {
       reference === "none" ? await r4Run(t, kind, null, end, "case", o.modules) : reference === "after" ? await r4Run(t, kind, change, end, "after", o.modules) : await r4Run(t, kind, change, end, reference, o.modules),
     );
   const got = await r4Run(t, kind, change, end, "case", o.modules);
-  return r4Differences(change, got, references.get(key), reference, Boolean(kind.atOpen) && change !== "reconnect");
+  const differences = r4Differences(change, got, references.get(key), reference, Boolean(kind.atOpen) && change !== "reconnect");
+  // Beside the rule: a change the operation's effects do not depend on takes none of them away (r3, with gate note2 M1).
+  // The case ends, in every piece, where the story ends when that change comes after the end.
+  if (reference !== "after" && r4Keeps(kind).includes(change)) {
+    const after = `${kind.name}|${change}|after|${end}`;
+    if (!references.has(after)) references.set(after, await r4Run(t, kind, change, end, "after", o.modules));
+    for (const found of r4Differences(change, { ...got, absolute: [] }, references.get(after), "after", false)) if (!differences.includes(found)) differences.push(found);
+  }
+  return differences;
 }
 
 /** The gate's findings, by the case that reproduces each. */
@@ -3065,6 +3405,11 @@ const R4_GATE = {
   "settings load × newer draft × success": "gate r4 §4, an edit while the load is out",
   "device adopt × commit × success": "gate r4 §4, membership changes while the adoption is out",
   "device brightness range × reopen × success": "gate r4 §5, the range is disabled throughout its request",
+  "settings save × schema × success": "gate note2 M1, Save's acknowledgement after a change of definition, every piece compared",
+  "settings preview rejected × schema × success": "gate note2 M2, the old definition's 200 answer with rejected n",
+  "settings save rejected × schema × refused": "gate note2 M2, a refused Save across a change of definition",
+  "settings preview × schema × success": "gate note2 M2, the edit that remains is revalidated",
+  "health log × epoch × success": "gate note2 M3, the new run's lines reach the pane",
 };
 
 /** Cases that fail at fbf3f61: phase B makes each one pass and takes it off this list. */
@@ -3104,6 +3449,9 @@ const R4_KNOWN = new Set([
   "raw save × epoch × success",
   "raw save × epoch × timeout",
   "raw save × type × refused",
+  "settings preview rejected × epoch × success",
+  "settings preview rejected × reincarnate × success",
+  "settings preview rejected × schema × success",
   "settings preview × commit × 500",
   "settings preview × commit × timeout",
   "settings preview × epoch × 500",
@@ -3117,6 +3465,7 @@ const R4_KNOWN = new Set([
   "settings preview × reincarnate × success",
   "settings preview × reincarnate × timeout",
   "settings preview × schema × 500",
+  "settings preview × schema × success",
   "settings preview × schema × timeout",
   "settings revert × epoch × 500",
   "settings revert × epoch × success",
@@ -3124,6 +3473,18 @@ const R4_KNOWN = new Set([
   "settings revert × reincarnate × 500",
   "settings revert × reincarnate × success",
   "settings revert × reincarnate × timeout",
+  "settings save rejected × epoch × 500",
+  "settings save rejected × epoch × refused",
+  "settings save rejected × epoch × timeout",
+  "settings save rejected × membership × 500",
+  "settings save rejected × membership × refused",
+  "settings save rejected × membership × timeout",
+  "settings save rejected × reincarnate × 500",
+  "settings save rejected × reincarnate × refused",
+  "settings save rejected × reincarnate × timeout",
+  "settings save rejected × schema × 500",
+  "settings save rejected × schema × refused",
+  "settings save rejected × schema × timeout",
   "settings save × epoch × 500",
   "settings save × epoch × success",
   "settings save × epoch × timeout",
@@ -3133,6 +3494,8 @@ const R4_KNOWN = new Set([
   "settings save × reincarnate × 500",
   "settings save × reincarnate × success",
   "settings save × reincarnate × timeout",
+  "settings save × schema × 500",
+  "settings save × schema × timeout",
 ]);
 
 const R4_STRICT = process.env.R4_HARNESS_STRICT === "1";
@@ -3168,12 +3531,38 @@ for (const kind of R4_KINDS)
     }
   }
 
+// Stories of two changes: what an exclusion that holds for one change leaves open (gate note2, LOW).
+let r4Composites = 0;
+for (const [change, { kind: kindName, steps }] of Object.entries(R4_COMPOSITES)) {
+  const kind = /** @type {R4Kind} */ (R4_KINDS.find((k) => k.name === kindName));
+  for (const end of r4Ends(kind)) {
+    r4Composites += 1;
+    test(`r4 harness: two changes: ${kind.name} × ${change} × ${end} (gate note2 LOW: ${kind.name} × ${steps[steps.length - 1]} is unreachable as one change only)`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      // The last change alone is unreachable, for the stated reason; after the first it can be made.
+      assert.equal(r4Unreachable(kind, steps[steps.length - 1]), R4_NO_ROW);
+      assert.equal((await r4Run(t, kind, change, end, "probe")).unreachable, undefined, `${kind.name} × ${change} can be made through the stand-in DOM`);
+      const differences = await r4Case(t, kind, change, end, { references: r4References });
+      assert.deepEqual(differences, [], `${kind.site}: the old operation changed UI state that depends on an identity the changes changed`);
+    });
+  }
+}
+
 test("r4 harness: the matrix covers every operation kind, change and end; every exclusion is a probe that runs", () => {
   const combinations = R4_KINDS.reduce((sum, kind) => sum + Object.keys(R4_CHANGES).length * r4Ends(kind).length, 0);
   const excluded = r4Probes.reduce((sum, line) => sum + r4Ends(/** @type {R4Kind} */ (R4_KINDS.find((k) => line.startsWith(`${k.name} ×`)))).length, 0);
   assert.equal(r4Count + excluded, combinations);
-  for (const name of Object.keys(R4_GATE)) assert.ok(R4_KINDS.some((k) => name.startsWith(`${k.name} ×`)) && !r4Probes.some((p) => name.startsWith(p.split(":")[0])), `${name} is a case of the matrix`);
-  t_log(`r4 harness: ${R4_KINDS.length} kinds × ${Object.keys(R4_CHANGES).length} changes × ends (${R4_ENDS.join(", ")}; raw save also refused): ${combinations} combinations, ${r4Count} cases run, ${r4Probes.length} combinations (${excluded} with their ends) unreachable, each a probe that runs:\n  ${r4Probes.join("\n  ")}`);
+  // A named case is a case of the matrix: its kind, its change and its end exist, and it is not excluded.
+  /** @type {string[]} */
+  const names = [];
+  for (const kind of R4_KINDS) for (const change of Object.keys(R4_CHANGES)) if (!r4Unreachable(kind, /** @type {R4Change} */ (change))) for (const end of r4Ends(kind)) names.push(`${kind.name} × ${change} × ${end}`);
+  assert.equal(names.length, r4Count);
+  for (const name of Object.keys(R4_GATE)) assert.ok(names.includes(name), `${name} is a case of the matrix`);
+  // The known failures are cases of the matrix too: a name that matches no case would hide nothing, and is a mistake.
+  for (const name of R4_KNOWN) assert.ok(names.includes(name), `${name} (R4_KNOWN) is a case of the matrix`);
+  t_log(
+    `r4 harness: ${R4_KINDS.length} kinds × ${Object.keys(R4_CHANGES).length} changes × ends (${R4_ENDS.join(", ")}; raw save also refused; settings preview rejected: success only; settings save rejected: refused in place of success): ${combinations} combinations, ${r4Count} cases run, ${r4Probes.length} combinations (${excluded} with their ends) unreachable, each a probe that runs; ${r4Composites} cases of two changes; ${R4_KNOWN.size} known failures:\n  ${r4Probes.join("\n  ")}`,
+  );
 });
 
 // --- self-tests: product mutations the harness must catch (gate r4 §3, §4) ---
@@ -3241,6 +3630,167 @@ test("r4 harness self-test: a probe finds the combinations the first note exclud
     assert.equal(probe.unreachable, undefined, `${name} × ${change} can be made through the stand-in DOM`);
     assert.equal(r4Unreachable(kind, change), null, `${name} × ${change} runs as cases`);
   }
+});
+
+// --- r3: the mutants of the gate on harness r2 (findings-note2, M1 to M3), each caught ---
+
+/** @param {string} name @returns {R4Kind} */
+const r4KindOf = (name) => /** @type {R4Kind} */ (R4_KINDS.find((k) => k.name === name));
+/** The Device page with a changed settings form. @param {Array<[string, string]>} edits @param {Record<string, string>} [replace] what the form imports instead: relative import → module URL */
+const r4DeviceWithForm = async (edits, replace = {}) =>
+  (await import(await r4Mutant("pages/device.js", [], { "../components/settings-form.js": await r4Mutant("components/settings-form.js", edits, replace) }))).page;
+/** In sendPreview: the scene definition the preview was sent under. @type {[string, string]} */
+const R4_EDIT_SENT_UNDER = ["const plan = of.book.previewPlan(id);\n    of.previewed = true;", "const plan = of.book.previewPlan(id);\n    of.previewed = true;\n    const definition = JSON.stringify(current?.schema);"];
+/** In sendPreview: a transport failure is said only while the definition is the one the preview was sent under (the gate's memory fix). @type {[string, string]} */
+const R4_EDIT_GUARD_FAILURE = ["} catch (error) {\n      of.previewFailure = failureText(error);\n    }", "} catch (error) {\n      if (JSON.stringify(current?.schema) === definition) of.previewFailure = failureText(error);\n    }"];
+
+test("r4 harness self-test: Save's acknowledgement suppressed when the scene definition changed during the Save is caught (gate note2 M1)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = await r4DeviceWithForm([
+    ["const plan = mine.book.saveBody(session());\n    if (!plan) return;", "const plan = mine.book.saveBody(session());\n    if (!plan) return;\n    const definition = JSON.stringify(current?.schema);"],
+    ["done: (answer) => {\n          // What was saved", "done: (answer) => {\n          if (JSON.stringify(current?.schema) !== definition) return null;\n          // What was saved"],
+  ]);
+  const kind = r4KindOf("settings save");
+  const differences = await r4Case(t, kind, "schema", "success", { modules: { device } });
+  // n stays an unsaved edit, the next Save would send it again, and "Saved to config.json" is not said: none of these
+  // pieces depends on the scene definition. They are compared because a commuted story is compared in every piece.
+  const pieces = differences.filter((d) => /the story with the change after the end reads/.test(d));
+  for (const piece of [/row marker of n \[draft, membership\]: "previewing".*reads "saved/, /edits the next Save sends \[draft, membership\]: "n".*reads "none"/, /settings status line .*reads "Saved to config\.json"/])
+    assert.ok(pieces.some((d) => piece.test(d)), `the harness reports ${piece}:\n${differences.join("\n")}`);
+  // The same story with the real form passes: pixdcon wrote what was submitted, and the form says so.
+  assert.deepEqual(await r4Case(t, kind, "schema", "success"), []);
+});
+
+test("r4 harness self-test: a fix that guards only transport failures against a changed scene definition is caught, and a form that also binds the rejection to its definition and sends the remaining edits again passes every schema case of the settings form (gate note2 M2)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  /** Every case of the change `schema` of the settings form's kinds, with a form: the names of those that fail. @param {any} device */
+  const failing = async (device) => {
+    /** @type {string[]} */
+    const names = [];
+    for (const kind of R4_KINDS.filter((k) => k.name.startsWith("settings ") && !r4Unreachable(k, "schema")))
+      for (const end of r4Ends(kind)) if ((await r4Case(t, kind, "schema", end, { modules: { device } })).length) names.push(`${kind.name} × schema × ${end}`);
+    return names;
+  };
+  // The gate's memory fix: the old preview's transport failure is not said in the form of the new definition.
+  const partial = await r4DeviceWithForm([R4_EDIT_SENT_UNDER, R4_EDIT_GUARD_FAILURE]);
+  const rejected = r4KindOf("settings preview rejected");
+  // It does what it was made for: with the old preview failing in transport, nothing of it is said (the real form says it: R4_KNOWN).
+  const transport = await r4Case(t, r4KindOf("settings preview"), "schema", "500", { modules: { device: partial } });
+  assert.ok(!transport.some((d) => /preview feedback|Not previewed/.test(d)), `the fix takes the old transport failure off the new form:\n${transport.join("\n")}`);
+  assert.ok((await r4Case(t, r4KindOf("settings preview"), "schema", "500")).some((d) => /preview feedback/.test(d)), "the real form says the old transport failure");
+  // But the old definition's 200 answer still marks n in the form of the new definition, with the old reason.
+  const stale = await r4Case(t, rejected, "schema", "success", { modules: { device: partial } });
+  assert.ok(stale.some((d) => /^after the end: row n says "pixdcon refused this value: above the maximum of 1" about 2: a reason of an earlier scene definition/.test(d)), `the harness reports the old definition's rejection:\n${stale.join("\n")}`);
+  const withPartial = await failing(partial);
+  assert.ok(withPartial.includes("settings preview rejected × schema × success"), "the fix does not make all schema cases pass");
+  // A form that keeps the three parts of the rule for a definition (note §3) passes all of them: the checks can be met.
+  // Its book sends the edits that remain again under a newer draft number (pixdcon changes nothing for a draft it has
+  // seen), and each edit keeps its own draft: a Save that was under way still acknowledges the edit it submitted.
+  const book = await r4Mutant("view/drafts.js", [
+    [
+      "    /** Revert: nothing typed is kept. The page's draft number keeps rising. */",
+      "    again() {\n      draft = ++pageDraft;\n      for (const edit of edits.values())\n        if (edit.refused) {\n          delete edit.error;\n          delete edit.refused;\n        }\n    },\n    /** Revert: nothing typed is kept. The page's draft number keeps rising. */",
+    ],
+  ]);
+  const whole = await r4DeviceWithForm(
+    [
+      R4_EDIT_SENT_UNDER,
+      R4_EDIT_GUARD_FAILURE,
+      // What pixdcon refused belongs to the definition it judged by: an answer of an earlier definition marks nothing.
+      ["of.book.rejected(plan.sent, answer.body?.rejected);", "if (JSON.stringify(current?.schema) === definition) of.book.rejected(plan.sent, answer.body?.rejected);"],
+      // A newer definition: what pixdcon said about the edits that remain is dropped at once, and they are sent again.
+      [
+        'current = settingsState;\n        phase = "ready";',
+        'const before = current?.schema ? JSON.stringify(current.schema) : null;\n        current = settingsState;\n        phase = "ready";\n        if (before !== null && before !== JSON.stringify(current.schema) && scope.book.edits.size > 0) {\n          /** @type {any} */ (scope.book).again();\n          scope.previewFailure = null;\n          report();\n          preview();\n        }',
+      ],
+    ],
+    { "../view/drafts.js": book },
+  );
+  assert.deepEqual(await failing(whole), [], "a form that binds field rejection to its definition and revalidates the edits that remain passes every schema case of the settings form's kinds");
+  t_log(`r4 self-test (gate note2 M2): with the transport-only fix these schema cases still fail: ${withPartial.join("; ")}`);
+});
+
+test("r4 harness self-test: an outcome dropped because the person typed in another form meanwhile is caught (r3, with gate note2 M1)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  // Save's acknowledgement suppressed when the focus is no longer where it was when Save was clicked: a guard on an
+  // identity (another editor's) that Save's effects do not depend on.
+  const device = await r4DeviceWithForm([
+    ["const plan = mine.book.saveBody(session());\n    if (!plan) return;", "const plan = mine.book.saveBody(session());\n    if (!plan) return;\n    const focused = document.activeElement;"],
+    ["done: (answer) => {\n          // What was saved", "done: (answer) => {\n          if (document.activeElement !== focused) return null;\n          // What was saved"],
+  ]);
+  const kind = r4KindOf("settings save");
+  const differences = await r4Case(t, kind, "type", "success", { modules: { device } });
+  for (const piece of [/row marker of n \[draft, membership\]: "previewing".*the story with the change after the end reads "saved/, /settings status line .*the story with the change after the end reads "Saved to config\.json"/])
+    assert.ok(differences.some((d) => piece.test(d)), `the harness reports ${piece}:\n${differences.join("\n")}`);
+  // The rule's own comparison (the pieces of the typed form, against the story without the Save) does not see it.
+  assert.ok(!differences.some((d) => /the story without the old operation/.test(d)), differences.join("\n"));
+  // The real form passes: what is typed into the Create copy form takes no outcome away.
+  assert.deepEqual(await r4Case(t, kind, "type", "success"), []);
+});
+
+test("r4 harness self-test: field rejection given Save's projection (config membership) is caught (gate note2 M2)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const kind = r4KindOf("settings preview rejected");
+  const apply = "of.book.rejected(plan.sent, answer.body?.rejected);";
+  // Bound to config membership, as Save's acknowledgement is: a device that turned blob-only while the preview was out
+  // loses pixdcon's verdict on n for good (no other preview follows), though it previews like any other device.
+  const device = await r4DeviceWithForm([
+    [R4_EDIT_SENT_UNDER[0], `${R4_EDIT_SENT_UNDER[0]}\n    const member = Boolean(context.overlayOnly);`],
+    [apply, `if (Boolean(context.overlayOnly) === member) ${apply}`],
+  ]);
+  const differences = await r4Case(t, kind, "membership", "success", { modules: { device } });
+  assert.ok(differences.some((d) => /refusal of n .*: "none" — the story with the change after the end reads "pixdcon refused this value: above the maximum of 1"/.test(d)), `the harness reports the verdict on n that was dropped:\n${differences.join("\n")}`);
+  // The real form keeps the verdict. So it does when another field is edited meanwhile: the verdict is on the edit of n that was sent.
+  assert.deepEqual(await r4Case(t, kind, "membership", "success"), []);
+  assert.deepEqual(await r4Case(t, kind, "other field", "success"), []);
+});
+
+test("r4 harness self-test: a Health page that asks again in a new run but keeps the opening's epoch guard on the answer is caught; one that takes the answer passes (gate note2 M3)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  /** Health asks for the log again when the store holds a new run. @type {[string, string]} */
+  const reload = [
+    "unsubscribe = subscribe((state) => state, render);\n    loadLog();",
+    "r4Opened = getState().epoch;\n    let r4Seen = r4Opened;\n    unsubscribe = subscribe((state) => state, (state) => {\n      if (state.epoch !== r4Seen) {\n        r4Seen = state.epoch;\n        loadLog();\n      }\n      render(state);\n    });\n    loadLog();",
+  ];
+  /** @type {[string, string]} */
+  const opened = ['let copied = "";', 'let copied = "";\n/** @type {string|null} */\nlet r4Opened = null;'];
+  // The gate's mutant: the replacement GET is sent, and its answer is dropped by the epoch the page was opened in.
+  const mutant = (
+    await import(
+      await r4Mutant("pages/health.js", [
+        opened,
+        reload,
+        [
+          'followOp("log", async () => applyAnswer(await request("GET", "/api/v2/log", { resource: "log" })), {',
+          'followOp("log", async () => {\n    const answer = await request("GET", "/api/v2/log", { resource: "log" });\n    if (getState().epoch !== r4Opened) return;\n    applyAnswer(answer);\n  }, {',
+        ],
+      ])
+    )
+  ).page;
+  const kind = r4KindOf("health log");
+  for (const end of R4_ENDS) {
+    const differences = await r4Case(t, kind, "epoch", end, { modules: { health: mutant } });
+    assert.ok(!differences.some((d) => /no replacement load/.test(d)), `× ${end}: the mutant sends the replacement load, so the check of the request alone passes:\n${differences.join("\n")}`);
+    assert.ok(differences.some((d) => /the log pane does not show the lines of the run pixdcon is in .*though a load of that run was answered with them/.test(d)), `× ${end}: the harness reports that the new run's lines did not reach the pane:\n${differences.join("\n")}`);
+  }
+  // A page that asks again and takes the answer (the store's fence decides) passes: the check can be met.
+  const fixed = (await import(await r4Mutant("pages/health.js", [opened, reload]))).page;
+  for (const end of R4_ENDS) assert.deepEqual(await r4Case(t, kind, "epoch", end, { modules: { health: fixed } }), [], `health log × epoch × ${end} with a page that asks again and takes the answer`);
+  // And a line of an earlier run in the pane is reported: a page that keeps the lines of its last answer and shows them while the store holds none.
+  const keeping = (
+    await import(
+      await r4Mutant("pages/health.js", [
+        ['let copied = "";', 'let copied = "";\n/** @type {any[]} */\nlet r4Kept = [];'],
+        [
+          'followOp("log", async () => applyAnswer(await request("GET", "/api/v2/log", { resource: "log" })), {',
+          'followOp("log", async () => {\n    const answer = await request("GET", "/api/v2/log", { resource: "log" });\n    r4Kept = Array.isArray(answer.body) ? answer.body : [];\n    applyAnswer(answer);\n  }, {',
+        ],
+        ["const lines = state.log.filter(", "const lines = (state.log.length ? state.log : r4Kept).filter("],
+      ])
+    )
+  ).page;
+  const old = await r4Case(t, kind, "epoch", "success", { modules: { health: keeping } });
+  assert.ok(old.some((d) => /the log pane shows a line of an earlier run: \[pixdcon\] line 1 of run 1/.test(d)), `the harness reports the old run's line in the pane:\n${old.join("\n")}`);
 });
 
 /** @param {string} line */
@@ -3394,7 +3944,10 @@ const R4X_EFFECTS = /** @type {Array<[string, RegExp]>} */ ([
   ["slot drop", /(?<![\w$.])drop\(/],
   ["close", /\.close\(|\bopen\s*=\s*null|scrim\.remove\(\)/],
   ["blur", /\.blur\b/],
-  ["reset", /\.reset\(|\bbook\.(saved|clear|rejected)\(/],
+  // Save's acknowledgement and Revert (the book forgets edits), and a form's reset.
+  ["reset", /\.reset\(|\bbook\.(saved|clear)\(/],
+  // What pixdcon refused is marked on the edits that were sent: an effect of its own, with its own projection (gate note2 M2).
+  ["field rejection", /\bbook\.rejected\(/],
   ["focus", /\.focus\(/],
   ["enable/disable", /\.disabled\s*=(?!=)/],
   ["request start", /(?<![\w$.])(request|requestFrame|follow|start)\(/],
@@ -3593,6 +4146,9 @@ function r4xProjection(file, effect, fn = "") {
       return `opening · ${config ? "edit-row visit · " : ""}editor revision · epoch · life${member ? " · config membership" : ""}; blur and focus only inside the opening's root`;
     case "reset":
       return settings ? "each submitted edit's draft (monotonic acknowledgement) · scope (scene, epoch, life) · config membership" : "opening · editor revision (the form's)";
+    case "field rejection":
+      // Not Save's acknowledgement: no config membership (a blob-only device previews too), and the scene definition is part of it.
+      return "scene-definition generation (the definition pixdcon judged the value by is the one the form shows) · the submitted edit's own draft (the edit of that key is still the one that was sent) · scope (scene, epoch, life)";
     case "request start":
       return `the identities captured when the operation began, inherited and never re-read (scope: ${settings ? "scene, epoch, life" : raw ? "opening, epoch" : "epoch, life"}), checked before the request starts`;
     case "page state":
@@ -3630,20 +4186,20 @@ const R4_INVENTORY = [
   "web/js/components/recovery-dialog.js · retry · ops failed · render",
   "web/js/components/recovery-dialog.js · retry · await · store",
   "web/js/components/settings-form.js · load · ops failed · page state, render",
-  "web/js/components/settings-form.js · save · ops done · page callback, page state, preview feedback, render, request start, reset, slot drop, slot note, store",
+  "web/js/components/settings-form.js · save · ops done · field rejection, page callback, page state, preview feedback, render, request start, reset, slot drop, slot note, store",
   "web/js/components/settings-form.js · save · ops describe · slot failure text",
-  "web/js/components/settings-form.js · save · ops failed · page callback, page state, preview feedback, render, request start, reset, slot drop, store",
+  "web/js/components/settings-form.js · save · ops failed · field rejection, page callback, page state, preview feedback, render, request start, slot drop, store",
   "web/js/components/settings-form.js · revert · ops done · page callback, page state, preview feedback",
   "web/js/components/settings-form.js · revert · ops describe · slot failure text",
   "web/js/components/settings-form.js · clearOverlays · ops done · slot note",
   "web/js/components/settings-form.js · clearOverlays · ops describe · slot failure text",
-  "web/js/components/settings-form.js · enqueue · await · page callback, page state, preview feedback, render, request start, reset, slot drop, store",
+  "web/js/components/settings-form.js · enqueue · await · field rejection, page callback, page state, preview feedback, render, request start, slot drop, store",
   "web/js/components/settings-form.js · enqueue · await · none",
   "web/js/components/settings-form.js · retryEnd · await · store",
   "web/js/components/settings-form.js · leave · await · none",
   "web/js/components/settings-form.js · leave · await · store",
   "web/js/components/settings-form.js · load · await · store",
-  "web/js/components/settings-form.js · sendPreview · await · page callback, page state, preview feedback, render, reset, slot drop, store",
+  "web/js/components/settings-form.js · sendPreview · await · field rejection, page callback, page state, preview feedback, render, slot drop, store",
   "web/js/components/settings-form.js · save · await · store",
   "web/js/components/settings-form.js · revert · await · slot drop, store",
   "web/js/components/settings-form.js · clearOverlays · await · store",
@@ -3727,6 +4283,7 @@ test("r4 inventory self-test: one fake site of each kind is reported as unlisted
   const fake = `import { request } from "../api.js";
 import { follow, start } from "../ops.js";
 let open = null;
+const book = { saved() {}, rejected() {} };
 function paint(root) { root.textContent = "x"; }
 function lane(step) { return (async () => { await null; return step(); })(); }
 const settledFake = () => { open = null; };
@@ -3741,6 +4298,8 @@ export function fake(root, source) {
   source.onerror = () => { open = null; };
   lane(() => request("DELETE", "/d"));
 }
+export async function mark(sent) { const answer = await request("PUT", "/e"); book.rejected(sent, answer.body.rejected); }
+export async function acknowledge(sent) { await request("PUT", "/f"); book.saved(sent, []); }
 `;
   const files = [...r4WebFiles(), { file: "web/js/pages/fake.js", src: fake }];
   const { rows, unmapped } = r4xExtract(files);
@@ -3763,8 +4322,15 @@ export function fake(root, source) {
     ["an SSE onopen", / · fake · SSE onopen · .*focus/],
     ["an SSE onerror", / · fake · SSE onerror · .*close/],
     ["a deferred `return step()` of a lane, resolved to the request its caller queued", / · lane · await · .*request start/],
+    // Field rejection is an effect of its own (gate note2 M2): it is not listed as Save's acknowledgement ("reset"), nor the other way round.
+    ["an answer's `rejected` map marked on the edits (field rejection, and not reset)", / · mark · await · field rejection {2}\(/],
+    ["Save's acknowledgement (reset, and not field rejection)", / · acknowledge · await · reset {2}\(/],
   ];
   for (const [what, pattern] of expected) assert.ok(reported.some((u) => pattern.test(u)), `${what} is reported:\n${reported.join("\n")}`);
+  // The two effects have different projections: field rejection names the scene definition and no config membership; Save's acknowledgement the reverse.
+  const [rejection, acknowledgement] = ["field rejection", "reset"].map((effect) => r4xProjection("web/js/components/settings-form.js", effect, "sendPreview"));
+  assert.ok(/scene-definition generation/.test(rejection) && /submitted edit's own draft/.test(rejection) && !/config membership/.test(rejection), rejection);
+  assert.ok(/config membership/.test(acknowledgement) && !/scene-definition/.test(acknowledgement), acknowledgement);
   // A file the list holds rows of, gone: its rows are reported as vanished.
   const without = r4xExtract(r4WebFiles().filter((f) => f.file !== "web/js/pages/overlays.js"));
   assert.ok(r4InventoryDiff(without.rows).vanished.some((v) => v.startsWith("web/js/pages/overlays.js")), "the rows of a removed file are reported as vanished");
