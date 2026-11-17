@@ -19,7 +19,8 @@
  *  - 5 s deadline per request including the body (D-073)
  *
  * Fixed: failures reject instead of returning false; the cleanup is retried
- * until one sweep completed, and one bad entry no longer stops the sweep
+ * on its own five-minute timer until one sweep completed, independently of
+ * readiness and frame writes; one bad entry no longer stops the sweep
  * (D-B05, D-B06); brightness is validated (D-B09); a zero battery is logged as
  * 0 %, not as "AC" (D-B15).
  *
@@ -34,6 +35,7 @@ import { brightness, copyFrame, createTransport } from "./http-transport.js";
 
 // A runtime rebuild must not repeat a completed flash cleanup on the same device.
 const cleanedDevices = new Set();
+export const AWTRIX_CLEANUP_RETRY_MS = 5 * 60 * 1000;
 
 /**
  * @param {import("./driver.js").DriverOptions} options
@@ -45,6 +47,9 @@ export function createAwtrixDriver(options) {
   const appPath = (/** @type {string} */ name) => `/api/custom?name=${encodeURIComponent(name)}`;
   const cleanupKey = `${options.name}@${options.address}`;
   let cleanupDone = cleanedDevices.has(cleanupKey);
+  let cleanupStarted = false;
+  let closed = false;
+  let cleanupTimer = /** @type {AbortController|null} */ (null);
   let hasApp = false;
   /** @param {AbortSignal} [signal] @returns {Promise<Record<string, unknown>>} */
   async function stats(signal) {
@@ -52,25 +57,43 @@ export function createAwtrixDriver(options) {
     if (!data || typeof data !== "object" || Array.isArray(data)) throw new DeviceError("AWTRIX invalid stats");
     return /** @type {Record<string, unknown>} */ (data);
   }
+  function scheduleCleanup() {
+    if (closed || cleanupDone || cleanupTimer) return;
+    const timer = new AbortController();
+    cleanupTimer = timer;
+    void options.clock.sleep(AWTRIX_CLEANUP_RETRY_MS, timer.signal).then(async (elapsed) => {
+      if (!elapsed || closed || cleanupTimer !== timer) return;
+      cleanupTimer = null;
+      await transport.queue(async () => { if (!closed && !cleanupDone) await cleanup(); });
+    }).catch((error) => {
+      if (closed) return;
+      options.logger.warn(`[UlanziDriver] cleanup retry: ${String(error)}`);
+      scheduleCleanup();
+    });
+  }
+  async function cleanup() {
+    try {
+      const files = await transport.request("/list?dir=/CUSTOMAPPS");
+      if (!Array.isArray(files)) throw new DeviceError("AWTRIX invalid app list");
+      let complete = true;
+      for (const file of files) {
+        if (file?.type !== "file" || typeof file.name !== "string" || !file.name.endsWith(".json") || file.name === `${appName}.json`) continue;
+        try { await transport.request(appPath(file.name.slice(0, -5)), ""); }
+        catch (error) { complete = false; options.logger.warn(`[UlanziDriver] cleanup: ${String(error)}`); }
+      }
+      cleanupDone = complete;
+      if (complete) cleanedDevices.add(cleanupKey);
+    } catch (error) { options.logger.warn(`[UlanziDriver] cleanup: ${String(error)}`); }
+    scheduleCleanup();
+  }
   async function initialize() {
     const data = await stats();
     options.logger.info(`[UlanziDriver] Initialized ${options.address} (battery: ${data.bat ?? "AC"}%)`);
-    if (options.cleanupLegacyApps && !cleanupDone) {
-      try {
-        const files = await transport.request("/list?dir=/CUSTOMAPPS");
-        if (!Array.isArray(files)) throw new DeviceError("AWTRIX invalid app list");
-        let complete = true;
-        for (const file of files) {
-          if (file?.type !== "file" || typeof file.name !== "string" || !file.name.endsWith(".json") || file.name === `${appName}.json`) continue;
-          try { await transport.request(appPath(file.name.slice(0, -5)), ""); }
-          catch (error) { complete = false; options.logger.warn(`[UlanziDriver] cleanup: ${String(error)}`); }
-        }
-        cleanupDone = complete;
-        if (complete) cleanedDevices.add(cleanupKey);
-      } catch (error) { options.logger.warn(`[UlanziDriver] cleanup: ${String(error)}`); }
+    transport.ready = true;
+    if (options.cleanupLegacyApps && !cleanupDone && !cleanupStarted) {
+      cleanupStarted = true;
+      await cleanup();
     }
-    // An incomplete sweep is retried by the next lazy init; frames can still be sent.
-    transport.ready = !options.cleanupLegacyApps || cleanupDone;
   }
   /** @param {import('../types.js').Frame} frame */
   async function send(frame) {
@@ -112,7 +135,7 @@ export function createAwtrixDriver(options) {
     notify: (notification) => transport.queue(async () => { await transport.request("/api/notify", notification); }),
     switchApp: (name) => transport.queue(async () => { await transport.request("/api/switch", { name }); }),
     selectChannel: null,
-    close: () => transport.close(),
+    close: async () => { closed = true; cleanupTimer?.abort(); cleanupTimer = null; await transport.close(); },
   };
 }
 

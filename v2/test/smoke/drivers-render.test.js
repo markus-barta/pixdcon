@@ -4,7 +4,7 @@ import test from "node:test";
 import { createServer } from "node:http";
 import { DeviceError, SceneError } from "../../src/core/errors.js";
 import { createPixooDriver } from "../../src/drivers/pixoo-driver.js";
-import { createAwtrixDriver, screenToFrame } from "../../src/drivers/awtrix-driver.js";
+import { AWTRIX_CLEANUP_RETRY_MS, createAwtrixDriver, screenToFrame } from "../../src/drivers/awtrix-driver.js";
 import { systemClock, manualClock } from "../../src/core/clock.js";
 import { HealthModel } from "../../src/health/health-model.js";
 import { TelemetryCollector } from "../../src/health/telemetry.js";
@@ -399,16 +399,65 @@ test("fake AWTRIX cleanup retries only failed entries, completes the sweep, and 
   const r = await rig(t, { start: false });
   r.awtrix.seedApps({ old: {}, other: {}, pixdcon_u: {} });
   r.awtrix.failNext(1, "POST /api/custom?name=old");
-  const options = { name: "u", address: r.awtrix.address, clock: systemClock(), logger, cleanupLegacyApps: true };
+  const options = { name: "u", address: r.awtrix.address, clock: r.clock, logger, cleanupLegacyApps: true };
   const driver = createAwtrixDriver(options); t.after(() => driver.close());
   await driver.init();
   assert.deepEqual(Object.keys(r.awtrix.state().apps).sort(), ["old", "pixdcon_u"]);
-  assert.equal(driver.ready, false, "an incomplete cleanup is retried by lazy init");
+  assert.equal(driver.ready, true, "cleanup does not control readiness");
   await driver.show({ kind: "app", app: { text: "new" } });
+  assert.deepEqual(Object.keys(r.awtrix.state().apps).sort(), ["old", "pixdcon_u"]);
+  await r.clock.advance(AWTRIX_CLEANUP_RETRY_MS - 1);
+  assert.ok(r.awtrix.state().apps.old);
+  await r.clock.advance(1); await until(() => !r.awtrix.state().apps.old);
   assert.equal(driver.ready, true); assert.deepEqual(Object.keys(r.awtrix.state().apps), ["pixdcon_u"]);
   const count = r.awtrix.state().requests.length;
   const replacement = createAwtrixDriver(options); t.after(() => replacement.close()); await replacement.init();
   assert.deepEqual(r.awtrix.state().requests.slice(count), ["GET /api/stats"]);
+});
+
+test("unfinished AWTRIX cleanup leaves one custom request per frame and never rewrites brightness", async (t) => {
+  for (const route of ["GET /list", "POST /api/custom?name=old"]) {
+    const r = await rig(t, { start: false, render: async (/** @type {string} */ _, /** @type {string} */ name, /** @type {any} */ surface) => {
+      if (name === "u") await surface.brightness(44);
+      await surface.paint(3); return null;
+    } });
+    r.devices[1].cleanupLegacyApps = true;
+    r.awtrix.seedApps({ old: {}, pixdcon_u: {} }); r.awtrix.failNext(100, route);
+    await r.scheduler.start(); await until(() => r.scheduler.loop("u")?.status().frameCount === 1);
+    const baseline = r.awtrix.state().requests.length;
+    for (let i = 2; i <= 6; i++) {
+      await r.clock.advance(500);
+      await until(() => r.scheduler.loop("u")?.status().frameCount === i);
+    }
+    assert.equal(r.scheduler.loop("u")?.driver.ready, true);
+    const later = r.awtrix.state().requests.slice(baseline);
+    assert.equal(later.filter((request) => request === "POST /api/custom").length, 5);
+    assert.equal(later.filter((request) => request === "POST /api/switch").length, 5);
+    assert.ok(later.every((request) => ["POST /api/custom", "POST /api/switch", "GET /api/screen"].includes(request)));
+    assert.equal(r.awtrix.state().requests.filter((request) => request === "POST /api/settings").length, 1);
+    assert.equal(r.awtrix.state().requests.filter((request) => request === "GET /list").length, 1);
+    assert.ok(r.awtrix.state().apps.old);
+  }
+});
+
+test("AWTRIX cleanup has one slow retry timer, survives a failed list, and cancels on close", async (t) => {
+  const r = await rig(t, { start: false });
+  r.awtrix.seedApps({ old: {}, pixdcon_u: {} }); r.awtrix.failNext(2, "GET /list");
+  const driver = createAwtrixDriver({ name: "u", address: r.awtrix.address, clock: r.clock, logger, cleanupLegacyApps: true });
+  t.after(() => driver.close()); await driver.init();
+  await driver.init(); // explicit re-init must not restart an unfinished sweep early
+  assert.equal(driver.ready, true);
+  assert.equal(r.awtrix.state().requests.filter((request) => request === "GET /list").length, 1);
+  await r.clock.advance(AWTRIX_CLEANUP_RETRY_MS);
+  await until(() => r.awtrix.state().requests.filter((request) => request === "GET /list").length === 2);
+  await driver.probe(); // the retry has left the serialized queue and armed its next timer
+  assert.equal(driver.ready, true);
+  await r.clock.advance(AWTRIX_CLEANUP_RETRY_MS - 1);
+  assert.equal(r.awtrix.state().requests.filter((request) => request === "GET /list").length, 2);
+  await driver.close(); const count = r.awtrix.state().requests.length;
+  await r.clock.advance(2 * AWTRIX_CLEANUP_RETRY_MS);
+  assert.equal(r.awtrix.state().requests.length, count);
+  assert.ok(r.awtrix.state().apps.old);
 });
 
 test("fake drivers keep compound frame writes serialized, preserve reset and switch best effort behavior, and clear readiness on failures", async (t) => {

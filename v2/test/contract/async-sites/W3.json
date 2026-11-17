@@ -2,6 +2,14 @@
   "owner": "W3",
   "rows": [
     {
+      "site": "src/drivers/awtrix-driver.js:64",
+      "id": "timer:options.clock.sleep#1",
+      "input": "unfinished legacy app cleanup retry, every five minutes",
+      "metadata": "driver lifetime, cleanup completion, one abortable retry identity",
+      "fence": "closed and timer identity checked before queueing; closed/completed checked again in serialized transport queue; cleanup never changes readiness or brightness; close aborts timer",
+      "test": "test/smoke/drivers-render.test.js: AWTRIX cleanup has one slow retry timer"
+    },
+    {
       "site": "src/drivers/http-transport.js:40",
       "id": "listener:cancellation.addEventListener(\"abort\")#1",
       "input": "request lifetime or poll AbortSignal",
