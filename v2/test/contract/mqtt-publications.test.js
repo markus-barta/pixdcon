@@ -836,3 +836,19 @@ test("status publisher: effective config fields named since or timestamp are rea
     [f.topics.configEffective],
   );
 });
+
+test("held display: availability is retired like a disabled display and published again when the address hold ends", async (t) => {
+  const f = await publications(t);
+  const device = f.devices.find((device) => device.name === "P");
+  assert.ok(device);
+  Object.assign(device, { enabled: false, held: true });
+  f.runtime.emit("changed", {});
+  await f.publisher.pending;
+  assert.equal(f.broker.retained()[f.topics.availability("P")], "offline");
+  assert.equal(owesOffline(f.publisher.ledger, "P"), false);
+  assert.equal(f.broker.retained()[f.topics.availability("U")], "online");
+  Object.assign(device, { enabled: true, held: false });
+  f.runtime.emit("changed", {});
+  await f.publisher.pending;
+  assert.equal(f.broker.retained()[f.topics.availability("P")], "online");
+});

@@ -2,7 +2,7 @@
   "owner": "W4",
   "rows": [
     {
-      "site": "src/api/http-server.js:154",
+      "site": "src/api/http-server.js:159",
       "id": "then:this.#handle().catch#1",
       "input": "a request handler that failed after its answer had started",
       "metadata": "none",
@@ -11,7 +11,7 @@
       "why": "the failure of the request that is being answered: it is logged and the half-sent response is closed; no state of pixdcon changes"
     },
     {
-      "site": "src/api/http-server.js:162",
+      "site": "src/api/http-server.js:167",
       "id": "listener:server.on(\"connection\")#1",
       "input": "a TCP connection opened",
       "metadata": "none",
@@ -20,7 +20,7 @@
       "why": "bookkeeping of open sockets, so that stop() can end them; no state of pixdcon changes"
     },
     {
-      "site": "src/api/http-server.js:164",
+      "site": "src/api/http-server.js:169",
       "id": "listener:socket.on(\"close\")#1",
       "input": "a TCP connection closed",
       "metadata": "none",
@@ -29,7 +29,7 @@
       "why": "bookkeeping of open sockets, so that stop() can end them; no state of pixdcon changes"
     },
     {
-      "site": "src/api/http-server.js:189",
+      "site": "src/api/http-server.js:194",
       "id": "listener:server.once(\"error\")#1",
       "input": "a failed bind",
       "metadata": "current start attempt",
@@ -37,7 +37,7 @@
       "test": "test/contract/http-api.test.js: HTTP bind retry:"
     },
     {
-      "site": "src/api/http-server.js:190",
+      "site": "src/api/http-server.js:195",
       "id": "listener:server.once(\"listening\")#1",
       "input": "bind completion, bind failure or cancellation",
       "metadata": "the start attempt and its abort signal",
@@ -45,7 +45,7 @@
       "test": "test/contract/http-api.test.js: HTTP bind retry:"
     },
     {
-      "site": "src/api/http-server.js:191",
+      "site": "src/api/http-server.js:196",
       "id": "listener:binding.signal.addEventListener(\"abort\")#1",
       "input": "bind completion, bind failure or cancellation",
       "metadata": "the start attempt and its abort signal",
@@ -53,7 +53,7 @@
       "test": "test/contract/http-api.test.js: HTTP bind retry:"
     },
     {
-      "site": "src/api/http-server.js:201",
+      "site": "src/api/http-server.js:206",
       "id": "timer:clock.sleep#1",
       "input": "bind completion, bind failure or cancellation",
       "metadata": "the start attempt and its abort signal",
@@ -61,7 +61,7 @@
       "test": "test/contract/http-api.test.js: HTTP bind retry:"
     },
     {
-      "site": "src/api/http-server.js:415",
+      "site": "src/api/http-server.js:417",
       "id": "iterate:for await#1",
       "input": "the body of a write request, chunk by chunk",
       "metadata": "none of its own: the chunks belong to the request that is being read",
@@ -241,7 +241,7 @@
       "was": "${method} ${path}"
     },
     {
-      "site": "src/api/routes-v2.js:537",
+      "site": "src/api/routes-v2.js:535",
       "id": "work:deps.config.reload#1",
       "input": "HTTP request",
       "metadata": "device identity, session and draft; position header",
@@ -250,7 +250,7 @@
       "was": "${method} ${path}"
     },
     {
-      "site": "src/api/routes-v2.js:565",
+      "site": "src/api/routes-v2.js:563",
       "id": "route:server.route#1",
       "input": "HTTP requests: questions and commands of pages and of outside callers",
       "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",

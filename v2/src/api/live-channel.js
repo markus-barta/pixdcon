@@ -21,7 +21,7 @@
  *    start again with the process, so a number from an earlier run means
  *    nothing here (B-177). A bare number without an epoch is such a cursor.
  *  - Events are delivered in seq order. A view inside an event carries its
- *    `epoch` and its own `rev`; the page drops what is not of its snapshot's
+ *    `epoch`, device `incarnation` and its own `rev`; the page drops what is not of its snapshot's
  *    epoch or not newer than what it shows (build rule 3).
  *  - "preview" events are sent at most once per second and device, and not at
  *    all when the frame did not change, except to refresh `receivedAt`.

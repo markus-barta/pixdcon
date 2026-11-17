@@ -13,7 +13,7 @@
  *    unknown_device, unknown_scene, unknown_overlay, invalid_mode,
  *    invalid_brightness, invalid_field, invalid_config, config_invalid (file on
  *    disk), overlay_only_device, not_overlay_only, mqtt_offline,
- *    shadow_output, not_implemented.
+ *    shadow_output, blob_not_writer, not_implemented.
  *  - Reads are cheap and side-effect free. The page normally needs only
  *    GET /api/v2/bootstrap and the live channel.
  *
@@ -226,7 +226,7 @@ export const V2_ROUTES = Object.freeze([
     path: "/api/v2/overlays/:id",
     summary: "Clear one overlay (retained empty payload)",
     ok: "{confirmed: boolean, pending: boolean, overlays: OverlayRecord[]}",
-    errors: "404 unknown_overlay, 503 mqtt_offline, 409 shadow_output",
+    errors: "404 unknown_overlay, 503 mqtt_offline, 409 shadow_output, 409 blob_not_writer (the config overlay, while this instance is not its writer)",
     rows: "A-148, A-139",
   },
 
@@ -282,7 +282,7 @@ export const V2_ROUTES = Object.freeze([
     path: "/api/v2/status",
     summary:
       "Controller, MQTT, config, supervision and v1 ownership status for the Health page",
-    ok: "{controller: ControllerStatus, mqtt: MqttStatus, config: ConfigFileState, scheduler: {devices, loopsAlive, restarts, lastWatchdogAt, watchdogIntervalMs}, v1: {transition, known, receivedAt, devices}}",
+    ok: "{controller: ControllerStatus, mqtt: MqttStatus, config: ConfigFileState, scheduler: {devices, loopsAlive, restarts, lastWatchdogAt, watchdogIntervalMs}, v1: {transition, known, receivedAt, connection, devices}}",
     rows: "A-131",
   },
   {
@@ -303,13 +303,13 @@ export const V2_ROUTES = Object.freeze([
 export function registerV2Routes(server, deps) {
   /** @type {Record<string, import("./http-server.js").RouteHandler>} */
   const built = {
-    "GET /api/v2/bootstrap": () => ({
+    "GET /api/v2/bootstrap": () => server.answer({
       ...deps.live.deps.snapshot(),
       epoch: deps.epoch,
       seq: deps.live.seq(),
     }),
-    "GET /api/v2/devices": () => deps.state.views(),
-    "GET /api/v2/devices/:name": (ctx) => deps.state.view(ctx.params.name),
+    "GET /api/v2/devices": () => server.answer(deps.state.views()),
+    "GET /api/v2/devices/:name": (ctx) => server.answer(deps.state.view(ctx.params.name)),
     "GET /api/v2/events": (ctx) => deps.live.handle(ctx),
     "POST /api/v2/devices": async (ctx) => {
       const body = await ctx.body();
@@ -437,7 +437,7 @@ export function registerV2Routes(server, deps) {
       return HANDLED;
     },
     "GET /api/v2/devices/:name/settings/:scene": (ctx) =>
-      deps.settings.state(ctx.params.name, ctx.params.scene),
+      server.answer(deps.settings.state(ctx.params.name, ctx.params.scene)),
     "PUT /api/v2/devices/:name/settings/:scene": (ctx) =>
       deviceCommand(deps, ctx.params.name, async () => {
         const body = await ctx.body();
@@ -486,11 +486,11 @@ export function registerV2Routes(server, deps) {
         device: ctx.params.name,
         scene: ctx.params.scene,
       });
-      return deps.settings.state(ctx.params.name, ctx.params.scene);
+      return server.answer(deps.settings.state(ctx.params.name, ctx.params.scene));
     },
     "POST /api/v2/preview-sessions/:session/end": async (ctx) => {
       keys(await ctx.body(), []);
-      return { ended: deps.settings.endPreview(ctx.params.session).length };
+      return server.answer({ ended: deps.settings.endPreview(ctx.params.session).length });
     },
     "DELETE /api/v2/devices/:name/settings/:scene/overlays": async (ctx) => {
       requireDrive(deps, ctx.params.name);
@@ -499,29 +499,27 @@ export function registerV2Routes(server, deps) {
         ctx.params.name,
         ctx.params.scene,
       );
-      return {
+      return server.answer({
         state: deps.settings.state(ctx.params.name, ctx.params.scene),
         ...result,
-      };
+      });
     },
-    "GET /api/v2/overlays": () => deps.overlays.list(),
+    "GET /api/v2/overlays": () => server.answer(deps.overlays.list()),
     "DELETE /api/v2/overlays/:id": async (ctx) => {
       const result = await deps.overlays.clear(ctx.params.id);
-      return {
+      return server.answer({
         confirmed: result.confirmed,
         pending: result.pending,
         overlays: deps.overlays.list(),
-      };
+      });
     },
-    "GET /api/v2/scenes": () => ({
+    "GET /api/v2/scenes": () => server.answer({
       scenes: deps.scenes.list(),
       builtins: deps.builtinModes,
     }),
-    "POST /api/v2/scenes/:key/copy": async (ctx) => ({
-      status: 201,
-      body: await copyScene(deps, ctx.params.key, await ctx.body()),
-    }),
-    "GET /api/v2/config/raw": () => deps.config.readRaw(),
+    "POST /api/v2/scenes/:key/copy": async (ctx) =>
+      server.answer(await copyScene(deps, ctx.params.key, await ctx.body()), 201),
+    "GET /api/v2/config/raw": async () => server.answer(await deps.config.readRaw()),
     "PUT /api/v2/config/raw": async (ctx) => {
       const body = await ctx.body();
       keys(body, ["text"]);
@@ -530,13 +528,13 @@ export function registerV2Routes(server, deps) {
       const result = await deps.config.replaceRaw(
         /** @type {string} */ (body.text),
       );
-      return { state: deps.config.file(), diff: result.diff };
+      return server.answer({ state: deps.config.file(), diff: result.diff });
     },
     "POST /api/v2/config/reload": async (ctx) => {
       keys(await ctx.body(), []);
-      return deps.config.reload();
+      return server.answer(await deps.config.reload());
     },
-    "GET /api/v2/status": () => ({
+    "GET /api/v2/status": () => server.answer({
       controller: deps.controller(),
       mqtt: deps.mqtt?.status() ?? {
         state: "disabled",
@@ -551,14 +549,14 @@ export function registerV2Routes(server, deps) {
       v1: deps.ownership.status(),
     }),
     "GET /api/v2/log": (ctx) =>
-      deps.logger
+      server.answer(deps.logger
         .ring()
         .filter(
           (line) =>
             ctx.query.get("level") !== "warn" ||
             ["WARN", "ERROR"].includes(line.level),
         )
-        .slice(-200),
+        .slice(-200)),
   };
   for (const { method, path, ...meta } of V2_ROUTES) {
     const handler = built[`${method} ${path}`];

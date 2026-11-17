@@ -633,9 +633,13 @@ test("live channel: an event carries the device rev; an older answer never overw
   const entered = deferred(),
     release = deferred();
   const oldView = structuredClone(api.device);
-  api.deps.state.view = () => {
+  const route = api.server.table.find((route) => route.path === "/api/v2/devices/:name");
+  assert.ok(route);
+  const handler = route.handler;
+  route.handler = (ctx) => {
+    const body = handler(ctx);
     entered.resolve();
-    return release.promise.then(() => oldView);
+    return release.promise.then(() => body);
   };
   const answer = api.api("/api/v2/devices/pixoo-189");
   await entered.promise;
@@ -929,7 +933,7 @@ test.todo(
 );
 
 // --- Ordering (knowledge entry, section 3.0) ---
-test("position: the X-Pixdcon-Position of a write's answer is not lower than the seq of the live events the write caused", async (t) => {
+test("position: the X-Pixdcon-Position of a write's answer is not lower than the seq of the live events the write caused, and never later than the last event published before its body was built", async (t) => {
   const api = await recordedApi(t);
   api.deps.state.retry = async () => {
     api.deps.state.emit("device", { ...api.device, rev: 8 });
@@ -1029,6 +1033,7 @@ async function recordedApi(t, options = {}) {
   const device = {
     name: "pixoo-189",
     epoch,
+    incarnation: 1,
     rev: 7,
     origin: "config",
     type: "pixoo",
@@ -1684,4 +1689,102 @@ test("v1 device save: scene and editable fields commit in one atomic store write
     1,
     "validation failure changes no part of the saved device",
   );
+});
+
+test("blob not writer: DELETE /api/v2/overlays/blob preserves 409 and controller writer reasons without publishing", async (t) => {
+  const api = await recordedApi(t);
+  let published = 0;
+  api.deps.mqtt = { publish() { published++; }, status: () => ({ state: "connected" }) };
+  for (const reason of ["v1_writes", "force_shadow"]) {
+    const writer = { writer: false, reason };
+    api.deps.controller = () => ({ blobWriter: writer });
+    api.deps.ownership.status = () => ({ transition: true, known: true, connection: 3, devices: [] });
+    // The overlay service owns the policy; the route must preserve its error.
+    api.deps.overlays.clear = async () => { throw new HttpError(409, "blob_not_writer", "This instance does not write the config overlay"); };
+    const result = await api.api("/api/v2/overlays/blob", "DELETE");
+    assert.equal(result.status, 409);
+    assert.equal(result.body.code, "blob_not_writer");
+    const status = (await api.api("/api/v2/status")).body;
+    assert.deepEqual(status.controller.blobWriter, writer);
+    assert.equal(status.v1.connection, 3);
+  }
+  assert.equal(published, 0);
+});
+
+test("incarnation: recorded DeviceView and SettingsState lives pass through snapshots, removal, events and answers unchanged", async (t) => {
+  const api = await recordedApi(t);
+  Object.assign(api.device, { incarnation: 4, rev: 20 });
+  const settings = () => ({ epoch: api.device.epoch, incarnation: api.device.incarnation, rev: api.device.rev, device: api.device.name, scene: "clock", values: {} });
+  api.deps.settings.state = settings;
+  const snapshot = api.live.deps.snapshot;
+  api.live.deps.snapshot = () => ({ ...snapshot(), incarnations: api.device.incarnation });
+  const events = await stream(t, `${api.base}/api/v2/events`);
+  const first = await events.next();
+  assert.equal(first.data.incarnations, 4);
+  assert.equal(first.data.devices[0].incarnation, 4);
+  for (const incarnation of [4, 5]) {
+    if (incarnation === 5) {
+      api.deps.state.emit("device-removed", { name: api.device.name, incarnation: 4 });
+      const removed = await events.next();
+      assert.deepEqual(removed.data, { name: api.device.name, incarnation: 4 });
+      // W1 supplies lifecycle numbers; this transport must not reinterpret them.
+      Object.assign(api.device, { incarnation, rev: 1 });
+      api.deps.state.emit("device-added", structuredClone(api.device));
+      const added = await events.next();
+      assert.equal(added.data.incarnation, 5);
+      assert.equal(added.data.rev, 1);
+    }
+    assert.equal((await api.api(`/api/v2/devices/${api.device.name}`)).body.incarnation, incarnation);
+    const answer = (await api.api(`/api/v2/devices/${api.device.name}/settings/clock`)).body;
+    assert.equal(answer.incarnation, incarnation);
+    api.deps.settings.emit("settings", settings());
+    assert.deepEqual((await events.next()).data, answer);
+    const boot = (await api.api("/api/v2/bootstrap")).body;
+    assert.equal(boot.incarnations, incarnation);
+    assert.equal(boot.devices[0].incarnation, incarnation);
+  }
+});
+
+test("overlay records after a reconnect: confirmed, inEffect and restricts pass through list, snapshot and events for every kind", async (t) => {
+  const api = await recordedApi(t);
+  const records = ["blob", "device-scene", "scene-path", "device-ip", "device-enabled", "setting", "mode", "brightness"].map((kind) => ({ id: kind, kind, confirmed: false, inEffect: false, restricts: kind === "device-ip" ? "held" : kind === "device-enabled" ? "off" : null }));
+  api.deps.overlays.list = () => structuredClone(records);
+  const snapshot = api.live.deps.snapshot;
+  api.live.deps.snapshot = () => ({ ...snapshot(), overlays: api.deps.overlays.list() });
+  const events = await stream(t, `${api.base}/api/v2/events`);
+  assert.deepEqual((await events.next()).data.overlays, records);
+  assert.deepEqual((await api.api("/api/v2/overlays")).body, records);
+  records[0].confirmed = records[0].inEffect = true;
+  api.deps.overlays.emit("changed", { keys: ["blob"] });
+  assert.deepEqual((await events.next()).data, records);
+  assert.equal((await api.api("/api/v2/bootstrap")).body.overlays[1].confirmed, false);
+});
+
+test("position: a delayed handler's explicit body position wins over newer events, including position zero", async (t) => {
+  const api = await recordedApi(t);
+  const gate = deferred(), built = deferred();
+  api.server.route("GET", "/api/_position", async () => {
+    const answer = api.server.answer({ value: "old" });
+    built.resolve();
+    await gate.promise;
+    return answer;
+  });
+  const pending = api.api("/api/_position");
+  await built.promise;
+  api.live.publish("scenes", []);
+  gate.resolve();
+  assert.equal((await pending).headers.get("x-pixdcon-position"), "abcd1234-0");
+  // Exercise the actual whole-resource route at the microtask boundary too.
+  const route = api.server.table.find((route) => route.path === "/api/v2/overlays");
+  assert.ok(route);
+  const handler = route.handler;
+  route.handler = async (ctx) => {
+    const answer = handler(ctx);
+    api.live.publish("overlays", [{ id: "new" }]);
+    await Promise.resolve();
+    return answer;
+  };
+  assert.equal((await api.api("/api/v2/overlays")).headers.get("x-pixdcon-position"), "abcd1234-1");
+  api.server.route("GET", "/api/_fallback", () => ({ value: "current" }));
+  assert.equal((await api.api("/api/_fallback")).headers.get("x-pixdcon-position"), "abcd1234-2");
 });

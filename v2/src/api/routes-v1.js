@@ -270,7 +270,7 @@ export function registerV1Routes(server, deps) {
       ctx.res.end(content);
       return HANDLED;
     },
-    "GET /api/config": () => deps.state.runningConfigV1(),
+    "GET /api/config": () => server.answer(deps.state.runningConfigV1()),
     "GET /api/config/file": () => {
       if (!deps.config.file().valid)
         throw new HttpError(
@@ -278,13 +278,13 @@ export function registerV1Routes(server, deps) {
           "config_invalid",
           "config.json is invalid on disk",
         );
-      return deps.config.get();
+      return server.answer(deps.config.get());
     },
     "POST /api/config/file": async (ctx) => {
       await deps.config.replaceRaw(JSON.stringify(await ctx.body()));
       return { ok: true };
     },
-    "GET /api/scenes": () => ({
+    "GET /api/scenes": () => server.answer({
       ...Object.fromEntries(
         deps.scenes.list().map((scene) => [
           scene.key,
@@ -301,9 +301,9 @@ export function registerV1Routes(server, deps) {
       ),
       builtins: deps.builtinModes,
     }),
-    "GET /api/scene-settings": () => deps.settings.toV1(),
-    "GET /api/previews": () => deps.previews.toV1(),
-    "GET /api/status": () => statusV1(deps),
+    "GET /api/scene-settings": () => server.answer(deps.settings.toV1()),
+    "GET /api/previews": () => server.answer(deps.previews.toV1()),
+    "GET /api/status": () => server.answer(statusV1(deps)),
     "POST /api/device": async (ctx) => {
       await deps.config.addDevice(newDevice(await ctx.body()));
       return { ok: true };
@@ -338,12 +338,12 @@ export function registerV1Routes(server, deps) {
                   : value;
           }
         });
-        return {
+        return server.answer({
           ok: true,
           device: deps.config
             .get()
             .devices.find((device) => device.name === name),
-        };
+        });
       });
     },
     "POST /api/scene": async (ctx) => {
@@ -415,14 +415,14 @@ export function registerV1Routes(server, deps) {
             "Some settings are invalid",
             { rejected: result.rejected },
           );
-        return {
+        return server.answer({
           ok: true,
           saved: Object.fromEntries(
             Object.entries(result.state.values)
               .filter(([, value]) => "saved" in value)
               .map(([key, value]) => [key, value.saved]),
           ),
-        };
+        });
       });
     },
     "POST /api/scene-settings/overlay": async (ctx) => {
@@ -447,7 +447,7 @@ export function registerV1Routes(server, deps) {
           "Some overlays were not confirmed",
           { failed: result.failed },
         );
-      return { ok: true, overlay: deps.overlays.settingValues(device, scene) };
+      return server.answer({ ok: true, overlay: deps.overlays.settingValues(device, scene) });
     },
     "POST /api/scene-settings/overlay/clear": async (ctx) => {
       const body = await ctx.body();
@@ -463,7 +463,7 @@ export function registerV1Routes(server, deps) {
           "Some overlays were not cleared",
           { failed: result.failed },
         );
-      return { ok: true, overlay: deps.overlays.settingValues(device, scene) };
+      return server.answer({ ok: true, overlay: deps.overlays.settingValues(device, scene) });
     },
     "POST /api/scene/clone": async (ctx) => {
       const body = await ctx.body();

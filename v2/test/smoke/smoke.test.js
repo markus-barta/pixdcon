@@ -631,7 +631,15 @@ test.todo(
 );
 // Blocked W1: gateway reconnect/replay and overlay pending-clear reconciliation are skeletons.
 test.todo(
-  "MQTT gone and back: displays keep rendering, retained state is read again, pending clears are sent",
+  "MQTT gone and back: displays keep rendering and keep their scene, mode, brightness and settings while the broker is away; after the reconnect a display that showed an overlay scene, was paused, or had a setting or brightness overlay goes back to it when the broker has replayed it, and stays on the saved values when the overlay was cleared meanwhile; nothing is published because the connection came back, a stale overlay is cleared when it is replayed",
+);
+// Blocked W1: OverlayService mirror reconnect effects and RuntimeConfig address holds.
+test.todo(
+  "held display: with an IP overlay that the new connection has not delivered, the display's runtime is stopped and no request goes to the overlay's address or to the one in config.json; the replay starts it on the overlay's address, a clear starts it on config.json's",
+);
+// Blocked W1: enabled overlay protective effect across reconnect in OverlayService/RuntimeConfig.
+test.todo(
+  "switched off stays off: a display that an enabled overlay switched off gets no request across a reconnect, also when the overlay was cleared while pixdcon was away, until a message for its topic is delivered",
 );
 
 // --- Ordering (knowledge entry, section 3.0) ---

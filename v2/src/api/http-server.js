@@ -67,7 +67,7 @@ export const HANDLED = Symbol("handled");
 /**
  * @callback RouteHandler
  * @param {RequestContext} ctx
- * @returns {unknown} a value to send as JSON with status 200, {status, body} for another status, or HANDLED
+ * @returns {unknown} JSON, {status, body, position?} stamped where the body is built, or HANDLED
  */
 
 /**
@@ -90,6 +90,11 @@ export const HANDLED = Symbol("handled");
  */
 
 export class HttpServer {
+  /** Capture the live position in the same step that builds the response body.
+   * @param {unknown} body @param {number} [status] */
+  answer(body, status = 200) {
+    return { status, body, position: this.options.position?.() };
+  }
   /**
    * @param {object} options
    * @param {number} options.port 0 picks a free port (tests)
@@ -288,17 +293,14 @@ export class HttpServer {
         body: () => readJsonBody(req),
       });
       if (result === HANDLED) return;
-      // Read after the handler ran: the answer includes every change the
-      // handler made, so it stands at or after the events of those changes.
-      const position = this.options.position?.();
       const shaped =
         result &&
         typeof result === "object" &&
         "status" in result &&
         "body" in result
-          ? /** @type {{status: number, body: unknown}} */ (result)
-          : { status: 200, body: result };
-      sendJson(res, shaped.status, shaped.body ?? {}, position);
+          ? /** @type {{status: number, body: unknown, position?: string}} */ (result)
+          : { status: 200, body: result, position: undefined };
+      sendJson(res, shaped.status, shaped.body ?? {}, shaped.position ?? this.options.position?.());
     } catch (error) {
       if (res.headersSent) throw error;
       const { status, body } = this.#errorBody(
