@@ -745,6 +745,8 @@ export class StateStore extends EventEmitter {
               },
       address: { value: device.address, source: device.addressSource },
       enabled: device.enabled,
+      held: device.held,
+      enabledSource: device.enabledSource,
       output: device.output.mode,
       outputProblem:
         device.output.reason === "v1_owner"

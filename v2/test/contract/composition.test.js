@@ -822,6 +822,69 @@ function effectiveInput() {
   };
 }
 
+test("device view hold seam: one blob can hold an address and switch another display off; views, snapshots and write answers distinguish them", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, { clock });
+  const { mqtt, overlays, runtime, state } = stack.app.modules;
+  assert.ok(mqtt);
+  await stack.broker.inject(
+    stack.app.topics.overlayBlob,
+    JSON.stringify({
+      devices: [
+        { name: "pixoo-t", ip: stack.pixoo.address },
+        { name: "ulanzi-t", enabled: false },
+      ],
+    }),
+    { retain: true },
+  );
+  await until(() => Boolean(overlays.get("blob")));
+  await clock.advance(300);
+  const release = stack.broker.holdRetained();
+  t.after(release);
+  await stack.broker.dropClients();
+  await until(() => mqtt.status().state === "offline");
+  await clock.advance(5000);
+  await until(() => mqtt.status().connection === 2);
+  await mqtt.settle();
+  await clock.advance(300);
+  const bootstrap = await stack.api("/api/v2/bootstrap");
+  for (const [name, held] of /** @type {const} */ ([
+    ["pixoo-t", true],
+    ["ulanzi-t", false],
+  ])) {
+    const effective = runtime.device(name);
+    assert.ok(effective);
+    const expected = {
+      enabled: false,
+      held,
+      enabledSource: effective.enabledSource,
+    };
+    const view = state.view(name);
+    assert.deepEqual(
+      {
+        enabled: view.desired.enabled,
+        held: view.desired.held,
+        enabledSource: view.desired.enabledSource,
+      },
+      expected,
+    );
+    assert.deepEqual(
+      bootstrap.body.devices.find(
+        (/** @type {any} */ device) => device.name === name,
+      ).desired,
+      view.desired,
+    );
+    /** @type {import("../../src/types.js").DeviceView[]} */ const events = [];
+    state.on("device", (event) => {
+      if (event.name === name) events.push(event);
+    });
+    const answer = await state.chooseScene(name, view.desired.scene.scene);
+    assert.equal(answer.view.desired.held, held);
+    assert.equal(answer.view.desired.enabledSource, effective.enabledSource);
+    assert.equal(events.at(-1)?.desired.held, held);
+  }
+});
+
 test("config contract: v1 normalization, safe identities, duplicate rejection, unknown keys and parse positions", () => {
   const input = {
     devices: [

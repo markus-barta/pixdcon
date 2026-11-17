@@ -109,7 +109,7 @@ export function deviceEntry(name, type, address, patch = {}) {
 /** @param {import('../../src/types.js').EffectiveDevice} device @returns {import('../../src/types.js').DesiredState} */
 export function desiredOf(device) {
   const since = new Date(0).toISOString();
-  return { scene: { scene: device.savedScene, source: "config", since, overlayId: null, problem: null }, choice: { scene: device.savedScene, persisted: true, notSavedReason: null, chosenAt: null, overridden: false }, mode: { value: "play", source: "default", since }, brightness: { override: null, source: "none", since }, address: { value: device.address, source: device.addressSource }, enabled: device.enabled, output: device.output.mode, outputProblem: null };
+  return { scene: { scene: device.savedScene, source: "config", since, overlayId: null, problem: null }, choice: { scene: device.savedScene, persisted: true, notSavedReason: null, chosenAt: null, overridden: false }, mode: { value: "play", source: "default", since }, brightness: { override: null, source: "none", since }, address: { value: device.address, source: device.addressSource }, enabled: device.enabled, held: device.held, enabledSource: device.enabledSource, output: device.output.mode, outputProblem: null };
 }
 
 /** @param {import('node:test').TestContext} t @param {any} [options] */

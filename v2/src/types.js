@@ -366,6 +366,8 @@
  * @property {{override: number|null, source: "none"|"mqtt"|"ui", since: IsoTime}} brightness override in percent 1 to 100, null = the scene decides
  * @property {{value: string, source: "config"|"blob"|"overlay"}} address effective host[:port] (D-188); same as `EffectiveDevice.address`
  * @property {boolean} enabled
+ * @property {boolean} held `EffectiveDevice.held`: the device's address rests on an overlay that the current connection has not delivered; it is listed and not started ("On hold")
+ * @property {EffectiveDevice["enabledSource"]} enabledSource source of the effective enable/hold decision
  * @property {OutputMode} output `EffectiveDevice.output.mode`: after the force-shadow switch, the config and the transition interlock
  * @property {string|null} outputProblem why a device that config.json wants driven is in shadow: "still driven by pixdcon v1", "waiting for pixdcon v1's device list", "this instance never drives a display"
  */
