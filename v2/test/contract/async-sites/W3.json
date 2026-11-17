@@ -90,7 +90,7 @@
       "test": "test/smoke/drivers-render.test.js: previews in order:"
     },
     {
-      "site": "src/render/render-loop.js:152",
+      "site": "src/render/render-loop.js:151",
       "id": "listener:this.deps.mqtt.on(\"connect\")#1",
       "input": "gateway reconnect",
       "metadata": "runtime-owned ON obligation; gateway connections only rise",
@@ -98,7 +98,7 @@
       "test": "test/smoke/drivers-render.test.js: stop retries an owed ON within its deadline"
     },
     {
-      "site": "src/render/render-loop.js:174",
+      "site": "src/render/render-loop.js:173",
       "id": "timer:this.deps.clock.sleep#1",
       "input": "pacing, stop deadline or plug wait",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -106,7 +106,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends"
     },
     {
-      "site": "src/render/render-loop.js:293",
+      "site": "src/render/render-loop.js:294",
       "id": "timer:this.deps.clock.sleep#2",
       "input": "pacing, stop deadline or plug wait",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -114,7 +114,7 @@
       "test": "test/smoke/drivers-render.test.js: backoff 1, 2, 4"
     },
     {
-      "site": "src/render/render-loop.js:330",
+      "site": "src/render/render-loop.js:331",
       "id": "work:mqtt.publish#1",
       "input": "plug publish outcome",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -122,7 +122,7 @@
       "test": "test/smoke/drivers-render.test.js: uncertain OFF outcomes still owe ON"
     },
     {
-      "site": "src/render/render-loop.js:342",
+      "site": "src/render/render-loop.js:344",
       "id": "timer:this.deps.clock.sleep#3",
       "input": "owed ON retry interval",
       "metadata": "ON obligation, running flag, stop deadline, abortable retry sleep",
@@ -130,7 +130,7 @@
       "test": "test/smoke/drivers-render.test.js: failed ON retries on the clock"
     },
     {
-      "site": "src/render/render-loop.js:356",
+      "site": "src/render/render-loop.js:358",
       "id": "work:mqtt.publish#2",
       "input": "plug publish outcome",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -138,7 +138,7 @@
       "test": "test/smoke/drivers-render.test.js: only a certainly unsent OFF error"
     },
     {
-      "site": "src/render/render-loop.js:430",
+      "site": "src/render/render-loop.js:432",
       "id": "work:this.deps.scenes.acquire#1",
       "input": "scene instance acquired asynchronously",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",

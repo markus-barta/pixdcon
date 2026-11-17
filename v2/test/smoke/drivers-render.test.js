@@ -637,6 +637,35 @@ test("only a certainly unsent OFF error owes no ON and consumes no power cycle",
   assert.deepEqual(r.mqtt.messages.map((m) => m.payload), ['{"state":"OFF"}']);
 });
 
+test("offline owed ON retries wait thirty seconds, commands wait, and reconnect wakes immediately", async (t) => {
+  const error = new DeviceError("offline");
+  const r = loopRig(t, { deviceError: error, probeError: error, device: { powerCyclePlugin: { topic: "plug" } } });
+  await flush(); await r.clock.advance(151000);
+  r.mqtt.connected = false;
+  await r.clock.advance(10000);
+  const count = r.mqtt.messages.length;
+  r.loop.apply({ mode: "stop" }); r.loop.retryNow(); await flush();
+  await r.clock.advance(29999);
+  assert.equal(r.mqtt.messages.length, count);
+  assert.equal(r.calls.filter((c) => c.op === "power").length, 0, "Stop waits for ON");
+  await r.clock.advance(1); assert.equal(r.mqtt.messages.length, count + 1);
+  r.mqtt.connected = true;
+  r.mqtt.emit("connect", { connection: ++r.mqtt.connection }); await flush();
+  assert.equal(r.loop.plugOnOwed, false);
+  await r.clock.advance(30000);
+  assert.equal(r.loop.status().phase, "stopped");
+});
+
+test("reconnect during plug OFF preserves the full ten-second off wait", async (t) => {
+  const error = new DeviceError("offline");
+  const r = loopRig(t, { deviceError: error, probeError: error, device: { powerCyclePlugin: { topic: "plug" } } });
+  await flush(); await r.clock.advance(151000 + 500);
+  r.mqtt.emit("connect", { connection: ++r.mqtt.connection }); await flush();
+  assert.deepEqual(r.mqtt.messages.map((m) => m.payload), ['{"state":"OFF"}']);
+  await r.clock.advance(9499); assert.equal(r.mqtt.messages.length, 1);
+  await r.clock.advance(1); assert.equal(r.mqtt.messages[1]?.payload, '{"state":"ON"}');
+});
+
 test("failed ON retries on the clock and cannot enter exhausted or send another OFF while owed", async (t) => {
   const error = new DeviceError("offline");
   const r = loopRig(t, { deviceError: error, probeError: error, device: { maxPowerCycles: 1, powerCyclePlugin: { topic: "plug" } } });
@@ -727,7 +756,7 @@ test("good probes during backoff preserve rejected-frame errors, cycle at ten, a
   assert.equal(r.mqtt.messages.filter((m) => m.payload === '{"state":"OFF"}').length, 1);
 });
 
-test("good probes retry rejected frames without replenishing the exhausted cycle budget", async (t) => {
+test("good probes preserve the cycle budget; play while playing and retryNow are manual retries", async (t) => {
   const error = new DeviceError("offline");
   const r = loopRig(t, { deviceError: error, probeError: error, device: { maxPowerCycles: 1, powerCyclePlugin: { topic: "plug" } } });
   await flush(); await r.clock.advance(151000 + 40000 + 151000);
@@ -739,7 +768,10 @@ test("good probes retry rejected frames without replenishing the exhausted cycle
   await r.clock.advance(600000);
   assert.equal(r.mqtt.messages.filter((m) => m.payload === '{"state":"OFF"}').length, 1);
   assert.equal(r.loop.status().powerCycleCount, 1);
-  r.loop.apply({ mode: "play" }); await flush(); assert.equal(r.loop.status().powerCycleCount, 1);
+  r.loop.apply({ mode: "play" }); await flush();
+  assert.equal(r.loop.status().powerCycleCount, 0, "play while playing is a manual retry");
+  await r.clock.advance(65000 + 40000 + 65000);
+  assert.equal(r.loop.status().phase, "exhausted"); assert.equal(r.loop.status().powerCycleCount, 1);
   r.loop.retryNow(); await flush();
   assert.equal(r.loop.status().powerCycleCount, 0, "manual retry resets cycles even if the frame still fails");
 });

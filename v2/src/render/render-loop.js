@@ -32,7 +32,7 @@
  *  - Power cycles used up: phase "exhausted", probing every 60 s, and
  *    a good probe resets errors and retries rendering without replenishing cycles;
  *    ordinary backoff probes only end the wait and preserve frame errors. Only an
- *    accepted frame or retryNow() starts the cycle budget over (B-035, S-8).
+ *    accepted frame or manual retry (retryNow/play while playing) starts the cycle budget over (B-035, S-8).
  *  - An OFF result other than certain error owes ON until QoS-1 confirmation.
  *    Reconnects wake retries; stop keeps trying within its deadline (D-124).
  *    The log says what was really sent (D-B16).
@@ -128,7 +128,6 @@ export class RenderLoop {
       if (!this.plugOnOwed) return;
       this.plugWake = true;
       this.plugSleeper?.abort();
-      this.sleeper?.abort();
     };
     this.pausedFrame = false;
     this.lastSceneBrightness = /** @type {number|null} */ (null);
@@ -189,8 +188,9 @@ export class RenderLoop {
   }
 
   /**
-   * Change scene, mode or brightness override. Idempotent; wakes every sleep.
-   * Setting mode "play" while playing asks for a re-init (v1).
+   * Change scene, mode or brightness override. Idempotent; wakes ordinary sleeps.
+   * Setting mode "play" while playing is a manual retry and re-init (v1, contract 4.7).
+   * apply()/retryNow() wait for confirmed ON while a plug ON is owed.
    *
    * @param {Partial<LoopTarget>} patch
    */
@@ -201,13 +201,14 @@ export class RenderLoop {
     const sceneChanged = patch.scene !== undefined && patch.scene !== this.target.scene;
     if (sceneChanged) this.effective.showingSince = null;
     if (patch.mode === "play" || sceneChanged) this.reinit = true;
+    if (playAgain) this.retry = true;
     if (sceneChanged || patch.mode !== undefined) this.pausedFrame = false;
     this.target = { ...this.target, ...patch };
     this.version += 1;
     this.sleeper?.abort();
   }
 
-  /** "Retry now": leave any wait, re-initialise the display, start counting again. */
+  /** "Retry now": re-init and start counting again; waits for any owed ON first. */
   retryNow() {
     this.retry = true;
     this.sleeper?.abort();
@@ -333,7 +334,8 @@ export class RenderLoop {
       } catch (error) { this.deps.logger.warn(`[RenderLoop] ${device.name}: plug ON failed: ${String(error)}`); }
       if (!this.plugOnOwed) return true;
       if (this.plugWake) continue; // a new connection arrived during the publish
-      const wait = Math.min(LOOP_DEFAULTS.initialBackoffMs, this.running ? Infinity : (this.stopUntil ?? 0) - this.deps.clock.now());
+      const retryMs = mqtt.status().state === "connected" ? LOOP_DEFAULTS.initialBackoffMs : LOOP_DEFAULTS.maxBackoffMs;
+      const wait = Math.min(retryMs, this.running ? Infinity : (this.stopUntil ?? 0) - this.deps.clock.now());
       if (wait <= 0) break;
       this.report({ phase: "retrying", nextRetryAt: new Date(this.deps.clock.now() + wait).toISOString() });
       const sleeper = new AbortController();
