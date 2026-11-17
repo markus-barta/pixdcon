@@ -89,7 +89,7 @@
       "metadata": "immutable shared file URL",
       "fence": "none",
       "why": "read-only drawing reference; no controller state changes",
-      "test": "test/contract/scenes.test.js: v1 scene surface:"
+      "test": "test/golden/golden.test.js: surface--v1-lines-alpha-and-aligned-text"
     },
     {
       "site": "src/scenes/v1-shared.js:219",
@@ -98,7 +98,7 @@
       "metadata": "immutable shared file URL",
       "fence": "none",
       "why": "read-only drawing reference; no controller state changes",
-      "test": "test/contract/scenes.test.js: v1 scene surface:"
+      "test": "test/golden/golden.test.js: surface--v1-lines-alpha-and-aligned-text"
     },
     {
       "site": "src/scenes/scenes-watcher.js:57",
