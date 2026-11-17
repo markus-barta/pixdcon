@@ -120,7 +120,9 @@ export function startRouter(root) {
     markNav(nav);
     if (route === "enlarged") {
       if (!mounted) mount("device", { name: params.name });
-      enlarged?.close();
+      // An open view steps by itself (Previous, Next, the arrow keys); the
+      // address only follows it.
+      if (enlarged) return;
       const opener = /** @type {HTMLElement} */ (
         document.activeElement instanceof HTMLElement ? document.activeElement : root
       );

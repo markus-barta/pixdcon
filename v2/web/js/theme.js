@@ -45,6 +45,22 @@ export function setTheme(theme) {
   applyTheme();
 }
 
+/** @returns {"pretty"|"semver"} the version display chosen in this browser (Health › Version display, B-058) */
+export function versionDisplay() {
+  try {
+    return localStorage.getItem("pixdcon.versionDisplay") === "semver" ? "semver" : "pretty";
+  } catch {
+    return "pretty";
+  }
+}
+
+/** @param {"pretty"|"semver"} value */
+export function setVersionDisplay(value) {
+  try {
+    localStorage.setItem("pixdcon.versionDisplay", value);
+  } catch {}
+}
+
 /** Put the theme in effect on <html>: the address wins, then the saved choice. */
 export function applyTheme() {
   const theme = currentTheme();

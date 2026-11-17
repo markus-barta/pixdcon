@@ -97,6 +97,8 @@ export function sceneMeta(state, key) {
  */
 export function heldBy(view, overlays) {
   if (!view || view.desired?.enabled !== false) return null;
+  // The one answer, once the state store says it (request w2-to-w1-1).
+  if (view.desired?.held === false) return null;
   const list = overlays ?? [];
   const own = list.find(
     (record) =>
@@ -105,6 +107,8 @@ export function heldBy(view, overlays) {
       record.restricts === "held",
   );
   if (own) return own;
+  if (view.desired?.held === true)
+    return list.find((record) => record.restricts === "held") ?? { kind: "device", value: view.desired?.address?.value ?? "" };
   if (view.desired?.address?.source === "blob") {
     const blob = list.find(
       (record) => record.kind === "blob" && record.restricts === "held",

@@ -80,7 +80,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/components/settings-form.js:616",
+      "site": "web/js/components/settings-form.js:624",
       "id": "listener:host.addEventListener(\"input\")#1",
       "input": "a setting value typed",
       "metadata": "a command of the user (a click, a key, a form); the form's draft number rises with every edit (view/drafts.js)",
@@ -89,7 +89,7 @@
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:617",
+      "site": "web/js/components/settings-form.js:625",
       "id": "listener:host.addEventListener(\"change\")#1",
       "input": "a checkbox, choice or colour changed",
       "metadata": "a command of the user (a click, a key, a form); the form's draft number rises with every edit",
@@ -98,7 +98,7 @@
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:618",
+      "site": "web/js/components/settings-form.js:626",
       "id": "listener:host.addEventListener(\"click\")#1",
       "input": "Save, Revert, Clear N overlays, Reset to default, Retry",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -169,7 +169,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/main.js:90",
+      "site": "web/js/main.js:91",
       "id": "listener:versionButton.addEventListener(\"click\")#1",
       "input": "a click on the version in the top bar",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -178,7 +178,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/main.js:116",
+      "site": "web/js/main.js:117",
       "id": "timer:setInterval#1",
       "input": "the 1 s clock of the page",
       "metadata": "none: a hint (rule 3.0)",
@@ -186,7 +186,7 @@
       "test": "test/contract/client.test.js: client timers:"
     },
     {
-      "site": "web/js/main.js:124",
+      "site": "web/js/main.js:125",
       "id": "subscribe:subscribe#2",
       "input": "the devices the store holds, to ask once per device life for its last frame",
       "metadata": "epoch, device name and incarnation",
@@ -194,7 +194,7 @@
       "test": "test/contract/client.test.js: client previews:"
     },
     {
-      "site": "web/js/main.js:156",
+      "site": "web/js/main.js:157",
       "id": "listener:window.addEventListener(\"pagehide\")#1",
       "input": "the page is left",
       "metadata": "the page's session id",
@@ -360,7 +360,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/pages/health.js:227",
+      "site": "web/js/pages/health.js:218",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "the log filter, Copy, the version display",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -369,7 +369,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/health.js:228",
+      "site": "web/js/pages/health.js:219",
       "id": "listener:root.addEventListener(\"scroll\")#1",
       "input": "the log pane scrolled",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -378,7 +378,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/health.js:229",
+      "site": "web/js/pages/health.js:220",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Health page",
       "metadata": "none: the store calls it after a change it applied",
@@ -402,7 +402,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/router.js:147",
+      "site": "web/js/router.js:149",
       "id": "listener:window.addEventListener(\"hashchange\")#1",
       "input": "a route change (the address)",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -411,7 +411,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/store.js:673",
+      "site": "web/js/store.js:679",
       "id": "subscribe:main.subscribe#1",
       "input": "a page's subscription, passed on to the default store",
       "metadata": "none: the store calls it after a change it applied",

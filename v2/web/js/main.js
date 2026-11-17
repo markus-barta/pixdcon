@@ -38,7 +38,7 @@ import {
   tick,
   toPreview,
 } from "./store.js";
-import { applyTheme } from "./theme.js";
+import { applyTheme, versionDisplay } from "./theme.js";
 import { prettyVersion } from "./format.js";
 import { header } from "./view/model.js";
 import { setSession } from "./session.js";
@@ -67,7 +67,8 @@ subscribe(
     const version = prettyVersion(state.controller?.version);
     if (version) {
       versionButton.hidden = false;
-      versionButton.textContent = version.pretty;
+      versionButton.textContent =
+        versionDisplay() === "semver" ? version.canonical : version.pretty;
       versionButton.title = `${version.canonical} · ${version.utc} · click to copy`;
       versionButton.setAttribute("aria-label", `Version ${version.canonical}, click to copy`);
       versionButton.dataset.canonical = version.canonical;

@@ -21,7 +21,8 @@
 import { ApiError, request } from "../api.js";
 import { dot, icon, setHtml, setStatusLine } from "../dom.js";
 import { clock, duration, esc, prettyVersion } from "../format.js";
-import { applyAnswer, getState, subscribe } from "../store.js";
+import { applyAnswer, getState, subscribe, tick } from "../store.js";
+import { setVersionDisplay, versionDisplay } from "../theme.js";
 import {
   HEALTH_RULE,
   blobWriterLine,
@@ -39,15 +40,6 @@ let filter = "all";
 /** The log pane follows the newest line unless the user scrolled up. */
 let follow = true;
 let copied = "";
-
-/** @returns {"pretty"|"semver"} the version display chosen in this browser (B-058) */
-export function versionDisplay() {
-  try {
-    return localStorage.getItem("pixdcon.versionDisplay") === "semver" ? "semver" : "pretty";
-  } catch {
-    return "pretty";
-  }
-}
 
 /**
  * @param {any} line LogLine
@@ -151,9 +143,8 @@ function onClick(event) {
       follow = true;
       break;
     case "version-display":
-      try {
-        localStorage.setItem("pixdcon.versionDisplay", String(button.dataset.value));
-      } catch {}
+      setVersionDisplay(button.dataset.value === "semver" ? "semver" : "pretty");
+      tick(Date.now()); // the top bar follows at once
       break;
     case "copy-version": {
       const title = button.getAttribute("title") ?? "";

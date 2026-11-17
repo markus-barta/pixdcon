@@ -524,10 +524,18 @@ export function createSettingsForm(host, options) {
     else setHtml(revertSlot, "");
     const blocked = Boolean(context.configInvalid);
     saveButton.disabled =
-      phase !== "ready" || changes === 0 || Boolean(jsonError) || blocked || frozen || busy !== null;
+      phase !== "ready" ||
+      changes === 0 ||
+      Boolean(jsonError) ||
+      blocked ||
+      Boolean(context.overlayOnly) ||
+      frozen ||
+      busy !== null;
     saveButton.title = blocked
       ? "config.json is not valid JSON"
-      : "Writes config.json and clears the MQTT overlay of each saved setting";
+      : context.overlayOnly
+        ? "This device is not in config.json: add it to config.json to save its settings"
+        : "Writes config.json and clears the MQTT overlay of each saved setting";
     setHtml(saveButton, busy === "save" ? `${icon("spinner")}Saving…` : `${icon("save")}Save`);
 
     /** @type {{text: string, cls: string}} */

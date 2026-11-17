@@ -176,7 +176,7 @@ async function copyScene(copyForm) {
   const slot = /** @type {HTMLElement} */ (copyForm.querySelector(".slot"));
   try {
     const answer = await request("POST", `/api/v2/scenes/${encodeURIComponent(key)}/copy`, {
-      resource: "scenes",
+      resource: `scene-copy:${key}`,
       key: `copy:${key}`,
       body: {
         targetKey: String(data.get("targetKey") ?? "") || undefined,

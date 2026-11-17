@@ -194,7 +194,10 @@ export function connectLive(handlers, options) {
       return;
     }
     cursor = `${position.epoch}-${position.seq}`;
-    setState({ state: "live", lastEventAt: Date.now(), lostSince: null });
+    // The time of the last event is kept without a report: the page needs
+    // it only when the stream is lost ("No answer from pixdcon since …").
+    current = { ...current, lastEventAt: Date.now() };
+    setState({ state: "live", lostSince: null });
     armSilence();
     handlers.onEvent({
       type,

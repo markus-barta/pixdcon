@@ -301,9 +301,15 @@ export function createStore() {
           pixoo: value?.pixoo ?? [],
         };
         break;
-      case "log":
-        next.log = Array.isArray(value) ? value.slice(-LOG_LINES) : [];
+      case "log": {
+        // The answer is the log up to its position; lines that came with
+        // the stream after it stay (LogLine.seq orders them).
+        const lines = Array.isArray(value) ? value : [];
+        const last = lines.reduce((top, line) => Math.max(top, Number(line?.seq ?? 0)), 0);
+        const newer = next.log.filter((line) => Number(line?.seq ?? 0) > last);
+        next.log = [...lines, ...newer].slice(-LOG_LINES);
         break;
+      }
     }
   }
 
