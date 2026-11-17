@@ -72,11 +72,21 @@ import { installSharedResolution } from "./v1-shared.js";
  * @property {import("../types.js").Logger} logger
  */
 
+/**
+ * @typedef {object} RuntimeEntry
+ * @property {string} scene
+ * @property {string} device
+ * @property {import("../types.js").OutputMode} output captured before init; state paths depend on it
+ * @property {number} generation
+ * @property {SceneInstance|null} current
+ * @property {Promise<SceneInstance>|null} pending
+ */
+
 export class SceneRuntime {
   /** @param {SceneRuntimeDeps} deps */
   constructor(deps) {
     this.deps = deps;
-    /** @type {Map<string, {scene: string, device: string, generation: number, current: SceneInstance|null, pending: Promise<SceneInstance>|null}>} */
+    /** @type {Map<string, RuntimeEntry>} */
     this.entries = new Map();
     /** @type {Set<SceneInstance>} */
     this.instances = new Set();
@@ -109,10 +119,25 @@ export class SceneRuntime {
         phase: "import",
       });
     const key = JSON.stringify([scene, device]);
+    const output = this.deps.outputOf(device);
     let entry = this.entries.get(key);
     if (!entry) {
-      entry = { scene, device, generation: 0, current: null, pending: null };
+      entry = {
+        scene,
+        device,
+        output,
+        generation: 0,
+        current: null,
+        pending: null,
+      };
       this.entries.set(key, entry);
+    } else if (entry.output !== output) {
+      // A rebuilt runtime must never inherit the old mode's state paths.
+      // Its old instance stays owned by the old loop until that loop releases it.
+      entry.generation++;
+      entry.output = output;
+      entry.current = null;
+      return this.load(entry);
     }
     if (entry.current) return entry.current;
     return entry.pending ?? this.load(entry);
@@ -187,11 +212,11 @@ export class SceneRuntime {
   }
 
   /** Prepare a replacement beside the running instance; only its generation may install it.
-   * @param {{scene: string, device: string, generation: number, current: SceneInstance|null, pending: Promise<SceneInstance>|null}} entry
+   * @param {RuntimeEntry} entry
    * @returns {Promise<SceneInstance>}
    */
   load(entry) {
-    const { scene, device, generation } = entry;
+    const { scene, device, output, generation } = entry;
     const key = JSON.stringify([scene, device]);
     const fileToken = `${this.identity}-${this.fileTokens.get(scene) ?? 0}`;
     const ref = { scene, device, token: `${fileToken}.${++this.counter}` };
@@ -211,7 +236,7 @@ export class SceneRuntime {
             phase: "import",
           });
         const url = pathToFileURL(file);
-        url.searchParams.set("t", ref.token);
+        url.searchParams.set("t", fileToken);
         url.searchParams.set("d", device);
         const moduleNamespace = await import(url.href);
         if (!current())
@@ -228,7 +253,7 @@ export class SceneRuntime {
             settingsTopic: this.deps.settingsTopic,
             resources: meta.resources,
             shadowStateDir:
-              this.deps.outputOf(device) === "shadow"
+              output === "shadow"
                 ? join(
                     this.deps.dataDir,
                     ".pixdcon2/shadow-state",

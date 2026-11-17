@@ -276,8 +276,9 @@ test("v1 scene surface: Pixoo passthrough, AWTRIX payload, legacy screen shape, 
   await assert.rejects(ulanzi.drawCustom(app), DeviceError);
   await assert.rejects(pixoo.push(), DeviceError);
 });
-/** @param {string} source */
-async function runtimePeer(source) {
+/** @param {string} source
+ * @param {(device: string) => import("../../src/types.js").OutputMode} [outputOf] */
+async function runtimePeer(source, outputOf = () => "shadow") {
   await mkdir(OUT_DIR, { recursive: true });
   const dataDir = await mkdtemp(join(OUT_DIR, "scene-contract-"));
   const file = join(dataDir, "scene.mjs");
@@ -294,7 +295,7 @@ async function runtimePeer(source) {
     }),
     mqttContext: contexts.mqttContext,
     settingsTopic: () => "settings",
-    outputOf: () => "shadow",
+    outputOf,
     dataDir,
     logger: silentLogger,
   });
@@ -312,6 +313,108 @@ test("isolation per device: the scene file is evaluated once per device, so a mo
   assert.equal(await first.renderFrame({ deviceName: "first" }), 2);
   assert.equal(await second.renderFrame({ deviceName: "second" }), 1);
   assert.equal(await runtime.acquire("scene", "first"), first);
+});
+
+test("scene import cache: release and acquire reuse one evaluation per file token and device, with fresh instance identities", async (t) => {
+  const counts = /** @type {any} */ (globalThis);
+  counts.__sceneImportCount = 0;
+  const { runtime } = await runtimePeer(`
+    globalThis.__sceneImportCount++;
+    let frames = 0;
+    export default { render() { return ++frames; } };
+  `);
+  t.after(async () => {
+    await runtime.releaseAll();
+    delete counts.__sceneImportCount;
+  });
+  const tokens = new Set();
+  for (let frame = 1; frame <= 25; frame++) {
+    const instance = await runtime.acquire("scene", "first");
+    tokens.add(instance.ref.token);
+    assert.equal(await instance.renderFrame({ deviceName: "first" }), frame);
+    await runtime.release(instance);
+  }
+  assert.equal(
+    counts.__sceneImportCount,
+    1,
+    "count module evaluations, not heap growth",
+  );
+  assert.equal(tokens.size, 25, "instances still have independent owners");
+  const other = await runtime.acquire("scene", "second");
+  assert.equal(await other.renderFrame({ deviceName: "second" }), 1);
+  assert.equal(
+    counts.__sceneImportCount,
+    2,
+    "a different device has its own module",
+  );
+  await runtime.invalidate(["scene"]);
+  await waitFor(() => !runtime.isCurrent(other));
+  const replaced = await runtime.acquire("scene", "second");
+  assert.equal(await replaced.renderFrame({ deviceName: "second" }), 1);
+  assert.equal(
+    counts.__sceneImportCount,
+    3,
+    "a changed file gets a new evaluation",
+  );
+  await runtime.release(other);
+  await runtime.release(replaced);
+  const reacquired = await runtime.acquire("scene", "second");
+  assert.equal(await reacquired.renderFrame({ deviceName: "second" }), 2);
+  assert.equal(
+    counts.__sceneImportCount,
+    3,
+    "the replacement token is cached too",
+  );
+});
+
+test("scene output mode: drive to shadow and back replaces an unreleased instance and captures state paths before init", async (t) => {
+  /** @type {import("../../src/types.js").OutputMode} */
+  let output = "drive";
+  const { runtime, contexts, dataDir } = await runtimePeer(
+    `export default {
+    init(ctx) { this._boilerStatePath ??= 'v1-history'; ctx.mqtt.subscribe('input', () => {}); },
+    render(surface) { surface.record(this._boilerStatePath); }
+  };`,
+    () => output,
+  );
+  runtime.deps.registry.get = () =>
+    /** @type {any} */ ({
+      resources: { assetDirs: [], stateFields: ["_boilerStatePath"] },
+    });
+  t.after(() => runtime.releaseAll());
+  /** @type {string[]} */
+  const paths = [];
+  const surface = {
+    deviceName: "device",
+    record: (/** @type {string} */ path) => paths.push(path),
+  };
+  const driven = await runtime.acquire("scene", "device");
+  await driven.renderFrame(surface);
+  output = "shadow";
+  const shadow = await runtime.acquire("scene", "device");
+  assert.notEqual(shadow, driven);
+  assert.equal(runtime.isCurrent(driven), false);
+  await shadow.renderFrame(surface);
+  assert.deepEqual(paths, [
+    "v1-history",
+    join(dataDir, ".pixdcon2/shadow-state/device/scene-_boilerStatePath.json"),
+  ]);
+  assert.equal(
+    contexts.subscriptions.size,
+    2,
+    "old loop still owns its instance",
+  );
+  await runtime.release(driven);
+  assert.equal(
+    runtime.isCurrent(shadow),
+    true,
+    "a late release cannot evict the new mode",
+  );
+  output = "drive";
+  const drivenAgain = await runtime.acquire("scene", "device");
+  assert.notEqual(drivenAgain, shadow);
+  await drivenAgain.renderFrame(surface);
+  assert.equal(paths.at(-1), "v1-history");
 });
 
 test("instance tokens: a replacement instance and the instance it replaces have different tokens, MQTT owners and settings subscribers", async (t) => {

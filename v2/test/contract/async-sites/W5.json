@@ -26,23 +26,31 @@
       "test": "test/contract/scenes.test.js: registry order:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:118",
+      "site": "src/scenes/scene-runtime.js:140",
       "id": "work:this.load#1",
       "input": "a per-device scene module import",
-      "metadata": "InstanceRef token and runtime entry generation",
+      "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
       "fence": "only the current entry generation installs an initialized instance; stale instances are released",
-      "test": "test/contract/scenes.test.js: scene runtime order:"
+      "test": "test/contract/scenes.test.js: scene output mode:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:178",
+      "site": "src/scenes/scene-runtime.js:143",
       "id": "work:this.load#2",
       "input": "a per-device scene module import",
-      "metadata": "InstanceRef token and runtime entry generation",
+      "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
+      "fence": "only the current entry generation installs an initialized instance; stale instances are released",
+      "test": "test/contract/scenes.test.js: scene import cache:"
+    },
+    {
+      "site": "src/scenes/scene-runtime.js:203",
+      "id": "work:this.load#3",
+      "input": "a per-device scene module import",
+      "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
       "fence": "only the current entry generation installs an initialized instance; stale instances are released",
       "test": "test/contract/scenes.test.js: scene runtime order:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:216",
+      "site": "src/scenes/scene-runtime.js:241",
       "id": "import:import#1",
       "input": "a per-device scene module import",
       "metadata": "InstanceRef token and runtime entry generation",
