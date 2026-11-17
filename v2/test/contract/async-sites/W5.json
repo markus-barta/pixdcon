@@ -26,35 +26,27 @@
       "test": "test/contract/scenes.test.js: registry order:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:140",
+      "site": "src/scenes/scene-runtime.js:157",
       "id": "work:this.load#1",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
-      "fence": "only the current entry generation installs an initialized instance; stale instances are released; superseded first-load callers follow the live replacement, never a released entry",
-      "test": "test/contract/scenes.test.js: scene output mode:"
+      "fence": "only the current entry generation installs; acquire hands ownership to a loop only in its captured output mode; unacquired replacements are released on retirement; supersede follows stay in the same mode; only the latest reload reports a failure",
+      "test": "test/contract/scenes.test.js: first load output supersede:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:143",
+      "site": "src/scenes/scene-runtime.js:243",
       "id": "work:this.load#2",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
-      "fence": "only the current entry generation installs an initialized instance; stale instances are released; superseded first-load callers follow the live replacement, never a released entry",
-      "test": "test/contract/scenes.test.js: scene import cache:"
+      "fence": "only the current entry generation installs; acquire hands ownership to a loop only in its captured output mode; unacquired replacements are released on retirement; supersede follows stay in the same mode; only the latest reload reports a failure",
+      "test": "test/contract/scenes.test.js: scene reload ownership:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:203",
-      "id": "work:this.load#3",
-      "input": "a per-device scene module import",
-      "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
-      "fence": "only the current entry generation installs an initialized instance; stale instances are released; superseded first-load callers follow the live replacement, never a released entry",
-      "test": "test/contract/scenes.test.js: scene reload scheduling:"
-    },
-    {
-      "site": "src/scenes/scene-runtime.js:240",
+      "site": "src/scenes/scene-runtime.js:288",
       "id": "import:import#1",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
-      "fence": "only the current entry generation installs an initialized instance; stale instances are released; superseded first-load callers follow the live replacement, never a released entry",
+      "fence": "only the current entry generation installs; acquire hands ownership to a loop only in its captured output mode; unacquired replacements are released on retirement; supersede follows stay in the same mode; only the latest reload reports a failure",
       "test": "test/contract/scenes.test.js: scene runtime order:"
     },
     {

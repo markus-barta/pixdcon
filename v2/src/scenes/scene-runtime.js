@@ -30,6 +30,10 @@
  *    instance is released; when import or init failed, only the
  *    replacement's subscriptions are released and the old instance never
  *    notices.
+ *    Only instances handed out by acquire belong to a loop. A replacement
+ *    superseded before acquisition is released by the runtime itself. Loads
+ *    and supersede follows keep their captured output mode; a caller from a
+ *    retired mode cannot acquire the rebuilt loop's instance.
  *  - only the changed file is imported again; the file token is per file (S-18)
  *
  * The runtime knows nothing about the v1 contract itself. It asks an adapter
@@ -45,6 +49,17 @@ import { pathToFileURL } from "node:url";
 import { SceneError } from "../core/errors.js";
 import { createV1Instance } from "./v1-scene-adapter.js";
 import { installSharedResolution } from "./v1-shared.js";
+
+/** Cancellation by a newer load, output mode, release or shutdown is not a scene failure. */
+class SupersededLoadError extends SceneError {
+  /** @param {import("../types.js").InstanceRef} ref */
+  constructor(ref) {
+    super(`Scene ${ref.scene} load was superseded`, {
+      ...ref,
+      phase: "import",
+    });
+  }
+}
 
 /**
  * What the render loop drives. One instance per (scene, device).
@@ -90,6 +105,8 @@ export class SceneRuntime {
     this.entries = new Map();
     /** @type {Set<SceneInstance>} */
     this.instances = new Set();
+    /** @type {WeakSet<SceneInstance>} Instances actually handed to render loops. */
+    this.handedOut = new WeakSet();
     /** @type {Set<Promise<SceneInstance>>} */
     this.pending = new Set();
     this.closed = false;
@@ -131,16 +148,37 @@ export class SceneRuntime {
         pending: null,
       };
       this.entries.set(key, entry);
-    } else if (entry.output !== output) {
-      // A rebuilt runtime must never inherit the old mode's state paths.
-      // Its old instance stays owned by the old loop until that loop releases it.
-      entry.generation++;
-      entry.output = output;
-      entry.current = null;
-      return this.load(entry);
+    } else {
+      this.refreshOutput(entry, output);
     }
-    if (entry.current) return entry.current;
-    return entry.pending ?? this.load(entry);
+    for (;;) {
+      const instance = await (entry.current ??
+        entry.pending ??
+        this.load(entry));
+      // This also covers callers following a superseding load. An output
+      // rebuild may have retired its result before this continuation ran.
+      if (
+        this.closed ||
+        this.entries.get(key) !== entry ||
+        entry.output !== output
+      )
+        throw new SupersededLoadError(instance.ref);
+      if (entry.current !== instance) continue;
+      this.handedOut.add(instance);
+      return instance;
+    }
+  }
+
+  /** Refresh state-path policy before any load; a loop owns only handed-out instances.
+   * @param {RuntimeEntry} entry @param {import("../types.js").OutputMode} output */
+  refreshOutput(entry, output) {
+    if (entry.output === output) return;
+    entry.generation++;
+    entry.output = output;
+    const previous = entry.current;
+    entry.current = null;
+    entry.pending = null;
+    if (previous && !this.handedOut.has(previous)) void this.release(previous);
   }
 
   /**
@@ -198,9 +236,19 @@ export class SceneRuntime {
     const devices = new Set();
     for (const entry of this.entries.values()) {
       if (!changed.has(entry.scene)) continue;
+      this.refreshOutput(entry, this.deps.outputOf(entry.device));
       entry.generation++;
+      const generation = entry.generation;
       devices.add(entry.device);
       void this.load(entry).catch((error) => {
+        // Only the latest preparation reports its failure. Older loads may
+        // follow its promise; cancellation on release is expected as well.
+        if (
+          error instanceof SupersededLoadError ||
+          this.closed ||
+          entry.generation !== generation
+        )
+          return;
         this.deps.logger.warn(
           `Scene ${entry.scene} reload failed: ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -238,11 +286,7 @@ export class SceneRuntime {
         url.searchParams.set("t", fileToken);
         url.searchParams.set("d", device);
         const moduleNamespace = await import(url.href);
-        if (!current())
-          throw new SceneError(`Scene ${scene} load was superseded`, {
-            ...ref,
-            phase: "import",
-          });
+        if (!current()) throw new SupersededLoadError(ref);
         instance = await createV1Instance(
           { ref, moduleNamespace },
           {
@@ -264,22 +308,29 @@ export class SceneRuntime {
         );
         if (!current()) {
           await instance.release();
-          throw new SceneError(`Scene ${scene} load was superseded`, {
-            ...ref,
-            phase: "import",
-          });
+          throw new SupersededLoadError(ref);
         }
+        const previous = entry.current;
         entry.current = instance;
         this.instances.add(instance);
+        if (previous && !this.handedOut.has(previous))
+          void this.release(previous);
         return instance;
       } catch (error) {
         this.deps.settings.releaseContext(ref);
         // A reload during the first init is not a scene failure. Its callers
-        // follow the latest load, even if that load already finished. Stop or
-        // release removes the entry and must still reject the stale caller.
-        if (!this.closed && this.entries.get(key) === entry && !current()) {
-          if (entry.pending) return entry.pending;
-          if (entry.current) return entry.current;
+        // follow the latest load in the same output mode, even if ready.
+        // acquire records ownership before handing that followed result out.
+        if (!current()) {
+          if (
+            !this.closed &&
+            this.entries.get(key) === entry &&
+            entry.output === output
+          ) {
+            if (entry.pending) return entry.pending;
+            if (entry.current) return entry.current;
+          }
+          throw new SupersededLoadError(ref);
         }
         if (error instanceof SceneError) throw error;
         throw new SceneError(

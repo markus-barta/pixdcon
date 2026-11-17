@@ -472,6 +472,89 @@ test("scene output mode: drive to shadow and back replaces an unreleased instanc
   assert.equal(paths.at(-1), "v1-history");
 });
 
+/** @param {import('node:test').TestContext} t @param {boolean} reloadFirst */
+async function assertReloadOwnership(t, reloadFirst) {
+  /** @type {import("../../src/types.js").OutputMode} */
+  let output = "drive";
+  // home3's sampling interval writes this state field independently of render.
+  // Use synchronous file writes so a byte comparison also detects late ticks.
+  const { runtime, contexts, dataDir } = await runtimePeer(
+    `
+    import { appendFileSync } from 'node:fs';
+    import { fileURLToPath } from 'node:url';
+    export default {
+      init(ctx) {
+        this._boilerStatePath ??= fileURLToPath(new URL('./v1-history.json', import.meta.url));
+        const sample = () => appendFileSync(this._boilerStatePath, 'sample\\n');
+        sample(); this.timer = setInterval(sample, 5);
+        ctx.mqtt.subscribe('input', sample); ctx.settings.subscribe(() => {});
+      }, render() {}, destroy() { clearInterval(this.timer); }
+    };
+  `,
+    () => output,
+  );
+  t.after(() => runtime.releaseAll());
+  const old = await runtime.acquire("scene", "device");
+  if (!reloadFirst) output = "shadow";
+  await runtime.invalidate(["scene"]);
+  await waitFor(() => runtime.pending.size === 0);
+  if (reloadFirst) output = "shadow";
+  const shadow = await runtime.acquire("scene", "device");
+  // The old loop reaches its frame boundary only after the reload and rebuild.
+  await runtime.release(old);
+  await waitFor(() => runtime.instances.size <= 2);
+  const driveFile = join(dataDir, "v1-history.json");
+  const shadowFile = join(
+    dataDir,
+    ".pixdcon2/shadow-state/device/scene-_boilerStatePath.json",
+  );
+  const before = await readFile(driveFile, "utf8");
+  const shadowBefore = await readFile(shadowFile, "utf8");
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  await contexts.deliver("input", "sample now");
+  assert.equal(
+    await readFile(driveFile, "utf8"),
+    before,
+    "no timer or MQTT write to the drive path after switching",
+  );
+  assert.ok(
+    (await readFile(shadowFile, "utf8")).length > shadowBefore.length,
+    "the shadow sampler still runs",
+  );
+  assert.equal(
+    runtime.instances.size,
+    1,
+    "only the acquired shadow instance survives",
+  );
+  assert.equal(runtime.isCurrent(shadow), true);
+  assert.deepEqual([...contexts.subscriptions.keys()], [shadow.ref.token]);
+  assert.deepEqual([...contexts.settings.keys()], [shadow.ref.token]);
+}
+
+test("scene reload ownership: output flips before reload; no drive sampler survives the old loop", async (t) => {
+  await assertReloadOwnership(t, false);
+});
+
+test("scene reload ownership: reload installs before output flips; unacquired drive sampler is released", async (t) => {
+  await assertReloadOwnership(t, true);
+});
+
+test("scene reload ownership: consecutive reloads release replacements no loop acquired", async (t) => {
+  const { runtime, contexts } = await runtimePeer(`export default {
+    init(ctx) { ctx.mqtt.subscribe('input', () => {}); }, render() {}
+  };`);
+  t.after(() => runtime.releaseAll());
+  const old = await runtime.acquire("scene", "device");
+  for (let i = 0; i < 3; i++) {
+    await runtime.invalidate(["scene"]);
+    await waitFor(() => runtime.pending.size === 0);
+  }
+  const replacement = await runtime.acquire("scene", "device");
+  await runtime.release(old);
+  assert.equal(runtime.instances.size, 1);
+  assert.deepEqual([...contexts.subscriptions.keys()], [replacement.ref.token]);
+});
+
 test("instance tokens: a replacement instance and the instance it replaces have different tokens, MQTT owners and settings subscribers", async (t) => {
   const source = `export default {
     init(ctx) { this.values = ctx.settings.all(); ctx.settings.subscribe(v => { this.values = v; }); ctx.mqtt.subscribe('input', () => {}); },
@@ -559,6 +642,109 @@ test("first load supersede: waiting callers follow the pending or already ready 
     await runtime.releaseAll();
   }
   delete globals.__firstLoad;
+});
+
+test("first load output supersede: stale callers reject rather than share the other mode's pending or ready instance", async (t) => {
+  const globals = /** @type {any} */ (globalThis);
+  for (const replacementFirst of [false, true]) {
+    const drive = Promise.withResolvers();
+    const shadow = Promise.withResolvers();
+    const control = { drive, shadow, started: 0 };
+    globals.__outputInit = control;
+    /** @type {import("../../src/types.js").OutputMode} */
+    let output = "drive";
+    const { runtime, contexts } = await runtimePeer(
+      `
+      const control = globalThis.__outputInit;
+      export default {
+        async init(ctx) {
+          ctx.mqtt.subscribe('input', () => {}); control.started++;
+          await (this._boilerStatePath ? control.shadow : control.drive).promise;
+        }, render() { return 25; }
+      };
+    `,
+      () => output,
+    );
+    t.after(async () => {
+      drive.resolve(undefined);
+      shadow.resolve(undefined);
+      await runtime.releaseAll();
+      delete globals.__outputInit;
+    });
+    const stale = assert.rejects(
+      runtime.acquire("scene", "device"),
+      /superseded/,
+    );
+    await waitFor(() => control.started === 1);
+    output = "shadow";
+    const acquiring = runtime.acquire("scene", "device");
+    await waitFor(() => control.started === 2);
+    if (replacementFirst) shadow.resolve(undefined);
+    if (replacementFirst) await acquiring;
+    drive.resolve(undefined);
+    await stale;
+    shadow.resolve(undefined);
+    const replacement = await acquiring;
+    assert.equal(await replacement.renderFrame({ deviceName: "device" }), 25);
+    assert.equal(runtime.instances.size, 1);
+    assert.equal(runtime.isCurrent(replacement), true);
+    assert.deepEqual(
+      [...contexts.subscriptions.keys()],
+      [replacement.ref.token],
+    );
+    await runtime.releaseAll();
+  }
+});
+
+test("scene reload warnings: a followed failure logs once and release cancellation logs nothing", async (t) => {
+  const globals = /** @type {any} */ (globalThis);
+  for (const cancel of [false, true]) {
+    const gate = Promise.withResolvers();
+    const control = { gate, started: 0 };
+    globals.__warningInit = control;
+    const { runtime, file } = await runtimePeer(
+      `export default { render() {} };`,
+    );
+    /** @type {string[]} */
+    const warnings = [];
+    runtime.deps.logger = {
+      ...silentLogger,
+      warn: (message) => warnings.push(message),
+    };
+    t.after(async () => {
+      gate.resolve(undefined);
+      await runtime.releaseAll();
+      delete globals.__warningInit;
+    });
+    const old = await runtime.acquire("scene", "device");
+    await writeFile(
+      file,
+      `
+      const control = globalThis.__warningInit;
+      export default {
+        async init() { control.started++; await control.gate.promise; throw Error('new load broke'); },
+        render() {}
+      };
+    `,
+    );
+    await runtime.invalidate(["scene"]);
+    await waitFor(() => control.started === 1);
+    if (cancel) {
+      await runtime.release(old);
+    } else {
+      await runtime.invalidate(["scene"]);
+      await waitFor(() => control.started === 2);
+    }
+    gate.resolve(undefined);
+    await waitFor(() => runtime.pending.size === 0);
+    assert.deepEqual(
+      warnings,
+      cancel
+        ? []
+        : ["Scene scene reload failed: Scene scene init: new load broke"],
+    );
+    await runtime.releaseAll();
+  }
 });
 
 test("scene reload scheduling: a hanging replacement init leaves the registry lane free and the last good instance running", async (t) => {
