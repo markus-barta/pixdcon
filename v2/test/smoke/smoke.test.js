@@ -844,8 +844,14 @@ test("MQTT gone and back: displays keep rendering and keep their scene, mode, br
   release();
   await waitFor(
     () =>
-      overlays.get(`mode:${name}`)?.confirmed &&
-      overlays.get(`device-scene:${name}`)?.confirmed,
+      [
+        `mode:${name}`,
+        `device-scene:${name}`,
+        `brightness:${name}`,
+        `setting:${name}:overlay:n`,
+      ].every(
+        (id) => overlays.get(id)?.confirmed && overlays.get(id)?.connection === 2,
+      ),
   );
   await clock.advance(300);
   await waitFor(
