@@ -314,52 +314,172 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:161",
-      "id": "contract:MqttGateway.start",
-      "input": "the broker client's events: connect, close, reconnect, error, message; the 5 s start timeout",
-      "metadata": "the gateway numbers every connection and stamps every message with that number and the retain flag as delivered",
-      "fence": "mqtt-gateway.js Order: connect before a connection's first message, disconnect after its last; handlers are called synchronously, in arrival order",
-      "test": "test/contract/wire.test.js: gateway order: connect is emitted before the first message of a connection"
+      "site": "src/mqtt/mqtt-gateway.js:194",
+      "id": "listener:this.once(\"connect\")#1",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:",
+      "was": "MqttGateway.start"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:166",
-      "id": "contract:MqttGateway.stop",
-      "input": "the 2 s limit for a clean close",
-      "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
-      "fence": "conservative side: the connection is closed by force",
-      "test": "test/contract/wire.test.js: gateway timers:"
+      "site": "src/mqtt/mqtt-gateway.js:195",
+      "id": "timer:this.options.clock.sleep#1",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:184",
-      "id": "contract:MqttGateway.subscribe",
-      "input": "MQTT messages for a filter: retained replays and live messages",
-      "metadata": "topic, payload, retain flag as delivered, connection number, receipt time (MqttMessage)",
-      "fence": "the gateway decides nothing: it hands every message to the owners of the filter with its stamp; each owner's handler is a site with its own fence",
-      "test": "test/contract/wire.test.js: gateway: every message carries the retain flag as delivered"
+      "site": "src/mqtt/mqtt-gateway.js:214",
+      "id": "timer:this.options.clock.sleep#2",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:",
+      "was": "MqttGateway.stop"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:208",
-      "id": "contract:MqttGateway.publish",
-      "input": "the acknowledgement of an own publish, or its absence",
-      "metadata": "the connection it was sent on; outcome confirmed, sent, offline, timeout or error",
-      "fence": "mqtt-gateway.js: a publish belongs to its connection and is never sent again; a missing acknowledgement is reported as timeout, not guessed",
+      "site": "src/mqtt/mqtt-gateway.js:291",
+      "id": "timer:this.options.clock.sleep#3",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:291",
+      "id": "then:this.options.clock.sleep().then#1",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:298",
+      "id": "work:client.publish#1",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway publish outcome:",
+      "was": "MqttGateway.publish"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:327",
+      "id": "subscribe:this.subscribe#1",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway owners:",
+      "was": "MqttGateway.settle"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:331",
+      "id": "timer:this.options.clock.sleep#4",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:335",
+      "id": "work:this.publish#1",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
       "test": "test/contract/wire.test.js: gateway publish outcome:"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:221",
-      "id": "contract:MqttGateway.settle",
-      "input": "the echo of the sync marker, or the 2 s timeout",
-      "metadata": "connection; complete true or false",
-      "fence": "a hint (core/ordering.js EVIDENCE.hint): it paces the start and causes nothing outward",
-      "test": "test/contract/wire.test.js: gateway settle: a pacing hint only"
+      "site": "src/mqtt/mqtt-gateway.js:363",
+      "id": "subscribe:this.subscribe#2",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway owners:",
+      "was": "MqttGateway.sceneContext"
     },
     {
-      "site": "src/mqtt/mqtt-gateway.js:231",
-      "id": "contract:MqttGateway.sceneContext",
-      "input": "messages for the subscriptions of one scene instance",
-      "metadata": "InstanceRef {scene, device, token} as the owner of the subscriptions",
-      "fence": "an owner per instance: releasing one token leaves the other's handlers; a released instance is not called",
-      "test": "test/contract/wire.test.js: gateway instance tokens:"
+      "site": "src/mqtt/mqtt-gateway.js:367",
+      "id": "subscribe:this.subscribe#3",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway owners:"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:394",
+      "id": "listener:client.on(\"connect\")#1",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:401",
+      "id": "listener:client.on(\"message\")#1",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:409",
+      "id": "then:Promise.resolve().catch#1",
+      "input": "handler failure or SUBACK promise completion",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "none",
+      "test": "test/contract/wire.test.js: gateway order:",
+      "why": "logging or removing a settled SUBACK promise only; no controller state or subscriber is changed"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:413",
+      "id": "listener:client.on(\"error\")#1",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:420",
+      "id": "listener:client.on(\"close\")#1",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:425",
+      "id": "timer:this.options.clock.sleep#5",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:425",
+      "id": "then:this.options.clock.sleep().then#2",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway order:"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:449",
+      "id": "subscribe:client.subscribe#1",
+      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "test": "test/contract/wire.test.js: gateway owners:",
+      "was": "MqttGateway.subscribe"
+    },
+    {
+      "site": "src/mqtt/mqtt-gateway.js:452",
+      "id": "then:ack.then#1",
+      "input": "handler failure or SUBACK promise completion",
+      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "fence": "none",
+      "test": "test/contract/wire.test.js: gateway order:",
+      "why": "logging or removing a settled SUBACK promise only; no controller state or subscriber is changed"
     },
     {
       "site": "src/overlay/overlay-service.js:326",
@@ -561,10 +681,6 @@
     }
   ],
   "none": [
-    "MqttGateway.fromEnv",
-    "MqttGateway.status",
-    "MqttGateway.unsubscribeAll",
-    "offlineSceneContext",
     "OverlayService.stop",
     "OverlayService.list",
     "OverlayService.get",
