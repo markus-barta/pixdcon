@@ -159,6 +159,32 @@ test("pause holds one frame, stop blanks and switches off, play takes the displa
   assert.equal(r.released.length, 0, "pause and stop keep the scene instance");
 });
 
+test("stop still powers off when the fake rejects /api/draw and stop errors never cycle the plug", async (t) => {
+  const r = await rig(t, { start: false });
+  r.devices[1].powerCyclePlugin = { topic: "plug" };
+  await r.scheduler.start(); await until(() => r.awtrix.state().updates > 0);
+  r.awtrix.failNext(100, "POST /api/draw");
+  r.choose("u", { mode: { value: "stop" } });
+  await until(() => r.scheduler.loop("u")?.status().phase === "stopped");
+  assert.equal(r.awtrix.state().power, false);
+  const requests = r.awtrix.state().requests;
+  assert.ok(requests.lastIndexOf("POST /api/power") > requests.lastIndexOf("POST /api/draw"));
+  await r.clock.advance(400000);
+  assert.equal(r.mqtt.messages.length, 0);
+  assert.equal(r.scheduler.loop("u")?.status().powerCycleCount, 0);
+
+  // Even failures of the power-off itself must never open the breaker.
+  r.awtrix.failNext(100, "POST /api/power");
+  r.choose("u", { scene: { scene: "blue" } }); await flush();
+  for (let i = 0; i < 12; i++) {
+    const before = r.awtrix.state().requests.length;
+    await r.clock.advance(30000);
+    await until(() => r.awtrix.state().requests.length > before);
+  }
+  assert.equal(r.mqtt.messages.length, 0);
+  assert.equal(r.scheduler.loop("u")?.deviceErrors, 0);
+});
+
 test("built-in mode: the fake shows the firmware channel or app and receives no frames", async (t) => {
   const r = await rig(t); await until(() => r.pixoo.state().frames > 0 && r.awtrix.state().updates > 0);
   r.choose("p", { scene: { scene: "builtin:clock" } }); r.choose("u", { scene: { scene: "builtin:time" } });

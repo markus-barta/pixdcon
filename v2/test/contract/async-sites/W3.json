@@ -114,7 +114,7 @@
       "test": "test/smoke/drivers-render.test.js: 10 failed renders with a plug configured:"
     },
     {
-      "site": "src/render/render-loop.js:380",
+      "site": "src/render/render-loop.js:381",
       "id": "work:this.deps.scenes.acquire#1",
       "input": "scene instance acquired asynchronously",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",

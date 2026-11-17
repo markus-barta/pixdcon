@@ -335,7 +335,7 @@ export class RenderLoop {
         if (target.mode === "pause" && this.instance && !this.deps.scenes.isCurrent(this.instance)) this.pausedFrame = false;
         this.deps.health.expect(this.deps.device.name, { framesDue: target.mode === "play" && custom, hasScene: !!target.scene });
         try {
-          await this.applyBrightness();
+          if (target.mode !== "stop") await this.applyBrightness();
           if (!this.running || version !== this.version) continue;
           if (this.instance && this.instance.scene !== target.scene) {
             const old = this.instance; this.instance = null; await this.deps.scenes.release(old);
@@ -344,7 +344,8 @@ export class RenderLoop {
           const key = `${target.mode}:${target.scene ?? ""}`;
           if (target.mode === "stop") {
             if (this.quietKey !== key) {
-              await this.driver.blank();
+              try { await this.driver.blank(); }
+              catch (error) { this.deps.logger.warn(`[RenderLoop] ${this.deps.device.name}: stop blank failed: ${String(error)}`); }
               if (!this.running || version !== this.version) continue;
               await this.driver.setPower(false);
               if (!this.running || version !== this.version) continue;
@@ -401,7 +402,7 @@ export class RenderLoop {
           const classified = error instanceof DeviceError || error instanceof SceneError ? error : new SceneError(error instanceof Error ? error.message : String(error), { cause: error, phase: "render" });
           this.deps.health.renderFailed(this.deps.device.name, classified);
           this.errors += 1;
-          if (classified instanceof DeviceError && !builtin) this.deviceErrors += 1;
+          if (classified instanceof DeviceError && target.mode === "play" && custom) this.deviceErrors += 1;
           else this.deviceErrors = 0;
           if (this.deviceErrors >= LOOP_DEFAULTS.breakerErrors) {
             if (this.cycles >= this.deps.device.maxPowerCycles && this.deps.device.powerCyclePlugin && this.deps.device.output === "drive") {
