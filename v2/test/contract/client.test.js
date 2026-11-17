@@ -736,3 +736,32 @@ test("client previews: a frame from the stream is checked before it is drawn (ba
   assert.equal(filling.applyFrameAnswer({ device: "c", generation: again, epoch: A, incarnation: 4 }, frame).reason, "newer_copy", "a held frame is never replaced by the HTTP one");
   assert.equal(clock(frame.receivedAt), "18:41:00");
 });
+
+// ---------------------------------------------------------------------------
+// Fix round 1: the first gate's findings 1 to 10, each test playing the
+// gate's sequence. Findings 9 and 10 are pure (store, view model); the
+// others run the pages and the settings form against the stand-in DOM below.
+// ---------------------------------------------------------------------------
+
+test("r2 finding 9, log: lines from the HTTP answer and from the stream are merged by LogLine.seq, without copies and in order; the 200-line cap keeps history, not copies", () => {
+  const { store, stream } = loadedStore();
+  const line = (/** @type {number} */ seq) => ({ seq, at: at("18:42:00"), level: "INFO", message: `[Test] line ${seq}` });
+  assert.equal(store.applyAnswer({ body: [line(1), line(2)], resource: "log", generation: beginRequest(store.fence(), "log"), epoch: A, seq: 12 }).action, "apply");
+  store.applyEvent({ type: "log", epoch: A, seq: 13, stream, data: line(1) });
+  store.applyEvent({ type: "log", epoch: A, seq: 14, stream, data: line(2) });
+  store.applyEvent({ type: "log", epoch: A, seq: 15, stream, data: line(3) });
+  assert.deepEqual(store.getState().log.map((l) => l.seq), [1, 2, 3]);
+  // An answer that overlaps what the stream brought, and a stream line that is late.
+  store.applyAnswer({ body: [line(2), line(3), line(4), line(5)], resource: "log", generation: beginRequest(store.fence(), "log"), epoch: A, seq: 16 });
+  store.applyEvent({ type: "log", epoch: A, seq: 17, stream, data: line(4) });
+  assert.deepEqual(store.getState().log.map((l) => l.seq), [1, 2, 3, 4, 5]);
+  // The cap: 260 lines, every one of them twice, keep the newest 200 lines once each.
+  const many = Array.from({ length: 260 }, (_, i) => line(i + 1));
+  store.applyAnswer({ body: many.slice(0, 200), resource: "log", generation: beginRequest(store.fence(), "log"), epoch: A, seq: 18 });
+  let seq = 18;
+  for (const l of many) store.applyEvent({ type: "log", epoch: A, seq: (seq += 1), stream, data: l });
+  const seqs = store.getState().log.map((l) => l.seq);
+  assert.equal(seqs.length, 200);
+  assert.equal(new Set(seqs).size, 200);
+  assert.deepEqual([seqs[0], seqs[199]], [61, 260]);
+});

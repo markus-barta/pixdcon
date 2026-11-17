@@ -105,7 +105,7 @@ import {
  * @property {any[]} overlays OverlayRecord[] as pixdcon lists them now
  * @property {Map<string, {record: any, at: number}>} gone overlay records that left the list in this epoch, with the time the page learned it: a page that showed the row keeps it in place, greyed, "Cleared 18:43:10"
  * @property {Map<string, any>} settings "<device>/<scene>" → SettingsState
- * @property {any[]} log LogLine[], oldest first, at most 200
+ * @property {any[]} log LogLine[] by LogLine.seq, oldest first, each line once, at most 200 (mergeLog)
  * @property {import("./live.js").LiveState} live
  * @property {number|null} dataAt epoch ms of the last data that was applied ("values below are from 18:41:52")
  * @property {{message: string, at: number}|null} loadError the first load failed (no snapshot yet)
@@ -150,6 +150,30 @@ function initialState() {
 
 /** @type {(reason: string) => Decision} */
 const drop = (reason) => ({ action: "drop", reason });
+
+/**
+ * The log as the page holds it, with lines that arrived: from the answer of
+ * GET /api/v2/log or from the stream. The two paths deliver the same lines
+ * in any order, so `LogLine.seq` is the one order: a line is held once, the
+ * lines are sorted by it, and the cap keeps the newest 200 lines, not
+ * copies of them. A line without a seq cannot be placed and is not taken.
+ *
+ * @param {any[]} held LogLine[], oldest first
+ * @param {any[]} lines LogLine[] that arrived
+ * @returns {any[]} LogLine[], oldest first, at most 200
+ */
+function mergeLog(held, lines) {
+  /** @type {Map<number, any>} */
+  const bySeq = new Map();
+  for (const line of [...held, ...lines]) {
+    const seq = Number(line?.seq);
+    if (Number.isFinite(seq)) bySeq.set(seq, line);
+  }
+  return [...bySeq.entries()]
+    .sort(([a], [b]) => a - b)
+    .slice(-LOG_LINES)
+    .map(([, line]) => line);
+}
 
 /**
  * base64 → bytes; null when the text is not base64.
@@ -301,15 +325,9 @@ export function createStore() {
           pixoo: value?.pixoo ?? [],
         };
         break;
-      case "log": {
-        // The answer is the log up to its position; lines that came with
-        // the stream after it stay (LogLine.seq orders them).
-        const lines = Array.isArray(value) ? value : [];
-        const last = lines.reduce((top, line) => Math.max(top, Number(line?.seq ?? 0)), 0);
-        const newer = next.log.filter((line) => Number(line?.seq ?? 0) > last);
-        next.log = [...lines, ...newer].slice(-LOG_LINES);
+      case "log":
+        next.log = mergeLog(next.log, Array.isArray(value) ? value : []);
         break;
-      }
     }
   }
 
@@ -483,7 +501,7 @@ export function createStore() {
         break;
       }
       case "log":
-        next.log = [...next.log, data].slice(-LOG_LINES);
+        next.log = mergeLog(next.log, [data]);
         break;
       case "ping":
         break;
