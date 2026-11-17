@@ -222,7 +222,7 @@ test("v1 scene contract: failures classify render and init; failed init releases
   }
 });
 
-test("scene release: release and shutdown await an admitted render, including rejection, before destroy and subscription cleanup", async (t) => {
+test("scene release: release and shutdown unsubscribe immediately and await an admitted render, including rejection, before destroy", async (t) => {
   const globals = /** @type {any} */ (globalThis);
   for (const shutdown of [false, true]) {
     for (const fail of [false, true]) {
@@ -263,7 +263,8 @@ test("scene release: release and shutdown await an admitted render, including re
         /released/,
       );
       assert.deepEqual(calls, [], "destroy cannot overtake a render in flight");
-      assert.equal(contexts.subscriptions.size, 1);
+      assert.equal(contexts.subscriptions.size, 0);
+      assert.equal(contexts.settings.get(instance.ref.token)?.size, 0);
       frame.resolve(undefined);
       await rendered;
       await releasing;
@@ -274,6 +275,125 @@ test("scene release: release and shutdown await an admitted render, including re
     }
   }
   delete globals.__releaseCalls;
+});
+
+test("scene release deadline: a hung frame cannot retain a sampler or subscriptions; late success and failure never destroy twice", async (t) => {
+  const globals = /** @type {any} */ (globalThis);
+  for (const fail of [false, true]) {
+    const deadlineMs = fail ? 0 : 25;
+    const frame = Promise.withResolvers();
+    const control = { ticks: 0, destroyed: 0, finished: 0, started: false };
+    globals.__drain = control;
+    const { runtime, contexts } = await runtimePeer(`
+      const control = globalThis.__drain;
+      export default {
+        init(ctx) {
+          this.timer = setInterval(() => control.ticks++, 5);
+          ctx.mqtt.subscribe('input', () => {}); ctx.settings.subscribe(() => {});
+        },
+        async render(surface) {
+          control.started = true; await surface.frame; control.finished++;
+          if (surface.fail) throw Error('late frame failed');
+        }, destroy() { clearInterval(this.timer); control.destroyed++; }
+      };
+    `);
+    /** @type {string[]} */
+    const warnings = [];
+    runtime.deps.logger = {
+      ...silentLogger,
+      warn: (message) => warnings.push(message),
+    };
+    t.after(async () => {
+      frame.resolve(undefined);
+      await runtime.releaseAll();
+      delete globals.__drain;
+    });
+    const instance = await runtime.acquire("scene", "device");
+    const rendering = instance.renderFrame({
+      deviceName: "device",
+      frame: frame.promise,
+      fail,
+    });
+    const rendered = fail
+      ? assert.rejects(rendering, /late frame failed/)
+      : rendering;
+    await waitFor(() => control.started && control.ticks > 0);
+    const releasing = runtime.release(instance, { deadlineMs });
+    assert.equal(
+      contexts.subscriptions.size,
+      0,
+      "MQTT owner removed before draining",
+    );
+    assert.equal(
+      contexts.settings.get(instance.ref.token)?.size,
+      0,
+      "settings unsubscribed before draining",
+    );
+    assert.equal(control.destroyed, 0, "give the frame its remaining budget");
+    await waitFor(() => control.destroyed === 1);
+    await releasing;
+    assert.equal(
+      control.finished,
+      0,
+      "destroy ran even though the frame is still hung",
+    );
+    assert.equal(runtime.instances.size, 0);
+    assert.equal(warnings.length, 1);
+    assert.ok(
+      warnings[0].includes(`frame drain timed out after ${deadlineMs}ms`),
+    );
+    const ticks = control.ticks;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(control.ticks, ticks, "destroy stopped the scene's interval");
+    frame.resolve(undefined);
+    await rendered;
+    await instance.release({ deadlineMs: 0 });
+    assert.equal(control.destroyed, 1);
+    assert.equal(warnings.length, 1);
+  }
+});
+
+test("scene release deadline: a frame settling within budget cancels the bound and destroys without a warning", async (t) => {
+  const frame = Promise.withResolvers();
+  const started = Promise.withResolvers();
+  let destroyed = 0;
+  /** @type {string[]} */
+  const warnings = [];
+  const contexts = sceneContexts();
+  const instance = await createV1Instance(
+    {
+      ref: { scene: "drain", device: "device", token: "normal-drain" },
+      moduleNamespace: {
+        async render() {
+          started.resolve(undefined);
+          await frame.promise;
+        },
+        destroy() {
+          destroyed++;
+        },
+      },
+    },
+    {
+      ...contexts,
+      settingsTopic: () => "settings",
+      shadowStateDir: null,
+      resources: { assetDirs: [], stateFields: [] },
+      logger: { ...silentLogger, warn: (message) => warnings.push(message) },
+    },
+  );
+  t.after(async () => {
+    frame.resolve(undefined);
+    await instance.release();
+  });
+  const rendering = instance.renderFrame({ deviceName: "device" });
+  await started.promise;
+  const releasing = instance.release({ deadlineMs: 40 });
+  assert.equal(destroyed, 0);
+  frame.resolve(undefined);
+  await Promise.all([rendering, releasing]);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(destroyed, 1);
+  assert.deepEqual(warnings, []);
 });
 
 test("v1 scene surface: Pixoo passthrough, AWTRIX payload, legacy screen shape, and refused frames", async () => {
@@ -700,7 +820,7 @@ test("scene reload warnings: a followed failure logs once and release cancellati
   const globals = /** @type {any} */ (globalThis);
   for (const cancel of [false, true]) {
     const gate = Promise.withResolvers();
-    const control = { gate, started: 0 };
+    const control = { gate, started: 0, cancel };
     globals.__warningInit = control;
     const { runtime, file } = await runtimePeer(
       `export default { render() {} };`,
@@ -722,7 +842,10 @@ test("scene reload warnings: a followed failure logs once and release cancellati
       `
       const control = globalThis.__warningInit;
       export default {
-        async init() { control.started++; await control.gate.promise; throw Error('new load broke'); },
+        async init() {
+          control.started++; await control.gate.promise;
+          if (!control.cancel) throw Error('new load broke');
+        },
         render() {}
       };
     `,

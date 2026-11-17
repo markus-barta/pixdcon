@@ -20,8 +20,10 @@
  *     mqtt: { deviceName, subscribe(topic, cb(payload)), subscribeWildcard(pattern, cb(payload, topic)), unsubscribeAll() },
  *   }
  *   A fresh ctx object is built for init and for destroy, as in v1. Both
- *   belong to the same instance (InstanceRef): what init subscribed, destroy
- *   and the release after it remove, and nothing of another instance.
+ *   belong to the same instance (InstanceRef): release removes only that
+ *   instance's subscriptions before draining its admitted frames. Destroy
+ *   follows frame settlement or the remaining stop budget (default 6 s),
+ *   with a warning when a hung frame outlives that budget.
  *
  *   device = the v1 driver surface, see v1-device-facade.js
  *
@@ -238,33 +240,57 @@ export async function createV1Instance(target, deps) {
           `Scene ${ref.scene} ${phase}: ${error instanceof Error ? error.message : String(error)}`,
           { ...ref, phase, cause: error },
         );
-  const release = () => {
+  /** @param {import("./scene-runtime.js").SceneReleaseOptions} [options] */
+  const release = (options = {}) => {
     if (releasing) return releasing;
     active = false;
-    releasing = (async () => {
+    const deadlineMs = Number.isFinite(options.deadlineMs)
+      ? Math.max(0, options.deadlineMs ?? 6000)
+      : 6000;
+    const deadlineAt = Date.now() + deadlineMs;
+    // Store the promise before invoking unsubscribe/destroy hooks; even a
+    // hook that reenters release gets the same teardown operation.
+    releasing = Promise.resolve().then(async () => {
       try {
-        // No new frame can enter after active=false. Destroy must not race
-        // a render that still uses the scene's state or surface.
-        await Promise.allSettled([...frames]);
+        if (frames.size) {
+          /** @type {ReturnType<typeof setTimeout>|undefined} */
+          let timer;
+          try {
+            const drained = await Promise.race([
+              Promise.allSettled([...frames]).then(() => true),
+              new Promise((resolve) => {
+                timer = setTimeout(
+                  () => resolve(false),
+                  Math.max(0, deadlineAt - Date.now()),
+                );
+              }),
+            ]);
+            if (!drained)
+              log(
+                `frame drain timed out after ${deadlineMs}ms; destroying with ${frames.size} frame(s) still in flight`,
+              );
+          } finally {
+            clearTimeout(timer);
+          }
+        }
         if (typeof scene.destroy === "function") await scene.destroy(context());
       } catch (error) {
         log(error);
-      } finally {
-        for (const unsubscribe of unsubscribers) {
-          try {
-            unsubscribe();
-          } catch (error) {
-            log(error);
-          }
-        }
-        unsubscribers.clear();
-        try {
-          mqtt.unsubscribeAll();
-        } catch (error) {
-          log(error);
-        }
       }
-    })();
+    });
+    for (const unsubscribe of unsubscribers) {
+      try {
+        unsubscribe();
+      } catch (error) {
+        log(error);
+      }
+    }
+    unsubscribers.clear();
+    try {
+      mqtt.unsubscribeAll();
+    } catch (error) {
+      log(error);
+    }
     return releasing;
   };
   try {

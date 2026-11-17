@@ -26,7 +26,7 @@
       "test": "test/contract/scenes.test.js: registry order:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:157",
+      "site": "src/scenes/scene-runtime.js:163",
       "id": "work:this.load#1",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
@@ -34,7 +34,7 @@
       "test": "test/contract/scenes.test.js: first load output supersede:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:243",
+      "site": "src/scenes/scene-runtime.js:250",
       "id": "work:this.load#2",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
@@ -42,7 +42,7 @@
       "test": "test/contract/scenes.test.js: scene reload ownership:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:288",
+      "site": "src/scenes/scene-runtime.js:295",
       "id": "import:import#1",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
@@ -50,7 +50,7 @@
       "test": "test/contract/scenes.test.js: scene runtime order:"
     },
     {
-      "site": "src/scenes/v1-scene-adapter.js:208",
+      "site": "src/scenes/v1-scene-adapter.js:210",
       "id": "subscribe:settings.subscribe#1",
       "input": "scene settings or MQTT callback",
       "metadata": "InstanceRef token and runtime entry generation",
@@ -58,7 +58,7 @@
       "test": "test/contract/scenes.test.js: v1 scene contract:"
     },
     {
-      "site": "src/scenes/v1-scene-adapter.js:222",
+      "site": "src/scenes/v1-scene-adapter.js:224",
       "id": "subscribe:mqtt.subscribe#1",
       "input": "scene settings or MQTT callback",
       "metadata": "InstanceRef token and runtime entry generation",
@@ -66,7 +66,7 @@
       "test": "test/contract/scenes.test.js: v1 scene contract:"
     },
     {
-      "site": "src/scenes/v1-scene-adapter.js:226",
+      "site": "src/scenes/v1-scene-adapter.js:228",
       "id": "subscribe:mqtt.subscribeWildcard#1",
       "input": "scene settings or MQTT callback",
       "metadata": "InstanceRef token and runtime entry generation",
@@ -140,6 +140,14 @@
       "fence": "none",
       "why": "no controller state; only the exclusively created temporary file is synced before an atomic no-replace link",
       "test": "test/contract/scenes.test.js: migration file contract:"
+    },
+    {
+      "site": "src/scenes/v1-scene-adapter.js:262",
+      "id": "timer:setTimeout#1",
+      "input": "remaining frame-drain deadline during scene release",
+      "metadata": "InstanceRef token, inactive instance, admitted frames and remaining loop stop budget",
+      "fence": "release fences new frames and unsubscribes immediately; the first release owns one teardown promise; drain completion or deadline starts destroy once; the timer is cleared on either outcome",
+      "test": "test/contract/scenes.test.js: scene release deadline:"
     }
   ],
   "none": [

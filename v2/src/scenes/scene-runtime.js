@@ -6,9 +6,10 @@
  *    changes when the file changed, so Node evaluates it again
  *  - each (scene, device) pair has its own instance; init() runs once per
  *    instance and is awaited before the first render
- *  - releasing an instance calls destroy(), and afterwards always removes the
- *    instance's MQTT subscriptions and settings subscribers, also when
- *    destroy() threw (B-007, C-046)
+ *  - releasing an instance always removes its MQTT subscriptions and settings
+ *    subscribers, also when destroy() throws (B-007, C-046). Subscriptions go
+ *    immediately; destroy follows frame drain within the loop's remaining
+ *    stop budget (default 6 s), warning if a hung frame outlives that budget.
  *
  * Fixed:
  *  - Real isolation per device (B-005, S-16). v1 evaluates a scene file once
@@ -73,7 +74,12 @@ class SupersededLoadError extends SceneError {
  *   "no delay given" (the loop then waits minFrameMs). Rejects with a
  *   DeviceError when the display refused the frame, with a SceneError for
  *   anything else.
- * @property {() => Promise<void>} release destroy and unsubscribe; never rejects
+ * @property {(options?: SceneReleaseOptions) => Promise<void>} release unsubscribe immediately, drain frames within the budget, then destroy; never rejects
+ */
+
+/**
+ * @typedef {object} SceneReleaseOptions
+ * @property {number} [deadlineMs] remaining frame-drain budget; default 6000 ms (the loop stop budget)
  */
 
 /**
@@ -183,12 +189,13 @@ export class SceneRuntime {
 
   /**
    * Release this instance, and no other instance of the same scene and
-   * device, after its frame in flight has finished: destroy(), then its MQTT
-   * owner and its settings subscribers go.
+   * device: unsubscribe immediately, then destroy after its frame finishes
+   * or the drain budget expires. The loop passes its remaining stop budget.
    *
    * @param {SceneInstance} instance
+   * @param {SceneReleaseOptions} [options]
    */
-  async release(instance) {
+  async release(instance, options) {
     const key = JSON.stringify([instance.scene, instance.device]);
     const entry = this.entries.get(key);
     if (entry?.current === instance) {
@@ -197,7 +204,7 @@ export class SceneRuntime {
       this.entries.delete(key);
     }
     try {
-      await instance.release();
+      await instance.release(options);
     } finally {
       this.instances.delete(instance);
       this.deps.settings.releaseContext(instance.ref);
