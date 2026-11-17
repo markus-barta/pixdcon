@@ -1415,8 +1415,9 @@ test("r2 finding 3, settings form: the draft number keeps rising when the device
     await settle();
     devicePage.unmount();
     await settle();
-    // Leaving ended the preview; the next one of the scene waits for that end.
-    pending(calls, "DELETE", "/settings/clock/preview?session=s1").answer(200, sceneSettings("d1", "clock", { epoch, rev }), `${epoch}-${10 + rev}`);
+    // Leaving ends the preview (finding 6); the next one of the scene waits for that end.
+    for (const end of calls.filter((c) => !c.answered && c.method === "DELETE"))
+      end.answer(200, sceneSettings("d1", "clock", { epoch, rev }), `${epoch}-${10 + rev}`);
     await settle();
     await open();
     const after = await preview("4");
