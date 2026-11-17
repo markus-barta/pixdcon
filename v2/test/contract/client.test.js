@@ -804,6 +804,19 @@ const decodeHtml = (/** @type {string} */ text) =>
       : (ENTITIES[name.toLowerCase()] ?? all),
   );
 
+let fakeDomRevision = 0;
+/** @type {WeakMap<FakeElement, {revision: number, one: Map<string, FakeElement|null>, all: Map<string, FakeElement[]>}>} */
+const fakeQueryResults = new WeakMap();
+/** Cache only until the next tree/attribute change. @param {FakeElement} element */
+function fakeQueryCache(element) {
+  let cache = fakeQueryResults.get(element);
+  if (!cache || cache.revision !== fakeDomRevision) {
+    cache = { revision: fakeDomRevision, one: new Map(), all: new Map() };
+    fakeQueryResults.set(element, cache);
+  }
+  return cache;
+}
+
 class FakeNode {
   constructor() {
     /** @type {FakeNode|null} */
@@ -814,6 +827,10 @@ class FakeNode {
   /** @returns {FakeElement|null} */
   get parentElement() {
     return this.parentNode instanceof FakeElement ? this.parentNode : null;
+  }
+  /** Whether focus can return to this browser node after a dialog closes. @returns {boolean} */
+  get isConnected() {
+    return this === fakeDocument.body || Boolean(this.parentNode?.isConnected);
   }
   get firstChild() {
     return this.childNodes[0] ?? null;
@@ -832,6 +849,7 @@ class FakeNode {
       child.remove();
       child.parentNode = this;
       this.childNodes.push(child);
+      fakeDomRevision += 1;
     }
   }
   /** @param {...(FakeNode|string)} nodes */
@@ -844,6 +862,7 @@ class FakeNode {
     const siblings = this.parentNode.childNodes;
     siblings.splice(siblings.indexOf(this), 1);
     this.parentNode = null;
+    fakeDomRevision += 1;
   }
 }
 
@@ -876,6 +895,8 @@ const fakeDocument = {
  * @type {Map<string, Array<Array<{combinator: string, tag: string|null, id: string|null, classes: string[], attrs: Array<{name: string, value?: string}>}>>>}
  */
 const parsedSelectors = new Map();
+/** Read-only class-token sets, shared by equal class attributes. @type {Map<string, Set<string>>} */
+const fakeClassTokens = new Map();
 
 /**
  * @param {string} selector
@@ -932,8 +953,12 @@ function parseSelectorText(selector) {
 function matchesCompound(element, part) {
   if (part.tag && part.tag !== "*" && element.localName !== part.tag) return false;
   if (part.id && element.getAttribute("id") !== part.id) return false;
-  const classes = element.className.split(/\s+/);
-  for (const cls of part.classes) if (!classes.includes(cls)) return false;
+  if (part.classes.length) {
+    const text = element.className;
+    let classes = fakeClassTokens.get(text);
+    if (!classes) { classes = new Set(text.split(/\s+/)); fakeClassTokens.set(text, classes); }
+    for (const cls of part.classes) if (!classes.has(cls)) return false;
+  }
   for (const attr of part.attrs) {
     const value = element.getAttribute(attr.name);
     if (value === null || (attr.value !== undefined && value !== attr.value)) return false;
@@ -955,10 +980,11 @@ function matchesSequence(element, sequence, i) {
 }
 
 class FakeEvent {
-  /** @param {string} type @param {{key?: string}} [init] */
+  /** @param {string} type @param {{key?: string, shiftKey?: boolean}} [init] */
   constructor(type, init = {}) {
     this.type = type;
     this.key = init.key;
+    this.shiftKey = Boolean(init.shiftKey);
     /** @type {any} */
     this.target = null;
     this.defaultPrevented = false;
@@ -984,10 +1010,20 @@ class FakeElement extends FakeNode {
     this.listeners = new Map();
     /** @type {Record<string, string>} */
     this.style = { cssText: "" };
+    this.clientWidth = 320;
+    this.clientHeight = 160;
+    this.scrollTop = 0;
+    this.scrollHeight = 160;
+    /** @type {Record<string, any>|null} */
+    this._dataset = null;
+  }
+  /** The browser's dataset object is needed only when accessed. @returns {Record<string, any>} */
+  get dataset() {
+    if (this._dataset) return this._dataset;
     const element = this;
     const attr = (/** @type {string|symbol} */ prop) =>
       `data-${String(prop).replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
-    this.dataset = new Proxy(
+    this._dataset = new Proxy(
       {},
       {
         get: (_, prop) => element.getAttribute(attr(prop)) ?? undefined,
@@ -997,6 +1033,7 @@ class FakeElement extends FakeNode {
         },
       },
     );
+    return this._dataset;
   }
   get children() {
     return /** @type {FakeElement[]} */ (this.childNodes.filter((node) => node instanceof FakeElement));
@@ -1010,11 +1047,13 @@ class FakeElement extends FakeNode {
   }
   /** @param {string} name @param {unknown} value */
   setAttribute(name, value) {
-    this.attrs.set(name.toLowerCase(), String(value));
+    const key = name.toLowerCase(); const next = String(value);
+    if (this.attrs.get(key) !== next) fakeDomRevision += 1;
+    this.attrs.set(key, next);
   }
   /** @param {string} name */
   removeAttribute(name) {
-    this.attrs.delete(name.toLowerCase());
+    if (this.attrs.delete(name.toLowerCase())) fakeDomRevision += 1;
   }
   /** @param {string} name */
   hasAttribute(name) {
@@ -1084,8 +1123,12 @@ class FakeElement extends FakeNode {
       for (const listener of [...(node.listeners.get(event.type) ?? [])]) listener.call(node, event);
     return !event.defaultPrevented;
   }
-  /** @param {string} selector */
+  /** @param {string} selector @returns {boolean} */
   matches(selector) {
+    if (selector.includes(":not(")) return selector.split(",").some((part) => {
+      const omitted = [...part.matchAll(/:not\(([^)]+)\)/g)].map((m) => m[1]);
+      return this.matches(part.replace(/:not\([^)]+\)/g, "")) && !omitted.some((not) => this.matches(not));
+    });
     return parseSelector(selector).some((sequence) => matchesSequence(this, sequence, sequence.length - 1));
   }
   /** @param {string} selector */
@@ -1096,20 +1139,40 @@ class FakeElement extends FakeNode {
   }
   /** @param {string} selector @returns {FakeElement[]} */
   querySelectorAll(selector) {
+    const cache = fakeQueryCache(this);
+    const previous = cache.all.get(selector);
+    if (previous) return previous.slice();
     /** @type {FakeElement[]} */
     const found = [];
     const walk = (/** @type {FakeElement} */ element) => {
-      for (const child of element.children) {
+      for (const child of element.childNodes) {
+        if (!(child instanceof FakeElement)) continue;
         if (child.matches(selector)) found.push(child);
         walk(child);
       }
     };
     walk(this);
-    return found;
+    cache.all.set(selector, found);
+    cache.one.set(selector, found[0] ?? null);
+    return found.slice();
   }
-  /** @param {string} selector */
+  /** @param {string} selector @returns {FakeElement|null} */
   querySelector(selector) {
-    return this.querySelectorAll(selector)[0] ?? null;
+    const cache = fakeQueryCache(this);
+    if (cache.one.has(selector)) return cache.one.get(selector) ?? null;
+    /** Native querySelector stops at the first tree-order match. @param {FakeElement} element @returns {FakeElement|null} */
+    const first = (element) => {
+      for (const child of element.childNodes) {
+        if (!(child instanceof FakeElement)) continue;
+        if (child.matches(selector)) return child;
+        const found = first(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const found = first(this);
+    cache.one.set(selector, found);
+    return found;
   }
 }
 
@@ -2236,6 +2299,13 @@ const R4_CHANGES = {
 const R4_STEPS = {
   "a newer draft pixdcon takes": ["draft"],
   "the new owner slides": ["owner"],
+  "equal value retyped": ["draft"],
+  "value changed away and back": ["draft"],
+  "reset replaced by an edit": ["draft"],
+  "reset replaced by equal default": ["draft"],
+  "another field reset": ["draft"],
+  "newer config in the same epoch": ["resource"],
+  "replacement overlay id": ["overlay"],
 };
 const R4_ENDS = /** @type {const} */ (["success", "500", "timeout"]);
 /** @typedef {(typeof R4_ENDS)[number] | "refused"} R4End */
@@ -2248,7 +2318,7 @@ const R4_ENDS = /** @type {const} */ (["success", "500", "timeout"]);
 const R4_POINTS = ["after the change", "after the end", "after the end, at the next render", "after everything was answered"];
 const R4_LAST = R4_POINTS.length - 1;
 /** config.json as pixdcon gives it: distinguishable per run, so a text of another run shows. @param {string} epoch */
-const R4_RAW = (epoch) => `{"devices": [], "run": "${epoch}"}`;
+const R4_RAW = (epoch, version = 1) => version === 1 ? `{"devices": [], "run": "${epoch}"}` : `{"devices": [], "run": "${epoch}", "version": ${version}}`;
 /**
  * The scene definition of Clock: two fields, so a Save of one with an edit
  * of the other typed meanwhile is a story. n has a range: pixdcon judges a
@@ -2374,6 +2444,7 @@ function r4World(spec) {
     previews: new Set(),
     layers: new Map(),
     drafts: new Map(),
+    configVersion: 1,
     spec: { ...spec, devices: (spec.devices ?? []).map((d) => ({ ...d, o: { ...d.o } })) },
   };
   for (const device of spec.devices ?? []) world.lives.set(device.name, 1);
@@ -2393,6 +2464,8 @@ const r4Now = (world) => ({
   schemas: new Map(world.schemas),
   saved: new Map([...world.saved].map(([key, values]) => [key, { ...values }])),
   devices: world.spec.devices.map((/** @type {any} */ d) => ({ ...d, o: { ...d.o } })),
+  configVersion: world.configVersion,
+  overlays: world.spec.overlays?.(world.epoch, world.epochs.indexOf(world.epoch)) ?? [],
 });
 
 /** A scene in one life of a device in the run pixdcon is in: what a preview it holds, and its memory of the page's drafts, belongs to. @param {any} world @param {string} device @param {string} scene */
@@ -2428,7 +2501,7 @@ function r4Snapshot(world) {
   world.rev += 1;
   const devices = (world.spec.devices ?? []).map((/** @type {any} */ d) => r4View(world, d.name, world.epoch, world.lives.get(d.name), world.rev));
   const data = {
-    ...snapshot(world.epoch, world.seq, devices, { overlays: world.spec.overlays?.(world.epoch) ?? [], incarnations: Math.max(0, ...world.lives.values()) }),
+    ...snapshot(world.epoch, world.seq, devices, { overlays: world.spec.overlays?.(world.epoch, world.epochs.indexOf(world.epoch)) ?? [], incarnations: Math.max(0, ...world.lives.values()) }),
     scenes: SCENES,
   };
   const decision = applyDefaultEvent({ type: "snapshot", epoch: world.epoch, seq: world.seq, stream: world.stream, data });
@@ -2499,10 +2572,10 @@ function r4Answer(world, call) {
     return r4Settings(world, call, device, scene);
   }
   if (path === "/api/v2/config/raw")
-    return method === "GET" ? { text: R4_RAW(call.epoch), state: { ...CONFIG_STATE, rev: call.rev } } : { state: { ...CONFIG_STATE, rev: call.rev }, diff: {} };
+    return method === "GET" ? { text: R4_RAW(call.epoch, call.configVersion), state: { ...CONFIG_STATE, rev: call.rev } } : { state: { ...CONFIG_STATE, rev: call.rev }, diff: {} };
   if (path === "/api/v2/config/reload") return { state: { ...CONFIG_STATE, rev: call.rev } };
   if (path === "/api/v2/log") return R4_LOG(call.epoch);
-  if (/^\/api\/v2\/overlays\/[^/]+$/.test(path)) return { overlays: world.spec.overlays?.(call.epoch) ?? [], pending: false, confirmed: true };
+  if (/^\/api\/v2\/overlays\/[^/]+$/.test(path)) return { overlays: call.overlays, pending: false, confirmed: true };
   if (/^\/api\/v2\/scenes\/[^/]+\/copy$/.test(path)) return { scene: { key: "clock-copy" }, path: "./scenes/clock-copy.js" };
   // Add device: what it brings is a device the story does not show; the answer carries no view.
   if (path === "/api/v2/devices") return {};
@@ -2607,6 +2680,11 @@ function r4Server(world) {
           answered: false,
           /** The status pixdcon answered with; 0: no answer reached the page. */
           status: 0,
+          // The story's edit objects, captured at submission: values alone
+          // cannot acknowledge an equal-valued replacement (gate F).
+          submitted: new Map(world.story?.edits ?? []),
+          formScope: world.story?.page === "device" ? r4FormScope(world.story) : null,
+          opening: world.story?.opening,
           /** @param {number} status @param {unknown} [answer] */
           answer(status, answer) {
             if (call.answered) return;
@@ -2759,7 +2837,13 @@ const r4FormScope = (ctx) => `${r4Scope(ctx.world, ctx.world.spec.devices[0].nam
  */
 function r4Edit(ctx, key, value) {
   r4Type(field(ctx.root, key), value);
-  ctx.edits.set(key, { value, scope: r4FormScope(ctx), opening: ctx.opening, at: ctx.calls.length });
+  ctx.edits.set(key, { value, intent: "set", scope: r4FormScope(ctx), opening: ctx.opening, at: ctx.calls.length });
+}
+/** Reset is an edit with its own identity and intent, even at an equal value. @param {any} ctx @param {string} key */
+function r6Reset(ctx, key) {
+  const value = String(ctx.world.schemas.get(r4Showing(ctx.world))[key].default);
+  r4Click(ctx.root.querySelector(`[data-act="reset"][data-key="${key}"]`));
+  ctx.edits.set(key, { value, intent: "reset", scope: r4FormScope(ctx), opening: ctx.opening, at: ctx.calls.length });
 }
 /** The display of the story's device shows the other scene (the live channel): another scope of the settings form. @param {any} ctx @returns {string} the scene it shows now */
 function r4Switch(ctx) {
@@ -2866,6 +2950,7 @@ const R4_PAGES = {
         ["mode", ["epoch", "life"], `${r4Text(root.querySelector(".mode-hint"))} | ${root.querySelectorAll('[data-act="mode"]').map((/** @type {any} */ b) => (b.disabled ? "x" : "o")).join("")}`],
         // The slider shows the level of its owner: the brightness slot of the device's life whose own request typed it (gate r5a E).
         ["brightness", ["epoch", "life", "owner"], `${r4Value(range)}${range?.disabled ? " [disabled]" : ""} | ${root.querySelectorAll('[data-act="bri-mode"]').map((/** @type {any} */ b) => (b.disabled ? "x" : "o")).join("")}`],
+        ["brightness feedback", ["epoch", "life", "owner"], r4Text(root.querySelector(".bri-hint"))],
         ["scene", ["epoch", "life"], `${r4Text(root.querySelector(".scene-below"))} | ${r4Text(root.querySelector(".v-src"))}`],
         ["action and adopt", ["epoch", "life"], `${r4Button(root.querySelector('.acts [data-act]'))} | ${r4Button(root.querySelector('.dev-head [data-act="adopt"]'))}`],
         // Create copy is an operation in the slot of the scene (`copy:<scene>`): its outcome is the scene's.
@@ -2876,7 +2961,7 @@ const R4_PAGES = {
   },
   overlays: {
     module: () => overlaysPage,
-    pieces: (root) => [["row o1 Clear and outcome", ["epoch"], `${r4Button(root.querySelector('[data-act="clear"][data-id="o1"]'))} | ${r4Text(root.querySelector('[data-id="o1"]')?.parentNode)}`]],
+    pieces: (root) => ["o1", "o2", "o3"].map((id) => [`row ${id} Clear and outcome`, ["epoch", "overlay"], `${r4Button(root.querySelector(`[data-act="clear"][data-id="${id}"]`))} | ${r4Text(root.querySelector(`[data-id="${id}"]`)?.closest(".ot-row"))}`]),
   },
   health: {
     module: () => healthPage,
@@ -2993,7 +3078,7 @@ const R4_KINDS = [
   },
   {
     name: "overlays clear", site: "web/js/pages/overlays.js:153", page: "overlays", request: ["DELETE", "/api/v2/overlays/o1"],
-    world: { devices: [{ name: "d1", o: { source: "overlay" } }], overlays: (/** @type {string} */ epoch) => [record("o1", "scene", { device: "d1", value: epoch.endsWith("1") ? "weather" : "clock" })] },
+    world: { devices: [{ name: "d1", o: { source: "overlay" } }], overlays: (/** @type {string} */ epoch, run = epoch.endsWith("1") ? 0 : 1) => [record("o1", "scene", { device: "d1", value: run === 0 ? "weather" : "clock" })] },
     begin: (ctx) => r4Click(ctx.root.querySelector('[data-act="clear"][data-id="o1"]')),
   },
   { name: "devices scene", site: "web/js/pages/devices.js:330", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/scene"], begin: (ctx) => typeInto(ctx.root.querySelector(".dt-row select"), "weather", "change") },
@@ -3123,6 +3208,34 @@ const R4_KINDS = [
   { name: "health log", site: "web/js/pages/health.js:187", page: "health", world: r4d1(), request: ["GET", "/api/v2/log"], atOpen: true },
 ];
 
+/** Weather has saved m=8 and default m=6: Reset must remove the saved layer. @param {any} ctx */
+async function r6ResetPreviewed(ctx) {
+  r6Reset(ctx, "m");
+  await settle();
+  r4Pending(ctx, "PUT", "/settings/weather/preview").ok();
+  await settle();
+}
+R4_KINDS.push(
+  {
+    name: "settings reset preview", site: "web/js/components/settings-form.js:892", page: "device", world: r4d1({ scene: "weather" }), request: ["PUT", "/settings/weather/preview"],
+    early: true, begin: (ctx) => r6Reset(ctx, "m"), commutes: ["membership"],
+    sent: (op) => assert.deepEqual(op.body.values, { m: 6 }, "Reset previews the default, not the saved value"),
+  },
+  {
+    name: "settings reset save", site: "web/js/view/drafts.js:168", page: "device", world: r4d1({ scene: "weather" }), request: ["PUT", "/settings/weather"],
+    setup: r6ResetPreviewed, again: async (ctx) => {
+      // The first Reset was already processed: the new opening may have
+      // no saved layer left to reset. Carry on with a fresh edit instead.
+      r4Edit(ctx, "m", "7");
+      await settle();
+      ctx.calls.find((/** @type {any} */ c) => !c.answered && c !== ctx.op && c.method === "PUT" && c.path.endsWith("/settings/weather/preview"))?.ok();
+      await settle();
+    }, begin: (ctx) => r4Click(saveButton(ctx.root)),
+    commutes: ["newer draft", "other field", "schema"],
+    sent: (op) => assert.deepEqual([op.body.set, op.body.reset], [{}, ["m"]], "Save removes the saved layer, not set it to the default"),
+  },
+);
+
 /**
  * The combinations the stand-in DOM offers no way to make, each with the
  * reason its probe must meet: the probe begins the operation and tries the
@@ -3136,7 +3249,7 @@ const R4_KINDS = [
 function r4Unreachable(kind, change) {
   if (change === "type" && !R4_PAGES[kind.page].type && !(kind.page === "devices" && !(kind.world.devices ?? []).length)) return `the ${kind.page} page has no field to type into`;
   if ((change === "commit" || change === "newer draft" || change === "other field") && kind.page !== "device") return `the ${kind.page} page has no settings form`;
-  if (change === "commit" && ["settings save", "settings save rejected", "settings revert", "settings clear overlays"].includes(kind.name))
+  if (change === "commit" && ["settings save", "settings reset save", "settings save rejected", "settings revert", "settings clear overlays"].includes(kind.name))
     return "Save, Revert and Clear are one busy slot: Save stays disabled while the operation runs";
   // The Save is clicked and sent, and pixdcon refuses it by the same definition that refuses the preview: nothing is committed.
   if (change === "commit" && kind.name === "settings preview rejected") return R4_NO_COMMIT;
@@ -3357,6 +3470,28 @@ const R4_STEP = {
     await r4FormReady(ctx);
     r4Edit(ctx, "n", "0");
   },
+  async "equal value retyped"(ctx) {
+    await r4FormReady(ctx);
+    r4Edit(ctx, "n", "2");
+  },
+  async "value changed away and back"(ctx) {
+    await r4FormReady(ctx);
+    r4Edit(ctx, "n", "3");
+    await settle();
+    r4Edit(ctx, "n", "2");
+  },
+  async "reset replaced by equal default"(ctx) {
+    await r4FormReady(ctx);
+    r4Edit(ctx, "m", "6");
+  },
+  async "reset replaced by an edit"(ctx) {
+    await r4FormReady(ctx);
+    r4Edit(ctx, "m", "7");
+  },
+  async "another field reset"(ctx) {
+    await r4FormReady(ctx);
+    r6Reset(ctx, "m");
+  },
   "the new owner slides"(ctx) {
     const range = ctx.root.querySelector('input[type="range"]');
     if (!range || range.disabled) throw new R4Unreachable(R4_NO_OWNER);
@@ -3419,27 +3554,31 @@ function r4Revalidation(ctx, final) {
  * its list itself.
  *
  * @param {any} ctx
- * @returns {{found: string[], pending: Record<string, number>}} pending: the edits a Save has still to send
+ * @returns {{found: string[], pending: Record<string, number>, resets: string[]}} pending: the sets and resets a Save has still to send
  */
 function r4Survival(ctx) {
   /** @type {string[]} */
   const found = [];
   /** @type {Record<string, number>} */
   const pending = {};
-  if (ctx.page !== "device" || !ctx.root) return { found, pending };
+  const resets = /** @type {string[]} */ ([]);
+  if (ctx.page !== "device" || !ctx.root) return { found, pending, resets };
   const scene = r4Showing(ctx.world);
   const here = r4FormScope(ctx);
   for (const [key, edit] of ctx.edits) {
     if (edit.scope !== here || edit.opening !== ctx.opening) continue;
-    const saved = ctx.calls.slice(edit.at).some((/** @type {any} */ c) => c.method === "PUT" && c.path.endsWith(`/settings/${scene}`) && c.status === 200 && String(c.body?.set?.[key]) === edit.value);
+    const saved = ctx.calls.some((/** @type {any} */ c) => c.method === "PUT" && c.path.endsWith(`/settings/${scene}`) && c.status === 200 && c.submitted?.get(key) === edit && (edit.intent === "reset" ? c.body?.reset?.includes(key) : String(c.body?.set?.[key]) === edit.value));
     const shown = r4Value(field(ctx.root, key));
     const marker = r4Marker(ctx.root, key);
     const what = `the edit ${key} = ${edit.value} of the story (${saved ? "a Save that pixdcon answered carried it" : "neither saved nor reverted, its scope and opening still shown"})`;
     if (shown !== edit.value) found.push(`${what} is gone: its field reads ${shown}`);
     else if (!saved && !/^(previewing|not previewed)/.test(marker)) found.push(`${what} is gone: the form holds no edit of ${key}, its row says "${marker}"`);
-    if (!saved) pending[key] = Number(edit.value);
+    if (!saved) {
+      if (edit.intent === "reset") resets.push(key);
+      else pending[key] = Number(edit.value);
+    }
   }
-  return { found, pending };
+  return { found, pending, resets };
 }
 
 /**
@@ -3449,10 +3588,10 @@ function r4Survival(ctx) {
  * the form does not offer Save though such edits remain, it says why: the
  * device is not in config.json, or a row says its edit is not taken.
  *
- * @param {any} ctx @param {Record<string, number>} pending what the story holds as still to be saved
+ * @param {any} ctx @param {Record<string, number>} pending what the story holds as still to be saved @param {string[]} [resets]
  * @returns {Promise<{sends: string|null, found: string[]}>} sends: what it sent, as a piece of the comparison; null: the page has no settings form
  */
-async function r4NextSave(ctx, pending) {
+async function r4NextSave(ctx, pending, resets = []) {
   /** @type {string[]} */
   const found = [];
   if (ctx.page !== "device" || !ctx.root?.querySelector(".set-body")) return { sends: null, found };
@@ -3460,7 +3599,7 @@ async function r4NextSave(ctx, pending) {
   const save = saveButton(ctx.root);
   if (!save || save.disabled) {
     const why = /Add the device to config\.json/.test(r4Text(ctx.root.querySelector(".set-desc"))) || ctx.root.querySelectorAll(".set-body .mk").some((/** @type {any} */ mk) => /^not previewed, not saved/.test(r4Text(mk)));
-    if (Object.keys(pending).length && !why) found.push(`the next Save: the form does not offer Save and says no reason, though the story's edits ${expected} are still to be saved`);
+    if ((Object.keys(pending).length || resets.length) && !why) found.push(`the next Save: the form does not offer Save and says no reason, though the story's edits ${expected}${resets.length ? ` and resets ${JSON.stringify(resets)}` : ""} are still to be saved`);
     return { sends: "Save is not offered", found };
   }
   const before = ctx.calls.length;
@@ -3473,7 +3612,29 @@ async function r4NextSave(ctx, pending) {
   }
   const set = JSON.stringify(Object.fromEntries(Object.entries(put.body?.set ?? {}).sort()));
   if (set !== expected) found.push(`the next Save sends set ${set}: the story's edits that are still to be saved are ${expected}`);
+  if (JSON.stringify([...(put.body?.reset ?? [])].sort()) !== JSON.stringify([...resets].sort())) found.push(`the next Save sends reset ${JSON.stringify(put.body?.reset)}: the story still intends reset ${JSON.stringify(resets)}`);
   return { sends: `set ${set} · reset ${JSON.stringify([...(put.body?.reset ?? [])].sort())}`, found };
+}
+
+/** Every Save, including the first and the follow-up, carries exactly the ledger's sets and resets. @param {any} ctx @returns {string[]} */
+function r6SaveBodies(ctx) {
+  const found = [];
+  for (const [index, call] of ctx.calls.entries()) {
+    if (call.method !== "PUT" || !/\/settings\/[^/]+$/.test(call.path)) continue;
+    const set = /** @type {Record<string, number>} */ ({});
+    const reset = /** @type {string[]} */ ([]);
+    for (const [key, edit] of call.submitted ?? []) {
+      if (edit.scope !== call.formScope || edit.opening !== call.opening) continue;
+      const acknowledged = ctx.calls.slice(0, index).some((/** @type {any} */ before) => before.status === 200 && before.method === "PUT" && before.path === call.path && before.submitted?.get(key) === edit);
+      if (acknowledged) continue;
+      if (edit.intent === "reset") reset.push(key);
+      else set[key] = Number(edit.value);
+    }
+    const actual = { set: Object.fromEntries(Object.entries(call.body?.set ?? {}).sort()), reset: [...(call.body?.reset ?? [])].sort() };
+    const expected = { set: Object.fromEntries(Object.entries(set).sort()), reset: reset.sort() };
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) found.push(`Save request ${index + 1} sends ${JSON.stringify(actual)}; submitted story identities intend ${JSON.stringify(expected)}`);
+  }
+  return found;
 }
 
 /**
@@ -3525,6 +3686,7 @@ async function r4Run(t, kind, change, end, mode, modules, last = false) {
   const steps = r4Steps(change);
   /** @type {any} */
   const ctx = { world, calls: r4Server(world), kind, page: null, root: null, op: null, modules, changed: new Set(steps.flatMap(r4StepChanges)), edits: new Map(), shows: 0, opening: 0 };
+  world.story = ctx;
   /** The change of the story: its single changes, one after the other. */
   const make = async () => {
     for (const step of steps) {
@@ -3670,14 +3832,17 @@ async function r4Run(t, kind, change, end, mode, modules, last = false) {
     // The story's edits survive, each with its value, and the next Save carries exactly them (gate r5a B).
     const survival = r4Survival(ctx);
     absolute.push(...survival.found.map((found) => `${R4_POINTS[R4_LAST]}: ${found}`));
-    const next = await r4NextSave(ctx, survival.pending);
-    absolute.push(...next.found);
+    const next = await r4NextSave(ctx, survival.pending, survival.resets);
+    absolute.push(...next.found, ...r6SaveBodies(ctx));
     return { points, changed: ctx.changed, absolute, definition, nextSave: next.sends, replacing, calls: ctx.calls, sent: ctx.calls.map(r4Request), op: mode === "case" && ctx.op ? r4Request(ctx.op) : null };
   } finally {
     r4Close(ctx);
     await r4AnswerAll(ctx);
     t.mock.timers.tick(60_000);
     await settle();
+    // Retained request records keep world; the completed ledger must not
+    // keep this unmounted DOM and its listeners alive through that world.
+    world.story = null;
   }
 }
 
@@ -3843,7 +4008,7 @@ const r4SceneScoped = (kind) => kind.name.startsWith("settings ") || kind.name =
  *
  * @param {R4Kind} kind @param {string} change
  */
-const r4Commutes = (kind, change) => /** @type {string[]} */ (kind.commutes ?? []).includes(change) || (change === "scene" && !r4SceneScoped(kind));
+const r4Commutes = (kind, change) => (kind.name === "settings save" && change === "another field reset") || /** @type {string[]} */ (kind.commutes ?? []).includes(change) || (change === "scene" && !r4SceneScoped(kind));
 
 /**
  * The changes after which the page becomes something else by answers of its
@@ -4493,6 +4658,7 @@ async function r5Main(t, edits, story) {
   const subscriptions = [];
   /** @type {any[]} */
   const requests = [];
+  /** @type {any[]} */ const frameAnswers = [];
   /** @type {any[]} */
   const errors = [];
   /** @type {any} */ let rejectBoot;
@@ -4504,10 +4670,15 @@ async function r5Main(t, edits, story) {
     subscriptions,
     requests,
     errors,
+    frameAnswers,
+    toPreview: (/** @type {any} */ frame) => {
+      assert.ok(frame, "a missing first frame cannot be parsed as an image");
+      return frame;
+    },
     request: () => bootstrap,
     requestFrame: (/** @type {string} */ name) => {
       requests.push(name);
-      return Promise.resolve({ generation: 1, frame: null });
+      return Promise.resolve({ generation: 1, frame: story === "frame" ? { rgb: new Uint8Array([1, 2, 3]), width: 1, height: 1 } : null });
     },
     subscribe: (/** @type {any} */ select, /** @type {any} */ render) => {
       subscriptions.push({ select, render });
@@ -4532,7 +4703,7 @@ async function r5Main(t, edits, story) {
       "export class ApiError extends Error {} export const request=b.request, requestFrame=b.requestFrame;",
     ),
     "./store.js": stub(
-      "export const getState=()=>b.state, subscribe=b.subscribe, setLoadError=b.setLoadError; export const applyAnswer=()=>{}, applyEvent=()=>{}, applyFrameAnswer=()=>{}, fence=()=>({}), setLive=()=>{}, tick=()=>{}, toPreview=()=>null;",
+      "export const getState=()=>b.state, subscribe=b.subscribe, setLoadError=b.setLoadError; export const applyAnswer=()=>{}, applyEvent=()=>{}, applyFrameAnswer=(owner,frame)=>b.frameAnswers.push({owner,frame}), fence=()=>({}), setLive=()=>{}, tick=()=>{}, toPreview=b.toPreview;",
     ),
     "./live.js": stub('export const connectLive=()=>({session:"r5-main"});'),
     "./router.js": stub("export const startRouter=()=>{};"),
@@ -4555,6 +4726,12 @@ async function r5Main(t, edits, story) {
       return;
     }
     assert.deepEqual(requests, ["d1"], "one frame for the first life");
+    assert.deepEqual(frameAnswers.map((answer) => answer.owner), [{ device: "d1", generation: 1, epoch: A, incarnation: 1 }], "first-frame admission captures the exact epoch and device life");
+    if (story === "frame") {
+      assert.deepEqual([...frameAnswers[0].frame.rgb], [1, 2, 3], "a present first frame reaches its captured owner");
+      return;
+    }
+    assert.equal(frameAnswers[0].frame, null, "a no-frame answer still completes its captured admission");
     const deviceSub = subscriptions.find((/** @type {any} */ sub) => sub.select(state) === state.devices);
     assert.ok(deviceSub);
     if (story === "asked") {
@@ -5555,6 +5732,97 @@ R5_STORIES.push(
 
 /** Cases that fail at fbf3f61: phase B makes each one pass and takes it off this list. */
 /** @type {Set<string>} */
+// r6 / gate F-J. Extra histories supplement every A5 story and assertion.
+/** @type {Array<{name: string, kind: string, change: string, end: R4End}>} */
+const R6_CASES = [];
+for (const change of ["equal value retyped", "value changed away and back"])
+  for (const end of R4_ENDS) R6_CASES.push({ name: `settings save × ${change} × ${end} (gate r5b F)`, kind: "settings save", change, end });
+for (const change of ["epoch", "reincarnate"])
+  for (const end of /** @type {R4End[]} */ (["500", "timeout"])) R6_CASES.push({ name: `device brightness range × ${change} × ${end} (gate r5b I, .bri-hint)`, kind: "device brightness range", change, end });
+for (const kind of ["settings reset preview", "settings reset save"])
+  for (const change of ["reset replaced by an edit", "reset replaced by equal default"])
+    for (const end of R4_ENDS) R6_CASES.push({ name: `${kind} × ${change} × ${end} (gate r5b G)`, kind, change, end });
+
+/** The old Reload GET differs from both its opening text and the newer config event, within one epoch. @param {any} module */
+async function r6RawVersion(module) {
+  return r5Raw(module, async ({ world, calls, root }) => {
+    pending(calls, "GET", "/config/raw").ok();
+    await settle();
+    world.configVersion = 2;
+    world.rev += 1;
+    r4Click(root.querySelector('[data-act="reload"]'));
+    await settle();
+    pending(calls, "POST", "/config/reload").ok();
+    await settle();
+    const older = pending(calls, "GET", "/config/raw");
+    assert.equal(older.configVersion, 2);
+    world.configVersion = 3;
+    world.rev += 1;
+    assert.equal(r4Live(world, "config", { ...CONFIG_STATE, rev: world.rev }).action, "apply");
+    const typed = R4_RAW(world.epoch, 2);
+    r4Type(root.querySelector("textarea"), typed);
+    assert.match(r4Text(root.querySelector(".edbar .state")), / · unsaved changes$/);
+    older.ok();
+    await settle();
+    for (let render = 0; render < 2; render += 1) {
+      assert.equal(r4Value(root.querySelector("textarea")), typed, "the old payload cannot change the replacement edit");
+      assert.match(r4Text(root.querySelector(".edbar .state")), / · unsaved changes$/, "a dropped fence decision cannot become the editor's saved baseline");
+      world.rev += 1;
+      r4Live(world, "device", r4View(world, "d1", world.epoch, 1, world.rev));
+      await settle();
+    }
+    r4Click(root.querySelector('[data-act="reload"]'));
+    await settle();
+    pending(calls, "POST", "/config/reload").ok();
+    await settle();
+    pending(calls, "GET", "/config/raw").ok();
+    await settle();
+    assert.equal(r4Value(root.querySelector("textarea")), R4_RAW(world.epoch, 3), "a current resource version does reach the editor");
+    assert.match(r4Text(root.querySelector(".edbar .state")), /no unsaved changes$/);
+  });
+}
+
+/** @param {any} module @param {boolean} overlap @param {R4End} end @param {any} [t] */
+async function r6Overlays(module, overlap, end, t = /** @type {any} */ (null)) {
+  const records = [record("o1", "scene", { device: "d1", value: "clock" }), record("o2", "mode", { device: "d1", value: "pause" }), record("o3", "brightness", { device: "d1", value: 44 })];
+  const world = r4World({ ...r4d1(), overlays: () => overlap ? records : records.slice(0, 1) });
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  module.page.mount(root, {});
+  const row = (/** @type {string} */ id) => root.querySelector(`[data-id="${id}"]`)?.closest(".ot-row");
+  try {
+    r4Click(root.querySelector('[data-act="clear"][data-id="o1"]'));
+    await settle();
+    const old = pending(calls, "DELETE", "/overlays/o1");
+    if (end === "timeout") t.mock.timers.tick(10_000);
+    if (overlap) {
+      assert.equal(root.querySelector('[data-act="clear"][data-id="o2"]').disabled, false, "o1 cannot disable o2's independent Clear");
+      r4Click(root.querySelector('[data-act="clear"][data-id="o2"]'));
+      await settle();
+      assert.equal(calls.filter((/** @type {any} */ c) => c.method === "DELETE").length, 2, "different overlay ids admit independent Clears");
+    } else r4Live(world, "overlays", records.slice(1));
+    await settle();
+    const third = r4Text(row("o3"));
+    if (end === "success") old.ok();
+    else if (end === "500") old.answer(500, {});
+    else { old.abandon(); t.mock.timers.tick(5_000); }
+    await settle();
+    if (overlap) {
+      assert.match(r4Text(row("o2")), /Clearing/, "o2 keeps its own pending operation");
+      pending(calls, "DELETE", "/overlays/o2").ok();
+      await settle();
+      assert.doesNotMatch(r4Text(row("o2")), /Not cleared/);
+      if (end !== "success") assert.match(r4Text(row("o1")), /Not cleared/, "o1 owns its failure");
+    } else assert.doesNotMatch(r4Text(row("o2")), /Not cleared|Clearing/, "o2 owns neither o1's pending state nor its failure");
+    assert.equal(r4Text(row("o3")), third, "every unaffected row is observed too");
+  } finally {
+    module.page.unmount();
+    root.remove();
+    await r4AnswerAll({ calls });
+  }
+}
+
 const R4_KNOWN = new Set([
   "config add device × epoch × 500",
   "config add device × epoch × 500, last",
@@ -5695,6 +5963,48 @@ const R4_KNOWN = new Set([
   "settings save × reincarnate × timeout, last",
   "settings save × schema × 500",
   "settings save × schema × timeout",
+  // r6: Reset stories expose the same phase-B ownership bugs.
+  "settings reset preview × commit × 500",
+  "settings reset preview × commit × timeout",
+  "settings reset preview × epoch × 500",
+  "settings reset preview × epoch × 500, last",
+  "settings reset preview × epoch × success",
+  "settings reset preview × epoch × success, last",
+  "settings reset preview × epoch × timeout",
+  "settings reset preview × epoch × timeout, last",
+  "settings reset preview × newer draft × 500",
+  "settings reset preview × newer draft × timeout",
+  "settings reset preview × other field × 500",
+  "settings reset preview × other field × timeout",
+  "settings reset preview × reincarnate × 500",
+  "settings reset preview × reincarnate × 500, last",
+  "settings reset preview × reincarnate × success",
+  "settings reset preview × reincarnate × success, last",
+  "settings reset preview × reincarnate × timeout",
+  "settings reset preview × reincarnate × timeout, last",
+  "settings reset preview × reset replaced by an edit × 500 (gate r5b G)",
+  "settings reset preview × reset replaced by an edit × timeout (gate r5b G)",
+  "settings reset preview × reset replaced by equal default × 500 (gate r5b G)",
+  "settings reset preview × reset replaced by equal default × timeout (gate r5b G)",
+  "settings reset preview × schema × 500",
+  "settings reset preview × schema × timeout",
+  "settings reset save × epoch × 500",
+  "settings reset save × epoch × success",
+  "settings reset save × epoch × timeout",
+  "settings reset save × membership × 500",
+  "settings reset save × membership × success",
+  "settings reset save × membership × timeout",
+  "settings reset save × reincarnate × 500",
+  "settings reset save × reincarnate × success",
+  "settings reset save × reincarnate × timeout",
+  "settings reset save × schema × 500",
+  "settings reset save × schema × timeout",
+  "settings reset save × epoch × 500, last",
+  "settings reset save × epoch × success, last",
+  "settings reset save × epoch × timeout, last",
+  "settings reset save × reincarnate × 500, last",
+  "settings reset save × reincarnate × success, last",
+  "settings reset save × reincarnate × timeout, last",
 ]);
 
 const R4_STRICT = process.env.R4_HARNESS_STRICT === "1";
@@ -5710,6 +6020,37 @@ let r4Count = 0;
 const r4Probes = [];
 /** The cases where the old operation ends last, by name. @type {string[]} */
 const r4Last = [];
+/** @param {string} name @param {string} change */
+function r6CaseKind(name, change) {
+  const kind = r4KindOf(name);
+  return change === "another field reset" ? { ...kind, world: r4d1({ scene: "weather" }), request: /** @type {[string, string]} */ (["PUT", "/settings/weather"]) } : kind;
+}
+for (const end of R4_ENDS) R6_CASES.push({ name: `settings save × another field reset × ${end} (gate r5b G)`, kind: "settings save", change: "another field reset", end });
+
+const R6_ID_STORIES = {
+  "same-value replacement cases (gate F)": ["draft"],
+  "Reset preview and Save cases (gate G)": ["draft"],
+  "Raw newer config within one epoch (gate H)": ["resource"],
+  "replacement overlay ids and overlapping Clears (gate J)": ["overlay"],
+};
+/** @type {Array<{name: string, run: (t: any) => Promise<void>}>} */
+const R6_FOCUSED = [
+  { name: "Raw Reload × newer config in the same epoch × success (gate r5b H)", run: async () => r6RawVersion(await r5Module("pages/config-raw.js")) },
+  ...[false, true].flatMap((overlap) => ["success", "500", "timeout"].map((end) => ({ name: `overlays clear × ${overlap ? "overlapping distinct ids" : "replacement overlay id"} × ${end} (gate r5b J)`, run: async (/** @type {any} */ t) => r6Overlays(await r5Module("pages/overlays.js"), overlap, /** @type {R4End} */ (end), t) }))),
+];
+for (const story of R6_CASES)
+  test(`r4 harness: r6: ${story.name}`, { todo: !R4_STRICT && R4_KNOWN.has(story.name) ? `fails at fbf3f61: ${story.name}` : undefined }, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const differences = await r4Case(t, r6CaseKind(story.kind, story.change), story.change, story.end);
+    r4Report(story.name, differences);
+    assert.deepEqual(differences, []);
+  });
+for (const story of R6_FOCUSED)
+  test(`r4 harness: r6: ${story.name}`, { todo: !R4_STRICT && R4_KNOWN.has(story.name) ? `fails at fbf3f61: ${story.name}` : undefined }, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await story.run(t);
+  });
+
 for (const kind of R4_KINDS)
   for (const change of /** @type {R4Change[]} */ (Object.keys(R4_CHANGES))) {
     const why = r4Unreachable(kind, change);
@@ -5787,7 +6128,7 @@ test("r4 harness: the matrix covers every operation kind, change and end; every 
   assert.equal(names.length, r4Count);
   for (const name of Object.keys(R4_GATE)) assert.ok(names.includes(name) || r4Last.includes(name), `${name} is a case of the matrix`);
   // The known failures are cases of the matrix too: a name that matches no case would hide nothing, and is a mistake.
-  for (const name of R4_KNOWN) assert.ok(names.includes(name) || r4CompositeNames.includes(name) || r4Last.includes(name) || R5_STORIES.some((story) => `guard story: ${story.name}` === name), `${name} (R4_KNOWN) is a case of the matrix`);
+  for (const name of R4_KNOWN) assert.ok(names.includes(name) || r4CompositeNames.includes(name) || r4Last.includes(name) || R6_CASES.some((story) => story.name === name) || R6_FOCUSED.some((story) => story.name === name) || R5_STORIES.some((story) => `guard story: ${story.name}` === name), `${name} (R4_KNOWN) is a case of the matrix`);
   t_log(
     `r4 harness: ${R4_KINDS.length} kinds × ${Object.keys(R4_CHANGES).length} changes × ends (${R4_ENDS.join(", ")}; raw save also refused; settings preview rejected: success only; settings save rejected: refused in place of success): ${combinations} combinations, ${r4Count} cases run, ${r4Probes.length} combinations (${excluded} with their ends) unreachable, each a probe that runs; ${r4Last.length} cases with the old operation ending last (reopen, epoch, reincarnate, scene, where the change is inside the kind's projection); ${r4Composites} cases of two changes; ${R4_KNOWN.size} known failures:\n  ${r4Probes.join("\n  ")}`,
   );
@@ -5803,6 +6144,20 @@ test("r4 harness: the matrix covers every operation kind, change and end; every 
  * @type {Record<string, {model: string, data: (t: any) => Promise<Array<[string, unknown, unknown]>>|Array<[string, unknown, unknown]>}>}
  */
 const R4_IDENTITIES = {
+  resource: {
+    model: "same-epoch config resource version",
+    data: async () => {
+      await r6RawVersion(await r5Module("pages/config-raw.js"));
+      return [["Raw payload within one epoch", R4_RAW("e0000001", 1), R4_RAW("e0000001", 2)]];
+    },
+  },
+  overlay: {
+    model: "overlay id (independent row and operation slot)",
+    data: async () => {
+      for (const overlap of [false, true]) await r6Overlays(await r5Module("pages/overlays.js"), overlap, "500");
+      return [["overlay id and value", record("o1", "scene", { value: "clock" }), record("o2", "mode", { value: "pause" })]];
+    },
+  },
   epoch: {
     model: "server epoch (the run of pixdcon)",
     data: () => {
@@ -5875,7 +6230,11 @@ const R4_IDENTITIES = {
       const story = await r4Run(t, r4KindOf("settings preview"), "newer draft", "success", "case");
       const previews = (story.calls ?? []).filter((/** @type {any} */ c) => c.method === "PUT" && c.path.endsWith("/settings/clock/preview"));
       assert.equal(previews.length, 2, "the story sends two previews");
+      const equal = await r4Run(t, r4KindOf("settings save"), "equal value retyped", "success", "case");
+      const equalPreviews = (equal.calls ?? []).filter((/** @type {any} */ c) => c.method === "PUT" && c.path.endsWith("/settings/clock/preview"));
+      assert.equal(equalPreviews[0].body.values.n, equalPreviews[1].body.values.n, "equal values still identify different drafts");
       return [
+        ["equal-valued replacement's own draft number (gate F)", equalPreviews[0].body.draft, equalPreviews[1].body.draft],
         ["the draft number", previews[0].body.draft, previews[1].body.draft],
         ["the value of n", previews[0].body.values.n, previews[1].body.values.n],
       ];
@@ -5947,7 +6306,7 @@ test("r4 audit: every identity of the model has data of its own in the stand-in,
   for (const [identity, { model, data }] of Object.entries(R4_IDENTITIES)) {
     // It is a change of the matrix, or a step of a story of two changes (whose probe and cases run).
     const changes = Object.entries(R4_CHANGES).filter(([, ids]) => /** @type {string[]} */ (ids).includes(identity)).map(([change]) => change);
-    const steps = Object.entries(R4_COMPOSITES).filter(([, story]) => story.steps.some((step) => r4StepChanges(step).includes(identity))).map(([story]) => `two changes: ${story}`);
+    const steps = [...Object.entries(R6_ID_STORIES).filter(([, ids]) => ids.includes(identity)).map(([story]) => `r6: ${story}`), ...Object.entries(R4_COMPOSITES).filter(([, story]) => story.steps.some((step) => r4StepChanges(step).includes(identity))).map(([story]) => `two changes: ${story}`)];
     assert.ok(changes.length + steps.length > 0, `${model}: a change of the matrix or a story of two changes changes it`);
     const pairs = await data(t);
     assert.ok(pairs.length > 0, `${model}: the stand-in has data for it`);
@@ -6401,6 +6760,1135 @@ test("r4 harness self-test: a slider cleanup that runs without its condition is 
   assert.deepEqual([r4View(world, "d1", "e-a", 1, 1), r4View(world, "d1", "e-a", 2, 1), r4View(world, "d1", "e-b", 1, 1)].map((v) => v.desired.brightness.override), [30, 35, 32]);
 });
 
+/** Browser-owned APIs used by the remaining view, route and render predicates. @param {(browser: any) => Promise<void>} story */
+async function r6Browser(story) {
+  const global = /** @type {any} */ (globalThis);
+  const saved = new Map(["window", "location", "localStorage", "navigator"].map((key) => [key, Object.getOwnPropertyDescriptor(global, key)]));
+  const document = /** @type {any} */ (fakeDocument);
+  const documentKeys = ["documentElement", "addEventListener", "removeEventListener", "querySelectorAll"];
+  const documentSaved = new Map(documentKeys.map((key) => [key, Object.getOwnPropertyDescriptor(document, key)]));
+  const window = /** @type {any} */ (new FakeElement("window"));
+  window.scrollTo = () => {};
+  const storage = new Map();
+  const copies = /** @type {string[]} */ ([]);
+  const location = { hash: "#/devices", search: "", replace(/** @type {string} */ value) { this.hash = value; } };
+  Object.assign(document, {
+    documentElement: makeElement("html"),
+    addEventListener: (/** @type {string} */ type, /** @type {any} */ listener) => fakeDocument.body.addEventListener(type, listener),
+    removeEventListener: (/** @type {string} */ type, /** @type {any} */ listener) => fakeDocument.body.removeEventListener(type, listener),
+    querySelectorAll: (/** @type {string} */ selector) => fakeDocument.body.querySelectorAll(selector),
+  });
+  Object.assign(global, { window, location, localStorage: { getItem: (/** @type {string} */ key) => storage.get(key) ?? null, setItem: (/** @type {string} */ key, /** @type {string} */ value) => storage.set(key, value), removeItem: (/** @type {string} */ key) => storage.delete(key) } });
+  Object.defineProperty(global, "navigator", { configurable: true, value: { clipboard: { writeText: (/** @type {string} */ value) => { copies.push(value); return Promise.resolve(); } } } });
+  try { await story({ window, location, storage, copies, document }); }
+  finally {
+    for (const [key, descriptor] of saved) if (descriptor) Object.defineProperty(global, key, descriptor); else Reflect.deleteProperty(global, key);
+    for (const [key, descriptor] of documentSaved) if (descriptor) Object.defineProperty(document, key, descriptor); else Reflect.deleteProperty(document, key);
+  }
+}
+
+test("r4 harness: guard probe r6: browser theme precedence, saved choices and storage failure", async () => r6Browser(async ({ location, storage, document }) => {
+  const theme = await r5Module("theme.js");
+  for (const saved of ["system", "light", "dark", "invalid"])
+    for (const address of ["", "light", "dark", "invalid"]) {
+      storage.set("pixdcon.theme", saved);
+      location.search = address ? `?theme=${address}` : "";
+      const expected = address === "light" || address === "dark" ? address : saved === "light" || saved === "dark" ? saved : "system";
+      assert.equal(theme.currentTheme(), expected);
+      assert.equal(theme.savedTheme(), saved === "light" || saved === "dark" ? saved : "system");
+      theme.applyTheme();
+      assert.equal(document.documentElement.getAttribute("data-theme"), expected === "system" ? null : expected);
+    }
+  location.search = "";
+  for (const value of ["dark", "light", "system"]) { theme.setTheme(value); assert.equal(theme.currentTheme(), value); }
+  for (const value of ["semver", "pretty"]) { theme.setVersionDisplay(value); assert.equal(theme.versionDisplay(), value); }
+  const local = /** @type {any} */ (globalThis).localStorage;
+  local.getItem = () => { throw new Error("storage denied"); };
+  assert.equal(theme.savedTheme(), "system");
+  assert.equal(theme.versionDisplay(), "pretty");
+  local.setItem = local.removeItem = () => { throw new Error("storage denied"); };
+  assert.doesNotThrow(() => theme.setTheme("system"));
+  assert.doesNotThrow(() => theme.setVersionDisplay("semver"));
+}));
+
+test("r4 harness: guard probe r6: route identity, same-route reuse, replacement pages and enlarged callbacks", async () => r6Browser(async ({ location, window }) => {
+  const log = /** @type {any[]} */ ([]);
+  const global = /** @type {any} */ (globalThis);
+  global.__r6Routes = { log, zoom: null };
+  const stub = (/** @type {string} */ code) => `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
+  const replace = /** @type {Record<string, string>} */ ({});
+  for (const route of ["config", "config-raw", "device", "devices", "health", "overlays"])
+    replace[`./pages/${route}.js`] = stub(`export const page={mount(root,params){globalThis.__r6Routes.log.push(['mount',${JSON.stringify(route)},params]);root.innerHTML='<h1>route</h1>';},unmount(){globalThis.__r6Routes.log.push(['unmount',${JSON.stringify(route)}]);}};`);
+  replace["./components/enlarged-preview.js"] = stub("export function openEnlargedPreview(name,opener,options){globalThis.__r6Routes.zoom={name,options};return {close(){globalThis.__r6Routes.log.push(['close',name]);options.onClose();}};}");
+  const router = await r5Module("router.js", [], replace);
+  const examples = [
+    ["#/devices", "devices", {}], ["#/devices/a%20b", "device", { name: "a b" }], ["#/devices/d1/recovery", "device", { name: "d1", recovery: "1" }],
+    ["#/devices/d2/enlarged", "enlarged", { name: "d2" }], ["#/overlays", "overlays", {}], ["#/config/raw", "config-raw", {}], ["#/config/d1", "config", { open: "d1" }],
+    ["#/config", "config", {}], ["#/health", "health", {}], ["#/unknown", "devices", {}], ["#/devices/%zz", "device", { name: "%zz" }], ["#///", "devices", {}],
+  ];
+  for (const [hash, route, params] of examples) assert.deepEqual(router.parseHash(hash), { route, params, nav: String(route).startsWith("config") ? "config" : route === "device" || route === "enlarged" ? "devices" : route });
+  const root = pageRoot();
+  const nav = makeElement("a"); nav.setAttribute("data-nav", "devices"); fakeDocument.body.append(nav);
+  try {
+    const running = router.startRouter(root);
+    assert.equal(nav.getAttribute("aria-current"), "page");
+    assert.deepEqual(running.current(), { route: "devices", params: {} });
+    const before = log.length;
+    window.dispatchEvent(new FakeEvent("hashchange"));
+    assert.equal(log.length, before, "same route and params reuse the opening");
+    for (const hash of ["#/devices/d1", "#/devices/d2", "#/config/d1", "#/health", "#/overlays", "#/config/raw"]) {
+      running.go(hash); window.dispatchEvent(new FakeEvent("hashchange"));
+      assert.deepEqual(running.current(), { route: router.parseHash(hash).route, params: router.parseHash(hash).params });
+      assert.equal(fakeDocument.activeElement, root.querySelector("h1"), "replacement page receives focus");
+    }
+    running.go("#/devices/d1/enlarged"); window.dispatchEvent(new FakeEvent("hashchange"));
+    assert.equal(global.__r6Routes.zoom.name, "d1");
+    const zoom = global.__r6Routes.zoom;
+    zoom.options.onStep("d2"); assert.equal(location.hash, "#/devices/d2/enlarged");
+    window.dispatchEvent(new FakeEvent("hashchange")); assert.equal(global.__r6Routes.zoom, zoom, "enlarged stepping keeps its own opening");
+    zoom.options.onClose(); assert.equal(location.hash, "#/config/raw");
+    running.go("#/devices/d1/enlarged"); window.dispatchEvent(new FakeEvent("hashchange"));
+    running.go("#/health"); window.dispatchEvent(new FakeEvent("hashchange"));
+    assert.equal(location.hash, "#/health", "closing for a new route cannot restore the old address");
+    assert.equal(nav.hasAttribute("aria-current"), false);
+  } finally { root.remove(); nav.remove(); Reflect.deleteProperty(global, "__r6Routes"); }
+}));
+
+test("r4 harness: guard probe r6: pixel frame validity, canvas pixels, grid, veil, cache and fit resize", async (t) => r6Browser(async () => {
+  const pixel = await r5Module("components/pixel-preview.js");
+  const images = /** @type {any[]} */ ([]);
+  t.mock.method(/** @type {any} */ (FakeCanvas.prototype), "getContext", () => ({ createImageData: (/** @type {number} */ width, /** @type {number} */ height) => ({ width, height, data: new Uint8ClampedArray(width * height * 4) }), putImageData: (/** @type {any} */ image) => images.push(image) }));
+  for (const scale of [1, 4]) {
+    const host = pageRoot();
+    const preview = pixel.createPixelPreview(host, { scale, grid: true, size: { width: 2, height: 1 }, veil: 0.6, label: "own frame" });
+    try {
+      preview.draw(null, { veil: false, reason: "waiting", spinner: false });
+      assert.equal(host.querySelector("canvas").hidden, true);
+      assert.equal(r4Text(host.querySelector(".pv-empty")), "waiting");
+      preview.draw({ width: 2, height: 1, rgb: new Uint8Array(1) }, { veil: false, reason: null });
+      assert.equal(r4Text(host.querySelector(".pv-empty")), "bad frame");
+      const frame = { width: 2, height: 1, rgb: new Uint8Array([100, 120, 140, 200, 220, 240]) };
+      for (const veil of [false, true]) {
+        const before = images.length;
+        preview.draw(frame, { veil, reason: null });
+        const image = images.at(-1);
+        assert.deepEqual([image.width, image.height], [2 * scale, scale]);
+        assert.deepEqual([...image.data.slice(0, 4)], scale === 1 ? veil ? [40, 48, 56, 255] : [100, 120, 140, 255] : veil ? [6, 7, 8, 255] : [15, 18, 21, 255]);
+        assert.equal(host.querySelector(".pv-empty").hidden, true);
+        assert.equal(host.querySelector("canvas").hidden, false);
+        preview.draw(frame, { veil, reason: null });
+        assert.equal(images.length, before + 1, "unchanged frame and render state are cached");
+      }
+      preview.setGrid(false); preview.draw(frame, { veil: false, reason: null });
+      assert.deepEqual([...images.at(-1).data.slice(0, 4)], [100, 120, 140, 255]);
+      assert.equal(host.querySelector("canvas").width, 2 * scale);
+      assert.equal(host.querySelector("canvas").height, scale);
+      if (scale === 4) {
+        preview.setGrid(true); preview.draw(frame, { veil: false, reason: null });
+        const sample = (/** @type {number} */ x, /** @type {number} */ y) => [...images.at(-1).data.slice((y * 8 + x) * 4, (y * 8 + x) * 4 + 4)];
+        assert.deepEqual(sample(1, 1), [100, 120, 140, 255], "an interior pixel is not a grid line");
+        assert.deepEqual(sample(0, 1), [15, 18, 21, 255], "vertical grid edge");
+        assert.deepEqual(sample(1, 0), [15, 18, 21, 255], "horizontal grid edge");
+        preview.setGrid(false); preview.draw(frame, { veil: false, reason: null });
+      }
+      const before = images.length;
+      preview.setGrid(false); preview.draw(frame, { veil: false, reason: null });
+      assert.equal(images.length, before, "unchanged grid does not invalidate the cache");
+      preview.resize(); preview.draw(frame, { veil: false, reason: null });
+      assert.equal(images.length, before + 1);
+      assert.equal(preview.scale(), scale);
+      const replacement = { ...frame, rgb: new Uint8Array([25, 50, 75, 125, 150, 175]) };
+      const previous = images.length;
+      preview.draw(replacement, { veil: false, reason: null });
+      assert.equal(images.length, previous + 1, "a different frame owns a new draw even with the same grid, scale and veil");
+      assert.deepEqual([...images.at(-1).data.slice(0, 4)], [25, 50, 75, 255], "the current frame's bytes reach its canvas");
+    } finally { preview.destroy(); assert.equal(host.children.length, 0); host.remove(); }
+  }
+  const host = pageRoot(); host.clientWidth = 100; host.clientHeight = 40;
+  const preview = pixel.createPixelPreview(host, { scale: "fit", grid: false, size: { width: 2, height: 1 } });
+  try {
+    assert.equal(preview.scale(), 1, "before the first draw");
+    preview.draw(null, { veil: false, reason: "loading", spinner: true });
+    assert.equal(preview.scale(), 40);
+    host.clientWidth = 1; host.clientHeight = 1; preview.resize(); preview.draw(null, { veil: false, reason: "small" });
+    assert.equal(preview.scale(), 1, "fit never scales below one");
+    const canvas = host.querySelector("canvas"); canvas.getContext = () => null;
+    assert.doesNotThrow(() => preview.draw({ width: 1, height: 1, rgb: new Uint8Array([1, 2, 3]) }, { veil: false, reason: null }));
+  } finally { preview.destroy(); host.remove(); }
+}));
+
+test("r4 harness: guard probe r6: enlarged preview follows device ids, replacement lives, keyboard, resize and close ownership", async () => r6Browser(async ({ window }) => {
+  const world = r4World({ devices: [{ name: "d1" }, { name: "d2", o: { scene: "weather", source: "overlay" } }] });
+  r4NewEpoch(world);
+  const enlarged = await r5Module("components/enlarged-preview.js");
+  const opener = pageRoot();
+  const steps = /** @type {string[]} */ ([]);
+  let closed = 0;
+  let preview = enlarged.openEnlargedPreview("d1", opener, { onStep: (/** @type {string} */ name) => steps.push(name), onClose: () => { closed += 1; } });
+  try {
+    assert.match(r4Text(fakeDocument.body.querySelector(".zoom .pos")), /1 of 2/);
+    click(fakeDocument.body.querySelector('.zoom [data-act="next"]'));
+    assert.equal(steps.at(-1), "d2");
+    assert.match(r4Text(fakeDocument.body.querySelector(".zoom .meta")), /Weather · MQTT overlay/);
+    fakeDocument.body.dispatchEvent(new FakeEvent("keydown", { key: "ArrowLeft" }));
+    assert.equal(steps.at(-1), "d1");
+    fakeDocument.body.dispatchEvent(new FakeEvent("keydown", { key: "ArrowRight" }));
+    assert.equal(steps.at(-1), "d2");
+    const canvas = fakeDocument.body.querySelector(".zoom canvas");
+    world.lives.set("d2", 2); world.rev += 1;
+    r4Live(world, "device", r4View(world, "d2", world.epoch, 2, world.rev));
+    assert.notEqual(fakeDocument.body.querySelector(".zoom canvas"), canvas, "a replacement life owns a new preview canvas");
+    window.dispatchEvent(new FakeEvent("resize"));
+    assert.match(r4Text(fakeDocument.body.querySelector(".zoom .pos")), /2 of 2/);
+    fakeDocument.body.dispatchEvent(new FakeEvent("keydown", { key: "Escape" }));
+    preview.close();
+    assert.equal(closed, 1, "close callback belongs to one opening");
+    assert.equal(fakeDocument.activeElement, opener);
+    assert.equal(fakeDocument.body.querySelector(".zoom"), null);
+    for (const mode of ["close", "stage", "double"]) {
+      preview = enlarged.openEnlargedPreview("missing", opener);
+      assert.match(r4Text(fakeDocument.body.querySelector(".zoom-f")), /no device of this name/);
+      if (mode === "close") click(fakeDocument.body.querySelector('.zoom [data-act="close"]'));
+      else fakeDocument.body.querySelector(".zoom-stage").dispatchEvent(new FakeEvent(mode === "stage" ? "click" : "dblclick"));
+      assert.equal(fakeDocument.body.querySelector(".zoom"), null);
+    }
+  } finally { preview.close(); opener.remove(); }
+}));
+
+test("r4 harness: guard probe r6: field parsing preserves typed enum values, booleans, JSON, time and numeric errors", async () => {
+  const form = await r5Module("components/settings-form.js");
+  const cases = /** @type {Array<[any, string, any, boolean?]>} */ ([
+    [{ type: "boolean" }, "off", { value: true }, true], [{ type: "boolean" }, "on", { value: false }, false],
+    [{ type: "int" }, "2.6", { value: 3 }], [{ type: "float" }, "2.6", { value: 2.6 }], [{ type: "int" }, "", { error: "Enter a number." }], [{ type: "float" }, "NaN", { error: "Enter a number." }],
+    [{ type: "json" }, '{"a":1}', { value: { a: 1 } }], [{ type: "time" }, " 23:59 ", { value: "23:59" }], [{ type: "time" }, "24:00", { error: "Enter a time as HH:MM, 24-hour." }],
+    [{ type: "enum", options: [{ value: 1, label: "one" }, { value: 2, label: "two" }, "three"] }, "2", { value: 2 }],
+    [{ type: "enum", options: [1, 2] }, "1", { value: 1 }], [{ type: "enum", options: ["one", "two"] }, "two", { value: "two" }], [{ type: "enum" }, "new", { value: "new" }], [{ type: "text" }, "raw", { value: "raw" }],
+  ]);
+  for (const [field, raw, expected, checked] of cases) assert.deepEqual(form.parseField(field, raw, checked), expected);
+  assert.match(form.parseField({ type: "json" }, "{").error, /Not valid JSON:.*Not previewed or saved/);
+  assert.equal(form.showValue({ type: "boolean" }, true), "on");
+  assert.equal(form.showValue({ type: "boolean" }, false), "off");
+  assert.equal(form.showValue({ type: "json" }, { x: 1 }), '{"x":1}');
+  for (const value of [null, undefined]) assert.equal(form.showValue({}, value), "");
+  assert.equal(form.showValue({}, 7), "7");
+  assert.deepEqual(form.groupsOf({ a: { group: "First" }, b: { group: "Second" }, c: { group: "First" }, d: {} }), [{ group: "First", keys: ["a", "c"] }, { group: "Second", keys: ["b"] }, { group: "General", keys: ["d"] }]);
+});
+
+test("r4 harness: guard probe r6: render every settings field type and keep validation local to its edit", async (t) => {
+  const module = await r5Module("components/settings-form.js");
+  await r5Form(t, module, async ({ world, form, values, root, calls }) => {
+    const schema = {
+      b: { type: "boolean", default: false, label: "Boolean" }, j: { type: "json", default: { a: 1 }, label: "JSON" },
+      t: { type: "time", default: "12:30", label: "Time" }, c: { type: "color", default: "#112233", label: "Color" },
+      e: { type: "enum", default: 2, label: "Choice", options: [{ value: 1, label: "First" }, { value: 2, label: "Second" }] },
+      s: { type: "string", default: "text", label: "String", description: "own description" }, i: { type: "int", default: 4, label: "Integer", min: 0, max: 10, step: 1 }, f: { type: "float", default: 1.5, label: "Float" },
+    };
+    world.schemas.set("clock", schema);
+    form.update(values("clock"));
+    pending(calls, "GET", "/settings/clock").ok(); await settle();
+    for (const key of Object.keys(schema)) assert.ok(root.querySelector(`[data-row="${key}"] [data-key="${key}"]`), `schema field ${key} renders`);
+    assert.equal(r4Value(root.querySelector('[data-key="j"]')), '{"a":1}');
+    assert.equal(r4Value(root.querySelector('[data-key="e"]')), "2");
+    assert.equal(form.hasEdits(), false);
+    typeInto(root.querySelector('[data-hex="c"]'), "#aabbcc", "change"); await r4AnswerAll({ calls });
+    assert.equal(r5Previews(calls).at(-1).body.values.c, "#aabbcc");
+    assert.equal(form.hasEdits(), true);
+    const boolean = root.querySelector('[data-key="b"]'); boolean.checked = true; boolean.dispatchEvent(new FakeEvent("change"));
+    await r4AnswerAll({ calls });
+    assert.equal(r5Previews(calls).at(-1).body.values.b, true);
+    typeInto(root.querySelector('[data-key="j"]'), "{"); await settle();
+    assert.match(r4Text(root.querySelector('[data-row="j"] .jerr')), /Not valid JSON/);
+    assert.equal(root.querySelector('[data-act="save"]').disabled, true);
+    typeInto(root.querySelector('[data-key="j"]'), '{"a":2}'); await r4AnswerAll({ calls });
+    assert.equal(root.querySelector('[data-row="j"] [aria-invalid="true"]'), null);
+    assert.equal(root.querySelector('[data-act="save"]').disabled, false);
+    typeInto(root.querySelector('[data-key="t"]'), "25:00"); await settle();
+    assert.match(r4Text(root.querySelector('[data-row="t"] .ferr')), /HH:MM/);
+    assert.equal(root.querySelector('[data-row="j"] [aria-invalid="true"]'), null, "another field's validation cannot mark JSON");
+    typeInto(root.querySelector('[data-key="t"]'), "12:31"); await r4AnswerAll({ calls });
+    r4Click(root.querySelector('[data-act="save"]')); await settle();
+    const saving = pending(calls, "PUT", "/settings/clock");
+    saving.answer(200, { .../** @type {any} */ (r4Answer(world, saving)), overlaysNotCleared: ["own-overlay"] }); await settle();
+    form.update(values("clock"));
+    assert.match(r4Text(root.querySelector(".set-status")), /1 MQTT overlay could not be cleared/);
+  }, { ready: false });
+});
+
+test("r4 harness: guard probe r6: view helpers select the exact scene, type, device and overlay identity", async () => {
+  const model = await r5Module("view/model.js");
+  const state = /** @type {any} */ (loadedStore().store.getState());
+  state.scenes = [...SCENES, { key: "pixels", name: "pixel scene", pretty_name: "Pixels", deviceType: "pixoo" }, { key: "unnamed", name: "fallback name", pretty_name: "" }];
+  state.builtins = { ulanzi: [{ key: "builtin:time", label: "Clock mode" }], pixoo: [{ key: "builtin:time", label: "Pixoo mode" }] };
+  for (const key of [null, undefined, ""]) assert.equal(model.sceneName(state, key), "None");
+  for (const [key, expected] of [["clock", "Clock"], ["weather", "Weather"], ["pixels", "Pixels"], ["unnamed", "fallback name"], ["unknown", "unknown"], ["builtin:unknown", "unknown"]]) assert.equal(model.sceneName(state, key), expected);
+  assert.equal(model.sceneName(state, "builtin:time", "ulanzi"), "Clock mode");
+  assert.equal(model.sceneName(state, "builtin:time", "pixoo"), "Pixoo mode");
+  assert.equal(model.sceneName(state, "builtin:time"), "Clock mode");
+  assert.equal(model.sceneMeta(state, "pixels").key, "pixels");
+  assert.equal(model.sceneMeta(state, "missing"), undefined);
+  for (const type of ["ulanzi", "pixoo", "other"]) {
+    const device = view("owner", { type });
+    assert.deepEqual(model.sizeOf({ type }), type === "pixoo" ? { width: 64, height: 64 } : { width: 32, height: 8 });
+    assert.deepEqual(model.sizeOf({ size: { width: 3, height: 2 } }), { width: 3, height: 2 });
+    assert.equal(model.deviceTitle(device), "owner");
+    device.displayName = "Display title"; assert.equal(model.deviceTitle(device), "Display title");
+    const choices = model.sceneChoices(state, device);
+    const scenes = choices.groups.find((/** @type {any} */ group) => group.label === "Scenes").options;
+    assert.equal(scenes.some((/** @type {any} */ option) => option.value === "pixels"), type === "pixoo");
+  }
+  assert.equal(model.deviceTitle(null), "");
+  const d1 = view("d1", { source: "overlay" }); const d2 = view("d2", { source: "overlay", scene: "weather" });
+  d1.desired.scene.overlayId = "oa"; d2.desired.scene.overlayId = "ob";
+  state.overlays = [record("ob", "device-scene", { device: "d2", value: "weather" }), record("oa", "device-scene", { device: "d1", value: "clock" })];
+  assert.equal(model.showingNow(state, d1).source.topic, state.overlays[1].topic);
+  assert.equal(model.showingNow(state, d2).source.topic, state.overlays[0].topic);
+  for (const [mode, label] of [["play", "Playing"], ["pause", "Paused"], ["stop", "Stopped"]]) { d1.desired.mode.value = mode; assert.equal(model.modeCell(d1).label, label); }
+  for (const level of [0, 37, 100]) { d1.desired.brightness.override = level; assert.equal(model.brightnessCell(d1).big, `${level} %`); assert.equal(model.brightnessCell(d1).meta.text, "Override"); }
+  d1.desired.brightness.override = null; d1.effective.lastBrightness = null;
+  assert.equal(model.brightnessCell(d1).big, "—");
+  d1.effective.lastBrightness = 42; assert.equal(model.brightnessCell(d1).big, "42 %");
+});
+
+test("r4 harness: guard probe r6: overlay kind, confirmation, clear authority and replaced-row projection", async () => {
+  const model = await r5Module("view/model.js");
+  const state = /** @type {any} */ (loadedStore([view("d1"), view("d2", { type: "pixoo" })]).store.getState());
+  const kinds = ["device-scene", "device-ip", "device-enabled", "setting", "mode", "brightness", "scene-path", "blob", "unknown"];
+  for (const kind of kinds)
+    for (const confirmed of [false, true]) {
+      const value = kind === "device-enabled" ? false : kind === "brightness" ? 37 : kind === "blob" ? { devices: [{}], scenes: { clock: {} } } : kind === "mode" ? "pause" : kind === "device-scene" ? "clock" : "own value";
+      const r = record(`own-${kind}`, kind, { device: "d1", scene: "clock", key: "n", value, confirmed });
+      const row = model.overlayRow(state, r);
+      assert.equal(row.id, r.id); assert.equal(row.device, "d1"); assert.equal(row.topic, r.topic);
+      assert.equal(row.clear.disabled, false, "confirmed and waiting records can both be cleared");
+      if (!confirmed && kind !== "device-enabled") assert.match(row.status, /Waiting for the broker/);
+      state.mqtt = { ...state.mqtt, state: "offline" };
+      assert.equal(model.overlayRow(state, r).clear.disabled, true);
+      state.mqtt = { ...state.mqtt, state: "connected" };
+      r.valid = false; r.problem = "bad own value"; r.confirmed = true;
+      assert.match(model.overlayRow(state, r).status, /Not used/);
+      r.valid = true; r.problem = null; r.supersededBy = "ui";
+      assert.equal(model.overlayRow(state, r).status, "Replaced by your choice");
+      r.supersededBy = null; r.inEffect = false; r.problem = "own problem";
+      assert.match(model.overlayRow(state, r).status, /own problem/);
+    }
+  const a = record("a", "device-scene", { device: "d1", value: "clock" }); const b = record("b", "mode", { device: "d2", value: "stop" }); const c = record("c", "brightness", { device: "d1", value: { value: 42 } });
+  state.overlays = [b, c]; state.gone = new Map([["a", { record: a, at: 200 }]]);
+  const rows = model.overlayRows(state, { shown: ["a", "b"], since: 100 });
+  assert.deepEqual(rows.map((/** @type {any} */ row) => row.id), ["a", "b", "c"]);
+  assert.equal(rows[0].clear, null); assert.match(rows[0].cleared, /Cleared/); assert.equal(rows[1].cleared, null);
+  assert.deepEqual(model.overlayRows(state, { shown: ["a", "b"], since: 201 }).map((/** @type {any} */ row) => row.id), ["b", "c"]);
+  const blob = record("blob", "blob", { value: { devices: [{}, {}], scenes: {} } });
+  state.controller = { ...state.controller, blobWriter: { writer: false, reason: "v1_writes" } };
+  assert.match(model.overlayRow(state, blob).clear.reason, /v1/);
+  state.controller.blobWriter.reason = "never"; assert.match(model.overlayRow(state, blob).clear.reason, /never writes/);
+  for (const [mode, expected] of [["pause", "Pause"], ["stop", "Stop"], ["play", "Play"]]) assert.equal(model.overlayRow(state, record("mode", "mode", { value: mode })).value.text, expected);
+});
+
+test("r4 harness: guard probe r6: Health filters all warning levels, copies its current pane and keeps scroll ownership", async () => r6Browser(async ({ copies }) => {
+  const world = r4World(r4d1()); const calls = r4Server(world); r4NewEpoch(world);
+  const health = await r5Module("pages/health.js"); const root = pageRoot(); health.page.mount(root, {});
+  try {
+    const lines = ["DEBUG", "INFO", "WARN", "ERROR"].map((level, index) => ({ seq: index + 1, at: at("18:42:00"), level, message: `own-${level}` }));
+    pending(calls, "GET", "/log").answer(200, lines); await settle();
+    for (const line of lines) assert.match(r4Text(root.querySelector(".log")), new RegExp(line.message));
+    r4Click(root.querySelector('[data-act="filter"][data-value="warn"]'));
+    assert.doesNotMatch(r4Text(root.querySelector(".log")), /own-DEBUG|own-INFO/);
+    assert.match(r4Text(root.querySelector(".log")), /own-WARN.*own-ERROR/);
+    r4Click(root.querySelector('[data-act="copy-log"]')); assert.equal(copies.at(-1), root.querySelector(".log").textContent);
+    assert.match(r4Text(root.querySelector(".copy-log")), /Copied/);
+    r4Click(root.querySelector('[data-act="version-display"][data-value="semver"]'));
+    assert.match(r4Text(root.querySelector(".kv-px")), /SemVer/);
+    r4Click(root.querySelector('[data-act="copy-version"]')); assert.equal(copies.at(-1), r4State().controller.version);
+    const pane = root.querySelector(".log"); pane.scrollTop = 0; pane.clientHeight = 10; pane.scrollHeight = 100;
+    pane.dispatchEvent(new FakeEvent("scroll"));
+    r4Live(world, "log", { seq: 5, at: at("18:42:01"), level: "WARN", message: "later own line" }); await settle();
+    assert.equal(pane.scrollTop, 0, "new lines cannot steal a reader's scroll position");
+    pane.scrollTop = 90; pane.dispatchEvent(new FakeEvent("scroll"));
+    r4Live(world, "log", { seq: 6, at: at("18:42:02"), level: "WARN", message: "latest own line" }); await settle();
+    assert.equal(pane.scrollTop, 100, "following at the bottom keeps following");
+    r4Click(root.querySelector('[data-act="filter"][data-value="all"]')); assert.match(r4Text(pane), /own-INFO/);
+  } finally { health.page.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+}));
+
+/**
+ * Pure view selections must be insensitive to another owner's resources.
+ * Distinct frames, previews, records and values make a wrong selector
+ * observable even when the renderer's wording happens to be identical.
+ * @param {any} model
+ */
+function r6ViewOwners(model) {
+  for (const type of ["ulanzi", "pixoo"])
+    for (const health of ["online", "stale", "offline", "idle", "starting"])
+      for (const source of ["config", "ui", "overlay", "blob", "fallback"])
+        for (const variant of [0, 1, 2]) {
+          const own = view("d1", { type, health, source, scene: variant === 2 ? null : "clock" });
+          own.displayName = "Own display";
+          own.desired.scene.overlayId = "own-scene";
+          own.desired.choice = { scene: "weather", persisted: variant === 0, chosenAt: variant === 1 ? at("17:01:00") : null, notSavedReason: variant === 1 ? "config_invalid" : "storage", overridden: variant === 2 };
+          own.health.consecutiveErrors = variant;
+          own.health.lastFrameAt = variant === 2 ? null : at("18:42:00");
+          own.health.lastContactAt = variant === 2 ? null : at("18:42:01");
+          own.effective.nextRetryAt = variant === 1 ? at("18:43:00") : null;
+          own.health.lastError = variant === 0 ? null : { message: "Own error" };
+          own.health.powerCycles = { count: variant, max: 10 };
+          own.facts = { powerCyclePlugTopic: variant === 1 ? "own/plug" : null };
+          own.settingOverlayCount = variant;
+          const frame = /** @type {any} */ ({ width: 1, height: 1, rgb: new Uint8Array([11, 22, 33]), receivedAt: at("18:42:00") });
+          const ownRecords = [record("own-scene", "device-scene", { device: "d1", value: "clock", confirmed: variant === 0 }), record("own-setting", "setting", { device: "d1", scene: "clock", key: "n", value: 42, confirmed: false })];
+          const decoy = view("d2", { health: "offline", scene: "weather" });
+          const base = /** @type {any} */ (loadedStore([own, decoy]).store.getState());
+          const state = { ...base, now: Date.parse(at("18:42:10")), scenes: SCENES, overlays: [...ownRecords, record("decoy", "device-scene", { device: "d2", value: "weather", confirmed: false })], previews: new Map([["d1", frame], ["d2", { ...frame, rgb: new Uint8Array([99, 88, 77]), receivedAt: at("17:00:00") }]]), settings: new Map([["d1/clock", { preview: { draft: 4 }, values: { n: { default: 1, saved: 2, preview: 42 }, m: { default: 3, preview: 4 } } }], ["d2/clock", { preview: { draft: 9 }, values: { n: { default: 91, saved: 92 } } }]]) };
+          const other = { ...state, devices: new Map([["d2", { ...decoy, displayName: "Changed decoy" }], ["d1", own]]), overlays: [record("new-decoy", "device-scene", { device: "d2", value: "only the decoy changed", confirmed: false }), ...ownRecords.toReversed()], previews: new Map([["d2", { ...frame, receivedAt: at("16:00:00"), rgb: null }], ["d1", frame]]), settings: new Map([["d2/clock", { values: { n: { preview: 99 } } }], ["d1/clock", state.settings.get("d1/clock")]]) };
+          for (const name of ["deviceStatus", "deviceCondition", "showingNow", "sourceLines", "previewCount", "waitingSceneOverlay", "facts", "previewCaption", "previewState", "healthRow"])
+            assert.deepEqual(model[name](state, own), model[name](other, own), `${name}: unrelated device, overlay, preview and settings state cannot change d1's projection (${type}/${health}/${source}/${variant})`);
+          assert.equal(model.waitingSettingsLine(state, "d1", "clock"), model.waitingSettingsLine(other, "d1", "clock"));
+          assert.equal(model.previewCount(state, own), variant === 2 ? 0 : 2, "the current scene's own preview data is retained");
+          assert.match(model.waitingSettingsLine(state, "d1", "clock"), /^1 setting overlay/);
+          assert.equal(model.waitingSceneOverlay(state, own), variant === 0 ? undefined : `MQTT overlay 'clock' is not confirmed since the reconnect at ${model.reconnectAt(state)} · Overlays`);
+          assert.equal(model.healthRow(state, own).name, "d1");
+          assert.equal(model.previewState(state, own).frame, frame, "the current owner's frame is selected exactly");
+        }
+}
+test("r4 harness: guard probe r6: every view projection separates current device resources from reordered replacement decoys", async () => r6ViewOwners(await r5Module("view/model.js")));
+
+test("r4 harness: guard probe r6: recovery focus, copy, device type, current life and detached opening", async () => r6Browser(async ({ copies }) => {
+  const world = r4World(r4d1()); const calls = r4Server(world); r4NewEpoch(world);
+  const module = await r5Module("components/recovery-dialog.js");
+  const root = pageRoot(); const opener = makeElement("button"); root.append(opener);
+  let dialog = /** @type {any} */ (null);
+  try {
+    for (const type of ["ulanzi", "pixoo"]) {
+      const device = view("d1", { type, health: "stale", epoch: world.epoch });
+      device.facts = { powerCyclePlugTopic: type === "pixoo" ? "own/plug" : null };
+      device.health.powerCycles = { count: 2, max: 5 };
+      dialog = module.openRecoveryDialog(device, opener);
+      const scrim = root.querySelector(".scrim");
+      assert.match(r4Text(scrim.querySelector("h2")), /stale/);
+      const buttons = scrim.querySelectorAll("button"); const first = buttons[0]; const last = buttons.at(-1);
+      first.focus(); fakeDocument.body.dispatchEvent(new FakeEvent("keydown", { key: "Tab", shiftKey: true })); assert.equal(fakeDocument.activeElement, last);
+      last.focus(); fakeDocument.body.dispatchEvent(new FakeEvent("keydown", { key: "Tab" })); assert.equal(fakeDocument.activeElement, first);
+      const copy = scrim.querySelector("[data-copy]");
+      if (type === "ulanzi") { assert.ok(copy); click(copy); assert.match(copies.at(-1), /awtrix-rescue/); }
+      else assert.match(r4Text(scrim.querySelector(".dlg-b")), /own\/plug/);
+      device.health.reason = "scene_error"; device.health.state = "starting"; dialog.update(device);
+      assert.match(r4Text(scrim.querySelector(".dlg-b")), /scene fails/);
+      assert.doesNotMatch(r4Text(scrim.querySelector(".dlg-b")), /Power-cycle by hand/);
+      fakeDocument.body.dispatchEvent(new FakeEvent("keydown", { key: "ArrowRight" })); assert.ok(root.querySelector(".scrim"));
+      fakeDocument.body.dispatchEvent(new FakeEvent("keydown", { key: "Escape" }));
+      assert.equal(root.querySelector(".scrim"), null); assert.equal(fakeDocument.activeElement, opener);
+      dialog.close(); dialog = null;
+    }
+    const device = view("d1", { epoch: world.epoch, health: "offline" });
+    dialog = module.openRecoveryDialog(device, opener);
+    click(root.querySelector('[data-act="retry"]')); await settle();
+    const old = pending(calls, "POST", "/retry"); dialog.close();
+    dialog = module.openRecoveryDialog({ ...device, name: "d2" }, opener);
+    const before = r4Text(root.querySelector(".scrim")); old.answer(500, {}); await settle();
+    assert.equal(r4Text(root.querySelector(".scrim")), before, "detached d1's Retry cannot change d2's dialog");
+  } finally { dialog?.close(); root.remove(); await r4AnswerAll({ calls }); }
+}));
+
+test("r4 harness: guard probe r6: page input and render predicates across MQTT, config errors, scene failures and keyboard choices", async () => r6Browser(async () => {
+  for (const page of ["device", "devices", "config", "overlays", "health", "raw"])
+    for (const mqtt of ["connected", "offline", "disabled"]) {
+      const world = r4World({ devices: [{ name: "d1" }, { name: "d2", o: { health: "offline", type: "pixoo" } }], overlays: () => [record("blob", "blob", { value: { devices: [{ name: "d1" }] } }), record("setting", "setting", { device: "d1", scene: "clock", key: "n", value: 7 })] });
+      const calls = r4Server(world); r4NewEpoch(world);
+      r4Live(world, "mqtt", { ...r4State().mqtt, state: mqtt });
+      r4Live(world, "config", { ...CONFIG_STATE, rev: ++world.rev, valid: false, error: { message: "own config error" }, lastReload: { ok: false, message: "own reload error" } });
+      r4Live(world, "scenes", [...SCENES.map((scene) => ({ ...scene, status: scene.key === "clock" ? "error" : "ok", error: "own scene error" })), { ...SCENES[0], key: "extra", pretty_name: "", name: "extra", deviceType: "pixoo" }]);
+      const device = r4View(world, "d1", world.epoch, 1, ++world.rev);
+      device.health.state = mqtt === "connected" ? "starting" : "offline";
+      device.desired.scene.source = "ui"; device.desired.choice = { scene: "clock", persisted: false, notSavedReason: "config_invalid", chosenAt: at("18:00:00") };
+      r4Live(world, "device", device);
+      const root = pageRoot(); const module = R4_PAGES[page].module(); module.mount(root, page === "device" ? { name: "d1" } : page === "config" ? { open: "d1" } : {});
+      try {
+        await r4AnswerAll({ calls });
+        assert.ok(root.querySelector("h1"), `${page}/${mqtt}: page heading remains mounted`);
+        assert.doesNotMatch(r4Text(root), /undefined|\[object Object\]/, `${page}: render data is explicit`);
+        if (page === "raw") {
+          const editor = root.querySelector("textarea"); typeInto(editor, '{"devices":[],"scenes":{"clock":{}}}');
+          assert.match(r4Text(root.querySelector(".edbar .state")), /1 scene/);
+          editor.scrollTop = 31; editor.dispatchEvent(new FakeEvent("scroll")); assert.equal(root.querySelector(".gut").scrollTop, 31);
+        }
+        if (page === "config") {
+          const theme = root.querySelector('#theme-seg button[value="dark"]'); assert.ok(theme); click(theme);
+          assert.equal(/** @type {any} */ (fakeDocument).documentElement.getAttribute("data-theme"), "dark");
+          assert.ok(root.querySelector(".ct-edit"), "mount open=d1 selects that exact row");
+        }
+        if (page === "device" && mqtt === "connected") {
+          for (const key of ["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"]) {
+            const options = root.querySelectorAll('.opt[role="radio"]');
+            const before = calls.length; options.at(-1).dispatchEvent(new FakeEvent("keydown", { key })); await settle();
+            const sent = calls.slice(before).find((/** @type {any} */ call) => call.path.endsWith("/scene"));
+            assert.ok(sent, `radio ${key} changes the chosen scene`); sent.ok(); await settle();
+          }
+          const before = calls.length; root.querySelector('.opt[role="radio"]').dispatchEvent(new FakeEvent("keydown", { key: "Escape" })); await settle(); assert.equal(calls.length, before);
+          const copy = root.querySelector(".copyf"); typeInto(copy.querySelector('[name="targetKey"]'), "copy-own"); copy.querySelector('[name="replace"]').checked = true; copy.dispatchEvent(new FakeEvent("submit")); await settle();
+          pending(calls, "POST", "/copy").answer(200, { scene: { key: "copy-own" }, path: "own/path", backup: "own/backup" }); await settle();
+          assert.match(r4Text(root.querySelector(".adv .slot")), /backup/);
+        }
+      } finally { module.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+    }
+}));
+
+test("r4 harness: guard probe r6: format boundaries, scenes-answer envelope and empty overlays", async () => r6Browser(async () => {
+  const format = await r5Module("format.js");
+  assert.equal(format.duration(3_660_000), "1 h 1 min");
+  assert.equal(format.frameLabel(null, 0), "no frame yet");
+  assert.match(format.frameLabel(at("18:00:00"), Date.parse(at("18:00:05")), { stale: true }), /5 s ago/);
+  assert.doesNotMatch(format.frameLabel(at("18:00:00"), 0), /ago/);
+  const { store, stream } = loadedStore(); const generation = beginRequest(store.fence(), "scenes");
+  const body = { scenes: [{ key: "own-scene" }], builtins: { ulanzi: [{ key: "builtin:own", label: "Own mode" }], pixoo: [] } };
+  assert.equal(store.applyAnswer({ resource: "scenes", generation, epoch: A, seq: 20, body }).action, "apply");
+  assert.deepEqual(store.getState().scenes, body.scenes); assert.deepEqual(store.getState().builtins, body.builtins);
+  assert.equal(store.applyEvent({ type: "ping", epoch: A, seq: 21, stream, data: {} }).action, "apply");
+  const world = r4World({ devices: [] }); r4NewEpoch(world);
+  const overlays = await r5Module("pages/overlays.js"); const root = pageRoot(); overlays.page.mount(root, {});
+  try { assert.match(r4Text(root), /No overlays are stored/); assert.match(r4Text(root), /Scene settings/); }
+  finally { overlays.page.unmount(); root.remove(); }
+}));
+
+test("r4 harness: guard probe r6: bootstrap API and network errors, top-bar version modes and canonical copy", async (t) => r6Browser(async ({ copies }) => {
+  const global = /** @type {any} */ (globalThis);
+  const document = /** @type {any} */ (fakeDocument);
+  const saved = Object.getOwnPropertyDescriptor(document, "getElementById");
+  t.mock.method(globalThis, "setInterval", () => 1);
+  try {
+    for (const kind of ["api", "network"])
+      for (const display of ["pretty", "semver"]) {
+        /** @type {Map<string, any>} */
+        const nodes = new Map(["app", "version", "overlay-count", "restart", "mqtt-dot", "mqtt-text"].map((id) => [id, makeElement("div")]));
+        document.getElementById = (/** @type {string} */ id) => nodes.get(id);
+        const errors = /** @type {any[]} */ ([]);
+        const paints = /** @type {Array<(state: any) => void>} */ ([]);
+        const top = { overlayCount: 2, restart: { shown: true, title: "Own restart reason" }, mqtt: { dot: "bad", text: "Own MQTT status", cls: "bad" } };
+        global.__r6Main = { kind, display, errors, paints, top, state: { loaded: false, controller: { version: "261009065314.0.0" }, devices: new Map(), previews: new Map(), epoch: A } };
+        const stub = (/** @type {string} */ code) => `data:text/javascript;base64,${Buffer.from(`const b=globalThis.__r6Main;\n${code}\n// ${++r5MainId}`).toString("base64")}`;
+        const api = stub('export class ApiError extends Error {} export const request=async()=>{throw b.kind === "api" ? new ApiError("Own API reason") : new Error("network");}; export const requestFrame=async()=>({});');
+        await r5Module("main.js", [], {
+          "./api.js": api,
+          "./store.js": stub('export const getState=()=>b.state, subscribe=(select,paint)=>{b.paints.push(paint);paint(select(b.state));return()=>{};}, setLoadError=(error)=>b.errors.push(error); export const applyAnswer=()=>{}, applyEvent=()=>{}, applyFrameAnswer=()=>{}, fence=()=>({}), setLive=()=>{}, tick=()=>{}, toPreview=()=>null;'),
+          "./live.js": stub('export const connectLive=()=>({session:"r6-main"});'), "./router.js": stub('export const startRouter=()=>{};'),
+          "./theme.js": stub('export const applyTheme=()=>{}, versionDisplay=()=>b.display;'),
+          "./view/model.js": stub('export const header=()=>b.top;'),
+          "./session.js": stub('export const setSession=()=>{};'),
+        });
+        assert.deepEqual(errors.map((error) => error.message), [kind === "api" ? "Own API reason" : "No answer from pixdcon."]);
+        assert.equal(nodes.get("version").textContent, display === "pretty" ? "26·10·09 06:53" : "261009065314.0.0");
+        click(nodes.get("version")); assert.equal(copies.at(-1), "261009065314.0.0");
+        nodes.get("version").removeAttribute("data-canonical"); const count = copies.length; click(nodes.get("version")); assert.equal(copies.length, count);
+        assert.equal(nodes.get("overlay-count").textContent, "2"); assert.equal(nodes.get("restart").hidden, false);
+        assert.equal(nodes.get("overlay-count").hidden, false);
+        assert.equal(nodes.get("restart").title, "Own restart reason");
+        assert.equal(nodes.get("mqtt-dot").className, "dot bad");
+        assert.equal(nodes.get("mqtt-text").textContent, "Own MQTT status");
+        assert.equal(nodes.get("mqtt-text").style.color, "var(--bad)");
+        top.overlayCount = 0; top.restart.shown = false; top.mqtt.cls = "";
+        paints[0](global.__r6Main.state);
+        assert.equal(nodes.get("overlay-count").textContent, ""); assert.equal(nodes.get("overlay-count").hidden, true);
+        assert.equal(nodes.get("restart").hidden, true); assert.equal(nodes.get("mqtt-text").style.color, "");
+      }
+  } finally { Reflect.deleteProperty(global, "__r6Main"); if (saved) Object.defineProperty(document, "getElementById", saved); else Reflect.deleteProperty(document, "getElementById"); }
+}));
+
+test("r4 harness: guard probe r6: present and absent first frames retain captured device admission", async (t) => {
+  await r5Main(t, [], "frame");
+  await r5Main(t, [], "asked");
+});
+
+test("r4 harness: guard probe r6: form updates admit only the shown scene, epoch and device life", async (t) => {
+  await r5Form(t, await r5Module("components/settings-form.js"), async ({ form, values, world, root, calls }) => {
+    const own = values("weather", { effective: { n: 37, m: 38 } });
+    form.setScene("weather", "Weather", { epoch: world.epoch, incarnation: 1 });
+    form.update(own);
+    assert.equal(r4Value(field(root, "n")), "37");
+    for (const changed of [{ scene: "clock" }, { epoch: `${world.epoch}-old` }, { incarnation: 2 }]) {
+      form.update({ ...values("weather", { effective: { n: 99, m: 98 } }), ...changed });
+      assert.equal(r4Value(field(root, "n")), "37", `a foreign settings update cannot enter the shown form: ${JSON.stringify(changed)}`);
+    }
+    form.update(null);
+    assert.equal(r4Value(field(root, "n")), "37", "absence of values cannot replace the current values");
+    form.update(values("weather", { effective: { n: 42, m: 43 } }));
+    assert.equal(r4Value(field(root, "n")), "42", "the current owner's newer data reaches its form");
+    for (const scene of [null, "", "builtin:own"]) {
+      const sent = calls.length;
+      form.setScene(scene, scene, { epoch: world.epoch, incarnation: 1 });
+      form.update(own);
+      assert.equal(field(root, "n"), null, "a scene with no settings cannot admit another scene's form");
+      await settle();
+      assert.equal(calls.length, sent, "none and built-in scenes start no settings request");
+      await form.end();
+      assert.equal(calls.length, sent, "none and built-in scenes own no preview to end");
+    }
+  });
+});
+
+test("r4 harness: guard probe r6: render fallbacks and authority boundaries have executable domain witnesses", async () => r6Browser(async () => {
+  const model = await r5Module("view/model.js");
+  const state = /** @type {any} */ (loadedStore([view("d1"), view("d2", { health: "starting" })]).store.getState());
+  state.scenes = [...SCENES, { ...SCENES[0], key: "fallback-label", pretty_name: "", name: "Own fallback label" }];
+  for (const [status, text] of [["offline", "MQTT offline"], ["connecting", "MQTT connecting"], ["disabled", "MQTT not configured"]]) {
+    state.mqtt = { ...state.mqtt, state: status }; assert.equal(model.header(state).mqtt.text, text);
+  }
+  assert.match(model.devicesSummary(state).text, /1 online/);
+  assert.ok(model.sceneChoices(state, state.devices.get("d1")).groups[0].options.some((/** @type {any} */ option) => option.label === "Own fallback label"));
+  state.mqtt.state = "connected";
+  const own = state.devices.get("d1"); own.desired.enabled = false; own.desired.held = true;
+  state.overlays = [record("other", "mode", { device: "d2", value: "pause" })];
+  assert.equal(model.heldBy(own, state.overlays).kind, "device");
+  own.desired.address.value = null; assert.equal(model.heldBy(own, state.overlays).value, "");
+  const held = record("held", "blob", { restricts: "held", value: { devices: [{ name: "d1" }] } });
+  state.overlays.push(held); assert.equal(model.heldBy(own, state.overlays), held);
+  assert.match(model.deviceCondition(state, own).text, /On hold/);
+  own.desired.held = false; assert.equal(model.heldBy(own, state.overlays), null, "the current view's explicit held=false is authoritative");
+  delete own.desired.held; own.desired.address.source = "blob"; assert.equal(model.heldBy(own, state.overlays), held);
+  state.overlays = []; assert.equal(model.heldBy(own, state.overlays), null);
+  own.desired.enabled = true; own.desired.scene.source = "blob"; state.controller.mqttNamespace = null;
+  assert.match(model.showingNow(state, own).source.topic, /overlay\/blob/);
+  own.desired.scene.source = "config";
+  for (const health of ["online", "idle", "unknown"]) { own.health.state = health; own.health.lastFrameAt = null; assert.ok(model.showingNow(state, own).display.text); }
+  state.settings.set("d1/clock", { values: { n: { saved: 17, default: 3 }, m: { default: 4 } } });
+  for (const [key, expected] of [["n", "instead of the saved 17"], ["m", "instead of the default 4"]]) assert.equal(model.overlayRow(state, record("setting", "setting", { device: "d1", scene: "clock", key, value: 8 })).status, expected);
+  for (const kind of ["brightness", "unknown"]) { const r = record("raw", kind); r.raw = "own raw"; assert.equal(model.overlayRow(state, r).value.text, "own raw"); }
+  const replay = record("replay", "device-scene", { device: "d1", value: "clock" }); replay.origin = "replay";
+  assert.equal(model.overlayRow(state, replay).received.time, "at startup");
+  replay.confirmed = false; assert.notEqual(model.overlayRow(state, replay).received.time, "at startup");
+  own.desired.output = "shadow";
+  assert.equal(model.overlayRow(state, record("mode", "mode", { device: "d1", value: "pause" })).clear.disabled, true);
+  assert.equal(model.overlayRow(state, record("setting", "setting", { device: "d1", scene: "clock", key: "n", value: 8 })).clear.disabled, false);
+  assert.equal(model.overlayRow(state, record("path", "scene-path", { device: "d1", scene: "clock", value: "own/path" })).clear.disabled, false);
+
+  for (const page of ["config", "device", "devices", "health", "overlays"]) {
+    const world = r4World({ devices: [{ name: "d1" }, { name: "d2" }], overlays: () => [record("o1", "mode", { device: "d1", value: "pause" })] });
+    const calls = r4Server(world); r4NewEpoch(world);
+    r4Live(world, "config", { ...CONFIG_STATE, rev: ++world.rev, valid: true, reload: { ok: false, message: "Own loader failure" } });
+    r4Live(world, "scenes", SCENES.map((scene) => ({ ...scene, status: "broken", error: "Own scene failure" })));
+    const current = r4View(world, "d1", world.epoch, 1, ++world.rev);
+    current.health.state = "starting"; current.effective.lastBrightness = null; current.desired.brightness.override = null; current.settingOverlayCount = 1;
+    current.pending = { op: "scene", target: "weather" };
+    r4Live(world, "device", current);
+    r4Live(world, "mqtt", { state: "connecting", url: null });
+    r4Live(world, "controller", { ...r4State().controller, version: null });
+    const root = pageRoot(); const module = R4_PAGES[page].module(); module.mount(root, page === "device" ? { name: "d1", recovery: "1" } : {});
+    try {
+      await r4AnswerAll({ calls });
+      if (page === "config") { assert.match(r4Text(root.querySelector(".head .sub")), /Own loader failure/); assert.match(r4Text(root.querySelector(".st-body")), /Own scene failure/); }
+      if (page === "device") {
+        assert.match(r4Text(root.querySelector(".bri-hint")), /once it runs/);
+        assert.match(r4Text(root.querySelector('[data-scene="weather"]')), /switching/);
+        current.pending = null; current.desired.scene.source = "overlay"; current.desired.scene.scene = "weather"; current.desired.choice.scene = "clock"; current.rev = ++world.rev;
+        r4Live(world, "device", current); assert.match(r4Text(root.querySelector('[data-scene="clock"]')), /your choice/);
+        current.desired.scene.scene = "builtin:own"; current.desired.scene.source = "config"; current.rev = ++world.rev;
+        r4Live(world, "device", current); assert.match(r4Text(root.querySelector(".scene-below")), /Drawn by the display/);
+        current.health.state = "offline"; current.rev = ++world.rev; r4Live(world, "device", current);
+        assert.ok(root.querySelector(".scrim"), "requested recovery opens when the device becomes offline");
+      }
+      if (page === "overlays") {
+        r4Live(world, "mqtt", { state: "connected" }); click(root.querySelector('[data-act="clear"]')); await settle();
+        pending(calls, "DELETE", "/overlays/o1").answer(200, { pending: true, confirmed: false, overlays: [] }); await settle();
+        assert.ok(r4State().ops.get("overlay:o1").note.includes("waiting for the broker"));
+      }
+    } finally { module.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+  }
+}));
+
+test("r4 harness: guard probe r6: cold Devices and Overlays load, error, snapshot and unmounted subscriber", async () => {
+  const global = /** @type {any} */ (globalThis);
+  try {
+    for (const page of ["devices", "overlays"]) {
+      const store = createStore(); global.__r6Loading = store;
+      const code = `const store=globalThis.__r6Loading; export const getState=store.getState,subscribe=store.subscribe,applyAnswer=store.applyAnswer; // ${++r5MainId}`;
+      const module = await r5Module(`pages/${page}.js`, [], { "../store.js": `data:text/javascript;base64,${Buffer.from(code).toString("base64")}` });
+      const root = pageRoot(); module.page.mount(root, {});
+      try {
+        assert.match(r4Text(root.querySelector(".head .sub")), /Loading/);
+        store.setLoadError({ message: "Own initial load error", at: Date.now() });
+        assert.match(r4Text(root.querySelector(".head .sub")), /No answer from pixdcon since.*retrying every 5 s/);
+        const stream = openSource(store.fence(), "stream");
+        assert.equal(store.applyEvent({ type: "snapshot", epoch: A, seq: 10, stream, data: snapshot(A, 10, []) }).action, "apply");
+        assert.doesNotMatch(r4Text(root.querySelector(".head .sub")), /Loading|No answer from pixdcon/);
+        module.page.unmount(); const before = root.innerHTML;
+        store.setLive({ state: "lost", lostSince: Date.now(), lastEventAt: null, retryEveryMs: 5000 });
+        assert.equal(root.innerHTML, before, "an unmounted subscriber cannot repaint its old root");
+      } finally { module.page.unmount(); root.remove(); }
+    }
+  } finally { Reflect.deleteProperty(global, "__r6Loading"); }
+});
+
+/** The real API must open the bootstrap source, not register an ordinary resource request. @param {any} api */
+async function r6BootstrapSource(api) {
+  const world = r4World(r4d1()); const calls = r4Server(world); r4NewEpoch(world);
+  try {
+    const first = api.request("GET", "/api/v2/bootstrap", { resource: "bootstrap" }); await settle();
+    const call = pending(calls, "GET", "/bootstrap");
+    const own = r4View(world, "d1", call.epoch, 1, call.rev); own.displayName = "Current bootstrap data";
+    call.answer(200, snapshot(call.epoch, call.seq, [own]));
+    assert.equal(applyDefaultAnswer(await first).action, "apply", "a current bootstrap must actually load its data through the real API's source generation");
+    assert.equal(r4State().devices.get("d1").displayName, "Current bootstrap data");
+    const late = api.request("GET", "/api/v2/bootstrap", { resource: "bootstrap" }); await settle();
+    const old = pending(calls, "GET", "/bootstrap");
+    const obsolete = snapshot(old.epoch, old.seq, [own]); r4NewEpoch(world);
+    const current = r4State().devices.get("d1");
+    old.answer(200, obsolete);
+    assert.equal(applyDefaultAnswer(await late).action, "drop", "the replacement stream owns the new snapshot");
+    assert.equal(r4State().devices.get("d1"), current, "a late bootstrap cannot replace the stream's current device data");
+  } finally { await r4AnswerAll({ calls }); }
+}
+test("r4 harness: guard probe r6: real API bootstrap admits current data and drops a superseded source", async () => r6BootstrapSource(await r5Module("api.js")));
+test("r4 guard probe: bootstrap source and ordinary request generations preserve snapshot admission", async () => {
+  await r6BootstrapSource(await r5Module("api.js"));
+  await r6BootstrapSource(await r5Module("api.js", [['resource === "bootstrap"', 'false']]));
+});
+
+test("r4 guard probe: unkeyed transport admission never finds an undefined busy key", async () => {
+  const global = /** @type {any} */ (globalThis);
+  let observed = 0;
+  global.__r6BusyKey = (/** @type {unknown} */ key, /** @type {boolean} */ absentBusy) => {
+    assert.equal(absentBusy, false, "the busy set contains only explicitly keyed controls");
+    if (key === undefined) observed += 1;
+  };
+  const api = await r5Module("api.js", [[
+    "const { resource, body, key, signal } = options;",
+    "const { resource, body, key, signal } = options; globalThis.__r6BusyKey(key, busy.has(undefined));",
+  ]]);
+  const answers = /** @type {Array<(value: Response) => void>} */ ([]);
+  const calls = fakeFetch(() => new Promise((resolve) => answers.push(resolve)));
+  const notices = /** @type {any[]} */ ([]);
+  const stop = api.onBusy((/** @type {string} */ key, /** @type {boolean} */ busy) => notices.push([key, busy]));
+  try {
+    const first = api.request("GET", "/r6-unkeyed-1", { resource: "r6-unkeyed" });
+    const second = api.request("GET", "/r6-unkeyed-2", { resource: "r6-unkeyed" });
+    const keyed = api.request("POST", "/r6-keyed", { resource: "r6-keyed", key: "own-control" });
+    await assert.rejects(api.request("POST", "/r6-keyed", { resource: "r6-keyed", key: "own-control" }), (/** @type {any} */ error) => error.code === "busy");
+    assert.equal(calls.length, 3, "independent unkeyed work proceeds; a busy keyed control sends no duplicate");
+    for (const answer of answers) answer(new Response("{}", { status: 200 }));
+    await Promise.all([first, second, keyed]);
+    fakeFetch(() => new Response("{}", { status: 200 }));
+    await api.request("GET", "/r6-after-cleanup", { resource: "r6-unkeyed" });
+    assert.equal(observed, 3);
+    assert.deepEqual(notices, [["own-control", true], ["own-control", false]], "unkeyed work has no control outcome to announce");
+  } finally { stop(); Reflect.deleteProperty(global, "__r6BusyKey"); }
+});
+
+test("r4 harness: guard probe r6: transport envelopes preserve omitted bodies, metadata defaults, frame headers and external cancellation", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const api = await r5Module("api.js");
+  for (const extra of [undefined, null]) assert.deepEqual(new api.ApiError("own", { status: 400, code: "own", extra }).extra, {});
+  const calls = fakeFetch(() => new Response("{}", { status: 200 }));
+  const answer = await api.request("GET", "/r6-envelope", { resource: "r6-envelope" });
+  assert.deepEqual(calls[0].init.headers, { Accept: "application/json" });
+  assert.equal(calls[0].init.body, undefined); assert.equal(answer.epoch, null); assert.equal(answer.seq, 0);
+  await api.request("PUT", "/r6-envelope", { resource: "r6-envelope", body: { own: 7 } });
+  assert.equal(calls[1].init.headers["Content-Type"], "application/json"); assert.equal(calls[1].init.body, '{"own":7}');
+  for (const [payload, code, message] of [[{ error: "Own reason", code: "own_code", rejected: { n: "own rejection" } }, "own_code", "Own reason."], [{ error: "Already punctuated!", code: 7 }, "http_400", "Already punctuated!"], [null, "http_400", "pixdcon refused the request (400)."]]) {
+    fakeFetch(() => new Response(JSON.stringify(payload), { status: 400 }));
+    await assert.rejects(api.request("GET", "/r6-envelope", { resource: "r6-envelope" }), (/** @type {any} */ error) => {
+      assert.equal(error.code, code); assert.equal(error.message, message);
+      if (code === "own_code") assert.deepEqual(error.extra.rejected, { n: "own rejection" });
+      return true;
+    });
+  }
+  for (const explicit of [false, true]) {
+    const frames = fakeFetch(() => new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "X-Frame-Width": "1", "X-Frame-Height": "1", ...(explicit ? { "X-Frame-Source": "display", "X-Frame-Seq": "7" } : {}) } }));
+    const frame = await api.requestFrame("a/b");
+    assert.match(frames[0].url, /a%2Fb/); assert.equal(frame.frame.source, explicit ? "display" : "runtime"); assert.equal(frame.frame.frameSeq, explicit ? 7 : 0);
+  }
+  const controller = new AbortController();
+  fakeFetch((_url, init) => new Promise((_resolve, reject) => { init.signal.addEventListener("abort", () => reject(new Error("aborted"))); }));
+  const canceled = assert.rejects(api.request("GET", "/r6-cancel", { resource: "r6-cancel", signal: controller.signal }), (/** @type {any} */ error) => error.code === "aborted");
+  controller.abort(); await settle(); t.mock.timers.tick(15_000); await canceled;
+});
+
+/** Outcomes of independent end slots cannot appear under another device, run or life. @param {any} module */
+async function r6EndOwners(module) {
+  for (const key of [...r4State().ops.keys()]) if (key.startsWith("end:")) r4SetOp(key, null);
+  const world = r4World({ devices: [{ name: "d1" }, { name: "d2" }] }); const calls = r4Server(world); r4NewEpoch(world);
+  const first = r4View(world, "d1", world.epoch, 1, world.rev); const second = r4View(world, "d2", world.epoch, 1, world.rev);
+  try {
+    module.retryEnd(first, "clock", "s1"); await settle();
+    const one = pending(calls, "DELETE", "/d1/settings/clock/preview");
+    assert.deepEqual(module.failedEnds(second), [], "d2 owns no part of d1's pending Retry");
+    assert.deepEqual(module.failedEnds(first).map((/** @type {any} */ end) => [end.scene, end.busy]), [["clock", true]]);
+    module.retryEnd(second, "weather", "s1"); await settle();
+    const two = pending(calls, "DELETE", "/d2/settings/weather/preview");
+    const ops = await r5Module("ops.js");
+    /** @type {any} */ let finishAutomatic;
+    const automatic = ops.follow(`end:d1/automatic@${world.epoch}/1`, () => new Promise((resolve) => { finishAutomatic = resolve; }), { value: "end", label: "Ending…" });
+    assert.deepEqual(module.failedEnds(first).map((/** @type {any} */ end) => end.scene), ["clock"], "ordinary automatic ends are not pending Retries");
+    finishAutomatic(); await automatic; await settle();
+    one.answer(500, {}); await settle();
+    assert.deepEqual(module.failedEnds(first).map((/** @type {any} */ end) => [end.scene, end.busy]), [["clock", false]]);
+    assert.deepEqual(module.failedEnds(second).map((/** @type {any} */ end) => [end.scene, end.busy]), [["weather", true]]);
+    assert.deepEqual(module.failedEnds({ ...first, incarnation: 2 }), [], "the replacement life owns no earlier failure");
+    module.retryEnd(first, "clock", "s1"); await settle();
+    pending(calls, "DELETE", "/d1/settings/clock/preview").ok(); await settle();
+    assert.deepEqual(module.failedEnds(first), [], "a completed Retry is no longer busy and has no failure");
+    r4NewEpoch(world); const now = r4View(world, "d2", world.epoch, 1, world.rev);
+    assert.deepEqual(module.failedEnds(now), [], "the new epoch owns no earlier failure");
+    two.answer(500, {}); await settle(); assert.deepEqual(module.failedEnds(now), []);
+  } finally { await r4AnswerAll({ calls }); }
+}
+test("r4 harness: guard probe r6: preview end outcomes separate device, epoch, life and pending Retry", async () => r6EndOwners(await r5Module("components/settings-form.js")));
+test("r4 harness self-test: end outcome selectors require both device and life ownership", async () => {
+  await r6EndOwners(await r5Module("components/settings-form.js"));
+  for (const guard of ["!key.startsWith(prefix)", "!key.endsWith(life)"])
+    await assert.rejects(r6EndOwners(await r5Module("components/settings-form.js", [[guard, "false"]])), (/** @type {any} */ error) => error.name === "AssertionError");
+});
+
+/** A drop decision must preserve actual resource data, immediately and in subscribers. @param {any} module */
+function r6ResourceFences(module) {
+  for (const resource of ["controller", "mqtt", "config", "scenes", "overlays"]) {
+    const store = module.createStore(); const stream = openSource(store.fence(), "stream");
+    const boot = snapshot(A, 10, [view("d1")]);
+    assert.equal(store.applyEvent({ type: "snapshot", epoch: A, seq: 10, stream, data: boot }).action, "apply");
+    assert.equal(store.getState().loaded, true, "current snapshot data must load, not merely return an apply decision");
+    const value = (/** @type {string} */ tag, /** @type {number} */ rev) => resource === "controller" ? { ...boot.controller, version: tag } : resource === "mqtt" ? { ...boot.mqtt, state: tag === "old" ? "connected" : "offline", url: `mqtt://${tag}` } : resource === "config" ? { ...boot.config, rev, path: `${tag}/config.json`, valid: tag === "old" } : resource === "scenes" ? [{ ...SCENES[0], key: `${tag}-scene`, pretty_name: tag }] : [record(`${tag}-overlay`, "mode", { device: "d1", value: tag === "old" ? "play" : "pause" })];
+    const body = (/** @type {any} */ data) => resource === "config" ? { state: data } : resource === "scenes" ? { scenes: data } : resource === "overlays" ? { overlays: data } : data;
+    const shown = /** @type {any[]} */ ([]); const stop = store.subscribe((/** @type {any} */ state) => state[resource], (/** @type {any} */ data) => shown.push(data));
+    try {
+      const generation = beginRequest(store.fence(), resource); const fresh = value("current", 30); const old = value("old", 20);
+      assert.equal(store.applyEvent({ type: resource, epoch: A, seq: 30, stream, data: fresh }).action, "apply");
+      assert.deepEqual(store.getState()[resource], fresh); assert.deepEqual(shown.at(-1), fresh);
+      assert.equal(store.applyAnswer({ resource, generation, epoch: A, seq: 20, body: body(old) }).action, "drop");
+      assert.deepEqual(store.getState()[resource], fresh, `${resource}: a returned drop must not admit old resource data`);
+      assert.deepEqual(shown.at(-1), fresh, `${resource}: the subscriber must not render the dropped data`);
+      const first = beginRequest(store.fence(), resource); const replacement = beginRequest(store.fence(), resource);
+      assert.equal(store.applyAnswer({ resource, generation: first, epoch: A, seq: 100, body: body(old) }).action, "drop");
+      assert.deepEqual(shown.at(-1), fresh, `${resource}: a superseded request cannot transiently publish data`);
+      const current = value("replacement", 40);
+      assert.equal(store.applyAnswer({ resource, generation: replacement, epoch: A, seq: 40, body: body(current) }).action, "apply");
+      assert.deepEqual(store.getState()[resource], current, `${resource}: current replacement data reaches the store`);
+      assert.deepEqual(shown.at(-1), current);
+      const stale = snapshot(A, 20, [view("d1")]); stale[resource] = old;
+      assert.equal(store.applyEvent({ type: "snapshot", epoch: A, seq: 20, stream, data: stale }).action, "drop");
+      assert.deepEqual(shown.at(-1), current, `${resource}: a dropped snapshot cannot publish old resource data`);
+      const partial = snapshot(A, 35, [view("d1")]); partial[resource] = old;
+      assert.equal(store.applyEvent({ type: "snapshot", epoch: A, seq: 35, stream, data: partial }).action, "apply");
+      assert.deepEqual(store.getState()[resource], current, `${resource}: the snapshot keeps a newer resource answer`);
+    } finally { stop(); }
+  }
+}
+test("r4 harness: guard probe r6: resource fence decisions preserve current data and subscribers across answers and snapshots", async () => r6ResourceFences(await r5Module("store.js")));
+test("r4 harness self-test: a returned drop without guarding actual resource writes is caught", async () => {
+  r6ResourceFences(await r5Module("store.js"));
+  for (const anchor of ['if (decision.action !== "apply") return decision;\n    const next = draft();\n    next.dataAt = Date.now();\n    switch (resource)', 'if (decision.action !== "apply") return decision;\n    /** @type {ClientState} */\n    let next = draft();']) {
+    const mutant = await r5Module("store.js", [[anchor, anchor.replace('if (decision.action !== "apply")', 'if ((decision.action !== "apply", false))')]]);
+    assert.throws(() => r6ResourceFences(mutant), (/** @type {any} */ error) => error.name === "AssertionError");
+  }
+});
+
+/** Every cache belongs to the same device life/epoch as its view; unrelated owners survive cleanup. @param {any} module */
+function r6StoreOwners(module) {
+  const store = module.createStore(); let stream = openSource(store.fence(), "stream");
+  const first = view("d1", { incarnation: 1 }); const other = view("d2", { incarnation: 2 });
+  store.applyEvent({ type: "snapshot", epoch: A, seq: 10, stream, data: snapshot(A, 10, [first, other], { incarnations: 2 }) });
+  const one = sceneSettings("d1", "clock", { epoch: A, incarnation: 1, rev: 5, effective: { n: 2 }, preview: { session: "s1", draft: 2 } });
+  const two = sceneSettings("d2", "clock", { epoch: A, incarnation: 2, rev: 5, effective: { n: 8 } });
+  assert.equal(store.applyEvent({ type: "settings", epoch: A, seq: 11, stream, data: one }).action, "apply");
+  assert.equal(store.applyEvent({ type: "settings", epoch: A, seq: 12, stream, data: two }).action, "apply");
+  const frame = (/** @type {number} */ byte) => ({ width: 1, height: 1, rgb: new Uint8Array([byte, byte, byte]), source: "runtime", receivedAt: at("18:42:00"), frameSeq: byte });
+  const capture = (/** @type {string} */ device, /** @type {number} */ incarnation) => ({ device, epoch: A, incarnation, generation: beginRequest(store.fence(), `frame:${device}`) });
+  const oldFrame = capture("d1", 1);
+  assert.equal(store.applyFrameAnswer(oldFrame, null).action, "apply");
+  assert.equal(store.getState().previews.has("d1"), false, "204 creates no fictitious cached frame");
+  assert.equal(store.applyFrameAnswer(oldFrame, frame(1)).action, "apply");
+  const obsoleteOther = capture("d2", 2); const currentOther = capture("d2", 2);
+  assert.equal(store.applyFrameAnswer(obsoleteOther, frame(99)).action, "drop", "an older frame request cannot fill an empty current slot");
+  assert.equal(store.getState().previews.has("d2"), false);
+  assert.equal(store.applyFrameAnswer(currentOther, frame(2)).action, "apply");
+  assert.equal(store.getState().settings.get("d1/clock").incarnation, 1);
+  assert.equal(store.getState().settings.get("d2/clock").incarnation, 2);
+  assert.equal(store.applyEvent({ type: "device-removed", epoch: A, seq: 20, stream, data: { name: "d1", incarnation: 1 } }).action, "apply");
+  assert.equal(store.getState().devices.has("d1"), false); assert.equal(store.getState().settings.has("d1/clock"), false); assert.equal(store.getState().previews.has("d1"), false);
+  assert.equal(store.getState().settings.get("d2/clock"), two); assert.equal(store.getState().previews.get("d2").frameSeq, 2);
+  const replacement = view("d1", { incarnation: 3, rev: 1 });
+  assert.equal(store.applyEvent({ type: "device", epoch: A, seq: 21, stream, data: replacement }).action, "apply");
+  assert.equal(store.getState().settings.has("d1/clock"), false, "new life starts without the old life's settings");
+  const current = sceneSettings("d1", "clock", { epoch: A, incarnation: 3, rev: 1, effective: { n: 9 } });
+  assert.equal(store.applyEvent({ type: "settings", epoch: A, seq: 22, stream, data: current }).action, "apply");
+  assert.equal(store.applyEvent({ type: "settings", epoch: A, seq: 23, stream, data: { ...one, rev: 999 } }).action, "drop");
+  assert.equal(store.getState().settings.get("d1/clock"), current, "old life cannot overwrite current settings");
+  const currentView = { ...replacement, rev: 30, displayName: "Current revision thirty" };
+  assert.equal(store.applyEvent({ type: "device", epoch: A, seq: 24, stream, data: currentView }).action, "apply");
+  assert.equal(store.applyEvent({ type: "device", epoch: A, seq: 25, stream, data: { ...currentView, rev: 29, displayName: "Obsolete revision twenty-nine" } }).action, "drop");
+  assert.equal(store.getState().devices.get("d1"), currentView, "a newer carrier position cannot admit an older revision of the same life");
+  assert.equal(store.applyFrameAnswer(oldFrame, frame(99)).action, "drop"); assert.equal(store.getState().previews.has("d1"), false);
+  assert.equal(store.applyFrameAnswer(capture("d1", 3), frame(3)).action, "apply");
+  stream = openSource(store.fence(), "stream");
+  assert.equal(store.applyEvent({ type: "snapshot", epoch: A, seq: 40, stream, data: snapshot(A, 40, [view("d1", { incarnation: 3, rev: 10 })], { incarnations: 3 }) }).action, "apply");
+  assert.equal(store.getState().devices.has("d2"), false); assert.equal(store.getState().settings.has("d2/clock"), false); assert.equal(store.getState().previews.has("d2"), false);
+  assert.equal(store.getState().settings.get("d1/clock"), current); assert.equal(store.getState().previews.get("d1").frameSeq, 3);
+  assert.equal(store.getState().devices.get("d1"), currentView, "an accepted snapshot keeps a newer device revision");
+  const oldAnswer = beginRequest(store.fence(), "device:d1"); stream = openSource(store.fence(), "stream");
+  assert.equal(store.applyEvent({ type: "snapshot", epoch: B, seq: 1, stream, data: snapshot(B, 1, [], { incarnations: 0 }) }).action, "apply");
+  assert.deepEqual([store.getState().devices.size, store.getState().settings.size, store.getState().previews.size], [0, 0, 0], "a new epoch cannot retain absent devices, settings or frames");
+  assert.equal(store.applyAnswer({ resource: "device:d1", generation: oldAnswer, epoch: A, seq: 999, body: first }).action, "drop");
+  assert.equal(store.applyFrameAnswer(oldFrame, frame(99)).action, "drop");
+  assert.deepEqual([store.getState().devices.size, store.getState().settings.size, store.getState().previews.size], [0, 0, 0]);
+}
+test("r4 harness: guard probe r6: store caches follow exact device life, snapshot membership and epoch", async () => r6StoreOwners(await r5Module("store.js")));
+
+test("r4 harness: guard probe r6: page openings retire only their idle outcomes and detach owned listeners", async () => {
+  for (const page of ["config", "device", "devices", "raw", "health", "overlays"]) {
+    const world = r4World(r4d1()); const calls = r4Server(world); r4NewEpoch(world);
+    const scope = `d1@${world.epoch}/1`;
+    const owned = page === "config" ? [`patch:${scope}`, `adopt:${scope}`, "add-device"] : page === "devices" ? [`scene:${scope}`, `restore:${scope}`, "add-device"] : page === "device" ? [`scene:${scope}`, `mode:${scope}`, `brightness:${scope}`, `restore:${scope}`, `adopt:${scope}`] : [];
+    const busy = owned.map((key) => `${key}/busy`);
+    const unrelated = page === "device" ? [`brightness:d2@${world.epoch}/1`, `foreign:${scope}`, "unrelated:r6"] : ["unrelated:r6"];
+    for (const key of [...owned, ...unrelated, ...busy]) r4SetOp(key, { token: 900, busy: busy.includes(key), label: "own operation", value: null, failure: null, note: "own kept note" });
+    const root = pageRoot(); const module = R4_PAGES[page].module();
+    try {
+      module.mount(root, page === "device" ? { name: "d1" } : {});
+      await r4AnswerAll({ calls });
+      for (const key of owned) assert.equal(r4State().ops.has(key), false, `${page} retires its own idle outcome: ${key}`);
+      for (const key of [...busy, ...unrelated]) assert.equal(r4State().ops.has(key), true, `${page} preserves another owner or pending outcome: ${key}`);
+      const formHost = root.querySelector(".settings-host");
+      const count = (/** @type {any} */ node) => [...node.listeners.values()].reduce((sum, listeners) => sum + listeners.length, 0);
+      assert.ok(count(root) > 0, "the mounted root owns interaction listeners");
+      module.unmount();
+      assert.equal(count(root), 0, `${page} releases its interaction listeners on unmount`);
+      if (formHost) { assert.equal(count(formHost), 0, "the form releases its own listeners"); assert.equal(formHost.children.length, 0, "the ended form owns no surviving fields"); }
+      module.unmount();
+    } finally {
+      module.unmount(); root.remove(); await r4AnswerAll({ calls });
+      for (const key of [...owned, ...unrelated, ...busy]) r4SetOp(key, null);
+    }
+  }
+});
+
+test("r4 harness: guard probe r6: HTML slots retain unchanged nodes and ignore absent targets", async () => {
+  const dom = await r5Module("dom.js"); const root = pageRoot();
+  try {
+    assert.equal(dom.setHtml(null, "<input>"), false);
+    assert.equal(dom.setHtml(undefined, "<input>"), false);
+    assert.equal(dom.setHtml(root, '<input value="own">'), true);
+    const input = root.querySelector("input"); input.focus();
+    assert.equal(dom.setHtml(root, '<input value="own">'), false);
+    assert.equal(root.querySelector("input"), input, "an unchanged current slot retains its field and focus owner");
+    assert.equal(fakeDocument.activeElement, input);
+    assert.equal(dom.setHtml(root, '<input value="new">'), true);
+    assert.notEqual(root.querySelector("input"), input);
+  } finally { root.remove(); }
+});
+
+test("r4 harness: guard probe r6: current form outcomes report failure, recovery, remaining preview and Revert", async (t) => {
+  const module = await r5Module("components/settings-form.js");
+  await r5Form(t, module, async ({ edit, calls, root, reports, form, session }) => {
+    await edit("2"); r5Previews(calls).at(-1).answer(500, {}); await settle();
+    assert.match(reports.at(-1), /500/, "a current preview failure must reach its page");
+    await edit("3"); r5Previews(calls).at(-1).ok(); await settle();
+    assert.equal(reports.at(-1), null, "a current successful preview clears its page's failure");
+    r4Click(saveButton(root)); await settle(); const saving = pending(calls, "PUT", "/settings/clock");
+    await edit("4"); r5Previews(calls).at(-1).ok(); await settle();
+    const before = r5Previews(calls).length;
+    saving.ok(); await settle();
+    assert.equal(r5Previews(calls).length, before + 1, "Save re-previews the current scope's remaining edit");
+    assert.deepEqual(r5Previews(calls).at(-1).body.values, { n: 4 });
+    r5Previews(calls).at(-1).answer(500, {}); await settle();
+    assert.match(reports.at(-1), /500/);
+    r4Click(root.querySelector('[data-act="revert"]')); await settle();
+    const reverting = pending(calls, "DELETE", "/settings/clock/preview");
+    assert.match(reverting.url, /\?session=s1$/, "Revert ends the captured session's preview");
+    reverting.ok(); await settle();
+    assert.equal(reports.at(-1), null, "the current Revert clears its page's preview failure");
+    session(""); const sent = calls.length; const ended = form.end(); await settle();
+    assert.equal(calls.length, sent, "leaving without a session cannot send an end for the previewed scope");
+    await ended;
+  });
+  await r5Form(t, module, async ({ calls, root }) => {
+    pending(calls, "GET", "/settings/clock").answer(500, {}); await settle();
+    assert.match(r4Text(root), /Settings could not be loaded:.*500/);
+    assert.equal(root.querySelector('[data-act="retry"]').disabled, false, "a current load failure offers Retry");
+  }, { ready: false });
+});
+
+test("r4 harness: guard probe r6: registry outcomes preserve labels, notes, idle ownership and superseded callbacks", async () => {
+  const ops = await r5Module("ops.js"); const store = await import(new URL("../../web/js/store.js", import.meta.url).href);
+  const keys = ["r6-registry", "r6-registry-idle", "r6-registry-busy", "other:r6-registry"];
+  try {
+    const first = ops.follow(keys[0], async () => 1, { label: "Own label", done: () => "Own outcome" });
+    assert.equal(ops.op(keys[0]).label, "Own label"); assert.equal(ops.op(keys[0]).busy, true);
+    await first; await settle(); assert.equal(ops.op(keys[0]).note, "Own outcome");
+    ops.clearNote(keys[0]); assert.equal(ops.op(keys[0]).note, null);
+    await ops.follow(keys[0], async () => 2); await settle();
+    assert.equal(ops.op(keys[0]).label, ""); assert.equal(ops.op(keys[0]).note, null, "an absent callback produces the idle null note");
+    for (const [index, key] of keys.entries()) r4SetOp(key, { token: 901, busy: index === 2, label: "kept", value: null, note: "own", failure: null });
+    ops.forgetIdle((/** @type {string} */ key) => key.startsWith("r6-registry"));
+    assert.equal(r4State().ops.has(keys[1]), false); assert.equal(r4State().ops.has(keys[2]), true); assert.equal(r4State().ops.has(keys[3]), true);
+    let updates = 0; const stop = store.subscribe((/** @type {any} */ state) => state.ops, () => { updates += 1; });
+    try { const before = updates; ops.drop("r6-never-started"); assert.equal(updates, before, "an absent slot cannot announce an update"); } finally { stop(); }
+    /** @type {any} */ let finish; let called = false;
+    const old = ops.follow(keys[0], () => new Promise((resolve) => { finish = resolve; }), { done: () => { called = true; return "obsolete"; } });
+    await ops.follow(keys[0], async () => 3, { done: () => "current" }); await settle(); finish(1); await old; await settle();
+    assert.equal(called, false, "a superseded operation cannot call done even when a later token check protects its slot");
+    assert.equal(ops.op(keys[0]).note, "current");
+  } finally { for (const key of keys) ops.drop(key); }
+});
+
+test("r4 harness: guard probe r6: rejection reasons and repeated Reset acknowledgements retain exact edit identity", async () => {
+  const { createDraftBook } = await r5Module("view/drafts.js");
+  const book = createDraftBook(); book.edit("n", "2", { value: 2 });
+  const preview = book.previewPlan("s1"); book.rejected(preview.sent, { n: "Own server rejection" });
+  assert.equal(book.edits.get("n").error, "Own server rejection"); assert.equal(book.edits.get("n").refused, true);
+  book.clear(); book.reset("m", 6, "6"); const save = book.saveBody("s1");
+  book.reset("m", 6, "6"); book.saved(save.committed, save.body.reset);
+  const next = book.saveBody("s1");
+  assert.deepEqual(next.body.set, {}); assert.deepEqual(next.body.reset, ["m"], "an equal-valued newer Reset remains a Reset after the old Save");
+});
+
+test("r4 harness: guard probe r6: store protocol preserves snapshot positions, order, legacy lives and stream ownership", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(at("18:42:00")) });
+  const m = await r5Module("store.js"); const store = m.createStore();
+  const d1 = view("d1", { incarnation: 1 }); const d2 = view("d2", { incarnation: 2 });
+  const boot = snapshot(A, 10, [d1, d2], { incarnations: 2 });
+  const builtins = { ulanzi: [{ key: "builtin:own", label: "Own mode" }], pixoo: [] }; boot.builtins = builtins;
+  const generation = openSource(store.fence(), "bootstrap");
+  assert.equal(store.applyAnswer({ resource: "bootstrap", generation, epoch: B, seq: 11, body: boot }).action, "apply");
+  assert.deepEqual([store.getState().epoch, store.getState().seq], [A, 10], "snapshot body position is authoritative over its carrier");
+  const oldStream = openSource(store.fence(), "stream"); const stream = openSource(store.fence(), "stream");
+  let commits = 0; const stop = store.subscribe((/** @type {any} */ state) => state, () => { commits += 1; });
+  try {
+    const before = commits;
+    assert.equal(store.applyEvent({ type: "snapshot", epoch: A, seq: 20, stream: oldStream, data: snapshot(A, 20, []) }).action, "drop");
+    assert.equal(commits, before, "a superseded snapshot source publishes no state");
+    assert.equal(store.applyEvent({ type: "snapshot", epoch: A, seq: 20, stream, data: { ...snapshot(A, 20, [d2, d1], { incarnations: 2 }), builtins } }).action, "apply");
+    assert.deepEqual([...store.getState().devices.keys()], ["d2", "d1"], "snapshot config order survives equal-revision views");
+    t.mock.timers.tick(1000); const dataAt = store.getState().dataAt;
+    assert.equal(store.applyEvent({ type: "device", epoch: A, seq: 21, stream, data: d1 }).action, "drop", "a live view cannot replay an equal revision using snapshot rules");
+    assert.equal(store.getState().dataAt, dataAt, "a dropped view advances position without announcing new data");
+    const count = commits;
+    assert.equal(store.applyEvent({ type: "ping", epoch: A, seq: 20, stream, data: {} }).action, "drop");
+    assert.equal(commits, count, "an unchanged rejected position causes no render");
+    assert.equal(store.applyEvent({ type: "device", epoch: A, seq: 22, stream, data: view("omitted", { incarnation: 1 }) }).action, "drop", "snapshot census excludes an already ended unlisted life");
+    assert.equal(store.applyEvent({ type: "builtins", epoch: A, seq: 23, stream, data: { ulanzi: [], pixoo: [] } }).action, "apply");
+    assert.deepEqual(store.getState().builtins, builtins, "builtins are snapshot data, not a stream resource");
+    const logRequest = beginRequest(store.fence(), "log");
+    store.applyEvent({ type: "log", epoch: A, seq: 24, stream, data: { seq: 2, at: at("18:42:00"), level: "INFO", message: "new line" } });
+    assert.equal(store.applyAnswer({ resource: "log", generation: logRequest, epoch: A, seq: 23, body: [{ seq: 1, at: at("18:41:59"), level: "INFO", message: "history" }] }).action, "apply");
+    assert.deepEqual(store.getState().log.map((/** @type {any} */ line) => line.seq), [1, 2], "live log data does not discard older history");
+    const scenes = beginRequest(store.fence(), "scenes");
+    store.applyAnswer({ resource: "scenes", generation: scenes, epoch: A, seq: 25, body: { scenes: SCENES } });
+    assert.deepEqual(store.getState().builtins, builtins, "a scene envelope with no builtins cannot clear another resource");
+    const config = store.getState().config;
+    store.applyEvent({ type: "snapshot", epoch: A, seq: 30, stream, data: { epoch: A, seq: 30, devices: [d2, d1], incarnations: 2 } });
+    assert.equal(store.getState().config, config, "an omitted snapshot resource retains its current value");
+    const newer = view("d1", { incarnation: 3, rev: 1 });
+    store.applyEvent({ type: "device", epoch: A, seq: 31, stream, data: newer });
+    store.applyEvent({ type: "device-removed", epoch: A, seq: 32, stream, data: { name: "d1", incarnation: 1 } });
+    assert.equal(store.getState().devices.get("d1"), newer, "a late named removal cannot remove its successor life");
+  } finally { stop(); }
+  const legacyStore = m.createStore(); const legacyStream = openSource(legacyStore.fence(), "stream");
+  const legacy = view("legacy"); Reflect.deleteProperty(legacy, "incarnation");
+  legacyStore.applyEvent({ type: "snapshot", epoch: A, seq: 1, stream: legacyStream, data: snapshot(A, 1, [legacy]) });
+  const oldSettings = sceneSettings("legacy", "clock", { epoch: A, rev: 1 }); Reflect.deleteProperty(oldSettings, "incarnation");
+  legacyStore.applyEvent({ type: "settings", epoch: A, seq: 2, stream: legacyStream, data: oldSettings });
+  assert.equal(legacyStore.getState().settings.has("legacy/clock"), true);
+  legacyStore.applyEvent({ type: "device", epoch: A, seq: 3, stream: legacyStream, data: view("legacy", { incarnation: 3, rev: 1 }) });
+  assert.equal(legacyStore.getState().settings.has("legacy/clock"), false, "an unnamed legacy life yields to a named replacement and clears its settings");
+});
+
+test("r4 harness: guard probe r6: Raw current validation marks and retry starts retain editor ownership", async () => {
+  await r5Raw(await r5Module("pages/config-raw.js"), async ({ calls, root, world }) => {
+    pending(calls, "GET", "/config/raw").ok(); await settle();
+    r4Type(root.querySelector("textarea"), '{\n"devices":[]\n}'); r4Click(root.querySelector('[data-act="save"]')); await settle();
+    pending(calls, "PUT", "/config/raw").answer(422, { code: "invalid_config", error: "Own validation", line: 2 }); await settle();
+    r4Live(world, "mqtt", { ...r4State().mqtt }); await settle();
+    assert.deepEqual(root.querySelectorAll(".gut b.err").map(r4Text), ["2"], "the current failed Save marks its own validation line");
+    r4Click(root.querySelector('[data-act="save"]')); await settle();
+    assert.deepEqual(root.querySelectorAll(".gut b.err"), [], "starting the current retry clears the old mark");
+    pending(calls, "PUT", "/config/raw").ok(); await settle();
+  });
+});
+
+test("r4 harness: guard probe r6: completed brightness releases its slider and recovery keeps one dialog and opener", async () => {
+  const world = r4World(r4d1({ override: 30 })); const calls = r4Server(world); r4NewEpoch(world);
+  const module = (await r5Module("pages/device.js")).page; const root = pageRoot();
+  module.mount(root, { name: "d1" });
+  try {
+    await r4AnswerAll({ calls });
+    const range = root.querySelector('input[type="range"]');
+    typeInto(range, "40", "input"); typeInto(range, "40", "change"); await settle();
+    pending(calls, "PUT", "/brightness").ok(); await settle();
+    root.querySelector("h1").focus();
+    const next = r4View(world, "d1", world.epoch, 1, ++world.rev); next.desired.brightness.override = 73; next.health.state = "offline";
+    r4Live(world, "device", next); await settle();
+    assert.equal(r4Value(root.querySelector('input[type="range"]')), "73", "a later current value cannot be masked by a completed slider draft");
+    assert.equal(fakeDocument.body.querySelector(".scrim"), null, "recovery was not requested on this opening");
+    const opener = root.querySelector('[data-act="recovery"]'); opener.focus(); r4Click(opener);
+    r4Click(opener); assert.equal(fakeDocument.body.querySelectorAll(".scrim").length, 1, "a repeated recovery request keeps the same dialog");
+    r4Click(fakeDocument.body.querySelector('.scrim [data-act="close"]'));
+    assert.equal(fakeDocument.activeElement, opener, "the recovery button retains focus ownership");
+    r4Click(opener); assert.equal(fakeDocument.body.querySelectorAll(".scrim").length, 1, "closing releases the dialog owner for another opening");
+    r4Click(fakeDocument.body.querySelector('.scrim [data-act="close"]'));
+  } finally { module.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+});
+
+// r6: every gate mutant must fail the same named story that its control passes.
+test("r4 harness self-test: same-value replacements require draft identity, never value equality (gate r5b F)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const book = await r4Mutant("view/drafts.js", [
+    ["committed.set(key, edit.draft);", "committed.set(key, edit.value);"],
+    ["edits.get(key)?.draft === number", "edits.get(key)?.value === number"],
+  ]);
+  const device = await r4DeviceWithForm([], { "../view/drafts.js": book });
+  for (const change of ["equal value retyped", "value changed away and back"]) {
+    assert.deepEqual(await r4Case(t, r4KindOf("settings save"), change, "success"), [], "the real draft identity preserves equal-valued edits");
+    const differences = await r4Case(t, r4KindOf("settings save"), change, "success", { modules: { device } });
+    assert.ok(differences.some((d) => /the next Save|holds no edit/.test(d)), differences.join("\n"));
+  }
+});
+
+test("r4 harness self-test: an old Reset Save cannot delete a replacement edit (gate r5b G)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const book = await r4Mutant("view/drafts.js", [[
+    "for (const key of reset) if (!edits.has(key)) resets.delete(key);",
+    "for (const key of reset) { edits.delete(key); resets.delete(key); }",
+  ]]);
+  const device = await r4DeviceWithForm([], { "../view/drafts.js": book });
+  const kind = r4KindOf("settings reset save");
+  assert.deepEqual(await r4Case(t, kind, "reset replaced by an edit", "success"), []);
+  const differences = await r4Case(t, kind, "reset replaced by an edit", "success", { modules: { device } });
+  assert.ok(differences.some((d) => /the next Save|holds no edit/.test(d)), differences.join("\n"));
+});
+
+test("r4 harness self-test: Raw must obey the fence result even after applyAnswer ran (gate r5b H)", async () => {
+  await r6RawVersion(await r5Module("pages/config-raw.js"));
+  const mutant = await r5Module("pages/config-raw.js", [[
+    'applyAnswer(answer).action === "apply" && base.opened === opened && root',
+    '(applyAnswer(answer), true) && base.opened === opened && root',
+  ]]);
+  await assert.rejects(r6RawVersion(mutant), (/** @type {any} */ error) => error.name === "AssertionError" && /saved baseline/.test(error.message));
+});
+
+const R6_FEEDBACK_MUTANT = /** @type {Array<[string, string]>} */ ([
+  ["let previewFailure = null;", "let previewFailure = null;\nlet r6FeedbackCache = null;"],
+  ["start(key, async () => applyAnswer(await send(key)), {", "start(key, async () => {\n    try { return applyAnswer(await send(key)); }\n    catch (error) {\n      if (control === 'brightness') { r6FeedbackCache = String(error); render(getState()); }\n      throw error;\n    }\n  }, {"],
+  ['const briOp = opOf("brightness", view);', 'const briOp = { ...opOf("brightness", view), ...(r6FeedbackCache ? { failure: r6FeedbackCache } : {}) };'],
+]);
+test("r4 harness self-test: brightness feedback cached by old work is observed independently of operation slots (gate r5b I)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const change of ["epoch", "reincarnate"])
+    for (const end of /** @type {R4End[]} */ (["500", "timeout"])) {
+      const fresh = R6_FEEDBACK_MUTANT.map(([from, to]) => /** @type {[string, string]} */ ([from, `${to}\n// independent gate-I run: ${change}/${end}\n`]));
+      const device = (await r5Module("pages/device.js", fresh)).page;
+      const kind = r4KindOf("device brightness range");
+      assert.deepEqual(await r4Case(t, kind, change, end), []);
+      const differences = await r4Case(t, kind, change, end, { modules: { device } });
+      assert.ok(differences.some((d) => /brightness feedback.*Not changed/.test(d)), differences.join("\n"));
+      const view = r4State().devices.get("d1");
+      const current = [...r4State().ops].filter(([key]) => key === `brightness:d1@${view.epoch}/${view.incarnation}`);
+      assert.equal(current.filter(([, slot]) => slot.failure).length, 0, "no retained failure in the new owner's brightness slot explains the hint");
+    }
+});
+
+test("r4 harness self-test: distinct overlay ids cannot share one Clear slot (gate r5b J)", async () => {
+  for (const overlap of [false, true]) {
+    await r6Overlays(await r5Module("pages/overlays.js"), overlap, "500");
+    const mutant = await r5Module("pages/overlays.js", [['`overlay:${id}`', '`overlay:shared`']]);
+    await assert.rejects(r6Overlays(mutant, overlap, "500"), (/** @type {any} */ error) => error.name === "AssertionError");
+  }
+});
+
 /** @param {string} line */
 function t_log(line) {
   if (process.env.R4_HARNESS_STRICT === "1") process.stdout.write(`# ${line.replaceAll("\n", "\n# ")}\n`);
@@ -6570,6 +8058,30 @@ const R4X_EFFECTS = /** @type {Array<[string, RegExp]>} */ ([
 /** Called, not followed: render reads the current state (note §3). */
 const R4X_RENDER = new Set(["render", "redraw", "draw"]);
 /**
+ * State that a renderer reads, including through local helpers. Discover
+ * names from readers and assignments, never a hand-maintained name list.
+ * Conservative on shadowed locals: an extra writer is inventoried too.
+ * @param {string} code @param {any[]} fns @param {[number, number]} range
+ * @returns {Array<{name: string, line: number}>}
+ */
+function r6RenderWrites(code, fns, range) {
+  const readers = fns.filter((f) => R4X_RENDER.has(f.name));
+  const seen = new Set(readers.map((f) => f.name));
+  for (let i = 0; i < readers.length; i += 1)
+    for (const call of code.slice(readers[i].start, readers[i].end + 1).matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
+      const fn = fns.find((f) => f.name === call[1]);
+      if (fn && !seen.has(fn.name)) { readers.push(fn); seen.add(fn.name); }
+    }
+  const reads = new Set(readers.flatMap((f) => code.slice(f.start, f.end + 1).match(/[A-Za-z_$][\w$]*/g) ?? []));
+  const writes = [];
+  for (const m of code.slice(range[0], range[1] + 1).matchAll(/\b([A-Za-z_$][\w$]*)(?:\.([A-Za-z_$][\w$]*))?\s*(?:=(?!=|>)|\+\+|--|[+&|?]?=)/g)) {
+    const name = m[2] ? `${m[1]}.${m[2]}` : m[1];
+    if (reads.has(m[2] ?? m[1])) writes.push({ name, line: r4xLineOf(code, range[0] + m.index) });
+  }
+  return writes;
+}
+
+/**
  * The effects of the code in `range`, and of what it calls.
  *
  * @param {string} code @param {any[]} fns @param {[number, number]} range
@@ -6581,6 +8093,7 @@ const R4X_RENDER = new Set(["render", "redraw", "draw"]);
 function r4xFollow(code, fns, range, bound, seen, via, spans = []) {
   const body = code.slice(range[0], range[1] + 1);
   const effects = new Set(R4X_EFFECTS.filter(([, re]) => re.test(body)).map(([name]) => name));
+  if (r6RenderWrites(code, fns, range).length) effects.add("page state");
   for (const m of body.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g)) {
     const name = m[1];
     if (R4X_KEYWORDS.has(name)) continue;
@@ -6651,8 +8164,11 @@ function r4xExtract(files) {
       const spans = [];
       const effects = new Set([...r4xFollow(code, fns, range, new Map(), new Set(), via, spans), ...extra]);
       mine.push([Math.min(at, range[0]), range[1]], [at, at + 60]);
+      const stateWrites = [range, ...spans].flatMap((span) => r6RenderWrites(code, fns, span)).filter((write, i, list) => list.findIndex((w) => w.line === write.line && w.name === write.name) === i);
+      // Each write has an explicit ownership obligation, including cache variables new code may introduce.
+      const writes = stateWrites.map((write) => ({ ...write, owner: r4xProjection(file, "page state", holder(at)) }));
       // range, spans: the continuation's own code and the code it calls (offsets in the file), for the guard-removal sweep.
-      rows.push({ site: `${file}:${r4xLineOf(code, at)}`, file, line: r4xLineOf(code, at), kind, fn: holder(at), what, effects: [...effects].sort(), via: [...via].sort(), range, spans });
+      rows.push({ site: `${file}:${r4xLineOf(code, at)}`, file, line: r4xLineOf(code, at), kind, fn: holder(at), what, writes, effects: [...effects].sort(), via: [...via].sort(), range, spans });
     };
     // 1. ops.js callbacks: done (what it returns is the slot's note), failed, describe (the slot's failure text)
     for (const m of code.matchAll(/\b(done|failed|describe)\s*:\s*/g)) {
@@ -6728,6 +8244,67 @@ function r4xExtract(files) {
   }
   return { rows, hits, unmapped };
 }
+/**
+ * Conservative inventory of persistent bindings, object writes and collection
+ * mutations across every imported UI module. No variable-name whitelist and
+ * no async-span restriction: helpers called by continuations count too.
+ * Local collection builders are intentionally included for review.
+ * @param {Array<{file: string, src: string}>} files
+ */
+function r6xPersistentWrites(files) {
+  const owners = (/** @type {string} */ file) => {
+    if (file.includes("settings-form") || file.includes("drafts")) return "opening, epoch, device life, scene, definition and each submitted edit's draft/Reset intent; slot token for outcomes";
+    if (file.includes("config-raw")) return "opening, editor revision, load token, epoch and config resource position; obey the caller's fence decision";
+    if (file.endsWith("/live.js")) return "live stream generation";
+    if (file.endsWith("/ops.js")) return "operation key and token, epoch and device life carried by the key";
+    if (file.endsWith("/store.js")) return "client fence: epoch, stream/request generation, resource position and device life";
+    if (file.endsWith("/api.js")) return "request's captured resource/control key and its single pending transport";
+    if (file.endsWith("/main.js")) return "live/bootstrap generation; frame requests capture epoch and device life";
+    if (file.includes("overlays")) return "page opening for DOM; exact overlay id and operation token for each row's outcome";
+    if (file.includes("device")) return "page opening, exact device id, epoch, life, scene and control owner; form/row revision where edited";
+    if (file.includes("config.js")) return "opening, edit-row visit, exact device id, life, revision and config membership";
+    if (file.includes("health")) return "opening and epoch for log data; current reader's filter and scroll position";
+    if (file.includes("router")) return "current route and page/dialog opening";
+    if (file.includes("preview") || file.endsWith("/dom.js")) return "mounted DOM/canvas target and its current device/frame owner; callback's opening";
+    if (file.includes("model.js")) return "pure current-state projection, exact device/scene/overlay id; guarded caller owns async admission";
+    if (file.includes("theme") || file.includes("session")) return "current browser preference/session, synchronously changed by its current owner";
+    return "current function inputs; imported caller owns async admission";
+  };
+  /** @type {any[]} */
+  const out = [];
+  for (const { file, src } of files) {
+    if (file.endsWith("/ordering.js")) continue;
+    const code = r4xCodeOnly(src); const fns = r4xFunctions(code);
+    const holder = (/** @type {number} */ at) => fns.filter((f) => f.start <= at && at <= f.end).sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
+    const declarations = [...code.matchAll(/\b(?:let|const|var)\s+([A-Za-z_$][\w$]*)/g)].map((m) => ({ name: m[1], at: m.index, fn: holder(m.index) }));
+    const add = (/** @type {number} */ at, /** @type {string} */ name, /** @type {string} */ kind) => out.push({ file, line: r4xLineOf(code, at), fn: holder(at)?.name ?? "(module)", name, kind, owner: owners(file) });
+    for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*)(\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)?\s*(=(?!=|>)|\+\+|--|\+=|-=|&&=|\|\|=|\?\?=)/g)) {
+      if (/\b(?:let|const|var)\s*$/.test(code.slice(Math.max(0, m.index - 16), m.index))) continue;
+      const binding = declarations.filter((d) => d.name === m[1] && d.at < m.index && (!d.fn || d.fn.start <= m.index && m.index <= d.fn.end)).at(-1);
+      if (m[2] || binding && binding.fn !== holder(m.index)) add(m.index, `${m[1]}${m[2] ?? ""}`, m[3]);
+    }
+    // Computed properties are state writes too (including nested keys),
+    // independent of whether their base is a local builder or outer cache.
+    for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*)\s*(?=(?:\.[A-Za-z_$][\w$]*\s*)*\[)/g)) {
+      if (["const", "let", "var", "return"].includes(m[1]) || code[m.index - 1] === ".") continue;
+      let cursor = m.index + m[1].length; let computed = false;
+      for (;;) {
+        while (/\s/.test(code[cursor] ?? "")) cursor += 1;
+        const property = /^\.[A-Za-z_$][\w$]*/.exec(code.slice(cursor));
+        if (property) { cursor += property[0].length; continue; }
+        if (code[cursor] !== "[") break;
+        computed = true; cursor = r4xMatch(code, cursor) + 1;
+      }
+      const operation = /^(=(?!=|>)|\+\+|--|\+=|-=|&&=|\|\|=|\?\?=)/.exec(code.slice(cursor));
+      if (computed && operation) add(m.index, src.slice(m.index, cursor).trim().replace(/\s+/g, " "), operation[1]);
+    }
+    for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.(set|delete|add|clear|push|splice)\s*\(/g)) add(m.index, m[1], `.${m[2]}`);
+  }
+  return out;
+}
+/** Line-independent inventory key; adding or changing a writer requires ownership review. @param {any} row */
+const r6xWriteKey = (row) => `${row.file} · ${row.fn} · ${row.name} · ${row.kind} · ${row.owner}`;
+
 /** A row as the inventory lists it: no line number, so code that moves keeps its row. @param {any} row */
 const r4xKey = (row) => `${row.file} · ${row.fn} · ${row.kind} · ${row.effects.join(", ") || "none"}`;
 /**
@@ -6893,6 +8470,38 @@ test("r4 inventory: the extraction re-run over web/js finds exactly the listed c
   // Each effect declares the identities it depends on (its projection): the one guard checks those, captured at the start.
   const unprojected = rows.flatMap((row) => row.effects.filter((/** @type {string} */ e) => r4xProjection(row.file, e, row.fn) === "?").map((/** @type {string} */ e) => `${row.site}: ${e}`));
   assert.deepEqual(unprojected, [], "every effect of the inventory has a projection");
+});
+
+test("r4 inventory: every asynchronous render-state writer has an ownership obligation; arbitrary feedback caches cannot disappear (gate r5b I)", async () => {
+  const files = r4WebFiles();
+  const inventory = r4xExtract(files);
+  for (const row of inventory.rows)
+    for (const write of row.writes) assert.ok(write.owner && write.owner !== "?", `${row.site}: ${write.name} needs its ownership check`);
+  for (const name of ["r6FeedbackCache", "unanticipatedFeedback", "differentStateName"]) {
+    const url = await r4Mutant("pages/device.js", R6_FEEDBACK_MUTANT.map(([a, b]) => [a, b.replaceAll("r6FeedbackCache", name)]));
+    const source = Buffer.from(url.split(",")[1], "base64").toString("utf8");
+    const mutant = r4xExtract(files.map((file) => file.file === "web/js/pages/device.js" ? { ...file, src: source } : file));
+    assert.ok(mutant.rows.some((row) => row.file === "web/js/pages/device.js" && row.kind === "await" && row.writes.some((/** @type {any} */ write) => write.name === name)), `${name}: the work continuation's render-state write is inventoried`);
+    assert.ok(r4InventoryDiff(mutant.rows).unlisted.some((row) => row.startsWith("web/js/pages/device.js")), "the added async state effect requires inventory review");
+  }
+});
+
+test("r4 inventory: persistent UI state writers across imported helpers all declare ownership (r6)", async () => {
+  const { createHash } = await import("node:crypto");
+  const rows = r6xPersistentWrites(r4WebFiles());
+  assert.ok(rows.length > 100, "all UI modules, not only async spans, were scanned");
+  for (const row of rows) assert.ok(row.owner.length > 10, `${r6xWriteKey(row)} requires ownership review`);
+  const digest = createHash("sha256").update(rows.map(r6xWriteKey).join("\n")).digest("hex");
+  assert.equal(digest, "40c9e05cfa81c8ccf8654db8a9cad2199d74928f304120876d6f04ea43d42a94", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+});
+test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
+  for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {
+    const source = `let ${name}=null; export async function work(){await Promise.resolve();${name}='late';} export const read=()=>${name};`;
+    const rows = r6xPersistentWrites([{ file: "web/js/view/fake-state.js", src: source }]);
+    assert.ok(rows.some((row) => row.name === name && row.fn === "work"), `${name}: a persistent write needs ownership review regardless of reader name or module boundary`);
+    const computed = `const ${name}={}; export async function work(){await Promise.resolve();${name}[keys[index]].feedback='late';} export const read=()=>${name};`;
+    assert.ok(r6xPersistentWrites([{ file: "web/js/view/fake-state.js", src: computed }]).some((row) => row.name === `${name}[keys[index]].feedback` && row.fn === "work"), "computed cache writes require the same ownership review");
+  }
 });
 
 test("r4 inventory self-test: one fake site of each kind is reported as unlisted, a removed file's rows as vanished", () => {
