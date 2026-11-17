@@ -319,7 +319,7 @@
       "test": "test/contract/client.test.js: r2 finding 2, settings form:"
     },
     {
-      "site": "web/js/pages/devices.js:416",
+      "site": "web/js/pages/devices.js:436",
       "id": "listener:root.addEventListener(\"change\")#1",
       "input": "a scene chosen in a row's select",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -327,15 +327,15 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/devices.js:417",
+      "site": "web/js/pages/devices.js:437",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "Restore in a row",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "one Restore per row at a time (B-176): while it runs the button shows Restoring… in the width it reserves and takes no click, and a click that comes anyway sends nothing and says nothing; the answer goes through store.applyAnswer (decideView), and it clears what an earlier failure of the row said",
+      "test": "test/contract/client.test.js: r2 finding 8, B-176:"
     },
     {
-      "site": "web/js/pages/devices.js:418",
+      "site": "web/js/pages/devices.js:438",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "typing in the empty state's Add device form",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -344,7 +344,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/devices.js:419",
+      "site": "web/js/pages/devices.js:439",
       "id": "listener:root.addEventListener(\"submit\")#1",
       "input": "Add device in the empty state",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -352,7 +352,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/devices.js:420",
+      "site": "web/js/pages/devices.js:440",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Devices page",
       "metadata": "none: the store calls it after a change it applied",

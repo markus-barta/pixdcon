@@ -77,6 +77,9 @@ h3{font-size:13px;line-height:20px;font-weight:600;margin:0}
 .link:hover{text-decoration:underline}
 .link.ovr{color:var(--ovr)}
 .link:disabled{color:var(--text-3);cursor:not-allowed;text-decoration:none}
+.link.rw{display:inline-grid;justify-items:start}
+.link.rw>span{grid-area:1/1;display:inline-flex;align-items:center;gap:4px}
+.link.rw>span[aria-hidden="true"]{visibility:hidden}
 .ibtn{width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--line-strong);border-radius:6px;background:var(--surface);color:var(--text-2);cursor:pointer;padding:0}
 .ibtn:hover{color:var(--text);background:var(--tint)}
 

@@ -18,7 +18,7 @@
  * Owner: UI worker.
  */
 
-import { ApiError, request } from "../api.js";
+import { ApiError, isBusy, request } from "../api.js";
 import { createPixelPreview } from "../components/pixel-preview.js";
 import { dot, icon, lineHtml, setAttr, setClass, setHtml, setStatusLine } from "../dom.js";
 import { esc } from "../format.js";
@@ -65,6 +65,8 @@ let rows = new Map();
 const switching = new Map();
 /** The last failure of a row's scene control, said in its second line. @type {Map<string, string>} */
 const failures = new Map();
+/** Rows whose Restore runs (B-176: busy label, no second request). @type {Set<string>} */
+const restoring = new Set();
 
 const ADD_LINK = `<a class="btn" href="#/config/add">${icon("plus")}Add device</a>`;
 
@@ -181,8 +183,13 @@ function updateRow(row, view, state) {
     second = `<span style="color:var(--bad);display:inline-flex;align-items:center;gap:6px">${icon("alert")}${esc(failure)}</span>`;
   else if (lines.second.restore !== undefined) {
     const restore = lines.second.restore;
-    const disabled = restore.disabled || frozen;
-    second = `${esc(lines.second.text)} <button class="link" type="button" data-act="restore"${disabled ? " disabled" : ""}${restore.title ? ` title="${esc(restore.title)}"` : ""}>${icon("undo")}Restore</button>`;
+    const busy = restoring.has(view.name);
+    const disabled = restore.disabled || frozen || busy;
+    // Both labels stand in the button, one of them unseen, so the button
+    // keeps the width of the wider one and nothing beside it moves (B-176).
+    const idle = `${icon("undo")}Restore`;
+    const working = `${icon("spinner")}Restoring…`;
+    second = `${esc(lines.second.text)} <button class="link rw" type="button" data-act="restore"${disabled ? " disabled" : ""}${busy ? ' aria-busy="true"' : ""}${restore.title ? ` title="${esc(restore.title)}"` : ""}><span>${busy ? working : idle}</span><span aria-hidden="true">${busy ? idle : working}</span></button>`;
   } else if (lines.second.cls === "ovr")
     second = `<span style="color:var(--ovr);display:inline-flex;align-items:center;gap:6px">${lines.second.icon ? icon(lines.second.icon) : ""}${esc(lines.second.text)}</span>`;
   else second = esc(lines.second.text);
@@ -324,9 +331,20 @@ async function chooseScene(name, scene) {
   render(getState());
 }
 
-/** @param {string} name */
+/**
+ * Restore: clear the scene overlay of a row's device. One request at a time
+ * (B-176): while it runs the button shows "Restoring…" and takes no click,
+ * and a click that comes anyway sends nothing and says nothing. Its
+ * outcome is the row's: a failure is said in the row's second line, and
+ * an answer clears what an earlier failure said.
+ *
+ * @param {string} name
+ */
 async function restore(name) {
+  if (restoring.has(name) || isBusy(`restore:${name}`)) return;
+  restoring.add(name);
   failures.delete(name);
+  render(getState());
   try {
     const answer = await request(
       "DELETE",
@@ -334,12 +352,14 @@ async function restore(name) {
       { resource: `device:${name}`, key: `restore:${name}` },
     );
     applyAnswer(answer);
+    failures.delete(name);
   } catch (error) {
     failures.set(
       name,
       `Not restored: ${error instanceof ApiError ? error.message : "the request failed."}`,
     );
   }
+  restoring.delete(name);
   render(getState());
 }
 

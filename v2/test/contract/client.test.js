@@ -1288,6 +1288,7 @@ const SCENES = [
 const loadPage = async (name) => (await import(new URL(`../../web/js/pages/${name}.js`, import.meta.url).href)).page;
 const rawPage = await loadPage("config-raw");
 const devicePage = await loadPage("device");
+const devicesPage = await loadPage("devices");
 
 let pageEpochs = 0;
 /**
@@ -1545,6 +1546,37 @@ test("r2 finding 7, B-175: a failed preview and a failed Save are said beside th
     assert.equal(statusText(root), "Not saved: pixdcon failed to answer (500).", "the failed Save is still said");
   } finally {
     devicePage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r2 finding 8, B-176: Restore shows its busy label in reserved width and ignores a second click; it leaves no false failure behind once it succeeded", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e, source: "overlay" })]);
+  const root = pageRoot();
+  devicesPage.mount(root, {});
+  try {
+    const restore = () => root.querySelector('.dt-row [data-act="restore"]');
+    const second = () => root.querySelector(".dt-row .src2").textContent;
+    assert.ok(restore(), "the row offers Restore");
+    const button = restore();
+    assert.equal(click(button), true);
+    await settle();
+    click(button);
+    click(restore());
+    await settle();
+    assert.equal(calls.filter((c) => c.method === "DELETE" && c.url.endsWith("/scene-overlay")).length, 1, "the second click sent nothing");
+    assert.doesNotMatch(second(), /Not restored/, "a second click is no failure");
+    assert.equal(restore()?.disabled, true, "while it runs the button takes no click");
+    assert.equal(restore()?.getAttribute("aria-busy"), "true");
+    assert.equal(restore()?.children[0]?.textContent, "Restoring…", "its busy label shows");
+    assert.equal(restore()?.children[1]?.textContent, "Restore", "the other label keeps its width, unseen");
+    assert.equal(restore()?.children[1]?.getAttribute("aria-hidden"), "true");
+    pending(calls, "DELETE", "/scene-overlay").answer(200, view("d1", { epoch, rev: 2 }), `${epoch}-12`);
+    await settle();
+    assert.doesNotMatch(second(), /Not restored/, "no failure is left once it succeeded");
+  } finally {
+    devicesPage.unmount();
     await drain(calls);
   }
 });
