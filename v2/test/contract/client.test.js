@@ -2050,6 +2050,24 @@ test("r3 Tick (M1, Q1, Q2, default 7): overlay-only texts; 'not previewed · was
 // from data it brought (the store may take data through the fence).
 // Cases that fail at fbf3f61 are listed in R4_KNOWN and run as todo, so the
 // suite stays green; R4_HARNESS_STRICT=1 runs them as plain tests.
+//
+// Revision r2 (gate r4 on the note, design-note-r4.md "r2 changes"):
+//  - three more identities, each a change: the scene definition (schema),
+//    the edit-row visit (revisit), config membership; "other field" is a
+//    newer draft of another field;
+//  - a piece's identities may follow what it says (a slot outcome is not
+//    draft feedback); a kind names the changes outside its projection
+//    (`commutes`): there the case must end where the story ends when the
+//    change comes after the end;
+//  - absolute checks beside the comparison: no request for a scope pixdcon
+//    no longer holds starts after the change (captured values are
+//    inherited); a page whose load belongs to a run loads again in the new
+//    one; a kind's invariant (the brightness range) holds while it runs;
+//  - per-run data (raw text, display names) and a next render, so a stale
+//    write or a late gutter mark shows;
+//  - every exclusion is a probe that runs; self-tests run mutated pages
+//    (in memory) the harness must catch; the effect inventory is re-run by
+//    the suite (section "r4, phase A revision: the effect inventory").
 // ---------------------------------------------------------------------------
 
 const configPage = await loadPage("config");
@@ -2108,7 +2126,11 @@ globalThis.FormData = /** @type {any} */ (
   }
 );
 
-/** What a change of one identity changes (design note section 1). */
+/**
+ * What a change of one identity changes (design note r2, section 1). A
+ * change may record more as it runs (`ctx.changed`): a Save on a device that
+ * was blob-only adopts it first (membership).
+ */
 const R4_CHANGES = {
   reopen: ["opening"],
   leave: ["opening"],
@@ -2117,30 +2139,76 @@ const R4_CHANGES = {
   reincarnate: ["life"],
   commit: ["draft"],
   "newer draft": ["draft"],
+  "other field": ["draft"],
+  schema: ["schema"],
+  revisit: ["visit"],
+  membership: ["membership"],
   reconnect: [],
 };
 /** @typedef {keyof typeof R4_CHANGES} R4Change */
 const R4_ENDS = /** @type {const} */ (["success", "500", "timeout"]);
+/** @typedef {(typeof R4_ENDS)[number] | "refused"} R4End */
 const R4_POINTS = ["after the change", "after the end", "after everything was answered"];
-const R4_RAW = '{"devices": []}';
+/** config.json as pixdcon gives it: distinguishable per run, so a text of another run shows. @param {string} epoch */
+const R4_RAW = (epoch) => `{"devices": [], "run": "${epoch}"}`;
+/** The scene definition of Clock: two fields, so a Save of one with an edit of the other typed meanwhile is a story. */
+const R4_SCHEMA = {
+  n: { type: "int", label: "N", group: "General", description: "", default: 1, placeholder: "" },
+  m: { type: "int", label: "M", group: "General", description: "", default: 1, placeholder: "" },
+};
+/** The definition after pixdcon took a changed scene file (same run, life, scene and draft): n relabelled, a field more. */
+const R4_SCHEMA_2 = {
+  ...R4_SCHEMA,
+  n: { ...R4_SCHEMA.n, label: "N (new)" },
+  k: { type: "int", label: "K", group: "General", description: "", default: 5, placeholder: "" },
+};
+
+/** A change that cannot happen in the story: the stand-in DOM offers no way to do it. */
+class R4Unreachable extends Error {}
 
 /**
  * The world pixdcon holds in one story: its run (epoch), positions,
- * revisions and the lives of its devices.
+ * revisions, the lives and config membership of its devices, the scene
+ * definition, the saved settings, and the previews it was sent.
  *
  * @param {{devices?: Array<{name: string, o?: any}>, overlays?: (epoch: string) => any[], settingsOverlay?: boolean}} spec
  */
 function r4World(spec) {
   /** @type {any} */
-  const world = { epoch: "", seq: 100, rev: 100, stream: 0, lives: new Map(), spec: { ...spec, devices: (spec.devices ?? []).map((d) => ({ ...d, o: { ...d.o } })) } };
+  const world = {
+    epoch: "",
+    seq: 100,
+    rev: 100,
+    stream: 0,
+    epochs: [],
+    lives: new Map(),
+    schema: R4_SCHEMA,
+    saved: {},
+    previews: new Set(),
+    spec: { ...spec, devices: (spec.devices ?? []).map((d) => ({ ...d, o: { ...d.o } })) },
+  };
   for (const device of spec.devices ?? []) world.lives.set(device.name, 1);
   return world;
 }
 
-/** @param {any} world @param {string} name @param {string} epoch @param {number} life @param {number} rev */
-function r4View(world, name, epoch, life, rev) {
-  const entry = (world.spec.devices ?? []).find((/** @type {any} */ d) => d.name === name);
-  return view(name, { ...(entry?.o ?? {}), epoch, incarnation: life, rev });
+/** What pixdcon holds now, as a request it processes now would see it. @param {any} world */
+const r4Now = (world) => ({
+  epoch: world.epoch,
+  rev: world.rev,
+  lives: new Map(world.lives),
+  schema: world.schema,
+  saved: { ...world.saved },
+  devices: world.spec.devices.map((/** @type {any} */ d) => ({ ...d, o: { ...d.o } })),
+});
+
+/** @param {any} world @param {string} name @param {string} epoch @param {number} life @param {number} rev @param {any[]} [devices] the devices as pixdcon held them */
+function r4View(world, name, epoch, life, rev, devices = world.spec.devices ?? []) {
+  const entry = devices.find((/** @type {any} */ d) => d.name === name);
+  const v = view(name, { ...(entry?.o ?? {}), epoch, incarnation: life, rev });
+  // Distinguishable per run: what an answer of another run brings shows.
+  v.displayName = `${name} of ${epoch}`;
+  if (entry?.o?.override !== undefined) v.desired.brightness = { override: entry.o.override, source: "web", since: v.desired.brightness.since };
+  return v;
 }
 
 /** A snapshot of the world on a new stream (boot, reconnect, restart). @param {any} world */
@@ -2161,9 +2229,13 @@ function r4Snapshot(world) {
 function r4NewEpoch(world) {
   pageEpochs += 1;
   world.epoch = `e${String(pageEpochs).padStart(7, "0")}`;
+  world.epochs.push(world.epoch);
   for (const name of world.lives.keys()) world.lives.set(name, 1);
   r4Snapshot(world);
 }
+
+/** A value as the story reads it: each run of pixdcon by its place in the story (run 1, run 2), not by its id. @param {any} world @param {string} value */
+const r4InStory = (world, value) => world.epochs.reduce((/** @type {string} */ text, /** @type {string} */ epoch, /** @type {number} */ i) => text.replaceAll(epoch, `run ${i + 1}`), value);
 
 /** @param {any} world @param {string} type @param {any} data */
 function r4Live(world, type, data) {
@@ -2171,13 +2243,19 @@ function r4Live(world, type, data) {
   return applyDefaultEvent({ type, epoch: world.epoch, seq: world.seq, stream: world.stream, data });
 }
 
-/** @param {any} world @param {any} call @param {string} device @param {string} scene @param {{effective?: any, saved?: any, preview?: any}} [o] */
-function r4Settings(world, call, device, scene, o = {}) {
+/**
+ * A SettingsState as pixdcon held it when it processed `at` (a request, or
+ * r4Now for a live event): its scene definition and saved values.
+ *
+ * @param {any} world @param {any} at @param {string} device @param {string} scene @param {{effective?: any, preview?: any}} [o]
+ */
+function r4Settings(world, at, device, scene, o = {}) {
   /** @type {any} */
-  const state = sceneSettings(device, scene, { epoch: call.epoch, incarnation: call.lives.get(device) ?? 1, rev: call.rev, effective: o.effective, preview: o.preview ?? null });
+  const state = sceneSettings(device, scene, { epoch: at.epoch, incarnation: at.lives.get(device) ?? 1, rev: at.rev, effective: o.effective, preview: o.preview ?? null, schema: at.schema ?? world.schema });
+  const saved = at.saved ?? {};
   for (const [key, layer] of Object.entries(state.values)) {
     if (world.spec.settingsOverlay) /** @type {any} */ (layer).overlay = 4;
-    if (o.saved && key in o.saved) Object.assign(/** @type {any} */ (layer), { saved: o.saved[key], effective: o.saved[key], source: "config" });
+    if (key in saved) Object.assign(/** @type {any} */ (layer), { saved: saved[key], effective: o.effective?.[key] ?? saved[key], source: "config" });
   }
   return state;
 }
@@ -2201,11 +2279,11 @@ function r4Answer(world, call) {
     if (m[3] === "/preview" && method === "PUT")
       return { state: r4Settings(world, call, device, scene, { effective: call.body?.values, preview: { session: "s1", draft: call.body?.draft } }), rejected: {}, applied: true };
     if (m[3] === "/overlays") return { state: r4Settings(world, call, device, scene), failed: [] };
-    if (!m[3] && method === "PUT") return { state: r4Settings(world, call, device, scene, { saved: call.body?.set }), overlaysNotCleared: [] };
+    if (!m[3] && method === "PUT") return { state: r4Settings(world, call, device, scene), overlaysNotCleared: [] };
     return r4Settings(world, call, device, scene);
   }
   if (path === "/api/v2/config/raw")
-    return method === "GET" ? { text: R4_RAW, state: { ...CONFIG_STATE, rev: call.rev } } : { state: { ...CONFIG_STATE, rev: call.rev }, diff: {} };
+    return method === "GET" ? { text: R4_RAW(call.epoch), state: { ...CONFIG_STATE, rev: call.rev } } : { state: { ...CONFIG_STATE, rev: call.rev }, diff: {} };
   if (path === "/api/v2/config/reload") return { state: { ...CONFIG_STATE, rev: call.rev } };
   if (path === "/api/v2/log") return [];
   if (/^\/api\/v2\/overlays\/[^/]+$/.test(path)) return { overlays: world.spec.overlays?.(call.epoch) ?? [], pending: false, confirmed: true };
@@ -2214,12 +2292,20 @@ function r4Answer(world, call) {
   if (path === "/api/v2/devices") return {};
   if ((m = /^\/api\/v2\/devices\/([^/]+)(\/[a-z-]+)?$/.exec(path))) {
     const name = decodeURIComponent(m[1]);
-    return r4View(world, name, call.epoch, call.lives.get(name) ?? 1, call.rev);
+    return r4View(world, name, call.epoch, call.lives.get(name) ?? 1, call.rev, call.devices);
   }
   throw new Error(`the harness has no answer for ${method} ${call.url}`);
 }
 
-/** The stand-in for fetch: every request is held until the story answers it. @param {any} world */
+/**
+ * The stand-in for fetch: every request is held until the story answers it.
+ * pixdcon processes a request when it is sent: a Save changes the saved
+ * values then, and a preview end that names a preview pixdcon was never
+ * sent in this run and life of the device is marked (old-scope work: the
+ * cleanup of an earlier run or life, started after it ended).
+ *
+ * @param {any} world
+ */
 function r4Server(world) {
   /** @type {any[]} */
   const calls = [];
@@ -2228,22 +2314,40 @@ function r4Server(world) {
       new Promise((resolve) => {
         world.seq += 1;
         world.rev += 1;
+        const method = init.method ?? "GET";
+        const path = String(url).split("?")[0];
+        const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+        const settings = /^\/api\/v2\/devices\/([^/]+)\/settings\/([^/]+)(\/preview)?$/.exec(path);
+        /** @type {string|null} */
+        let stray = null;
+        if (settings) {
+          const device = decodeURIComponent(settings[1]);
+          const scene = decodeURIComponent(settings[2]);
+          const life = world.lives.get(device) ?? 1;
+          const held = `${world.epoch}/${device}@${life}/${scene}`;
+          if (settings[3] && method === "PUT") world.previews.add(held);
+          if (settings[3] && method === "DELETE" && !world.previews.has(held))
+            stray = `DELETE …/settings/${scene}/preview in run ${world.epoch}, life ${life} of ${device}: pixdcon was sent no preview of it in this run and life`;
+          if (!settings[3] && method === "PUT") {
+            world.saved = { ...world.saved, ...(body?.set ?? {}) };
+            for (const key of body?.reset ?? []) delete world.saved[key];
+          }
+        }
         /** @type {any} */
         const call = {
-          method: init.method ?? "GET",
+          method,
           url: String(url),
-          path: String(url).split("?")[0],
-          body: typeof init.body === "string" ? JSON.parse(init.body) : undefined,
-          epoch: world.epoch,
+          path,
+          body,
+          ...r4Now(world),
           seq: world.seq,
-          rev: world.rev,
-          lives: new Map(world.lives),
+          stray,
           answered: false,
-          /** @param {number} status @param {unknown} [body] */
-          answer(status, body) {
+          /** @param {number} status @param {unknown} [answer] */
+          answer(status, answer) {
             if (call.answered) return;
             call.answered = true;
-            resolve(new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { "X-Pixdcon-Position": `${call.epoch}-${call.seq}` } }));
+            resolve(new Response(answer === undefined ? null : JSON.stringify(answer), { status, headers: { "X-Pixdcon-Position": `${call.epoch}-${call.seq}` } }));
           },
           ok() {
             call.answer(200, r4Answer(world, call));
@@ -2278,15 +2382,47 @@ function r4PreviewFeedback(root) {
   const marker = root.querySelectorAll(".set-body .mk").some((/** @type {any} */ mk) => /^not previewed/.test(r4Text(mk)));
   return `status ${status ? "says it" : "-"} · title ${title ? "says it" : "-"} · marker ${marker ? "says it" : "-"}`;
 }
-/** The kind of a row's marker (default, saved, previewing, not previewed, …), without the values it names. @param {any} root */
-const r4Marker = (root) => r4Text(root.querySelector('.set-body [data-row="n"] .mk')).split("·")[0].trim() || "∅";
+/** The kind of a row's marker (default, saved, previewing, not previewed, …), without the values it names. @param {any} root @param {string} key */
+const r4Marker = (root, key) => r4Text(root.querySelector(`.set-body [data-row="${key}"] .mk`)).split("·")[0].trim() || "∅";
+/** The edits the next Save sends: the rows whose marker says an edit (previewing, not previewed). @param {any} root */
+const r4Unsaved = (root) =>
+  root.querySelectorAll(".set-body [data-row]").filter((/** @type {any} */ row) => /^(previewing|not previewed)/.test(r4Text(row.querySelector(".mk")))).map((/** @type {any} */ row) => row.getAttribute("data-row")).join(" ") || "none";
+/**
+ * What a row marker depends on, by what it says: "not previewed" is preview
+ * feedback (its draft, newest and above the committed one, in its scope and
+ * scene definition); the rest (saved, previewing, default) is Save
+ * bookkeeping (each submitted edit, and config membership).
+ *
+ * @param {string} said
+ */
+const r4MarkerDeps = (said) => (/^not previewed/.test(said) ? ["opening", "epoch", "life", "draft", "schema"] : ["draft", "membership"]);
+/**
+ * What the settings status line depends on, by what it says: an outcome of
+ * the action slot (Save, Revert, Clear) depends on the slot identities, and
+ * a Save outcome also on config membership (gate r4 §1); preview feedback on
+ * its draft, scope and scene definition; the count of unsaved edits on the
+ * drafts and membership.
+ *
+ * @param {string} said
+ */
+function r4StatusDeps(said) {
+  if (/^(Not saved|Saved)/.test(said)) return ["epoch", "life", "membership"];
+  if (/^(Not reverted|Not cleared|\d+ could not be cleared)/.test(said)) return ["epoch", "life"];
+  if (/^Not previewed/.test(said)) return ["opening", "epoch", "life", "draft", "schema"];
+  if (/^(Previewing|No unsaved|Changes are applied)/.test(said)) return ["draft", "membership"];
+  return ["draft", "schema"];
+}
 const r4Dialog = () => {
   const dialog = fakeDocument.body.querySelector(".scrim .dlg");
   return dialog ? `open · ${r4Button(dialog.querySelector('[data-act="retry"]'))} · ${r4Text(dialog.querySelector(".retry-note"))}` : "closed";
 };
+/** The fields a person can type into (not a slider, box or choice). @param {any} root */
+const r4TextFields = (root) =>
+  root.querySelectorAll("textarea, input").filter((/** @type {any} */ el) => !["range", "checkbox", "radio", "hidden", "color"].includes(el.getAttribute("type") ?? "") && !el.disabled);
 /** @param {any} el @param {string} value */
 function r4Type(el, value) {
-  if (!el) throw new Error("nothing to type into");
+  if (!el) throw new R4Unreachable("nothing to type into");
+  if (el.disabled) throw new R4Unreachable("the field is disabled");
   el.focus();
   typeInto(el, value);
 }
@@ -2300,32 +2436,39 @@ function r4Click(el) {
  * The pages: how each opens, what it shows (a piece is [name, the
  * identities it depends on, what it reads now]) and where a person types.
  *
- * @type {Record<string, {module: () => any, params?: any, pieces: (root: any) => Array<[string, string[], string]>, type?: (ctx: any) => void}>}
+ * A piece's identities may follow what it says (a function of its text):
+ * one line can say a slot outcome or preview feedback.
+ *
+ * @typedef {string[] | ((said: string) => string[])} R4Deps
+ * @type {Record<string, {module: () => any, params?: any, pieces: (root: any) => Array<[string, R4Deps, string]>, type?: (ctx: any) => void}>}
  */
 const R4_PAGES = {
   raw: {
     module: () => rawPage,
     pieces: (root) => [
-      ["editor text", ["opening", "revision"], r4Value(root.querySelector("textarea"))],
-      ["load and validity state", ["opening", "revision"], r4Text(root.querySelector(".edbar .state"))],
+      // What the editor holds and says belongs to a load of one run: compared across epochs too (gate r4 §4).
+      ["editor text", ["opening", "revision", "epoch"], r4Value(root.querySelector("textarea"))],
+      ["load and validity state", ["opening", "revision", "epoch"], r4Text(root.querySelector(".edbar .state"))],
+      ["gutter marks", ["opening", "revision", "epoch"], root.querySelectorAll(".gut b.err").map(r4Text).join(" ") || "none"],
       ["focus", ["opening", "revision"], r4Focus(root)],
       ["Save", ["epoch"], r4Button(root.querySelector('[data-act="save"]'))],
       ["Reload", ["epoch"], r4Button(root.querySelector('[data-act="reload"]'))],
       ["outcome line", ["epoch"], r4Text(root.querySelector(".errline"))],
     ],
-    type: (ctx) => r4Type(ctx.root.querySelector("textarea"), '{"devices": [], "typed": 2}'),
+    type: (ctx) => r4Type(ctx.root.querySelector("textarea"), '{"devices": [],\n "typed": 2}'),
   },
   config: {
     module: () => configPage,
     pieces: (root) => {
       const row = root.querySelector(".ct-edit");
       return [
-        ["edit row", ["opening", "life", "revision"], row ? `open for ${row.querySelector("form")?.getAttribute("data-device")}` : "closed"],
-        ["edit row fields", ["opening", "life", "revision"], row ? `${r4Value(row.querySelector('[name="displayName"]'))} | ${r4Value(row.querySelector('[name="comment"]'))}` : "∅"],
+        ["edit row", ["opening", "visit", "life", "revision", "membership"], row ? `open for ${row.querySelector("form")?.getAttribute("data-device")}` : "closed"],
+        ["edit row fields", ["opening", "visit", "life", "revision", "membership"], row ? `${r4Value(row.querySelector('[name="displayName"]'))} | ${r4Value(row.querySelector('[name="comment"]'))}` : "∅"],
         ["Add device fields", ["opening", "revision"], `${r4Value(root.querySelector('form.addf [name="name"]'))} | ${r4Value(root.querySelector('form.addf [name="ip"]'))}`],
-        ["focus", ["opening", "revision"], r4Focus(root)],
+        ["focus", ["opening", "visit", "revision"], r4Focus(root)],
+        // A slot (busy label, outcome) outlives the visit and the opening (rule 5): it depends on the slot identities only.
         ["edit row Save and outcome", ["epoch", "life"], row ? `${r4Button(row.querySelector('[data-act="patch"]'))} | ${r4Text(row.querySelector(".ef-f .slot"))}` : "∅"],
-        ["Add to config.json", ["epoch", "life"], `${r4Button(root.querySelector('[data-act="adopt"]'))} | ${root.querySelectorAll(".ct-body .slot").filter((/** @type {any} */ el) => !el.closest(".ct-edit")).map(r4Text).join(" ") || "∅"}`],
+        ["Add to config.json", ["epoch", "life", "membership"], `${r4Button(root.querySelector('[data-act="adopt"]'))} | ${root.querySelectorAll(".ct-body .slot").filter((/** @type {any} */ el) => !el.closest(".ct-edit")).map(r4Text).join(" ") || "∅"}`],
         ["Add device button and outcome", ["epoch"], `${r4Button(root.querySelector("form.addf button"))} | ${r4Text(root.querySelector("#add .slot"))}`],
       ];
     },
@@ -2354,15 +2497,19 @@ const R4_PAGES = {
     pieces: (root) => {
       const range = root.querySelector('input[type="range"]');
       return [
-        ["preview feedback", ["opening", "epoch", "life", "draft"], r4PreviewFeedback(root)],
-        // What a field shows is an edit (its draft) or the store's value (data): compared when the draft changed.
-        ["field n", ["draft"], r4Value(field(root, "n"))],
-        ["row marker of n", ["draft"], r4Marker(root)],
+        ["preview feedback", ["opening", "epoch", "life", "draft", "schema"], r4PreviewFeedback(root)],
+        // What a field shows is an edit (its draft) or the store's value (data): compared when the draft or the membership changed.
+        ["field n", ["draft", "membership"], r4Value(field(root, "n"))],
+        ["field m", ["draft", "membership"], r4Value(field(root, "m"))],
+        ["row marker of n", r4MarkerDeps, r4Marker(root, "n")],
+        ["row marker of m", r4MarkerDeps, r4Marker(root, "m")],
+        ["edits the next Save sends", ["draft", "membership"], r4Unsaved(root)],
         ["Create copy fields", ["opening", "revision"], `${r4Value(root.querySelector('.copyf [name="targetKey"]'))} | ${r4Value(root.querySelector('.copyf [name="name"]'))}`],
         ["focus", ["opening", "revision", "draft"], r4Focus(root)],
         ["recovery dialog", ["opening", "epoch", "life"], r4Dialog()],
+        // Slot labels and outcomes (busy, failure, note) depend on the slot identities; preview feedback is the piece above.
         ["title status line", ["epoch", "life"], r4Text(root.querySelector(".dev-head .sub"))],
-        ["settings status line", ["epoch", "life"], r4Text(root.querySelector(".set-status"))],
+        ["settings status line", r4StatusDeps, r4Text(root.querySelector(".set-status"))],
         ["settings Save and Revert", ["epoch", "life"], `${r4Button(root.querySelector('.set-h [data-act="save"]'))} | ${r4Button(root.querySelector('.set-h [data-act="revert"]'))} | ${r4Button(root.querySelector('.set-h [data-act="clear"]'))}`],
         ["mode", ["epoch", "life"], `${r4Text(root.querySelector(".mode-hint"))} | ${root.querySelectorAll('[data-act="mode"]').map((/** @type {any} */ b) => (b.disabled ? "x" : "o")).join("")}`],
         ["brightness", ["epoch", "life"], `${r4Value(range)}${range?.disabled ? " [disabled]" : ""} | ${root.querySelectorAll('[data-act="bri-mode"]').map((/** @type {any} */ b) => (b.disabled ? "x" : "o")).join("")}`],
@@ -2397,12 +2544,24 @@ function r4Pending(ctx, method, tail) {
   assert.ok(call, `a ${method} …${tail} was sent`);
   return call;
 }
+/** The range of the Device page is disabled while its brightness request runs (gate r4 §5): no slider revision can begin meanwhile. @param {any} ctx */
+function r4RangeHeld(ctx) {
+  const range = ctx.root.querySelector('input[type="range"]');
+  return range && !range.disabled ? `the brightness range is enabled (${r4Value(range)}) while its brightness request runs` : null;
+}
 
 /**
  * The operation kinds of the effect inventory (effects-r4.mjs), each with
  * the request that starts it: [method, the end of its path].
+ *  - `unreachable`: changes the stand-in DOM offers no way to make while
+ *    the operation runs, with the reason the probe must meet (section 4.5);
+ *  - `commutes`: changes outside the projection of the operation's effects
+ *    (section 3): the case must end where the story ends when the change
+ *    comes after the end;
+ *  - `ends`: ends beyond success, 500 and timeout;
+ *  - `invariant`: what must hold while the request runs.
  *
- * @typedef {{name: string, site: string, page: string, world: any, request: [string, string], setup?: (ctx: any) => Promise<void>|void, begin?: (ctx: any) => Promise<void>|void, atOpen?: boolean, early?: boolean, skip?: Partial<Record<R4Change, string>>}} R4Kind
+ * @typedef {{name: string, site: string, page: string, world: any, request: [string, string], setup?: (ctx: any) => Promise<void>|void, begin?: (ctx: any) => Promise<void>|void, atOpen?: boolean, early?: boolean, commutes?: R4Change[], ends?: R4End[], invariant?: (ctx: any) => string|null}} R4Kind
  * @type {R4Kind[]}
  */
 const R4_KINDS = [
@@ -2411,6 +2570,7 @@ const R4_KINDS = [
     name: "raw save", site: "web/js/pages/config-raw.js:227", page: "raw", world: r4d1(), request: ["PUT", "/api/v2/config/raw"],
     setup: (ctx) => r4Type(ctx.root.querySelector("textarea"), '{"devices": [], "saved": 1}'),
     begin: (ctx) => r4Click(ctx.root.querySelector('[data-act="save"]')),
+    ends: ["refused"],
   },
   { name: "raw reload", site: "web/js/pages/config-raw.js:274", page: "raw", world: r4d1(), request: ["POST", "/api/v2/config/reload"], begin: (ctx) => r4Click(ctx.root.querySelector('[data-act="reload"]')) },
   {
@@ -2449,9 +2609,19 @@ const R4_KINDS = [
   },
   { name: "device scene", site: "web/js/pages/device.js:111 (scene)", page: "device", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/scene"], begin: (ctx) => r4Click(ctx.root.querySelector('.opt[data-scene="weather"]')) },
   { name: "device mode", site: "web/js/pages/device.js:111 (mode)", page: "device", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/mode"], begin: (ctx) => r4Click(ctx.root.querySelector('[data-act="mode"][data-mode="pause"]')) },
-  { name: "device brightness", site: "web/js/pages/device.js:111 (brightness)", page: "device", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/brightness"], begin: (ctx) => r4Click(ctx.root.querySelector('[data-act="bri-mode"][data-value="override"]')) },
+  { name: "device brightness", site: "web/js/pages/device.js:111 (brightness)", page: "device", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/brightness"], begin: (ctx) => r4Click(ctx.root.querySelector('[data-act="bri-mode"][data-value="override"]')), invariant: r4RangeHeld },
+  {
+    name: "device brightness range", site: "web/js/pages/device.js:645 (setBrightness, the range)", page: "device", world: r4d1({ override: 30 }), request: ["PUT", "/api/v2/devices/d1/brightness"],
+    begin: (ctx) => {
+      const range = ctx.root.querySelector('input[type="range"]');
+      assert.equal(range.disabled, false, "the range takes a level while no brightness request runs");
+      typeInto(range, "40", "input");
+      typeInto(range, "40", "change");
+    },
+    invariant: r4RangeHeld,
+  },
   { name: "device return", site: "web/js/pages/device.js:111 (return)", page: "device", world: r4d1({ source: "overlay" }), request: ["DELETE", "/api/v2/devices/d1/scene-overlay"], begin: (ctx) => r4Click(ctx.root.querySelector('.acts [data-act="return"]')) },
-  { name: "device adopt", site: "web/js/pages/device.js:111 (adopt)", page: "device", world: r4d1({ origin: "blob" }), request: ["POST", "/api/v2/devices/d1/adopt"], begin: (ctx) => r4Click(ctx.root.querySelector('[data-act="adopt"]')), skip: { commit: "a device that is not in config.json has no Save" } },
+  { name: "device adopt", site: "web/js/pages/device.js:111 (adopt)", page: "device", world: r4d1({ origin: "blob" }), request: ["POST", "/api/v2/devices/d1/adopt"], begin: (ctx) => r4Click(ctx.root.querySelector('[data-act="adopt"]')) },
   {
     name: "device copy", site: "web/js/pages/device.js:203", page: "device", world: r4d1(), request: ["POST", "/api/v2/scenes/clock/copy"],
     setup: (ctx) => r4Type(ctx.root.querySelector('.copyf [name="targetKey"]'), "clock-copy"),
@@ -2462,22 +2632,27 @@ const R4_KINDS = [
     setup: (ctx) => r4Click(ctx.root.querySelector('[data-act="recovery"]')),
     begin: () => r4Click(fakeDocument.body.querySelector('.scrim [data-act="retry"]')),
   },
-  { name: "settings load", site: "web/js/components/settings-form.js:412", page: "device", world: r4d1(), request: ["GET", "/settings/clock"], atOpen: true, skip: { commit: "the form shows no values to edit until its load ends", "newer draft": "the form shows no values to edit until its load ends" } },
-  { name: "settings preview", site: "web/js/components/settings-form.js:443", page: "device", world: r4d1(), request: ["PUT", "/settings/clock/preview"], early: true, begin: (ctx) => r4Type(field(ctx.root, "n"), "2") },
+  // The load's projection is its scope (opening, scene, epoch, life): a change of membership or scene definition does not make its outcome another scope's.
+  { name: "settings load", site: "web/js/components/settings-form.js:412", page: "device", world: r4d1(), request: ["GET", "/settings/clock"], atOpen: true, commutes: ["membership", "schema"] },
+  // Preview feedback does not depend on config membership: a blob-only device previews too.
+  { name: "settings preview", site: "web/js/components/settings-form.js:443", page: "device", world: r4d1(), request: ["PUT", "/settings/clock/preview"], early: true, begin: (ctx) => r4Type(field(ctx.root, "n"), "2"), commutes: ["membership"] },
   {
     name: "settings save", site: "web/js/components/settings-form.js:474", page: "device", world: r4d1(), request: ["PUT", "/settings/clock"],
     setup: r4Previewed, begin: (ctx) => r4Click(saveButton(ctx.root)),
-    skip: { commit: "Save is the commit; the form's Save is busy while it runs" },
+    // Save's bookkeeping acknowledges each submitted edit: a newer draft, of n or of another field, is outside its projection.
+    // Pixdcon wrote what was submitted: a changed scene definition does not take that back (remaining edits are revalidated).
+    commutes: ["newer draft", "other field", "schema"],
   },
   {
     name: "settings revert", site: "web/js/components/settings-form.js:517", page: "device", world: r4d1(), request: ["DELETE", "/settings/clock/preview"],
-    setup: r4Previewed, begin: (ctx) => r4Click(ctx.root.querySelector('.set-h [data-act="revert"]')),
-    skip: { commit: "Save, Revert and Clear are one busy slot: no Save while Revert runs" },
+    // The click clears the edits (before any answer): its reference clicks too, and ends the Revert at once.
+    early: true, setup: r4Previewed, begin: (ctx) => r4Click(ctx.root.querySelector('.set-h [data-act="revert"]')),
+    // Its outcome (the end of the preview, the slot's line) is outside a newer draft, membership and the scene definition: a failed Revert keeps the store's values.
+    commutes: ["newer draft", "other field", "membership", "schema"],
   },
   {
     name: "settings clear overlays", site: "web/js/components/settings-form.js:545", page: "device", world: { ...r4d1(), settingsOverlay: true }, request: ["DELETE", "/settings/clock/overlays"],
     begin: (ctx) => r4Click(ctx.root.querySelector('.set-h [data-act="clear"]')),
-    skip: { commit: "Save, Revert and Clear are one busy slot: no Save while Clear runs" },
   },
   {
     name: "settings end", site: "web/js/components/settings-form.js:388", page: "device", world: r4d1(), request: ["DELETE", "/settings/clock/preview"],
@@ -2510,13 +2685,23 @@ const R4_KINDS = [
   { name: "health log", site: "web/js/pages/health.js:187", page: "health", world: r4d1(), request: ["GET", "/api/v2/log"], atOpen: true },
 ];
 
-/** Whether a change can happen while an operation of the kind runs; else why not. @param {R4Kind} kind @param {R4Change} change @returns {string|null} */
-function r4NotApplicable(kind, change) {
-  if (kind.skip?.[change]) return /** @type {string} */ (kind.skip[change]);
-  if (change === "reincarnate" && !(kind.world.devices ?? []).length) return "no device in the story";
-  if (change === "type" && !R4_PAGES[kind.page].type && !(kind.page === "devices" && !(kind.world.devices ?? []).length))
-    return `the ${kind.page} page has no editor`;
-  if ((change === "commit" || change === "newer draft") && kind.page !== "device") return `the ${kind.page} page has no settings drafts`;
+/**
+ * The combinations the stand-in DOM offers no way to make, each with the
+ * reason its probe must meet: the probe begins the operation and tries the
+ * change; it must find exactly this (section 4.5). Nothing is excluded by
+ * argument.
+ *
+ * @param {R4Kind} kind
+ * @param {R4Change} change
+ * @returns {string|null}
+ */
+function r4Unreachable(kind, change) {
+  if (change === "type" && !R4_PAGES[kind.page].type && !(kind.page === "devices" && !(kind.world.devices ?? []).length)) return `the ${kind.page} page has no field to type into`;
+  if ((change === "commit" || change === "newer draft" || change === "other field") && kind.page !== "device") return `the ${kind.page} page has no settings form`;
+  if (change === "commit" && ["settings save", "settings revert", "settings clear overlays"].includes(kind.name))
+    return "Save, Revert and Clear are one busy slot: Save stays disabled while the operation runs";
+  if (change === "revisit" && kind.page !== "config") return `the ${kind.page} page has no edit row`;
+  if (change === "revisit" && kind.world.devices?.[0]?.o?.origin === "blob") return "a device that is not in config.json has no edit row";
   return null;
 }
 
@@ -2527,12 +2712,12 @@ const r4Away = (ctx) => (ctx.kind.page === "config" ? "raw" : "config");
 function r4Open(ctx, page) {
   ctx.page = page;
   ctx.root = pageRoot();
-  R4_PAGES[page].module().mount(ctx.root, R4_PAGES[page].params ?? {});
+  (ctx.modules?.[page] ?? R4_PAGES[page].module()).mount(ctx.root, R4_PAGES[page].params ?? {});
 }
 /** @param {any} ctx */
 function r4Close(ctx) {
   if (!ctx.page) return;
-  R4_PAGES[ctx.page].module().unmount();
+  (ctx.modules?.[ctx.page] ?? R4_PAGES[ctx.page].module()).unmount();
   ctx.root.remove();
   ctx.page = null;
 }
@@ -2545,6 +2730,47 @@ async function r4AnswerAll(ctx, keep) {
     if (open.length === 0) return;
     for (const call of open) call.ok();
   }
+}
+
+/** The device of the story; an empty story gets one first (d9 appears, as another client added it). @param {any} ctx @returns {string} */
+function r4StoryDevice(ctx) {
+  const { world } = ctx;
+  if (!world.spec.devices.length) {
+    world.spec.devices.push({ name: "d9", o: {} });
+    world.lives.set("d9", 1);
+    world.rev += 1;
+    r4Live(world, "device", r4View(world, "d9", world.epoch, 1, world.rev));
+  }
+  return world.spec.devices[0].name;
+}
+
+/** The device's config membership changes (configured ↔ blob-only), in the same life. @param {any} ctx @param {"config"|"blob"} [to] */
+function r4Membership(ctx, to) {
+  const { world } = ctx;
+  const name = r4StoryDevice(ctx);
+  const entry = world.spec.devices.find((/** @type {any} */ d) => d.name === name);
+  entry.o.origin = to ?? (entry.o.origin === "blob" ? "config" : "blob");
+  world.rev += 1;
+  r4Live(world, "device", r4View(world, name, world.epoch, world.lives.get(name), world.rev));
+}
+
+/**
+ * The settings form can take an edit: values are there. A form whose load
+ * is still out gets them through the live channel (a `settings` event), as
+ * pixdcon may send them before it answers the GET (gate r4 §4).
+ *
+ * @param {any} ctx
+ */
+async function r4FormReady(ctx) {
+  if (!ctx.root.querySelector(".set-body")) throw new R4Unreachable(`the ${ctx.page} page has no settings form`);
+  if (!field(ctx.root, "n")) {
+    const { world } = ctx;
+    const entry = world.spec.devices[0];
+    world.rev += 1;
+    r4Live(world, "settings", r4Settings(world, r4Now(world), entry.name, entry.o.scene ?? "clock"));
+    await settle();
+  }
+  assert.ok(field(ctx.root, "n"), "the form shows values to edit");
 }
 
 /** @type {Record<R4Change, (ctx: any) => Promise<void>|void>} */
@@ -2564,21 +2790,34 @@ const R4_CHANGE = {
   },
   type(ctx) {
     const empty = ctx.root.querySelector(".empty-slot form.addf [name='name']");
-    if (empty) r4Type(empty, "typed-later");
-    else /** @type {any} */ (R4_PAGES[ctx.page].type)(ctx);
+    if (empty) return r4Type(empty, "typed-later");
+    const type = R4_PAGES[ctx.page].type;
+    if (type) return type(ctx);
+    const fields = r4TextFields(ctx.root);
+    if (fields.length) throw new Error(`the ${ctx.page} page has ${fields.length} field(s) to type into: the harness must type there`);
+    throw new R4Unreachable(`the ${ctx.page} page has no field to type into`);
   },
   epoch(ctx) {
     r4NewEpoch(ctx.world);
   },
   reincarnate(ctx) {
     const { world } = ctx;
-    const life = world.lives.get("d1");
-    r4Live(world, "device-removed", { name: "d1", incarnation: life });
-    world.lives.set("d1", life + 1);
+    const name = r4StoryDevice(ctx);
+    const life = world.lives.get(name);
+    r4Live(world, "device-removed", { name, incarnation: life });
+    world.lives.set(name, life + 1);
     world.rev += 1;
-    r4Live(world, "device", r4View(world, "d1", world.epoch, life + 1, world.rev));
+    r4Live(world, "device", r4View(world, name, world.epoch, life + 1, world.rev));
   },
   async commit(ctx) {
+    await r4FormReady(ctx);
+    if (/Add the device to config\.json/.test(r4Text(ctx.root.querySelector(".set-desc")))) {
+      // A Save needs the device in config.json: it was adopted meanwhile (the
+      // adoption's answer may still be out, gate r4 §4). Membership changes too.
+      r4Membership(ctx, "config");
+      ctx.changed.add("membership");
+      await settle();
+    }
     if (saveButton(ctx.root).disabled) {
       r4Type(field(ctx.root, "n"), "7");
       await settle();
@@ -2586,14 +2825,42 @@ const R4_CHANGE = {
       put?.ok();
       await settle();
     }
+    if (saveButton(ctx.root).disabled) throw new R4Unreachable("Save, Revert and Clear are one busy slot: Save stays disabled while the operation runs");
     r4Click(saveButton(ctx.root));
     await settle();
     const save = [...ctx.calls].reverse().find((/** @type {any} */ c) => !c.answered && c !== ctx.op && c.method === "PUT" && /\/settings\/[^/]+$/.test(c.path));
     assert.ok(save, "the commit's Save was sent");
     save.ok();
   },
-  "newer draft"(ctx) {
+  async "newer draft"(ctx) {
+    await r4FormReady(ctx);
     r4Type(field(ctx.root, "n"), "3");
+  },
+  async "other field"(ctx) {
+    await r4FormReady(ctx);
+    r4Type(field(ctx.root, "m"), "3");
+  },
+  schema(ctx) {
+    // pixdcon took a changed scene file: a newer SettingsState with another
+    // definition, in the same run, life, scene, and with the same draft.
+    const { world } = ctx;
+    const name = r4StoryDevice(ctx);
+    const entry = world.spec.devices.find((/** @type {any} */ d) => d.name === name);
+    world.schema = R4_SCHEMA_2;
+    world.rev += 1;
+    r4Live(world, "settings", r4Settings(world, r4Now(world), name, entry.o.scene ?? "clock"));
+  },
+  revisit(ctx) {
+    // Cancel, and the same device's row opens again, in the same opening: a new visit of the editor.
+    const cancel = ctx.root.querySelector('.ct-edit [data-act="cancel"]');
+    if (cancel) r4Click(cancel);
+    const edit = ctx.root.querySelector(`[data-act="edit"][data-device="${ctx.world.spec.devices[0]?.name}"]`);
+    if (!edit) throw new R4Unreachable(ctx.page === "config" ? "a device that is not in config.json has no edit row" : `the ${ctx.page} page has no edit row`);
+    r4Click(edit);
+    ctx.root.querySelector('.ct-edit [name="displayName"]')?.focus();
+  },
+  membership(ctx) {
+    r4Membership(ctx);
   },
   reconnect(ctx) {
     r4Snapshot(ctx.world);
@@ -2606,18 +2873,26 @@ const R4_CHANGE = {
  * @param {any} t the test (its manual clock)
  * @param {R4Kind} kind
  * @param {R4Change|null} change null: no change (the reference of a reconnect)
- * @param {(typeof R4_ENDS)[number]} end
- * @param {"case"|"without"|"early"} mode
- * @returns {Promise<Array<Map<string, {deps: string[], value: string}>>>} what the pieces read at the three points
+ * @param {R4End} end
+ * @param {"case"|"without"|"early"|"after"|"probe"} mode after: the change comes after the end (the commuted story); probe: only whether the change can be made
+ * @param {Record<string, any>} [modules] pages to mount instead of the real ones (the self-tests' mutants)
+ * @returns {Promise<{points: Array<Map<string, {deps: R4Deps, value: string}>>, changed: Set<string>, absolute: string[], unreachable?: string}>}
  */
-async function r4Run(t, kind, change, end, mode) {
+async function r4Run(t, kind, change, end, mode, modules) {
   for (const key of [...r4State().ops.keys()]) r4SetOp(key, null);
   fakeDocument.activeElement = null;
   const world = r4World(kind.world);
   /** @type {any} */
-  const ctx = { world, calls: r4Server(world), kind, page: null, root: null, op: null };
+  const ctx = { world, calls: r4Server(world), kind, page: null, root: null, op: null, modules, changed: new Set(change ? R4_CHANGES[change] : []) };
   r4NewEpoch(world);
+  /** @type {Array<Map<string, {deps: R4Deps, value: string}>>} */
   const points = [];
+  /** What must hold in the case whatever the reference shows. @type {string[]} */
+  const absolute = [];
+  const held = () => {
+    const broken = ctx.op && !ctx.op.answered && ctx.page === kind.page ? kind.invariant?.(ctx) : null;
+    if (broken) absolute.push(broken);
+  };
   try {
     r4Open(ctx, kind.page);
     await settle();
@@ -2633,6 +2908,9 @@ async function r4Run(t, kind, change, end, mode) {
     if (!kind.atOpen && mode !== "without") {
       const before = ctx.calls.length;
       await kind.begin?.(ctx);
+      ctx.op = ctx.calls.slice(before).find(isOp);
+      // Synchronously, before any answer: what must hold while it runs.
+      held();
       await settle();
       ctx.op = ctx.calls.slice(before).find(isOp);
       assert.ok(ctx.op, `${kind.name}: the operation sent ${method} …${tail}`);
@@ -2644,27 +2922,61 @@ async function r4Run(t, kind, change, end, mode) {
     }
     if (mode === "without" && kind.atOpen) throw new Error("an operation that opens with the page has an early reference");
     t.mock.timers.tick(10_000);
-    if (change) await R4_CHANGE[change](ctx);
+    const observe = () => new Map(R4_PAGES[ctx.page].pieces(ctx.root).map(([name, deps, value]) => [`${ctx.page}: ${name}`, { deps, value: r4InStory(world, value) }]));
+    ctx.changeAt = ctx.calls.length;
+    if (mode === "probe") {
+      try {
+        if (change) await R4_CHANGE[change](ctx);
+      } catch (error) {
+        if (error instanceof R4Unreachable) return { points, changed: ctx.changed, absolute, unreachable: error.message };
+        throw error;
+      }
+      return { points, changed: ctx.changed, absolute };
+    }
+    if (change && mode !== "after") await R4_CHANGE[change](ctx);
     await settle();
-    const observe = () => new Map(R4_PAGES[ctx.page].pieces(ctx.root).map(([name, deps, value]) => [`${ctx.page}: ${name}`, { deps, value }]));
+    if (!ctx.changed.has("epoch") && !ctx.changed.has("life")) held();
     points.push(observe());
+    ctx.endAt = ctx.calls.length;
     if (end === "timeout") {
       ctx.op?.abandon();
       t.mock.timers.tick(5_000);
     } else if (ctx.op) {
       if (end === "success") ctx.op.ok();
+      else if (end === "refused") ctx.op.answer(422, { code: "invalid_config", error: "config.json is not valid", message: "Line 2: a value is missing.", line: 2 });
       else ctx.op.answer(500, {});
     }
     await settle();
     points.push(observe());
+    if (change && mode === "after") {
+      ctx.changeAt = ctx.calls.length;
+      await R4_CHANGE[change](ctx);
+      await settle();
+    }
     if (ctx.awayFrom) {
       r4Close(ctx);
       r4Open(ctx, ctx.awayFrom);
       ctx.awayFrom = null;
     }
     await r4AnswerAll(ctx);
+    // The next render: pixdcon says its devices again (same data, a newer revision), so what a
+    // continuation left for "the next render" shows in both runs (the gutter, gate r4 §4).
+    for (const d of world.spec.devices) {
+      world.rev += 1;
+      r4Live(world, "device", r4View(world, d.name, world.epoch, world.lives.get(d.name), world.rev));
+    }
+    await r4AnswerAll(ctx);
     points.push(observe());
-    return points;
+    // Captured identities are inherited: no request of an earlier run or life starts after it ended (gate r4 §2, §3).
+    for (const call of ctx.calls.slice(ctx.changeAt)) if (call.stray) absolute.push(`a request for a scope pixdcon no longer holds was started after the change: ${call.stray}`);
+    // A page whose load belongs to a run loads again in the new one (the epoch rule), and is not left loading (gate r4 §4).
+    if (ctx.changed.has("epoch") && (kind.page === "raw" || kind.page === "health")) {
+      const load = kind.page === "raw" ? "/api/v2/config/raw" : "/api/v2/log";
+      if (!ctx.calls.slice(ctx.changeAt, ctx.endAt).some((/** @type {any} */ c) => c.method === "GET" && c.path === load))
+        absolute.push(`no replacement load of ${load} was sent when the new run's snapshot was taken`);
+      if (kind.page === "raw" && /Loading config\.json/.test(r4Text(ctx.root.querySelector(".edbar .state")))) absolute.push("the editor still says it is loading after everything was answered");
+    }
+    return { points, changed: ctx.changed, absolute };
   } finally {
     r4Close(ctx);
     await r4AnswerAll(ctx);
@@ -2679,31 +2991,60 @@ async function r4Run(t, kind, change, end, mode) {
  * them for a reconnect).
  *
  * @param {R4Change} change
- * @param {Array<Map<string, {deps: string[], value: string}>>} got
- * @param {Array<Map<string, {deps: string[], value: string}>>} want
- * @param {boolean} early the reference ended the operation at once
+ * @param {{points: Array<Map<string, {deps: R4Deps, value: string}>>, changed: Set<string>, absolute: string[]}} got
+ * @param {{points: Array<Map<string, {deps: R4Deps, value: string}>>}} want
+ * @param {"early"|"without"|"after"|"none"} reference how the reference ran
  * @param {boolean} atOpen the operation is the load the page's opening sent
  * @returns {string[]}
  */
-function r4Differences(change, got, want, early, atOpen) {
-  const changed = new Set(R4_CHANGES[change]);
+function r4Differences(change, got, want, reference, atOpen) {
+  const changed = got.changed;
   /** @type {string[]} */
-  const out = [];
-  got.forEach((pieces, i) => {
+  const out = [...got.absolute];
+  got.points.forEach((pieces, i) => {
     // A reference that ended its operation at once differs from the case
     // while the case's operation still runs; a reconnect is compared where
-    // everything was answered (the fence may ask again meanwhile).
-    // A load that opens with the page is compared where everything was
-    // answered: until then the reference holds data the case still waits for.
-    if ((early && i === 0) || (atOpen && i < 2) || (change === "reconnect" && i < 2)) return;
+    // everything was answered (the fence may ask again meanwhile), and so is
+    // a commuted story (its change came later). A load that opens with the
+    // page is compared where everything was answered: until then the
+    // reference holds data the case still waits for.
+    if ((reference === "early" && i === 0) || (atOpen && i < 2) || ((reference === "none" || reference === "after") && i < 2)) return;
     for (const [name, piece] of pieces) {
-      if (change !== "reconnect" && !piece.deps.some((d) => changed.has(d))) continue;
-      const reference = want[i]?.get(name)?.value;
-      if (piece.value !== reference)
-        out.push(`${R4_POINTS[i]}, ${name} [${piece.deps.join(", ")}]: "${piece.value}" — the story ${change === "reconnect" ? "without the reconnect" : "without the old operation"} reads "${reference}"`);
+      const value = want.points[i]?.get(name)?.value;
+      // A piece whose identities follow what it says is judged by what the case says: a slot outcome there is not draft feedback.
+      const deps = typeof piece.deps === "function" ? piece.deps(piece.value) : piece.deps;
+      if (reference !== "none" && !deps.some((d) => changed.has(d))) continue;
+      if (piece.value !== value)
+        out.push(
+          `${R4_POINTS[i]}, ${name} [${deps.join(", ")}]: "${piece.value}" — the story ${reference === "none" ? "without the reconnect" : reference === "after" ? "with the change after the end" : "without the old operation"} reads "${value}"`,
+        );
     }
   });
   return out;
+}
+
+/** The ends a kind runs. @param {R4Kind} kind @returns {R4End[]} */
+const r4Ends = (kind) => [...R4_ENDS, ...(kind.ends ?? [])];
+
+/**
+ * A case: the story and its reference, compared.
+ *
+ * @param {any} t @param {R4Kind} kind @param {R4Change} change @param {R4End} end
+ * @param {{modules?: Record<string, any>, references?: Map<string, any>}} [o] modules: mutants instead of the pages (self-tests)
+ */
+async function r4Case(t, kind, change, end, o = {}) {
+  const references = o.references ?? new Map();
+  const early = Boolean(kind.early || kind.atOpen);
+  /** @type {"early"|"without"|"after"|"none"} */
+  const reference = change === "reconnect" ? "none" : kind.commutes?.includes(change) ? "after" : early ? "early" : "without";
+  const key = reference === "none" ? `${kind.name}|none|${end}` : reference === "after" ? `${kind.name}|${change}|after|${end}` : `${kind.name}|${change}`;
+  if (!references.has(key))
+    references.set(
+      key,
+      reference === "none" ? await r4Run(t, kind, null, end, "case", o.modules) : reference === "after" ? await r4Run(t, kind, change, end, "after", o.modules) : await r4Run(t, kind, change, end, reference, o.modules),
+    );
+  const got = await r4Run(t, kind, change, end, "case", o.modules);
+  return r4Differences(change, got, references.get(key), reference, Boolean(kind.atOpen) && change !== "reconnect");
 }
 
 /** The gate's findings, by the case that reproduces each. */
@@ -2713,6 +3054,17 @@ const R4_GATE = {
   "config patch × type × success": "gate r3 M2, without removal",
   "overlays clear × epoch × 500": "gate r3 M3",
   "settings preview × commit × 500": "gate r3 M4",
+  "settings preview × schema × 500": "gate r4 §1, schema generation",
+  "config patch × revisit × success": "gate r4 §1, edit-row visit",
+  "settings save × membership × success": "gate r4 §1, config membership",
+  "settings preview × epoch × success": "gate r4 §2, the queued cleanup DELETE in a new epoch",
+  "settings save × other field × success": "gate r4 §3, Save acknowledges each submitted edit",
+  "raw load × epoch × success": "gate r4 §4, a replacement load",
+  "raw save × type × refused": "gate r4 §4, the gutter",
+  "settings load × commit × success": "gate r4 §4, Save while the load is out",
+  "settings load × newer draft × success": "gate r4 §4, an edit while the load is out",
+  "device adopt × commit × success": "gate r4 §4, membership changes while the adoption is out",
+  "device brightness range × reopen × success": "gate r4 §5, the range is disabled throughout its request",
 };
 
 /** Cases that fail at fbf3f61: phase B makes each one pass and takes it off this list. */
@@ -2722,11 +3074,11 @@ const R4_KNOWN = new Set([
   "config add device × epoch × success",
   "config add device × epoch × timeout",
   "config add device × type × success",
-  "config patch × epoch × 500",
   "config patch × epoch × success",
-  "config patch × epoch × timeout",
   "config patch × leave × success",
+  "config patch × membership × success",
   "config patch × reincarnate × success",
+  "config patch × revisit × success",
   "config patch × type × success",
   "device copy × epoch × 500",
   "device copy × epoch × success",
@@ -2735,66 +3087,685 @@ const R4_KNOWN = new Set([
   "devices add device × epoch × success",
   "devices add device × epoch × timeout",
   "health log × epoch × 500",
+  "health log × epoch × success",
   "health log × epoch × timeout",
   "overlays clear × epoch × 500",
   "overlays clear × epoch × success",
   "overlays clear × epoch × timeout",
   "raw load × epoch × 500",
+  "raw load × epoch × success",
   "raw load × epoch × timeout",
   "raw reload × epoch × 500",
   "raw reload × epoch × success",
   "raw reload × epoch × timeout",
   "raw reload × reopen × success",
   "raw save × epoch × 500",
+  "raw save × epoch × refused",
   "raw save × epoch × success",
   "raw save × epoch × timeout",
+  "raw save × type × refused",
   "settings preview × commit × 500",
   "settings preview × commit × timeout",
+  "settings preview × epoch × 500",
+  "settings preview × epoch × success",
+  "settings preview × epoch × timeout",
   "settings preview × newer draft × 500",
   "settings preview × newer draft × timeout",
+  "settings preview × other field × 500",
+  "settings preview × other field × timeout",
+  "settings preview × reincarnate × 500",
+  "settings preview × reincarnate × success",
+  "settings preview × reincarnate × timeout",
+  "settings preview × schema × 500",
+  "settings preview × schema × timeout",
+  "settings revert × epoch × 500",
+  "settings revert × epoch × success",
+  "settings revert × epoch × timeout",
+  "settings revert × reincarnate × 500",
+  "settings revert × reincarnate × success",
+  "settings revert × reincarnate × timeout",
+  "settings save × epoch × 500",
+  "settings save × epoch × success",
+  "settings save × epoch × timeout",
+  "settings save × membership × 500",
+  "settings save × membership × success",
+  "settings save × membership × timeout",
+  "settings save × reincarnate × 500",
+  "settings save × reincarnate × success",
+  "settings save × reincarnate × timeout",
 ]);
 
 const R4_STRICT = process.env.R4_HARNESS_STRICT === "1";
-/** The reference runs, by kind and change (and end, for a reconnect's). @type {Map<string, any>} */
+/** The reference runs, by kind and change (and end, for a reconnect's and a commuted story's). @type {Map<string, any>} */
 const r4References = new Map();
 let r4Count = 0;
+/** @type {string[]} */
+const r4Probes = [];
 for (const kind of R4_KINDS)
-  for (const change of /** @type {R4Change[]} */ (Object.keys(R4_CHANGES)))
-    for (const end of R4_ENDS) {
+  for (const change of /** @type {R4Change[]} */ (Object.keys(R4_CHANGES))) {
+    const why = r4Unreachable(kind, change);
+    if (why) {
+      r4Probes.push(`${kind.name} × ${change}: ${why}`);
+      // The exclusion is a claim the harness checks: the probe begins the operation and tries the change through the stand-in DOM.
+      test(`r4 harness: unreachable: ${kind.name} × ${change}`, async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        const probe = await r4Run(t, kind, change, "success", "probe");
+        assert.equal(probe.unreachable, why, `${kind.name} × ${change}: the change ${probe.unreachable === undefined ? "could be made: the case must run" : `is unreachable for another reason: ${probe.unreachable}`}`);
+      });
+      continue;
+    }
+    for (const end of r4Ends(kind)) {
       const name = `${kind.name} × ${change} × ${end}`;
-      const why = r4NotApplicable(kind, change);
-      if (why) continue;
       r4Count += 1;
       const gate = /** @type {Record<string, string>} */ (R4_GATE)[name];
       const label = `r4 harness: ${name}${gate ? ` (${gate})` : ""}`;
       const todo = !R4_STRICT && R4_KNOWN.has(name) ? `fails at fbf3f61: ${name}` : undefined;
       test(label, { todo }, async (t) => {
         t.mock.timers.enable({ apis: ["setTimeout"] });
-        const early = Boolean(kind.early || kind.atOpen);
-        const key = change === "reconnect" ? `${kind.name}|none|${end}` : `${kind.name}|${change}`;
-        if (!r4References.has(key))
-          r4References.set(key, change === "reconnect" ? await r4Run(t, kind, null, end, "case") : await r4Run(t, kind, change, end, early ? "early" : "without"));
-        const reference = /** @type {any} */ (r4References.get(key));
-        const got = await r4Run(t, kind, change, end, "case");
-        const differences = r4Differences(change, got, reference, early && change !== "reconnect", Boolean(kind.atOpen) && change !== "reconnect");
+        const differences = await r4Case(t, kind, change, end, { references: r4References });
         assert.deepEqual(differences, [], `${kind.site}: the old operation changed UI state that depends on an identity the change changed`);
       });
     }
+  }
 
-test("r4 harness: the matrix covers every operation kind, change and end; what does not apply is named with its reason", () => {
-  /** @type {string[]} */
-  const notApplicable = [];
-  for (const kind of R4_KINDS)
-    for (const change of /** @type {R4Change[]} */ (Object.keys(R4_CHANGES))) {
-      const why = r4NotApplicable(kind, change);
-      if (why) notApplicable.push(`${kind.name} × ${change}: ${why}`);
-    }
-  assert.equal(r4Count + notApplicable.length * R4_ENDS.length, R4_KINDS.length * Object.keys(R4_CHANGES).length * R4_ENDS.length);
-  for (const name of Object.keys(R4_GATE)) assert.ok(R4_KINDS.some((k) => name.startsWith(`${k.name} ×`)), `${name} is a case of the matrix`);
-  t_log(`r4 harness: ${R4_KINDS.length} kinds × ${Object.keys(R4_CHANGES).length} changes × ${R4_ENDS.length} ends: ${r4Count} cases run, ${notApplicable.length * R4_ENDS.length} not applicable:\n  ${notApplicable.join("\n  ")}`);
+test("r4 harness: the matrix covers every operation kind, change and end; every exclusion is a probe that runs", () => {
+  const combinations = R4_KINDS.reduce((sum, kind) => sum + Object.keys(R4_CHANGES).length * r4Ends(kind).length, 0);
+  const excluded = r4Probes.reduce((sum, line) => sum + r4Ends(/** @type {R4Kind} */ (R4_KINDS.find((k) => line.startsWith(`${k.name} ×`)))).length, 0);
+  assert.equal(r4Count + excluded, combinations);
+  for (const name of Object.keys(R4_GATE)) assert.ok(R4_KINDS.some((k) => name.startsWith(`${k.name} ×`)) && !r4Probes.some((p) => name.startsWith(p.split(":")[0])), `${name} is a case of the matrix`);
+  t_log(`r4 harness: ${R4_KINDS.length} kinds × ${Object.keys(R4_CHANGES).length} changes × ends (${R4_ENDS.join(", ")}; raw save also refused): ${combinations} combinations, ${r4Count} cases run, ${r4Probes.length} combinations (${excluded} with their ends) unreachable, each a probe that runs:\n  ${r4Probes.join("\n  ")}`);
+});
+
+// --- self-tests: product mutations the harness must catch (gate r4 §3, §4) ---
+
+/**
+ * A page module with its source changed in memory: relative imports point
+ * to the real modules (the same store and ops), or to other mutants.
+ *
+ * @param {string} file under web/js
+ * @param {Array<[string, string]>} edits [what is there, what it becomes]; each must be found
+ * @param {Record<string, string>} [replace] relative import → module URL
+ */
+async function r4Mutant(file, edits, replace = {}) {
+  const { readFileSync } = await import("node:fs");
+  const url = new URL(`../../web/js/${file}`, import.meta.url);
+  let src = readFileSync(url, "utf8");
+  for (const [from, to] of edits) {
+    assert.ok(src.includes(from), `the mutation finds its place in ${file}: ${from}`);
+    src = src.replace(from, to);
+  }
+  src = src.replace(/from\s+"(\.{1,2}\/[^"]+)"/g, (_, spec) => `from "${replace[spec] ?? new URL(spec, url).href}"`);
+  return `data:text/javascript;base64,${Buffer.from(src).toString("base64")}`;
+}
+
+test("r4 harness self-test: an epoch guard on Raw's load without a replacement load is caught (gate r4 §4)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mutant = await r4Mutant("pages/config-raw.js", [
+    ["function load(base = { opened, revision }, tries = 0) {", "function load(base = { opened, revision, epoch: getState().epoch }, tries = 0) {"],
+    ["if (base.opened !== opened || !root) return;\n        if (decision", "if (base.opened !== opened || !root || /** @type {any} */ (base).epoch !== getState().epoch) return;\n        if (decision"],
+  ]);
+  const raw = (await import(mutant)).page;
+  const kind = /** @type {R4Kind} */ (R4_KINDS.find((k) => k.name === "raw load"));
+  const differences = await r4Case(t, kind, "epoch", "success", { modules: { raw } });
+  assert.ok(differences.some((d) => /editor text/.test(d)), `the harness reports the empty editor: ${differences.join("\n")}`);
+  assert.ok(differences.some((d) => /replacement load/.test(d)), "and the missing replacement load");
+});
+
+test("r4 harness self-test: Save suppressed while a newer draft exists is caught (gate r4 §3)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const form = await r4Mutant("components/settings-form.js", [
+    ["const plan = mine.book.saveBody(session());\n    if (!plan) return;", "const plan = mine.book.saveBody(session());\n    if (!plan) return;\n    const at = mine.book.draft();"],
+    ["done: (answer) => {\n          // What was saved", "done: (answer) => {\n          if (mine.book.draft() !== at) return null;\n          // What was saved"],
+  ]);
+  const device = (await import(await r4Mutant("pages/device.js", [], { "../components/settings-form.js": form }))).page;
+  const kind = /** @type {R4Kind} */ (R4_KINDS.find((k) => k.name === "settings save"));
+  const differences = await r4Case(t, kind, "other field", "success", { modules: { device } });
+  assert.ok(differences.some((d) => /row marker of n|edits the next Save sends/.test(d)), `the harness reports the unacknowledged edit: ${differences.join("\n")}`);
+  // The same story with the real form passes: the submitted edit is acknowledged, the newer one stays and is sent.
+  assert.deepEqual(await r4Case(t, kind, "other field", "success"), []);
+});
+
+test("r4 harness self-test: a brightness range left enabled while its request runs is caught (gate r4 §5)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = (await import(await r4Mutant("pages/device.js", [["range.disabled = override === null || briDisabled;", "range.disabled = override === null;"]]))).page;
+  const kind = /** @type {R4Kind} */ (R4_KINDS.find((k) => k.name === "device brightness range"));
+  const differences = await r4Case(t, kind, "reopen", "success", { modules: { device } });
+  assert.ok(differences.some((d) => /range is enabled/.test(d)), `the harness reports the enabled range: ${differences.join("\n")}`);
+});
+
+test("r4 harness self-test: a probe finds the combinations the first note excluded reachable (gate r4 §4)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const [name, change] of /** @type {Array<[string, R4Change]>} */ ([["settings load", "commit"], ["settings load", "newer draft"], ["device adopt", "commit"]])) {
+    const kind = /** @type {R4Kind} */ (R4_KINDS.find((k) => k.name === name));
+    const probe = await r4Run(t, kind, change, "success", "probe");
+    assert.equal(probe.unreachable, undefined, `${name} × ${change} can be made through the stand-in DOM`);
+    assert.equal(r4Unreachable(kind, change), null, `${name} × ${change} runs as cases`);
+  }
 });
 
 /** @param {string} line */
 function t_log(line) {
   if (process.env.R4_HARNESS_STRICT === "1") process.stdout.write(`# ${line.replaceAll("\n", "\n# ")}\n`);
 }
+
+// ---------------------------------------------------------------------------
+// r4, phase A revision: the effect inventory, re-run by the suite (gate r4 §2)
+//
+// The section between the <effects-r4> marks is the extractor itself, and
+// the only copy: effects-r4.mjs beside the design note runs this section.
+// It finds every continuation in web/js (ops.js done/failed/describe, the
+// code after each await, then/catch/finally, SSE handlers, timers) and the
+// UI effects each performs, following indirection: named callbacks
+// (`done: settled`), helper functions of the file (a helper that writes UI
+// or starts a request is the continuation's effect), and callbacks passed
+// as arguments (`return step()` in a lane is every step the file queues;
+// a call that passes a step binds it). render/redraw/draw are not followed:
+// render reads the current state and is the one DOM writer (note §3).
+// R4_INVENTORY lists every continuation with its effects; the suite fails on
+// one that is not listed or a listed one that vanished.
+// ---------------------------------------------------------------------------
+
+// <effects-r4>
+/** Strings, comments and template text blanked (template expressions kept), so brackets and patterns match code only. @param {string} src */
+function r4xCodeOnly(src) {
+  let out = "";
+  let i = 0;
+  /** @type {string[]} */
+  const stack = [];
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (stack.length > 0 && stack[stack.length - 1] === "`") {
+      if (c === "\\") { out += "  "; i += 2; continue; }
+      if (c === "`") { stack.pop(); out += c; i += 1; continue; }
+      if (c === "$" && n === "{") { stack.push("{"); out += "${"; i += 2; continue; }
+      out += c === "\n" ? "\n" : " "; i += 1; continue;
+    }
+    if (c === "/" && n === "/") { while (i < src.length && src[i] !== "\n") { out += " "; i += 1; } continue; }
+    if (c === "/" && n === "*") { while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) { out += src[i] === "\n" ? "\n" : " "; i += 1; } out += "  "; i += 2; continue; }
+    if (c === '"' || c === "'") {
+      out += c; i += 1;
+      while (i < src.length && src[i] !== c) { if (src[i] === "\\") { out += " "; i += 1; } out += src[i] === "\n" ? "\n" : " "; i += 1; }
+      out += c; i += 1; continue;
+    }
+    if (c === "`") { stack.push("`"); out += c; i += 1; continue; }
+    if (c === "{" && stack.length) { stack.push("{"); out += c; i += 1; continue; }
+    if (c === "}" && stack.length && stack[stack.length - 1] === "{") { stack.pop(); out += c; i += 1; continue; }
+    out += c; i += 1;
+  }
+  return out;
+}
+/** @param {string} code @param {number} open an opening bracket @returns {number} its match */
+function r4xMatch(code, open) {
+  /** @type {Record<string, string>} */
+  const pairs = { "(": ")", "{": "}", "[": "]" };
+  const want = pairs[code[open]];
+  let depth = 0;
+  for (let i = open; i < code.length; i += 1) {
+    if (code[i] === code[open]) depth += 1;
+    else if (code[i] === want) { depth -= 1; if (depth === 0) return i; }
+  }
+  return code.length - 1;
+}
+/** @param {string} code @param {number} at @returns {number} the 1-based line */
+const r4xLineOf = (code, at) => code.slice(0, at).split("\n").length;
+/** An expression from `start` up to the comma, semicolon or bracket that ends it at depth 0. @param {string} code @param {number} start @returns {[number, number]} */
+function r4xExpression(code, start) {
+  let depth = 0;
+  for (let i = start; i < code.length; i += 1) {
+    const c = code[i];
+    if ("([{".includes(c)) depth += 1;
+    else if (")]}".includes(c)) { if (depth === 0) return [start, i - 1]; depth -= 1; }
+    else if ((c === "," || c === ";") && depth === 0) return [start, i - 1];
+    else if (c === "\n" && depth === 0 && /^\s*(const|let|function|export|return|if|for)\b/.test(code.slice(i + 1, i + 40))) return [start, i - 1];
+  }
+  return [start, code.length - 1];
+}
+/** The body of a function whose parameters close at `close`: a block, or an arrow's expression. @param {string} code @param {number} close @returns {[number, number]|null} */
+function r4xBodyAfter(code, close) {
+  const after = /^\s*(=>\s*)?/.exec(code.slice(close + 1, close + 40));
+  let start = close + 1 + (after ? after[0].length : 0);
+  if (code[start] === "{") return [start, r4xMatch(code, start)];
+  if (!after?.[1]) return null;
+  while (/\s/.test(code[start])) start += 1;
+  return r4xExpression(code, start);
+}
+/** A function value that starts at `at` (an arrow, a function, or the name of a function of the file): its body. @param {string} code @param {any[]} fns @param {number} at @returns {[number, number]|null} */
+function r4xFunctionAt(code, fns, at) {
+  const rest = code.slice(at, at + 200);
+  const fn = /^\s*(?:async\s+)?function\b[^(]*\(/.exec(rest);
+  if (fn) return r4xBodyAfter(code, r4xMatch(code, at + fn[0].length - 1));
+  const paren = /^\s*(?:async\s*)?\(/.exec(rest);
+  if (paren) {
+    const close = r4xMatch(code, at + paren[0].length - 1);
+    if (/^\s*=>/.test(code.slice(close + 1, close + 10))) return r4xBodyAfter(code, close);
+    return null;
+  }
+  const single = /^\s*(?:async\s+)?[A-Za-z_$][\w$]*\s*=>/.exec(rest);
+  if (single) {
+    let start = at + single[0].length;
+    while (/\s/.test(code[start])) start += 1;
+    return code[start] === "{" ? [start, r4xMatch(code, start)] : r4xExpression(code, start);
+  }
+  const name = /^\s*([A-Za-z_$][\w$]*)\s*(?=[,)}\n])/.exec(rest);
+  const named = name ? fns.find((f) => f.name === name[1]) : null;
+  return named ? [named.start, named.end] : null;
+}
+const R4X_KEYWORDS = new Set(["if", "for", "while", "switch", "catch", "return", "await", "function", "async", "typeof", "new", "void", "delete", "in", "of", "super", "import"]);
+/** Every named function of a file: declarations, const/let functions and arrows, and methods. @param {string} code */
+function r4xFunctions(code) {
+  /** @type {Array<{name: string, at: number, params: string[], start: number, end: number}>} */
+  const fns = [];
+  const re = /(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(|(?:^|\n)\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(|(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\s*\*?\s*[\w$]*\s*)?\(/g;
+  for (let m; (m = re.exec(code)); ) {
+    const name = m[1] || m[2] || m[3];
+    if (!name || R4X_KEYWORDS.has(name)) continue;
+    const open = m.index + m[0].length - 1;
+    const close = r4xMatch(code, open);
+    const body = r4xBodyAfter(code, close);
+    if (!body) continue;
+    // A call at the start of a line is not a method: a method's parameters are followed by its block.
+    if (m[2] && code[body[0]] !== "{") continue;
+    if (m[2] && !/^\s*\{/.test(code.slice(close + 1, close + 20))) continue;
+    const params = code.slice(open + 1, close).replace(/[{}[\]]/g, ",").split(",").map((p) => p.replace(/=.*$/s, "").replace(/\.\.\./, "").trim()).filter((p) => /^[A-Za-z_$][\w$]*$/.test(p));
+    fns.push({ name, at: m.index, params, start: body[0], end: body[1] });
+  }
+  return fns;
+}
+/** The arguments of a call whose parenthesis opens at `open`. @param {string} code @param {number} open @returns {Array<[number, number]>} */
+function r4xArguments(code, open) {
+  const close = r4xMatch(code, open);
+  /** @type {Array<[number, number]>} */
+  const args = [];
+  let depth = 0;
+  let from = open + 1;
+  for (let i = open + 1; i < close; i += 1) {
+    const c = code[i];
+    if ("([{".includes(c)) depth += 1;
+    else if (")]}".includes(c)) depth -= 1;
+    else if (c === "," && depth === 0) { args.push([from, i - 1]); from = i + 1; }
+  }
+  if (code.slice(from, close).trim()) args.push([from, close - 1]);
+  return args;
+}
+/** The effects a continuation performs, by pattern, in its code and in what it calls. */
+const R4X_EFFECTS = /** @type {Array<[string, RegExp]>} */ ([
+  ["DOM write", /\bsetHtml\(|\.innerHTML\s*=(?!=)|\.textContent\s*=(?!=)|\bsetStatusLine\(|\bsetAttr\(|\bsetClass\(|\.replaceChildren\(|\.value\s*=(?!=)|\.style\.[a-zA-Z]+\s*=(?!=)|\.className\s*=(?!=)/],
+  ["slot drop", /(?<![\w$.])drop\(/],
+  ["close", /\.close\(|\bopen\s*=\s*null|scrim\.remove\(\)/],
+  ["blur", /\.blur\b/],
+  ["reset", /\.reset\(|\bbook\.(saved|clear|rejected)\(/],
+  ["focus", /\.focus\(/],
+  ["enable/disable", /\.disabled\s*=(?!=)/],
+  ["request start", /(?<![\w$.])(request|requestFrame|follow|start)\(/],
+  ["page state", /\b(loading|loaded|again|errorLine|phase|loadError|sliding|open|copied|current|reported)\s*=(?!=)|\.(previewed|queued|left)\s*=(?!=)/],
+  ["preview feedback", /\.previewFailure\s*=(?!=)/],
+  ["page callback", /\boptions\.on[A-Z]\w*\s*\??\.?\(/],
+  ["connection feedback", /(?<![\w$.])(setLive|lose)\(/],
+  ["timer start", /(?<![\w$.])(setTimeout|setInterval)\(/],
+  ["slot outcome", /(?<![\w$.])setOp\(/],
+  ["store", /(?<![\w$.])(applyAnswer|applyFrameAnswer|applyEvent|setLive|setLoadError)\(/],
+]);
+/** Called, not followed: render reads the current state (note §3). */
+const R4X_RENDER = new Set(["render", "redraw", "draw"]);
+/**
+ * The effects of the code in `range`, and of what it calls.
+ *
+ * @param {string} code @param {any[]} fns @param {[number, number]} range
+ * @param {Map<string, Array<[number, number]>>} bound parameters bound to the callbacks a call passed
+ * @param {Set<string>} seen @param {Set<string>} via the helpers and callbacks followed
+ * @returns {Set<string>}
+ */
+function r4xFollow(code, fns, range, bound, seen, via) {
+  const body = code.slice(range[0], range[1] + 1);
+  const effects = new Set(R4X_EFFECTS.filter(([, re]) => re.test(body)).map(([name]) => name));
+  for (const m of body.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g)) {
+    const name = m[1];
+    if (R4X_KEYWORDS.has(name)) continue;
+    if (R4X_RENDER.has(name)) { effects.add("render"); continue; }
+    const at = range[0] + m.index;
+    /** @type {Array<{range: [number, number], bind: Map<string, Array<[number, number]>>}>} */
+    const targets = [];
+    const fn = fns.find((f) => f.name === name && f.at !== at && !(f.at <= at && at < f.start));
+    if (fn) {
+      // What this call passes as callbacks is what the helper's parameters call.
+      /** @type {Map<string, Array<[number, number]>>} */
+      const bind = new Map();
+      r4xArguments(code, at + m[0].length - 1).forEach((arg, i) => {
+        const value = r4xFunctionAt(code, fns, arg[0]);
+        if (value && fn.params[i]) bind.set(fn.params[i], [value]);
+      });
+      targets.push({ range: [fn.start, fn.end], bind });
+    } else if (bound.has(name)) {
+      for (const r of /** @type {Array<[number, number]>} */ (bound.get(name))) targets.push({ range: r, bind: new Map() });
+    } else {
+      // A parameter of the function that holds the call, not bound here: every callback the file passes for it.
+      const owner = fns.filter((f) => f.start <= at && at <= f.end && f.params.includes(name)).sort((a, b) => a.end - a.start - (b.end - b.start))[0];
+      if (owner) {
+        const index = owner.params.indexOf(name);
+        for (const call of code.matchAll(new RegExp(`(?<![\\w$.])${owner.name}\\s*\\(`, "g"))) {
+          if (call.index === owner.at || (owner.at <= call.index && call.index < owner.start)) continue;
+          const arg = r4xArguments(code, call.index + call[0].length - 1)[index];
+          const value = arg ? r4xFunctionAt(code, fns, arg[0]) : null;
+          if (value) targets.push({ range: value, bind: new Map() });
+        }
+      }
+    }
+    for (const target of targets) {
+      const key = `${target.range[0]}|${[...target.bind.values()].flat().join(",")}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      via.add(name);
+      for (const effect of r4xFollow(code, fns, target.range, target.bind, seen, via)) effects.add(effect);
+    }
+  }
+  return effects;
+}
+/**
+ * The inventory of a set of files.
+ *
+ * @param {Array<{file: string, src: string}>} files paths relative to v2/
+ * @returns {{rows: any[], hits: number, unmapped: string[]}}
+ */
+function r4xExtract(files) {
+  /** @type {any[]} */
+  const rows = [];
+  let hits = 0;
+  /** @type {string[]} */
+  const unmapped = [];
+  for (const { file, src } of files) {
+    const code = r4xCodeOnly(src);
+    const fns = r4xFunctions(code);
+    /** @type {Array<[number, number]>} */
+    const mine = [];
+    const holder = (/** @type {number} */ at) =>
+      fns.filter((f) => f.start <= at && at <= f.end).sort((a, b) => a.end - a.start - (b.end - b.start))[0]?.name ?? "(module)";
+    /** @param {string} kind @param {number} at @param {[number, number]|null} range @param {string[]} [extra] @param {string} [what] */
+    const add = (kind, at, range, extra = [], what = "") => {
+      if (!range) return;
+      const via = new Set();
+      const effects = new Set([...r4xFollow(code, fns, range, new Map(), new Set(), via), ...extra]);
+      mine.push([Math.min(at, range[0]), range[1]], [at, at + 60]);
+      rows.push({ site: `${file}:${r4xLineOf(code, at)}`, file, line: r4xLineOf(code, at), kind, fn: holder(at), what, effects: [...effects].sort(), via: [...via].sort() });
+    };
+    // 1. ops.js callbacks: done (what it returns is the slot's note), failed, describe (the slot's failure text)
+    for (const m of code.matchAll(/\b(done|failed|describe)\s*:\s*/g)) {
+      const range = r4xFunctionAt(code, fns, m.index + m[0].length);
+      const named = /^([A-Za-z_$][\w$]*)\s*[,}\n]/.exec(code.slice(m.index + m[0].length));
+      const body = range ? code.slice(range[0], range[1] + 1) : "";
+      // A note is text: a string, a template or a named sentence (SAVED) that it returns.
+      const text = /["'`]|\b[A-Z][A-Z_]{2,}\b/;
+      const returns = range && (code[range[0]] !== "{" ? text.test(body) : [...body.matchAll(/\breturn\s+([^;]*)/g)].some((r) => text.test(r[1])));
+      /** @type {string[]} */
+      const extra = m[1] === "describe" ? ["slot failure text"] : m[1] === "done" && returns ? ["slot note"] : [];
+      add(`ops ${m[1]}`, m.index, range, extra, named?.[1] ?? "");
+    }
+    // 2. await: from the awaited expression to the end of the async function that holds it
+    /** @type {Array<[number, number]>} */
+    const asyncBodies = [];
+    for (const a of code.matchAll(/\basync\b/g)) {
+      const range = r4xFunctionAt(code, fns, a.index);
+      if (range) asyncBodies.push(range);
+    }
+    for (const m of code.matchAll(/\bawait\b/g)) {
+      const body = asyncBodies.filter(([a, b]) => a <= m.index && m.index <= b).sort((x, y) => x[1] - x[0] - (y[1] - y[0]))[0];
+      const awaited = /^\s*(?:new\s+)?[A-Za-z_$][\w$.]*\s*(\()?/.exec(code.slice(m.index + 5));
+      const from = awaited?.[1] ? r4xMatch(code, m.index + 5 + awaited[0].length - 1) + 1 : m.index + 5 + (awaited?.[0].length ?? 0);
+      // `f(await x)`: f runs after x, in the continuation.
+      /** @type {string[]} */
+      const wrappers = [];
+      let depth = 0;
+      for (let i = m.index - 1; i >= (body ? body[0] : 0); i -= 1) {
+        if (")]}".includes(code[i])) depth += 1;
+        else if ("([{".includes(code[i])) {
+          if (depth === 0) {
+            if (code[i] === "{") break;
+            const callee = /([A-Za-z_$][\w$.]*)\s*$/.exec(code.slice(Math.max(0, i - 60), i));
+            if (callee && code[i] === "(") wrappers.push(callee[1]);
+          } else depth -= 1;
+        }
+      }
+      const wrapped = wrappers.flatMap((w) => R4X_EFFECTS.filter(([, re]) => re.test(`${w}(`)).map(([name]) => name));
+      add("await", m.index, [from, body ? body[1] : code.length - 1], wrapped);
+    }
+    // 3. then/catch/finally
+    for (const m of code.matchAll(/\.(then|catch|finally)\s*\(/g)) {
+      const open = m.index + m[0].length - 1;
+      add(`.${m[1]}`, m.index, [open, r4xMatch(code, open)]);
+    }
+    // 4. SSE handlers and EventSource callbacks
+    for (const m of code.matchAll(/\b(source|es|stream)\.addEventListener\s*\(|\.(onopen|onerror|onmessage)\s*=/g)) {
+      if (m[2]) add(`SSE ${m[2]}`, m.index, r4xFunctionAt(code, fns, m.index + m[0].length));
+      else {
+        const open = m.index + m[0].length - 1;
+        add("SSE handler", m.index, [open, r4xMatch(code, open)]);
+      }
+    }
+    // 5. timers
+    for (const m of code.matchAll(/(?<![\w$.])(setTimeout|setInterval)\s*\(/g)) {
+      const open = m.index + m[0].length - 1;
+      add(`timer ${m[1]}`, m.index, [open, r4xMatch(code, open)]);
+    }
+    // The cross-check: an independent line search; every hit must lie inside a continuation of the inventory.
+    const SEARCH = /\bawait\b|\.then\s*\(|\.catch\s*\(|\.finally\s*\(|\bsetTimeout\s*\(|\bsetInterval\s*\(|\bdone\s*:|\bfailed\s*:|\bdescribe\s*:|\.onopen\b|\.onerror\b|\.onmessage\b|source\.addEventListener/;
+    const lines = code.split("\n");
+    let offset = 0;
+    lines.forEach((line, i) => {
+      const hit = line.search(SEARCH);
+      if (hit !== -1) {
+        hits += 1;
+        const at = offset + hit;
+        if (!mine.some(([a, b]) => at >= a - 400 && at <= b + 1)) unmapped.push(`${file}:${i + 1}: ${src.split("\n")[i].trim()}`);
+      }
+      offset += line.length + 1;
+    });
+  }
+  return { rows, hits, unmapped };
+}
+/** A row as the inventory lists it: no line number, so code that moves keeps its row. @param {any} row */
+const r4xKey = (row) => `${row.file} · ${row.fn} · ${row.kind} · ${row.effects.join(", ") || "none"}`;
+/**
+ * The identities an effect depends on: its projection (note §1, §3). The
+ * one guard in ops.js checks exactly these for the effect, with the values
+ * captured when the operation began.
+ *
+ * @param {string} file @param {string} effect @param {string} [fn] the function that holds the continuation
+ */
+function r4xProjection(file, effect, fn = "") {
+  const settings = /settings-form/.test(file);
+  const raw = /config-raw/.test(file);
+  const config = /pages\/config\.js/.test(file);
+  // The live channel's continuations belong to one EventSource: its generation owns connection feedback and event admission.
+  if (/live\.js/.test(file) && effect !== "store") return "stream generation (it owns connection feedback and event admission)";
+  const device = /device\.js|devices\.js|config\.js|recovery-dialog|settings-form/.test(file) && !/addDevice|copyScene/.test(fn);
+  const member = (settings && fn === "save") || (config && /patch|adopt/.test(fn));
+  const slot = `slot token · epoch${device ? " · life" : ""}${settings ? " · scene" : ""}`;
+  switch (effect) {
+    case "slot note":
+    case "slot failure text":
+    case "slot outcome":
+      return `${slot}${member ? " · config membership" : ""}`;
+    case "slot drop":
+      return "the dropped slot still holds the operation this one superseded (its token) · opening";
+    case "close":
+    case "blur":
+    case "focus":
+      return `opening · ${config ? "edit-row visit · " : ""}editor revision · epoch · life${member ? " · config membership" : ""}; blur and focus only inside the opening's root`;
+    case "reset":
+      return settings ? "each submitted edit's draft (monotonic acknowledgement) · scope (scene, epoch, life) · config membership" : "opening · editor revision (the form's)";
+    case "request start":
+      return `the identities captured when the operation began, inherited and never re-read (scope: ${settings ? "scene, epoch, life" : raw ? "opening, epoch" : "epoch, life"}), checked before the request starts`;
+    case "page state":
+    case "preview feedback":
+    case "page callback":
+      return settings ? "opening · scope (scene, epoch, life) · scene-definition generation · newest draft and > committed" : raw ? "opening · load token · editor revision · epoch" : config ? "opening · edit-row visit" : "opening · slot token";
+    case "DOM write":
+      return raw ? "opening · editor revision · epoch (a replacement load writes the new run's text)" : "none beyond render's reading of the current state";
+    case "enable/disable":
+      return slot;
+    case "connection feedback":
+    case "timer start":
+      return "stream generation (it owns connection feedback and event admission)";
+    case "render":
+      return "none: render reads the current state";
+    case "store":
+      return "none: the store's fence decides (ordering.js)";
+    default:
+      return "?";
+  }
+}
+/**
+ * Every continuation of web/js at fbf3f61, with its effects (r4xKey): the
+ * suite fails on one that is not listed here and on a listed one that
+ * vanished. Phase B updates this list with the code, and each row's
+ * projection follows from its effects (r4xProjection).
+ */
+const R4_INVENTORY = [
+  "web/js/api.js · request · await · none",
+  "web/js/api.js · request · await · none",
+  "web/js/api.js · requestFrame · await · none",
+  "web/js/api.js · requestFrame · await · none",
+  "web/js/api.js · bound · timer setTimeout · none",
+  "web/js/components/recovery-dialog.js · retry · ops done · render",
+  "web/js/components/recovery-dialog.js · retry · ops failed · render",
+  "web/js/components/recovery-dialog.js · retry · await · store",
+  "web/js/components/settings-form.js · load · ops failed · page state, render",
+  "web/js/components/settings-form.js · save · ops done · page callback, page state, preview feedback, render, request start, reset, slot drop, slot note, store",
+  "web/js/components/settings-form.js · save · ops describe · slot failure text",
+  "web/js/components/settings-form.js · save · ops failed · page callback, page state, preview feedback, render, request start, reset, slot drop, store",
+  "web/js/components/settings-form.js · revert · ops done · page callback, page state, preview feedback",
+  "web/js/components/settings-form.js · revert · ops describe · slot failure text",
+  "web/js/components/settings-form.js · clearOverlays · ops done · slot note",
+  "web/js/components/settings-form.js · clearOverlays · ops describe · slot failure text",
+  "web/js/components/settings-form.js · enqueue · await · page callback, page state, preview feedback, render, request start, reset, slot drop, store",
+  "web/js/components/settings-form.js · enqueue · await · none",
+  "web/js/components/settings-form.js · retryEnd · await · store",
+  "web/js/components/settings-form.js · leave · await · none",
+  "web/js/components/settings-form.js · leave · await · store",
+  "web/js/components/settings-form.js · load · await · store",
+  "web/js/components/settings-form.js · sendPreview · await · page callback, page state, preview feedback, render, reset, slot drop, store",
+  "web/js/components/settings-form.js · save · await · store",
+  "web/js/components/settings-form.js · revert · await · slot drop, store",
+  "web/js/components/settings-form.js · clearOverlays · await · store",
+  "web/js/live.js · open · SSE onopen · close, connection feedback, page state, timer start",
+  "web/js/live.js · open · SSE onerror · close, connection feedback, page state, timer start",
+  "web/js/live.js · open · SSE handler · close, connection feedback, page state, timer start",
+  "web/js/live.js · lose · timer setTimeout · none",
+  "web/js/live.js · armSilence · timer setTimeout · close, connection feedback, page state, timer start",
+  "web/js/main.js · (module) · await · request start, store, timer start",
+  "web/js/main.js · loadFrame · await · store",
+  "web/js/main.js · (module) · timer setInterval · none",
+  "web/js/ops.js · run · .then · slot outcome",
+  "web/js/pages/config-raw.js · load · ops done · DOM write, page state, render, request start, store",
+  "web/js/pages/config-raw.js · load · ops describe · slot failure text",
+  "web/js/pages/config-raw.js · load · ops failed · page state, render",
+  "web/js/pages/config-raw.js · save · ops done · page state, slot note",
+  "web/js/pages/config-raw.js · save · ops describe · slot failure text",
+  "web/js/pages/config-raw.js · save · ops failed · page state",
+  "web/js/pages/config-raw.js · reloadFromDisk · ops done · slot note",
+  "web/js/pages/config-raw.js · reloadFromDisk · ops describe · slot failure text",
+  "web/js/pages/config-raw.js · load · await · store",
+  "web/js/pages/config-raw.js · save · await · store",
+  "web/js/pages/config-raw.js · reloadFromDisk · await · DOM write, page state, render, request start, slot drop, store",
+  "web/js/pages/config-raw.js · reloadFromDisk · await · DOM write, page state, render, store",
+  "web/js/pages/config.js · patch · ops done · blur, close, page state",
+  "web/js/pages/config.js · addDevice · ops done · reset, slot note",
+  "web/js/pages/config.js · patch · await · store",
+  "web/js/pages/config.js · adopt · await · store",
+  "web/js/pages/config.js · addDevice · await · store",
+  "web/js/pages/device.js · act · ops done · page state",
+  "web/js/pages/device.js · act · ops failed · page state",
+  "web/js/pages/device.js · copyScene · ops done · slot note",
+  "web/js/pages/device.js · act · await · store",
+  "web/js/pages/devices.js · addDevice · ops done · slot note",
+  "web/js/pages/devices.js · chooseScene · await · store",
+  "web/js/pages/devices.js · restore · await · store",
+  "web/js/pages/devices.js · addDevice · await · store",
+  "web/js/pages/health.js · loadLog · ops failed · render",
+  "web/js/pages/health.js · loadLog · await · store",
+  "web/js/pages/overlays.js · clear · ops done · slot note",
+  "web/js/pages/overlays.js · clear · await · store",
+];
+// </effects-r4>
+
+const { readdirSync: r4ReadDir, readFileSync: r4ReadFile, statSync: r4Stat } = await import("node:fs");
+/** The files of web/js, as the extractor reads them. @returns {Array<{file: string, src: string}>} */
+function r4WebFiles() {
+  const v2 = new URL("../../", import.meta.url);
+  /** @param {string} dir @returns {string[]} */
+  const walk = (dir) =>
+    r4ReadDir(new URL(dir, v2))
+      .sort()
+      .flatMap((name) => (r4Stat(new URL(`${dir}${name}`, v2)).isDirectory() ? walk(`${dir}${name}/`) : name.endsWith(".js") ? [`${dir}${name}`] : []));
+  return walk("web/js/").map((file) => ({ file, src: r4ReadFile(new URL(file, v2), "utf8") }));
+}
+/** What the extraction finds that the list does not hold, and what the list holds that the extraction no longer finds. @param {any[]} rows */
+function r4InventoryDiff(rows) {
+  const left = [...R4_INVENTORY];
+  /** @type {string[]} */
+  const unlisted = [];
+  for (const row of rows) {
+    const i = left.indexOf(r4xKey(row));
+    if (i === -1) unlisted.push(`${r4xKey(row)}  (${row.site})`);
+    else left.splice(i, 1);
+  }
+  return { unlisted, vanished: left };
+}
+
+test("r4 inventory: the extraction re-run over web/js finds exactly the listed continuations and effects; the line search finds nothing outside them", () => {
+  const { rows, hits, unmapped } = r4xExtract(r4WebFiles());
+  assert.deepEqual(unmapped, [], "every hit of the independent line search lies inside a continuation of the inventory");
+  assert.ok(hits > 50, "the line search ran");
+  const { unlisted, vanished } = r4InventoryDiff(rows);
+  assert.deepEqual({ unlisted, vanished }, { unlisted: [], vanished: [] }, "a continuation or an effect was added or vanished: list it in R4_INVENTORY with its projection (design note §2)");
+  // Each effect declares the identities it depends on (its projection): the one guard checks those, captured at the start.
+  const unprojected = rows.flatMap((row) => row.effects.filter((/** @type {string} */ e) => r4xProjection(row.file, e, row.fn) === "?").map((/** @type {string} */ e) => `${row.site}: ${e}`));
+  assert.deepEqual(unprojected, [], "every effect of the inventory has a projection");
+});
+
+test("r4 inventory self-test: one fake site of each kind is reported as unlisted, a removed file's rows as vanished", () => {
+  const fake = `import { request } from "../api.js";
+import { follow, start } from "../ops.js";
+let open = null;
+function paint(root) { root.textContent = "x"; }
+function lane(step) { return (async () => { await null; return step(); })(); }
+const settledFake = () => { open = null; };
+export function fake(root, source) {
+  start("fake", async () => { await request("GET", "/a"); paint(root); }, { done: () => "Done", failed: () => { open = null; }, describe: () => "Not done" });
+  follow("fake-2", async () => request("GET", "/b"), { done: settledFake });
+  request("GET", "/c").then(() => paint(root)).catch(() => root.focus()).finally(() => root.blur());
+  setTimeout(() => paint(root), 1);
+  setInterval(() => root.blur(), 1);
+  source.addEventListener("snapshot", () => paint(root));
+  source.onopen = () => root.focus();
+  source.onerror = () => { open = null; };
+  lane(() => request("DELETE", "/d"));
+}
+`;
+  const files = [...r4WebFiles(), { file: "web/js/pages/fake.js", src: fake }];
+  const { rows, unmapped } = r4xExtract(files);
+  assert.deepEqual(unmapped, [], "the fake file's sites are all continuations");
+  const { unlisted } = r4InventoryDiff(rows);
+  const reported = unlisted.filter((u) => u.startsWith("web/js/pages/fake.js"));
+  /** @type {Array<[string, RegExp]>} */
+  const expected = [
+    ["an await whose continuation calls a helper that writes UI", / · fake · await · .*DOM write/],
+    ["a done that returns the slot's note", / · fake · ops done · .*slot note/],
+    ["a named done callback (indirection)", / · fake · ops done · .*close/],
+    ["a failed callback", / · fake · ops failed · .*close/],
+    ["a describe (the slot's failure text)", / · fake · ops describe · .*slot failure text/],
+    ["a then", / · fake · \.then · .*DOM write/],
+    ["a catch", / · fake · \.catch · .*focus/],
+    ["a finally", / · fake · \.finally · .*blur/],
+    ["a setTimeout", / · fake · timer setTimeout · .*DOM write/],
+    ["a setInterval", / · fake · timer setInterval · .*blur/],
+    ["an SSE listener", / · fake · SSE handler · .*DOM write/],
+    ["an SSE onopen", / · fake · SSE onopen · .*focus/],
+    ["an SSE onerror", / · fake · SSE onerror · .*close/],
+    ["a deferred `return step()` of a lane, resolved to the request its caller queued", / · lane · await · .*request start/],
+  ];
+  for (const [what, pattern] of expected) assert.ok(reported.some((u) => pattern.test(u)), `${what} is reported:\n${reported.join("\n")}`);
+  // A file the list holds rows of, gone: its rows are reported as vanished.
+  const without = r4xExtract(r4WebFiles().filter((f) => f.file !== "web/js/pages/overlays.js"));
+  assert.ok(r4InventoryDiff(without.rows).vanished.some((v) => v.startsWith("web/js/pages/overlays.js")), "the rows of a removed file are reported as vanished");
+});
