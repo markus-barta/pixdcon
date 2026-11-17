@@ -85,6 +85,93 @@ test("R4-4: a device that left and came back while the page was disconnected. Th
   assert.equal(fence.revs.get("device:D"), 20);
 });
 
+test("R4-4, exactly as the review ran it: no incarnation, and the caller does not say that a view came with a snapshot. The fence knows where the last snapshot stood: a copy from the snapshot on replaces what the page holds from before it, whatever the revs say, a settings state as well as a device view", () => {
+  const fence = createClientFence();
+  const first = openSource(fence, "stream");
+  decideSnapshot(
+    fence,
+    { epoch: EPOCH, seq: 10, devices: ["D"] },
+    { generation: first },
+  );
+  assert.equal(
+    decideView(fence, { key: "device:D", epoch: EPOCH, seq: 10, rev: 20 })
+      .action,
+    "apply",
+  );
+  assert.equal(
+    decideView(fence, {
+      key: "settings:D/clock",
+      epoch: EPOCH,
+      seq: 12,
+      rev: 7,
+    }).action,
+    "apply",
+  );
+
+  // While the page is away D is removed and added again. The new stream
+  // starts with a snapshot, so neither event is delivered.
+  const next = openSource(fence, "stream");
+  assert.equal(
+    decideSnapshot(
+      fence,
+      { epoch: EPOCH, seq: 30, devices: ["D"] },
+      { generation: next },
+    ).action,
+    "apply",
+  );
+  // The store hands the snapshot's view on with the snapshot's position,
+  // and with nothing else.
+  assert.deepEqual(
+    decideView(fence, { key: "device:D", epoch: EPOCH, seq: 30, rev: 1 }),
+    { action: "apply", reason: "current" },
+    "rev 1 after rev 20: taken, it stands at the snapshot",
+  );
+  assert.equal(fence.revs.get("device:D"), 1);
+  for (let rev = 2; rev <= 20; rev++)
+    assert.equal(
+      decideView(fence, {
+        key: "device:D",
+        epoch: EPOCH,
+        seq: 30 + rev,
+        rev,
+      }).action,
+      "apply",
+      `rev ${rev}`,
+    );
+  // The settings state of the new device, asked for after the reconnect.
+  assert.deepEqual(
+    decideView(fence, {
+      key: "settings:D/clock",
+      epoch: EPOCH,
+      seq: 52,
+      rev: 1,
+    }),
+    { action: "apply", reason: "current" },
+    "rev 1 after rev 7 of the device that is gone",
+  );
+  // The late answers of the old device, built before the snapshot.
+  assert.equal(
+    decideView(fence, { key: "device:D", epoch: EPOCH, seq: 19, rev: 21 })
+      .reason,
+    "stands_before",
+  );
+  assert.equal(
+    decideView(fence, {
+      key: "settings:D/clock",
+      epoch: EPOCH,
+      seq: 19,
+      rev: 8,
+    }).reason,
+    "stands_before",
+  );
+  // Inside the time after the snapshot the rev decides, as before.
+  assert.equal(
+    decideView(fence, { key: "device:D", epoch: EPOCH, seq: 60, rev: 20 })
+      .reason,
+    "not_newer",
+  );
+});
+
 test("R4-4: every view names the incarnation of its device, and the name is the order. The review's sequence: the new device's view is taken as a new device, what the page held of the old one goes, settings states too, and a view of the old one is dropped whatever position it claims", () => {
   const fence = createClientFence();
   const stream = openSource(fence, "stream");

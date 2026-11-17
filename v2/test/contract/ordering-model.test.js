@@ -84,6 +84,12 @@
  *  7. A choice generation is never used twice for a device in one run of
  *     the process, and a choice on a driven device sends its own clear, or
  *     still owes it, on the connection it was made on.
+ * 10. Every change is announced (round 5, the fourth cross-read's R4-1): a
+ *     consumer that computes a device again only when a "changed" effect
+ *     names it, and reads the blob as a document again only when the effect
+ *     says so, holds what the precedence over the whole state says
+ *     (scene-world.js `stale`). No consumer of pixdcon looks at the whole
+ *     state, so this is the check that matters to them.
  * And at the end of every walk, after everything in flight was delivered:
  *  8. Store and mirror agree: for a driven device nothing that a suppression
  *     hides is left in the store, every scene the store holds is the one in
@@ -92,6 +98,20 @@
  *     (the Home Assistant toggle), and a new UI choice beats it again.
  *
  * A failure names the seed and the steps, so it can be replayed.
+ *
+ * Round 5 added two kinds of walk over the same reducer, each for something
+ * the walk above could not produce:
+ *  - the long walks: the same actions and checks for 9000 steps, as one run
+ *    of the process, so that it makes far more own blob rewrites than any
+ *    list of them could hold (R4-2 was a list of 32). The outside client
+ *    publishes rewrites again that are more than 32 rewrites old, and the
+ *    broker replays them.
+ *  - the fleet walk (`fleetWalk`, described there): several controllers on
+ *    one broker, pixdcon v1's own overlay module and two v2 instances with
+ *    their own secrets, of which exactly one writes the blob (R4-3), with
+ *    the end of the transition.
+ * The six other kinds of retained topic and the browser's fence have walks
+ * of their own: ordering-overrides.test.js, ordering-client.test.js.
  *
  * Two smaller walks at the end of the file do the same for the two other
  * places where the third cross-read found that waiting, or an

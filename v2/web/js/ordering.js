@@ -72,9 +72,15 @@
  *     that stands at or before it is taken. A removal forgets what stands
  *     at or before it, and leaves a view that stands after it.
  *   - no view replaces a copy that stands after it, whatever its rev. A
- *     view inside a snapshot replaces a copy that stands before it,
- *     whatever its rev: a snapshot is a complete copy at its position. That
- *     is the review's sequence, and it needs no incarnation.
+ *     copy that stands at or after the last snapshot replaces one that
+ *     stands before that snapshot, whatever its rev: a snapshot is a
+ *     complete copy at its position, so what the page holds from before it
+ *     is older than anything from it on, a settings state as well as a
+ *     device view. That is the review's sequence. It needs no incarnation,
+ *     and no word from the caller: the fence knows where the last snapshot
+ *     stood (`floor`). A view that the caller marks as part of a snapshot
+ *     (`snapshot: true`) is also taken over a copy that stands before it
+ *     on the same side of the last snapshot.
  * This rests on how pixdcon stamps, and so does the order of the whole
  * resources, which have no name: an answer must never name a later position
  * than the state it was built from. An earlier one is harmless: the answer
@@ -388,12 +394,19 @@ export function decideView(fence, view) {
       if (older) return drop("not_newer");
     } else {
       // No name: where the copies stand has to tell lives apart. No copy
-      // replaces one that stands after it, and a snapshot's copy replaces
-      // one that stands before it, whatever the revs say (a device that
-      // left and came back while the page was away counts from 1 again).
+      // replaces one that stands after it. A copy that stands at or after
+      // the last snapshot replaces one that stands before that snapshot,
+      // whatever the revs say: a device that left and came back while the
+      // page was away counts from 1 again, and everything the page holds
+      // from before the snapshot is older than a copy from the snapshot
+      // on. The fence sees that by the positions alone; the caller does
+      // not have to say that a view came with a snapshot. `snapshot: true`
+      // says it for two copies on the same side of the last snapshot.
       const carried = fence.carried.get(view.key) ?? -1;
       if (view.seq < carried) return drop("stands_before");
-      const byPosition = view.snapshot === true && view.seq > carried;
+      const acrossSnapshot = carried < fence.floor && view.seq >= fence.floor;
+      const byPosition =
+        acrossSnapshot || (view.snapshot === true && view.seq > carried);
       if (older && !byPosition) return drop("not_newer");
     }
   }
