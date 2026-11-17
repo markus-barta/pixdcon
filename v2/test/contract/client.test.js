@@ -4398,8 +4398,16 @@ test("r4 harness self-test: a probe finds the combinations the first note exclud
 
 // --- r3: the mutants of the gate on harness r2 (findings-note2, M1 to M3), each caught ---
 
-/** @param {string} name @returns {R4Kind} */
-const r4KindOf = (name) => /** @type {R4Kind} */ (R4_KINDS.find((k) => k.name === name));
+/**
+ * A declaration, so it is there whenever a test runs: with a name pattern
+ * that leaves a test as the first to run, the runner starts it while this
+ * file is still being evaluated (the audit runs alone).
+ *
+ * @param {string} name @returns {R4Kind}
+ */
+function r4KindOf(name) {
+  return /** @type {R4Kind} */ (R4_KINDS.find((k) => k.name === name));
+}
 /** The Device page with a changed settings form. @param {Array<[string, string]>} edits @param {Record<string, string>} [replace] what the form imports instead: relative import → module URL */
 const r4DeviceWithForm = async (edits, replace = {}) =>
   (await import(await r4Mutant("pages/device.js", [], { "../components/settings-form.js": await r4Mutant("components/settings-form.js", edits, replace) }))).page;
