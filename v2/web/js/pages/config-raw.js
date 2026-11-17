@@ -10,6 +10,14 @@
  * (PUT …/raw answers 400 invalid_config with line and column, and nothing
  * is written). One request at a time per button (build rule 2).
  *
+ * Order (finding 1 of the first gate): every request belongs to the
+ * opening of the page it was sent from (`opened`); what comes back after
+ * the page was left, or left and opened again, changes nothing on it. The
+ * text of an answer reaches the editor only after the store's fence took
+ * the answer's state (the newest request for "config", not standing
+ * before the copy the page holds), and only while the editor still holds
+ * what it held when the request left: what was typed since stays.
+ *
  * Owner: UI worker.
  */
 
@@ -32,6 +40,14 @@ let busy = null;
 let outcome = null;
 /** Line marked in the gutter by pixdcon's answer. @type {number|null} */
 let errorLine = null;
+/** Counts the openings of the page; a request answers to the opening it was sent from. */
+let opened = 0;
+/** A load whose answer the store did not take (another run, or older than the copy the page holds): asked again when the store changes next. */
+let again = false;
+
+/** @returns {HTMLTextAreaElement|null} */
+const editorOf = () =>
+  /** @type {HTMLTextAreaElement|null} */ (root?.querySelector("textarea") ?? null);
 
 /**
  * Check the text as JSON, with the line and column of the first error.
@@ -65,6 +81,10 @@ export function checkJson(text) {
 /** @param {import("../store.js").ClientState} state */
 function render(state) {
   if (!root) return;
+  if (again && state.loaded && busy === null) {
+    again = false;
+    void load();
+  }
   const q = (/** @type {string} */ selector) =>
     /** @type {HTMLElement} */ (/** @type {HTMLElement} */ (root).querySelector(selector));
   const config = state.config ?? {};
@@ -120,24 +140,49 @@ function gutter(text, marked) {
   setHtml(/** @type {HTMLElement} */ (root?.querySelector(".gut")), html);
 }
 
-async function load() {
+/**
+ * Ask pixdcon for the text.
+ *
+ * @param {number} [tries] answers that stood before the copy the page holds, so far
+ */
+async function load(tries = 0) {
+  const mine = opened;
+  const before = editorOf()?.value ?? "";
   loading = true;
+  /** @type {import("../api.js").Answer} */
+  let answer;
   try {
-    const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });
-    const editor = /** @type {HTMLTextAreaElement|null} */ (root?.querySelector("textarea") ?? null);
-    loaded = String(answer.body?.text ?? "");
-    if (editor) editor.value = loaded;
-    applyAnswer(answer);
+    answer = await request("GET", "/api/v2/config/raw", { resource: "config" });
   } catch (error) {
+    if (mine !== opened || !root) return;
     outcome = { text: `config.json could not be loaded: ${error instanceof ApiError ? error.message : "the request failed."}`, bad: true };
+    loading = false;
+    redraw();
+    return;
   }
+  // The fence first: the text and the state of one answer go together.
+  const decision = applyAnswer(answer);
+  if (mine !== opened || !root) return;
+  if (decision.action !== "apply") {
+    // A newer request of this page brings the text (Reload from disk).
+    if (decision.reason === "superseded_source") return;
+    // The page holds a newer copy of the config: the file changed after
+    // this answer was built. Ask again.
+    if (decision.reason === "not_newer" && tries < 3) return load(tries + 1);
+    again = true;
+    return;
+  }
+  loaded = String(answer.body?.text ?? "");
+  const editor = editorOf();
+  if (editor && editor.value === before) editor.value = loaded;
   loading = false;
   redraw();
 }
 
 async function save() {
-  const editor = /** @type {HTMLTextAreaElement|null} */ (root?.querySelector("textarea") ?? null);
+  const editor = editorOf();
   if (!editor || busy) return;
+  const mine = opened;
   const text = editor.value;
   busy = "save";
   outcome = null;
@@ -150,6 +195,7 @@ async function save() {
       body: { text },
     });
     applyAnswer(answer);
+    if (mine !== opened || !root) return;
     loaded = text;
     const diff = answer.body?.diff ?? {};
     const changed = [
@@ -164,6 +210,7 @@ async function save() {
       bad: false,
     };
   } catch (error) {
+    if (mine !== opened || !root) return;
     if (error instanceof ApiError && error.code === "invalid_config") {
       errorLine = typeof error.extra.line === "number" ? error.extra.line : null;
       outcome = { text: `Not saved. ${error.message}`, bad: true };
@@ -176,16 +223,22 @@ async function save() {
 
 async function reloadFromDisk() {
   if (busy) return;
+  const mine = opened;
   busy = "reload";
   outcome = null;
   redraw();
   try {
     applyAnswer(await request("POST", "/api/v2/config/reload", { resource: "config", key: "raw-reload", body: {} }));
+    if (mine !== opened || !root) return;
     busy = null;
     await load();
+    if (mine !== opened || !root) return;
     outcome = { text: "Reloaded from disk", bad: false };
   } catch (error) {
+    if (mine !== opened || !root) return;
     outcome = { text: `Not reloaded: ${error instanceof ApiError ? error.message : "the request failed."}`, bad: true };
+    // This request took the place of a load that was still on its way.
+    if (loading) again = true;
   }
   busy = null;
   redraw();
@@ -223,8 +276,10 @@ function onScroll(event) {
 /** @type {import("../router.js").Page} */
 export const page = {
   mount(target, _params) {
+    opened += 1;
     root = target;
     root.className = "p-raw";
+    again = false;
     loaded = "";
     loading = true;
     busy = null;
@@ -247,6 +302,7 @@ export const page = {
     void load();
   },
   unmount() {
+    opened += 1;
     unsubscribe?.();
     unsubscribe = null;
     if (root) {

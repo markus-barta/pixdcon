@@ -1286,6 +1286,7 @@ const SCENES = [
  * @returns {Promise<any>}
  */
 const loadPage = async (name) => (await import(new URL(`../../web/js/pages/${name}.js`, import.meta.url).href)).page;
+const rawPage = await loadPage("config-raw");
 const devicePage = await loadPage("device");
 
 let pageEpochs = 0;
@@ -1330,6 +1331,33 @@ const saveButton = (/** @type {any} */ root) => root.querySelector('.set-h [data
 
 setSession("s1");
 
+const CONFIG_STATE = { path: "/data/config.json", rev: 1, valid: true, error: null, loadedAt: at("18:40:12"), invalidSince: null, warnings: [] };
+
+test("r2 finding 1, raw config: a load that comes back after the page was left and opened again writes nothing; the newer load fills the editor, and what is typed afterwards stays", async () => {
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  const calls = heldFetch();
+  rawPage.mount(pageRoot(), {});
+  rawPage.unmount();
+  const root = pageRoot();
+  rawPage.mount(root, {});
+  try {
+    const [first, second] = calls.filter((c) => c.method === "GET" && c.url === "/api/v2/config/raw");
+    assert.ok(first && second, "each opening asked for the text");
+    second.answer(200, { text: '{"devices": []}', state: CONFIG_STATE }, `${epoch}-20`);
+    await settle();
+    const editor = root.querySelector("textarea");
+    assert.equal(editor.value, '{"devices": []}');
+    typeInto(editor, '{"devices": [], "x": 1}');
+    first.answer(200, { text: '{"devices": ["old"]}', state: CONFIG_STATE }, `${epoch}-10`);
+    await settle();
+    assert.equal(editor.value, '{"devices": [], "x": 1}', "the late answer of the page that was left wrote nothing");
+    assert.match(root.querySelector(".edbar .state").textContent, /unsaved changes/);
+    assert.doesNotMatch(root.querySelector(".edbar .state").textContent, /no unsaved changes/);
+  } finally {
+    rawPage.unmount();
+    await drain(calls);
+  }
+});
 
 test("r2 finding 2, settings form: after a restart (a new epoch) that keeps the device and its scene, the form drops the old values and loads the scene again", async () => {
   const calls = heldFetch();
