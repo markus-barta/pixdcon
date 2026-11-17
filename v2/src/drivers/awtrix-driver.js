@@ -45,6 +45,7 @@ export function createAwtrixDriver(options) {
   const appPath = (/** @type {string} */ name) => `/api/custom?name=${encodeURIComponent(name)}`;
   const cleanupKey = `${options.name}@${options.address}`;
   let cleanupDone = cleanedDevices.has(cleanupKey);
+  let hasApp = false;
   /** @param {AbortSignal} [signal] @returns {Promise<Record<string, unknown>>} */
   async function stats(signal) {
     const data = await transport.request("/api/stats", undefined, signal);
@@ -86,6 +87,7 @@ export function createAwtrixDriver(options) {
       if (output.kind === "frame") await send(output.frame);
       else {
         await transport.request(appPath(appName), output.app);
+        hasApp = true;
         try { await transport.request("/api/switch", { name: appName }); }
         catch (error) { transport.ready = false; options.logger.warn(`[UlanziDriver] switchToApp failed: ${String(error)}`); }
       }
@@ -102,7 +104,8 @@ export function createAwtrixDriver(options) {
     reclaim: () => transport.queue(async () => {
       await transport.request("/api/power", { power: true });
       await initialize();
-      await transport.request("/api/switch", { name: appName });
+      // A fresh display may have no custom app yet; show() creates it before selecting it.
+      if (hasApp) await transport.request("/api/switch", { name: appName });
     }),
     readTelemetry: (readOptions) => transport.queue(() => stats(readOptions?.signal)),
     readScreen: (readOptions) => transport.queue(async () => screenToFrame(await transport.request("/api/screen", undefined, readOptions?.signal))),

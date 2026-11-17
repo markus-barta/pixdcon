@@ -7,6 +7,7 @@
  *  - show() keeps the last output and passes it to the preview store
  *    (Pixoo frame as is; AWTRIX app rasterised with the injected
  *    `rasterizeAwtrixApp`, source "simulated")
+ *    previewFrame() exposes a copy of that local raster to the loop; readScreen stays null.
  *  - init, blank, setBrightness, setPower, activateBuiltin, reclaim resolve at once and record what was asked
  *  - probe() resolves; health of a shadow device is "shadow", not measured
  *  - readTelemetry() and readScreen are not available: no read from the real

@@ -31,6 +31,8 @@
  *    an exception or a timeout is logged for that device and ends there
  *  - a watchdog checks every loop's `alive` and `nextWakeAt`; a loop that died
  *    or is overdue is restarted and reported (A-027: v1 left it dead and green)
+ *    The tick is 1 s; grace is 30 s after a planned wake, or 60 s without one.
+ *    A factory that failed is retried after 10 s, without resetting health's age.
  *  - v1 stopped and started every device on any config or overlay change
  *    (A-030, A-032, B-047, S-15); v2 never does
  *
@@ -277,8 +279,10 @@ export class Scheduler {
     this.deps.health.unregister(name);
     record.stopFeed();
     this.deps.telemetry?.stop(name);
-    await record.loop.stop();
+    const stopping = record.loop.stop();
+    // Retirement revokes queued transport work immediately, including a drive → shadow change.
     await record.driver.close();
+    await stopping;
   }
 
   watchdog() {
@@ -295,7 +299,7 @@ export class Scheduler {
         this.runtimes.delete(name);
         this.enqueue(name, async () => {
           record.stopFeed(); this.deps.telemetry?.stop(name);
-          await record.loop.stop(); await record.driver.close();
+          const stopping = record.loop.stop(); await record.driver.close(); await stopping;
           const device = this.deps.runtime.device(name);
           if (device) await this.build(device);
         });

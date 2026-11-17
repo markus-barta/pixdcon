@@ -66,12 +66,12 @@
       "test": "test/smoke/drivers-render.test.js: telemetry on fake displays publishes native snapshots"
     },
     {
-      "site": "src/health/telemetry.js:110",
-      "id": "timer:this.deps.clock.every#1",
+      "site": "src/health/telemetry.js:115",
+      "id": "timer:this.deps.clock.sleep#1",
       "input": "poll interval tick",
       "metadata": "poller object identity, active flag and last measured snapshot",
       "fence": "current() checked after every read and before each publish; stop invalidates the poller; reconnect repeats measured data; timer only paces reads",
-      "test": "test/smoke/drivers-render.test.js: telemetry in order:"
+      "test": "test/smoke/drivers-render.test.js: telemetry pacing preserves sub-second remainders"
     },
     {
       "site": "src/render/preview-store.js:84",
@@ -122,7 +122,7 @@
       "test": "test/smoke/smoke.test.js: render reports in order:"
     },
     {
-      "site": "src/render/scheduler.js:157",
+      "site": "src/render/scheduler.js:159",
       "id": "listener:this.deps.runtime.on(\"changed\")#1",
       "input": "effective config change",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -130,7 +130,7 @@
       "test": "test/smoke/drivers-render.test.js: scheduler in order:"
     },
     {
-      "site": "src/render/scheduler.js:158",
+      "site": "src/render/scheduler.js:160",
       "id": "listener:this.deps.state.on(\"desired\")#1",
       "input": "desired device command",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -138,7 +138,7 @@
       "test": "test/smoke/drivers-render.test.js: scheduler in order:"
     },
     {
-      "site": "src/render/scheduler.js:159",
+      "site": "src/render/scheduler.js:161",
       "id": "listener:this.deps.state.on(\"retry\")#1",
       "input": "explicit retry command",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -146,7 +146,7 @@
       "test": "test/smoke/drivers-render.test.js: scheduler in order:"
     },
     {
-      "site": "src/render/scheduler.js:160",
+      "site": "src/render/scheduler.js:162",
       "id": "listener:this.deps.health.on(\"health\")#1",
       "input": "derived health measurement",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -154,7 +154,7 @@
       "test": "test/smoke/smoke.test.js: render reports in order:"
     },
     {
-      "site": "src/render/scheduler.js:163",
+      "site": "src/render/scheduler.js:165",
       "id": "timer:this.deps.clock.every#1",
       "input": "watchdog tick",
       "metadata": "effective revision, per-device lane position and runtime token",

@@ -107,10 +107,19 @@ export class TelemetryCollector {
       } catch (error) { if (current()) this.deps.logger.error(`[Telemetry] ${device.name}`, error); }
       finally { busy = false; }
     };
-    const timer = this.deps.clock.every(() => { void tick(); }, Math.max(1, Math.min(1000, this.deps.intervalMs())));
-    poller.cancel = () => { abort.abort(); timer.cancel(); };
+    const pace = async () => {
+      while (current()) {
+        const interval = Math.max(1, this.deps.intervalMs());
+        const remaining = busy ? interval : Math.max(1, interval - (this.deps.clock.now() - lastRead));
+        // Look for config changes at least once a second, preserving the exact due time.
+        if (!await this.deps.clock.sleep(Math.min(1000, remaining), abort.signal)) return;
+        if (current()) void tick();
+      }
+    };
+    poller.cancel = () => abort.abort();
     this.pollers.set(device.name, poller);
     void tick();
+    void pace().catch((error) => { if (current()) this.deps.logger.error(`[Telemetry] ${device.name}: poll timer`, error); });
   }
 
   /** Abort the read in flight and forget the device. @param {string} name */

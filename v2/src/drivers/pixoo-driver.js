@@ -82,7 +82,7 @@ export function createPixooDriver(options) {
     reclaim: () => transport.queue(async () => { await post({ Command: "Channel/OnOffScreen", OnOff: 1 }); await initialize(); }),
     readTelemetry: (readOptions) => transport.queue(async () => {
       const data = await post({ Command: "Channel/GetAllConf" }, readOptions?.signal);
-      return { reachable: true, brightness: data.Brightness, cur_clock_id: data.CurClockId };
+      return { reachable: true, brightness: data.Brightness ?? null, cur_clock_id: data.CurClockId ?? null };
     }),
     readScreen: null, notify: null, switchApp: null,
     close: () => transport.close(),

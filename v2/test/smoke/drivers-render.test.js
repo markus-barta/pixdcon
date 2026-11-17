@@ -568,3 +568,45 @@ test("scene brightness gets false on refusal and retries its last requested leve
   r.options.brightnessError = null;
   await r.clock.advance(500); assert.equal(r.loop.status().appliedBrightness, 42); assert.deepEqual(results, [false, true]);
 });
+
+test("telemetry pacing preserves sub-second remainders and re-reads the interval without overlapping polls", async () => {
+  const clock = manualClock(); const mqtt = new StubMqtt();
+  const health = new HealthModel({ clock, logger, config: () => healthConfig });
+  let interval = 1500;
+  /** @type {number[]} */
+  const starts = [];
+  const driver = /** @type {any} */ ({ info: { drives: true }, async readTelemetry() { starts.push(clock.now()); return { uid: "test" }; } });
+  const collector = new TelemetryCollector(/** @type {any} */ ({ mqtt, health, topics: createTopics(), clock, logger, haDiscovery: false, intervalMs: () => interval }));
+  collector.start({ name: "u", type: "ulanzi", address: "127.0.0.1" }, driver);
+  try {
+    await flush(); const start = clock.now();
+    await clock.advance(1499); assert.equal(starts.length, 1);
+    await clock.advance(1); assert.deepEqual(starts.map((at) => at - start), [0, 1500]);
+    interval = 2250;
+    await clock.advance(2249); assert.equal(starts.length, 2);
+    await clock.advance(1); assert.deepEqual(starts.map((at) => at - start), [0, 1500, 3750]);
+  } finally { collector.stopAll(); }
+  assert.equal(clock.pending(), 0);
+});
+
+test("switching drive to shadow revokes transport work that was queued behind a hung device request", async (t) => {
+  const r = await rig(t); await until(() => r.previews.get("p"));
+  r.pixoo.setHang(true);
+  const p = r.scheduler.loop("p"); assert.ok(p);
+  const cancelled = assert.rejects(p.driver.probe(), DeviceError);
+  await flush(); await r.clock.advance(500);
+  const before = r.pixoo.state().frames;
+  r.change(r.devices.map((/** @type {any} */ d) => d.name === "p" ? { ...d, output: { mode: "shadow", requested: "drive", reason: "v1_owner" } } : d), { devicesChanged: { p: ["output"] } });
+  await cancelled; r.pixoo.setHang(false);
+  await until(() => r.tokens.get("p") === 2 && r.previews.get("p")?.source === "simulated");
+  assert.equal(r.pixoo.state().frames, before); assert.equal(r.scheduler.loop("p")?.driver.info.drives, false);
+});
+
+test("AWTRIX startup creates its custom app before selecting it and a failed switch keeps the accepted first frame", async (t) => {
+  const r = await rig(t, { start: false }); r.awtrix.failNext(1, "POST /api/switch");
+  await r.scheduler.start(); await until(() => r.health.get("u")?.state === "online");
+  const requests = r.awtrix.state().requests;
+  assert.ok(requests.indexOf("POST /api/custom") < requests.indexOf("POST /api/switch"));
+  assert.deepEqual(r.awtrix.state().apps["pixdcon_u"], { text: "3", color: "#00FF00" });
+  assert.equal(r.scheduler.loop("u")?.driver.ready, false);
+});
