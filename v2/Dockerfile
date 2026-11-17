@@ -27,7 +27,7 @@ WORKDIR /app
 COPY v2/package.json v2/package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-FROM node:24-alpine
+FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
@@ -66,3 +66,17 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.WEB_PORT||8080)+'/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 
 CMD ["node", "src/main.js"]
+
+# Optional edge target. Build once with --target edge for the coordinator's
+# isolated preview lane. The config migration must also set statusBaseTopic
+# to home/hsb1/pixdcon2-edge. Mount the whole /data directory; mount the shared
+# scenes and generated-scenes read-only beneath it. Actual host port is an
+# operator choice (WEB_PORT overrides this preview default).
+FROM runtime AS edge
+ENV PIXDCON2_INSTANCE=pixdcon2-edge \
+    PIXDCON2_FORCE_SHADOW=1 \
+    WEB_PORT=8082
+EXPOSE 8082
+
+# Keep the normal build (without --target) as the production image.
+FROM runtime AS production

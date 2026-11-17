@@ -25,7 +25,7 @@
     "typecheck": "tsc -p jsconfig.json",
     "lint": "cd .. && npx --no-install eslint v2",
     "migrate:v1": "node src/config/migrate-v1.js",
-    "check": "npm run typecheck && npm test && npm run lint"
+    "check": "npm run typecheck && npm test && npm --prefix .. run lint"
   },
   "dependencies": {
     "mqtt": "^5.15.0",

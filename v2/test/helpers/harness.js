@@ -17,17 +17,17 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { startFakeAwtrix } from "../../dev/fake-awtrix.js";
 import { startFakePixoo } from "../../dev/fake-pixoo.js";
 import { startMemoryBroker } from "../../dev/memory-broker.js";
+import { rasterizeAwtrixApp } from "../../src/drivers/awtrix-raster.js";
+import { sharedPaths } from "../../src/scenes/v1-shared.js";
 import { guardInstalled } from "../../dev/net-guard.js";
 import { createLogger } from "../../src/core/logger.js";
 import { createApp } from "../../src/main.js";
 
-const here = dirname(fileURLToPath(import.meta.url));
-export const REPO_ROOT = resolve(here, "../../..");
+export const REPO_ROOT = sharedPaths().root;
 
 /** Every test file must run under the network guard; `npm test` preloads it. */
 export function requireNetGuard() {
@@ -149,6 +149,11 @@ export async function startStack(t, options = {}) {
     cleanup.add("fake pixoo", () => pixoo.stop());
     const awtrix = await startFakeAwtrix();
     cleanup.add("fake awtrix", () => awtrix.stop());
+    awtrix.setRaster(
+      (app) =>
+        rasterizeAwtrixApp(/** @type {Record<string, unknown>} */ (app)).frame
+          .rgb,
+    );
     const dataDir = await mkdtemp(join(tmpdir(), "pixdcon2-test-"));
     cleanup.add("data dir", () =>
       rm(dataDir, { recursive: true, force: true }),
