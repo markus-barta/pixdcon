@@ -247,7 +247,14 @@ test("composition: the namespace of a run is reported, and an unbuilt health mod
 
 test("N7 shutdown: a scene import that is still running when the wait for the registry lane runs out is fenced, not only waited for. It gets the lane's signal, scenes are released, stop returns; when the import comes back it invalidates nothing", async (t) => {
   const clock = manualClock();
-  const stack = await startStack(t, { mqtt: false, clock });
+  const stack = await startStack(t, {
+    mqtt: false,
+    clock,
+    config: (raw) =>
+      raw.devices.forEach((/** @type {any} */ device) => {
+        device.enabled = false;
+      }),
+  });
   const { scenes, sceneRuntime, runtime, registryLane } = stack.app.modules;
   /** @type {string[]} */
   const log = [];
@@ -257,8 +264,8 @@ test("N7 shutdown: a scene import that is still running when the wait for the re
   const imported = new Promise((resolve) => {
     finishImport = () => resolve(undefined);
   });
-  // The registry and the scene runtime are skeletons: stand-ins that
-  // record. The registry's stand-in does what the contract asks of the real
+  // Isolate the composition's shutdown fence with a controlled slow import.
+  // The registry's stand-in does what the contract asks of the real
   // one: it commits nothing once its signal is aborted.
   scenes.sync = async (_change, options) => {
     given = options?.signal;
@@ -282,7 +289,15 @@ test("N7 shutdown: a scene import that is still running when the wait for the re
   // The effective scene map changes; the import it starts does not end.
   runtime.emit("changed", {
     effective: { ...runtime.get(), devices: [], rev: runtime.get().rev + 1 },
-    diff: { scenesAdded: ["clock"], scenesRemoved: [], scenesChanged: [] },
+    diff: {
+      devicesAdded: [],
+      devicesRemoved: [],
+      devicesChanged: {},
+      globalChanged: [],
+      scenesAdded: ["clock"],
+      scenesRemoved: [],
+      scenesChanged: [],
+    },
   });
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(log, ["import started"]);
@@ -526,8 +541,10 @@ test("controller health: the measured status and its reasons are in the snapshot
   const answer = await stack.api("/api/health");
   assert.equal(answer.status, 503);
   assert.deepEqual(answer.body.reasons, ["watchdog_overdue"]);
-  assert.equal(events.at(-1).type, "controller");
-  assert.equal(events.at(-1).data.status, "failed");
+  const event = events.findLast((event) => event.type === "controller");
+  assert.ok(event, "the status change emitted a controller event");
+  assert.equal(event.data.status, "failed");
+  assert.deepEqual(event.data.reasons, ["watchdog_overdue"]);
 });
 
 // --- Ordering (knowledge entry, section 3.0; the pure fences are run in ordering.test.js) ---
@@ -898,7 +915,14 @@ test("settings contract: normalization keeps v1 coercion and bounds, invalid lay
 });
 
 test("device lives and reports: remove/add hands out a fresh incarnation, old runtime reports are dropped, retry is an explicit queued event", async (t) => {
-  const stack = await startStack(t, { mqtt: false });
+  // Reports below belong to the controlled tokens, not a live scheduler.
+  const stack = await startStack(t, {
+    mqtt: false,
+    config: (raw) =>
+      raw.devices.forEach((/** @type {any} */ device) => {
+        device.enabled = false;
+      }),
+  });
   const { state, config, runtime } = stack.app.modules;
   state.runtimeStarted("pixoo-t", 10);
   assert.equal(

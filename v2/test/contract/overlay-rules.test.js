@@ -21,7 +21,7 @@ import test from "node:test";
 import { readFile, writeFile } from "node:fs/promises";
 import { manualClock } from "../../src/core/clock.js";
 import { createApp } from "../../src/main.js";
-import { startStack } from "../helpers/harness.js";
+import { startStack, stopApp } from "../helpers/harness.js";
 
 test("overlay rule 1: a UI scene choice beats a stored scene overlay, and the retained overlay is cleared on the broker", async (t) => {
   const world = await serviceWorld(t);
@@ -156,7 +156,7 @@ test("overlay rule 9: shadow output: a UI choice changes the preview and publish
 });
 test("overlay rule 10 (late replay): a stored scene overlay delivered after the SUBACK and after the sync echo does not undo a UI choice made before it arrived; it is superseded and cleared again", async (t) => {
   const world = await serviceWorld(t);
-  await world.app.stop();
+  await stopApp(world.app, world.clock);
   await world.broker.inject(world.topics.overlayDeviceScene(D), "B", {
     retain: true,
   });
@@ -175,7 +175,7 @@ test("overlay rule 10 (late replay): a stored scene overlay delivered after the 
 });
 test("overlay rule 11 (late replay after the clear): a replay of the old value that arrives after the broker confirmed the clear and after the clear's own echo is ignored", async (t) => {
   const world = await serviceWorld(t);
-  await world.app.stop();
+  await stopApp(world.app, world.clock);
   await world.broker.inject(world.topics.overlayDeviceScene(D), "B", {
     retain: true,
   });
@@ -239,7 +239,7 @@ test("overlay rule 14 (stored while away): after a restart with an unconfirmed c
     await world.inject(world.topics.overlayDeviceScene(D), "B");
     delayOverlayWrites(t, world);
     await world.state.chooseScene(D, "C");
-    await world.app.stop();
+    await stopApp(world.app, world.clock);
     await world.broker.inject(world.topics.overlayDeviceScene(D), replacement, {
       retain: true,
     });
@@ -1071,7 +1071,7 @@ async function serviceWorld(t, options = {}) {
       await clock.advance(300);
     },
     async restart() {
-      await app.stop();
+      await stopApp(app, clock);
       app = await createApp(
         {
           PIXDCON_CONFIG_PATH: stack.configPath,
@@ -1083,7 +1083,8 @@ async function serviceWorld(t, options = {}) {
         },
         { clock, logger: stack.app.logger },
       );
-      t.after(() => app.stop());
+      const restarted = app;
+      t.after(() => stopApp(restarted, clock));
       await app.start();
       registryPeer(app);
       return app;
@@ -1176,8 +1177,12 @@ test("device view revision: a setting-overlay count change raises rev and emits 
   const before = world.state.view(D);
   /** @type {any[]} */ const devices = [];
   /** @type {any[]} */ const desired = [];
-  world.state.on("device", (view) => devices.push(view));
-  world.state.on("desired", (event) => desired.push(event));
+  world.state.on("device", (view) => {
+    if (view.name === D) devices.push(view);
+  });
+  world.state.on("desired", (event) => {
+    if (event.name === D) desired.push(event);
+  });
   await world.inject(world.topics.setting(D, "A", "n"), "9");
   const after = world.state.view(D);
   assert.equal(after.settingOverlayCount, 1);
@@ -1278,7 +1283,7 @@ test("startup retirements: a saved shadow suppression dropped before state.start
   await world.inject(world.topics.overlayDeviceScene(D), "B");
   await world.state.chooseScene(D, "C");
   await world.flush();
-  await world.app.stop();
+  await stopApp(world.app, world.clock);
   const raw = JSON.parse(await readFile(world.configPath, "utf8"));
   assert.ok(raw.devices[0].supersedes.granular);
   raw.devices[0].output = "drive";

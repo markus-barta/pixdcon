@@ -37,6 +37,24 @@ export function requireNetGuard() {
   );
 }
 
+/** Finish shutdown on the same clock that owns its deadlines and driver waits.
+ * @param {Awaited<ReturnType<typeof createApp>>} app
+ * @param {import("../../src/types.js").Clock & {advance?: (ms: number) => Promise<void>}} [clock]
+ */
+export async function stopApp(app, clock) {
+  let settled = false;
+  const stopping = app.stop().finally(() => {
+    settled = true;
+  });
+  if (clock?.advance) {
+    // File writes finish on OS I/O, not virtual timers. Drain admitted saves
+    // before advancing shutdown's budget past their fsync/rename completion.
+    await app.modules.config.lane.drain();
+    while (!settled) await clock.advance(100);
+  }
+  await stopping;
+}
+
 /**
  * A config.json for tests: one fake Pixoo and one fake Ulanzi, scenes from the repository.
  *
@@ -192,7 +210,7 @@ export async function startStack(t, options = {}) {
       { clock: options.clock, logger },
     );
     // Registered before start(): a start that fails half way is stopped too.
-    cleanup.add("pixdcon2", () => app.stop());
+    cleanup.add("pixdcon2", () => stopApp(app, options.clock));
     const { port } = await app.start();
     const base = `http://127.0.0.1:${port}`;
 

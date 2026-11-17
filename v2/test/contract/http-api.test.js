@@ -8,13 +8,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  readFile,
-  readdir,
-  realpath,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
@@ -60,7 +54,8 @@ test("HTTP: every JSON answer says where it stands: X-Pixdcon-Position carries t
   const stack = await startStack(t, { mqtt: false });
   for (const [path, status] of /** @type {const} */ ([
     ["/api/health", 200],
-    ["/api/v2/devices", 501], // an error answer is an answer too
+    ["/api/v2/devices", 200],
+    ["/api/v2/devices/missing", 404], // an error answer is an answer too
   ])) {
     const response = await fetch(`${stack.base}${path}`);
     assert.equal(response.status, status, path);
@@ -792,15 +787,14 @@ test("scene copy: the folders in the source's resources.assetDirs are linked bes
   const api = await recordedApi(t),
     stack = await startStack(t, { mqtt: false });
   const file = resolve(REPO_ROOT, "scenes/pixoo/home3.js");
-  await symlink(
+  // createApp installs the shared links before loading scenes.
+  assert.equal(
+    await realpath(resolve(stack.dataDir, "lib")),
     resolve(REPO_ROOT, "lib"),
-    resolve(stack.dataDir, "lib"),
-    "dir",
   );
-  await symlink(
+  assert.equal(
+    await realpath(resolve(stack.dataDir, "assets")),
     resolve(REPO_ROOT, "assets"),
-    resolve(stack.dataDir, "assets"),
-    "dir",
   );
   api.deps.scenes.get = (/** @type {any} */ key) =>
     key === "home3"
@@ -927,17 +921,20 @@ test("GET /api/health: 200 with status degraded while a display is offline, 503 
   const clock = manualClock();
   const stack = await startStack(t, { mqtt: false, clock });
   const { scheduler, health } = stack.app.modules;
-  // W1's effective config is still reserved: feed W3's supervisor its baseline,
-  // then exercise the production controller and HTTP health route unchanged.
-  scheduler.lastWatchdogAt = new Date(clock.now()).toISOString();
-  stack.app.modules.config.file = () => /** @type {any} */ ({ valid: true });
-  health.register("offline", { shadow: false, powerCycleMax: 0, plugTopic: null });
+  // A live watchdog keeps updating its timestamp. Stop only its timer to
+  // model supervision failing while the HTTP server remains responsive.
+  health.register("offline", {
+    shadow: false,
+    powerCycleMax: 0,
+    plugTopic: null,
+  });
   await clock.advance(120000);
   scheduler.lastWatchdogAt = new Date(clock.now()).toISOString();
   const degraded = await stack.api("/api/health");
   assert.equal(degraded.status, 200);
   assert.equal(degraded.body.status, "degraded");
   assert.ok(degraded.body.reasons.includes("display_offline:offline"));
+  scheduler.timer?.cancel();
   await clock.advance(scheduler.watchdogIntervalMs * 2 + 1);
   const failed = await stack.api("/api/health");
   assert.equal(failed.status, 503);
