@@ -11,7 +11,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "//": "Developer notes: PAIMOS knowledge 'guideline pixdcon-2-interfaces' (project PIXD). dev = v2 against fake devices and an in-memory MQTT broker, restarted on every change under src/. test = the three approved kinds only (golden frames, API/MQTT contract, fake-device smoke), together under 60 s. Every test script goes through test/helpers/run.js: it preloads dev/net-guard.js (only loopback is reachable, also for Node child processes, worker threads, DNS and UDP, so no real display, broker or host is ever contacted) and holds the run to a hard deadline: a single test is cut after 20 s, the whole run ends with exit code 1 after 55 s, and what is still alive then is killed. sites = the inventory of asynchronous input (dev/async-sites.js): every place in src/ and web/ that consumes a message, an event, a timer or an answer, against test/contract/async-sites/W1.json … W5.json; sites:update rewrites the line numbers of the rows after code moved, and nothing else. The release version is ../version.json (inspr-calver-3), not the version field above.",
+    "//": "Developer notes: PAIMOS knowledge 'guideline pixdcon-2-interfaces' (project PIXD). dev = v2 against fake devices and an in-memory MQTT broker, restarted on every change under src/. test = the three approved kinds only (golden frames, API/MQTT contract, fake-device smoke), together under 60 s. Every test script goes through test/helpers/run.js: it preloads dev/net-guard.js (only loopback is reachable, also for Node child processes, worker threads, DNS and UDP, so no real display, broker or host is ever contacted) and holds the run to a hard deadline: a single test is cut after 20 s, the whole run ends with exit code 1 after 55 s, and what is still alive then is killed. sites = the inventory of asynchronous input (dev/async-sites.js): every place in src/ and web/ that consumes a message, an event, a timer or an answer, against test/contract/async-sites/W1.json \u2026 W5.json; sites:update rewrites the line numbers of the rows after code moved, and nothing else. The release version is ../version.json (inspr-calver-3), not the version field above.",
     "start": "node src/main.js",
     "dev": "node dev/dev-runner.js",
     "dev:once": "node dev/dev-runner.js --once",
@@ -23,7 +23,9 @@
     "sites": "node dev/async-sites.js",
     "sites:update": "node dev/async-sites.js --update",
     "typecheck": "tsc -p jsconfig.json",
-    "lint": "cd .. && npx --no-install eslint v2"
+    "lint": "cd .. && npx --no-install eslint v2",
+    "migrate:v1": "node src/config/migrate-v1.js",
+    "check": "npm run typecheck && npm test && npm run lint"
   },
   "dependencies": {
     "mqtt": "^5.15.0",

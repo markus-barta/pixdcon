@@ -357,3 +357,69 @@ async function waitFor(predicate) {
     await new Promise(resolve => setTimeout(resolve, 2));
   }
 }
+
+test("migration file contract: legacy scene choice, unknown keys, shadow default and isolated controller status; source stays byte-identical", async () => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const cli = promisify(execFile);
+  await mkdir(OUT_DIR, { recursive: true });
+  const root = await mkdtemp(join(OUT_DIR, 'migration-'));
+  const input = join(root, 'v1-copy.json'), output = join(root, 'v2-data');
+  const config = { devices: [{ name: ' fake ', type: 'pixoo', ip: ' 127.0.0.1:1234 ', scenes: ['clock', 'other'], enabled: 'false', extra: { retained: true } }],
+    scenes: { clock: { path: 'scenes/clock.js' } }, extraRoot: ['unchanged'] };
+  const source = JSON.stringify(config);
+  await writeFile(input, source);
+  const command = new URL('../../src/config/migrate-v1.js', import.meta.url).pathname;
+  const result = await cli(process.execPath, [command, input, output]);
+  const report = JSON.parse(result.stdout);
+  const migrated = JSON.parse(await readFile(join(output, 'config.json'), 'utf8'));
+  assert.equal(await readFile(input, 'utf8'), source);
+  assert.equal(migrated.devices[0].name, 'fake');
+  assert.equal(migrated.devices[0].ip, '127.0.0.1:1234');
+  assert.equal(migrated.devices[0].scene, 'clock');
+  assert.equal(migrated.devices[0].enabled, false);
+  assert.equal(migrated.devices[0].output, 'shadow');
+  assert.equal(Object.hasOwn(migrated.devices[0], 'scenes'), false);
+  assert.deepEqual(migrated.devices[0].extra, { retained: true });
+  assert.deepEqual(migrated.extraRoot, ['unchanged']);
+  assert.equal(migrated.mqtt.baseTopic, 'home/hsb1/pixdcon');
+  assert.equal(migrated.mqtt.settingsBaseTopic, 'pixdcon');
+  assert.equal(migrated.mqtt.statusBaseTopic, 'home/hsb1/pixdcon2');
+  assert.equal(migrated.output.default, 'shadow');
+  assert.match(report.warnings[0], /only the first/);
+  assert.ok(report.changes.length >= 8);
+  assert.equal(await readlink(join(output, 'lib')), sharedPaths().libDir);
+  assert.equal(await readlink(join(output, 'assets')), sharedPaths().assetsDir);
+  const saved = await readFile(join(output, 'config.json'), 'utf8');
+  await assert.rejects(cli(process.execPath, [command, input, output]), /refusing to overwrite/);
+  assert.equal(await readFile(join(output, 'config.json'), 'utf8'), saved);
+  const drive = join(root, 'drive-data');
+  await cli(process.execPath, [command, input, drive, '--output', 'drive', '--status-base-topic', 'test/v2-edge']);
+  const driven = JSON.parse(await readFile(join(drive, 'config.json'), 'utf8'));
+  assert.equal(driven.devices[0].output, 'drive');
+  assert.equal(driven.mqtt.statusBaseTopic, 'test/v2-edge');
+});
+
+test("migration file contract: duplicates, malformed source, unknown CLI flags and an in-place write produce no replacement", async () => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const cli = promisify(execFile);
+  const { access } = await import('node:fs/promises');
+  await mkdir(OUT_DIR, { recursive: true });
+  const root = await mkdtemp(join(OUT_DIR, 'migration-reject-'));
+  const input = join(root, 'config.json'), output = join(root, 'target');
+  const command = new URL('../../src/config/migrate-v1.js', import.meta.url).pathname;
+  const entry = { name: 'duplicate', type: 'ulanzi', ip: '127.0.0.1' };
+  const source = JSON.stringify({ devices: [entry, { ...entry, name: ' duplicate ' }], scenes: {} });
+  await writeFile(input, source);
+  await assert.rejects(cli(process.execPath, [command, input, output]), /duplicate device name/);
+  await assert.rejects(access(join(output, 'config.json')));
+  assert.equal(await readFile(input, 'utf8'), source);
+  await writeFile(input, '{broken');
+  await assert.rejects(cli(process.execPath, [command, input, output]), /Invalid config JSON/);
+  await assert.rejects(cli(process.execPath, [command, input, output, '--unknown', 'x']), /Usage:/);
+  await writeFile(input, JSON.stringify({ devices: [entry], scenes: {} }));
+  const valid = await readFile(input, 'utf8');
+  await assert.rejects(cli(process.execPath, [command, input, root]), /different files/);
+  assert.equal(await readFile(input, 'utf8'), valid);
+});

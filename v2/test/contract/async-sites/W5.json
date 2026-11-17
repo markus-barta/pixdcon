@@ -131,6 +131,15 @@
       "metadata": "watch generation, current directory inode and per-file observed stamp",
       "fence": "native events only schedule a debounced stamp read; onChange runs serially and checks the active generation; stop cancels queued callbacks",
       "test": "test/contract/scenes.test.js: scenes watcher order:"
+    },
+    {
+      "site": "src/config/migrate-v1.js:143",
+      "id": "work:file.sync#1",
+      "input": "completion of syncing the migration temporary file",
+      "metadata": "exclusive temporary FileHandle; one CLI invocation",
+      "fence": "none",
+      "why": "no controller state; only the exclusively created temporary file is synced before an atomic no-replace link",
+      "test": "test/contract/scenes.test.js: migration file contract:"
     }
   ],
   "none": [
@@ -139,7 +148,6 @@
     "SceneRegistry.fileOf",
     "SceneRegistry.keysOfFile",
     "SceneRegistry.check",
-    "normalizeSchema",
-    "migrateV1Config"
+    "normalizeSchema"
   ]
 }
