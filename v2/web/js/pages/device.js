@@ -67,6 +67,11 @@ const running = new Map();
 const failures = new Map();
 /** Brightness typed on the slider, until its request was answered. @type {number|null} */
 let sliding = null;
+/** Why the settings form's last preview failed (B-175: said in the title status line and on the Display line); null when it worked. @type {string|null} */
+let previewFailure = null;
+/** A render runs; a change the settings form reports meanwhile draws once more after it. */
+let rendering = false;
+let renderAgain = false;
 
 /** @param {string} key @param {string} [label] */
 const busyLabel = (key, label) => running.get(key) ?? label;
@@ -200,6 +205,27 @@ async function copyScene(copyForm) {
  */
 function render(state) {
   if (!root) return;
+  if (rendering) {
+    renderAgain = true;
+    return;
+  }
+  rendering = true;
+  try {
+    draw(state);
+  } finally {
+    rendering = false;
+  }
+  if (renderAgain) {
+    renderAgain = false;
+    render(getState());
+  }
+}
+
+/**
+ * @param {import("../store.js").ClientState} state
+ */
+function draw(state) {
+  if (!root) return;
   const view = state.devices.get(name);
   const q = (/** @type {string} */ selector) =>
     /** @type {HTMLElement} */ (/** @type {HTMLElement} */ (root).querySelector(selector));
@@ -246,7 +272,7 @@ function render(state) {
   setHtml(q(".dev-head .st-slot"), `<span class="${stCls}">${dot(status.dot)}${esc(status.label)}</span>`);
 
   // Title status line (Tick, item 8; item 11)
-  const condition = deviceCondition(state, view);
+  const condition = deviceCondition(state, view, { previewFailure });
   const sub = q(".dev-head .sub");
   if (!condition) {
     setClass(sub, "sub");
@@ -367,7 +393,7 @@ function render(state) {
   }
 
   // Showing now
-  const now = showingNow(state, view);
+  const now = showingNow(state, view, { previewFailure });
   setClass(q(".why"), `why${now.tint ? ` ${now.tint}` : ""}`);
   setHtml(q(".why .k-now"), esc(now.label));
   setHtml(
@@ -463,7 +489,12 @@ function render(state) {
 
   // Settings (build rule 1: the form of the scene that is showing)
   if (form) {
-    form.setScene(showing || null, showing ? sceneName(state, showing, view.type) : undefined);
+    // The form's scope is the scene in this life of the device: another
+    // epoch or incarnation drops what it shows and loads again.
+    form.setScene(showing || null, showing ? sceneName(state, showing, view.type) : undefined, {
+      epoch: view.epoch ?? null,
+      incarnation: Number(view.incarnation ?? 0),
+    });
     form.update(state.settings.get(`${view.name}/${showing}`), {
       frozen,
       mqttConnected: state.mqtt?.state === "connected",
@@ -589,6 +620,7 @@ export const page = {
     running.clear();
     failures.clear();
     sliding = null;
+    previewFailure = null;
     root.className = "p-device";
     root.innerHTML = `
       <a class="crumb" href="#/devices">${icon("left")}Devices</a>
@@ -641,7 +673,14 @@ export const page = {
       </div>`;
     form = createSettingsForm(
       /** @type {HTMLElement} */ (root.querySelector(".settings-host")),
-      { device: name, session: getSession },
+      {
+        device: name,
+        session: getSession,
+        onPreviewFailure(message) {
+          previewFailure = message;
+          render(getState());
+        },
+      },
     );
     root.addEventListener("click", onClick);
     root.addEventListener("input", onInput);
@@ -656,11 +695,14 @@ export const page = {
     dialog?.close();
     dialog = null;
     if (form) {
-      // Leaving the page reverts what it previewed (approved spec 8).
+      // Leaving the page reverts what it previewed (approved spec 8): the
+      // scenes it switched away from ended when it switched; this ends the
+      // one it shows.
       void form.end();
       form.destroy();
       form = null;
     }
+    previewFailure = null;
     preview?.destroy();
     preview = null;
     previewKey = "";

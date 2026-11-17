@@ -80,30 +80,30 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/components/settings-form.js:624",
+      "site": "web/js/components/settings-form.js:746",
       "id": "listener:host.addEventListener(\"input\")#1",
       "input": "a setting value typed",
-      "metadata": "a command of the user (a click, a key, a form); the form's draft number rises with every edit (view/drafts.js)",
-      "fence": "the preview carries the newest draft and every edit that parses, one request at a time per form (the newest edits are sent again when it is answered); the answer goes through store.applyAnswer (decideView); the fields show the form's own edits until they are saved or reverted",
-      "test": "test/contract/client.test.js: client settings form:",
+      "metadata": "a command of the user (a click, a key, a form); every edit takes the next number of the page's draft counter (view/drafts.js), its identity",
+      "fence": "the preview carries the newest draft and every edit that parses, one request at a time per form (the newest edits are sent again when it is answered); the answer goes through store.applyAnswer (decideView); the fields show the form's own edits until they are saved or reverted. Everything that comes back belongs to the scope it was sent from (scene, epoch and incarnation of the device): an answer for a scope that is no longer shown goes to the store and changes no edit, busy label, outcome or status line; another scope drops the edits and loads again, and the preview this page holds of the scope it leaves ends, before the next preview of that scene is sent. A rejection marks only the edit that was sent (its draft); the draft number is the page's counter, rising across forms.",
+      "test": "test/contract/client.test.js: r2 finding 5, settings form:",
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:625",
+      "site": "web/js/components/settings-form.js:747",
       "id": "listener:host.addEventListener(\"change\")#1",
       "input": "a checkbox, choice or colour changed",
-      "metadata": "a command of the user (a click, a key, a form); the form's draft number rises with every edit",
-      "fence": "as for a typed value: newest draft, one preview request at a time, the answer through decideView",
-      "test": "test/contract/client.test.js: client settings form:",
+      "metadata": "a command of the user (a click, a key, a form); every edit takes the next number of the page's draft counter",
+      "fence": "as for a typed value: newest draft, one preview request at a time, the answer through decideView; bound to the form's scope like a typed value",
+      "test": "test/contract/client.test.js: r2 finding 5, settings form:",
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:626",
+      "site": "web/js/components/settings-form.js:748",
       "id": "listener:host.addEventListener(\"click\")#1",
       "input": "Save, Revert, Clear N overlays, Reset to default, Retry",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position); Save names the draft it commits, and what was typed after the click stays as a newer preview",
-      "test": "test/contract/client.test.js: client settings form:",
+      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position); Save names the draft it commits, and what was typed after the click stays as a newer preview; Save commits the edits by their draft numbers, so an edit typed after the click stays whatever it reads, and a Save that comes back after the scope changed touches nothing of the scope shown; a failed Save, Revert or Clear is said beside it, before anything else (B-175)",
+      "test": "test/contract/client.test.js: r2 finding 4, settings form:",
       "was": "components/settings-form.createSettingsForm"
     },
     {
@@ -270,7 +270,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/pages/device.js:646",
+      "site": "web/js/pages/device.js:685",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "scene options, Mode, Brightness Auto/Override, Return to …, Recovery steps, Add to config.json",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -278,7 +278,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/device.js:647",
+      "site": "web/js/pages/device.js:686",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "the brightness slider moving",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -287,7 +287,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/device.js:648",
+      "site": "web/js/pages/device.js:687",
       "id": "listener:root.addEventListener(\"change\")#1",
       "input": "the brightness slider let go",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -295,7 +295,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/device.js:649",
+      "site": "web/js/pages/device.js:688",
       "id": "listener:root.addEventListener(\"submit\")#1",
       "input": "Create copy (Separate copy of this scene)",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -303,7 +303,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/device.js:650",
+      "site": "web/js/pages/device.js:689",
       "id": "listener:root.addEventListener(\"keydown\")#1",
       "input": "arrow keys in the scene radio group",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -311,12 +311,12 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/device.js:651",
+      "site": "web/js/pages/device.js:690",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Device page",
       "metadata": "none: the store calls it after a change it applied",
-      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
-      "test": "test/contract/client.test.js: client store:"
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply. The settings form is handed the scene with the epoch and incarnation of the device view, so a restart or another life of the device is another scope of the form",
+      "test": "test/contract/client.test.js: r2 finding 2, settings form:"
     },
     {
       "site": "web/js/pages/devices.js:416",

@@ -24,11 +24,13 @@ import { connectLive } from "../../web/js/live.js";
 import { openSource, beginRequest } from "../../web/js/ordering.js";
 import {
   applyAnswer as applyDefaultAnswer,
+  applyEvent as applyDefaultEvent,
   createStore,
   decideFrameAnswer,
   fence as defaultFence,
   toPreview,
 } from "../../web/js/store.js";
+import { setSession } from "../../web/js/session.js";
 import { createDraftBook } from "../../web/js/view/drafts.js";
 import {
   HEALTH_RULE,
@@ -491,33 +493,36 @@ test("client controls: one request at a time per control; a click while its requ
 
 test("client settings form: every edit raises the draft; a preview answer for an older draft than the one on screen is not shown", () => {
   const book = createDraftBook();
-  assert.equal(book.edit("size", "2", { value: 2 }), 1);
-  assert.equal(book.edit("size", "3", { value: 3 }), 2);
-  assert.equal(book.edit("layout", '{"rows": [1,', { error: "Not valid JSON" }), 3);
+  // The draft number is the page's edit counter: it rises with every edit
+  // of any form of the page (r2 finding 3), so the test counts from the first.
+  const d = book.edit("size", "2", { value: 2 });
+  assert.ok(d >= 1);
+  assert.equal(book.edit("size", "3", { value: 3 }), d + 1);
+  assert.equal(book.edit("layout", '{"rows": [1,', { error: "Not valid JSON" }), d + 2);
   // The preview carries the newest draft and only what parses (S-5: never `{}`).
-  assert.deepEqual(book.previewBody("s1"), { session: "s1", draft: 3, values: { size: 3 } });
+  assert.deepEqual(book.previewBody("s1"), { session: "s1", draft: d + 2, values: { size: 3 } });
   assert.equal(book.saveBody("s1"), null, "Save is blocked while a field does not parse");
-  assert.equal(book.edit("layout", "{}", { value: {} }), 4);
+  assert.equal(book.edit("layout", "{}", { value: {} }), d + 3);
   const plan = book.saveBody("s1");
   assert.ok(plan);
-  assert.deepEqual(plan.body, { set: { size: 3, layout: {} }, reset: [], session: "s1", draft: 4 });
+  assert.deepEqual(plan.body, { set: { size: 3, layout: {} }, reset: [], session: "s1", draft: d + 3 });
 
   // Answers of two previews come back in the wrong order: the store shows
   // the newer one (decideView by rev), and the field shows what was typed.
   const { store } = loadedStore([view("d1", { rev: 5 })]);
-  const newer = { state: settings("d1", { rev: 6, draft: 4 }), rejected: {}, applied: true };
-  const older = { state: settings("d1", { rev: 5, draft: 2 }), rejected: {}, applied: true };
+  const newer = { state: settings("d1", { rev: 6, draft: d + 3 }), rejected: {}, applied: true };
+  const older = { state: settings("d1", { rev: 5, draft: d + 1 }), rejected: {}, applied: true };
   assert.equal(store.applyAnswer({ body: newer, resource: "settings:d1/clock", generation: 1, epoch: A, seq: 40 }).action, "apply");
   assert.equal(store.applyAnswer({ body: older, resource: "settings:d1/clock", generation: 1, epoch: A, seq: 41 }).reason, "not_newer");
-  assert.equal(store.getState().settings.get("d1/clock").preview.draft, 4);
+  assert.equal(store.getState().settings.get("d1/clock").preview.draft, d + 3);
   assert.deepEqual(book.shown("size", store.getState().settings.get("d1/clock").values.size), { raw: "3", value: 3, error: undefined });
 
   // Save commits what it named; what was typed after the click stays, with a newer draft.
-  assert.equal(book.edit("size", "5", { value: 5 }), 5);
+  assert.equal(book.edit("size", "5", { value: 5 }), d + 4);
   book.saved(plan.committed, plan.body.reset);
   assert.equal(book.edits.has("layout"), false);
   assert.equal(book.edits.get("size")?.raw, "5");
-  assert.deepEqual(book.previewBody("s1"), { session: "s1", draft: 5, values: { size: 5 } });
+  assert.deepEqual(book.previewBody("s1"), { session: "s1", draft: d + 4, values: { size: 5 } });
 });
 
 test("client store, snapshot (N4): a snapshot is applied part by part: every resource that decideSnapshot does not name in keep, every device view through decideView with the snapshot's seq, and the devices in gone are removed; a late answer that stands before the snapshot changes nothing on screen", () => {
@@ -779,5 +784,739 @@ test("r2 finding 10, item 11: a device that an entry of the config overlay (blob
     const disabled = state.devices.get("d2");
     assert.equal(showingNow(state, disabled).display.text, "Off · disabled in config.json");
     assert.equal(deviceCondition(state, disabled), null);
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// A small stand-in for the browser's DOM, so the pages and the settings form
+// run in Node: it parses the HTML the components write, finds their slots by
+// the selectors they use, and carries events up the tree; nothing more.
+// ---------------------------------------------------------------------------
+
+const VOID_TAGS = new Set(["input", "br", "img", "hr", "meta", "link", "source", "wbr", "col", "area", "base", "embed", "param", "track"]);
+/** @type {Record<string, string>} */
+const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+const decodeHtml = (/** @type {string} */ text) =>
+  text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (all, /** @type {string} */ name) =>
+    name[0] === "#"
+      ? String.fromCodePoint(name[1].toLowerCase() === "x" ? parseInt(name.slice(2), 16) : Number(name.slice(1)))
+      : (ENTITIES[name.toLowerCase()] ?? all),
+  );
+
+class FakeNode {
+  constructor() {
+    /** @type {FakeNode|null} */
+    this.parentNode = null;
+    /** @type {FakeNode[]} */
+    this.childNodes = [];
+  }
+  /** @returns {FakeElement|null} */
+  get parentElement() {
+    return this.parentNode instanceof FakeElement ? this.parentNode : null;
+  }
+  get firstChild() {
+    return this.childNodes[0] ?? null;
+  }
+  /** @returns {string} */
+  get textContent() {
+    return this.childNodes.map((node) => node.textContent).join("");
+  }
+  set textContent(text) {
+    this.replaceChildren(String(text ?? ""));
+  }
+  /** @param {...(FakeNode|string)} nodes */
+  append(...nodes) {
+    for (const node of nodes) {
+      const child = typeof node === "string" ? new FakeText(node) : node;
+      child.remove();
+      child.parentNode = this;
+      this.childNodes.push(child);
+    }
+  }
+  /** @param {...(FakeNode|string)} nodes */
+  replaceChildren(...nodes) {
+    for (const child of [...this.childNodes]) child.remove();
+    this.append(...nodes.filter((node) => node !== ""));
+  }
+  remove() {
+    if (!this.parentNode) return;
+    const siblings = this.parentNode.childNodes;
+    siblings.splice(siblings.indexOf(this), 1);
+    this.parentNode = null;
+  }
+}
+
+class FakeText extends FakeNode {
+  /** @param {string} text */
+  constructor(text) {
+    super();
+    this.data = String(text);
+  }
+  get textContent() {
+    return this.data;
+  }
+  set textContent(text) {
+    this.data = String(text);
+  }
+}
+
+/** @type {{activeElement: any, body: any, createElement: (tag: string) => any}} */
+const fakeDocument = {
+  activeElement: null,
+  body: null,
+  createElement: (tag) => makeElement(tag),
+};
+
+/**
+ * @param {string} selector
+ * @returns {Array<Array<{combinator: string, tag: string|null, id: string|null, classes: string[], attrs: Array<{name: string, value?: string}>}>>}
+ */
+function parseSelector(selector) {
+  /** @type {any[][]} */
+  const lists = [];
+  /** @type {any[]} */
+  let sequence = [];
+  let combinator = " ";
+  /** @type {any} */
+  let compound = null;
+  const start = () => {
+    if (!compound) {
+      compound = { combinator, tag: null, id: null, classes: [], attrs: [] };
+      sequence.push(compound);
+    }
+    return compound;
+  };
+  const token = /\s*([>,])\s*|(\s+)|([a-zA-Z*][\w-]*)|#([\w-]+)|\.([\w-]+)|\[([\w-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\]]*)))?\]/g;
+  for (const m of selector.trim().matchAll(token)) {
+    if (m[1] === ",") {
+      lists.push(sequence);
+      sequence = [];
+      compound = null;
+      combinator = " ";
+    } else if (m[1] === ">" || m[2] !== undefined) {
+      compound = null;
+      combinator = m[1] === ">" ? ">" : " ";
+    } else if (m[3]) start().tag = m[3].toLowerCase();
+    else if (m[4]) start().id = m[4];
+    else if (m[5]) start().classes.push(m[5]);
+    else if (m[6]) start().attrs.push({ name: m[6], value: m[7] ?? m[8] ?? m[9] });
+  }
+  lists.push(sequence);
+  return lists;
+}
+
+/** @param {FakeElement} element @param {any} part */
+function matchesCompound(element, part) {
+  if (part.tag && part.tag !== "*" && element.localName !== part.tag) return false;
+  if (part.id && element.getAttribute("id") !== part.id) return false;
+  const classes = element.className.split(/\s+/);
+  for (const cls of part.classes) if (!classes.includes(cls)) return false;
+  for (const attr of part.attrs) {
+    const value = element.getAttribute(attr.name);
+    if (value === null || (attr.value !== undefined && value !== attr.value)) return false;
+  }
+  return true;
+}
+
+/** @param {FakeElement} element @param {any[]} sequence @param {number} i @returns {boolean} */
+function matchesSequence(element, sequence, i) {
+  if (!matchesCompound(element, sequence[i])) return false;
+  if (i === 0) return true;
+  if (sequence[i].combinator === ">") {
+    const parent = element.parentElement;
+    return parent ? matchesSequence(parent, sequence, i - 1) : false;
+  }
+  for (let up = element.parentElement; up; up = up.parentElement)
+    if (matchesSequence(up, sequence, i - 1)) return true;
+  return false;
+}
+
+class FakeEvent {
+  /** @param {string} type @param {{key?: string}} [init] */
+  constructor(type, init = {}) {
+    this.type = type;
+    this.key = init.key;
+    /** @type {any} */
+    this.target = null;
+    this.defaultPrevented = false;
+    this.stopped = false;
+  }
+  preventDefault() {
+    this.defaultPrevented = true;
+  }
+  stopPropagation() {
+    this.stopped = true;
+  }
+}
+
+class FakeElement extends FakeNode {
+  /** @param {string} tag */
+  constructor(tag) {
+    super();
+    this.localName = tag.toLowerCase();
+    this.tagName = tag.toUpperCase();
+    /** @type {Map<string, string>} */
+    this.attrs = new Map();
+    /** @type {Map<string, Array<(event: any) => void>>} */
+    this.listeners = new Map();
+    /** @type {Record<string, string>} */
+    this.style = { cssText: "" };
+    const element = this;
+    const attr = (/** @type {string|symbol} */ prop) =>
+      `data-${String(prop).replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
+    this.dataset = new Proxy(
+      {},
+      {
+        get: (_, prop) => element.getAttribute(attr(prop)) ?? undefined,
+        set: (_, prop, value) => {
+          element.setAttribute(attr(prop), String(value));
+          return true;
+        },
+      },
+    );
+  }
+  get children() {
+    return /** @type {FakeElement[]} */ (this.childNodes.filter((node) => node instanceof FakeElement));
+  }
+  get firstElementChild() {
+    return this.children[0] ?? null;
+  }
+  /** @param {string} name */
+  getAttribute(name) {
+    return this.attrs.get(name.toLowerCase()) ?? null;
+  }
+  /** @param {string} name @param {unknown} value */
+  setAttribute(name, value) {
+    this.attrs.set(name.toLowerCase(), String(value));
+  }
+  /** @param {string} name */
+  removeAttribute(name) {
+    this.attrs.delete(name.toLowerCase());
+  }
+  /** @param {string} name */
+  hasAttribute(name) {
+    return this.attrs.has(name.toLowerCase());
+  }
+  get id() {
+    return this.getAttribute("id") ?? "";
+  }
+  get className() {
+    return this.getAttribute("class") ?? "";
+  }
+  set className(value) {
+    this.setAttribute("class", value);
+  }
+  get classList() {
+    const list = () => this.className.split(/\s+/).filter(Boolean);
+    return {
+      contains: (/** @type {string} */ cls) => list().includes(cls),
+      add: (/** @type {string[]} */ ...cls) => (this.className = [...new Set([...list(), ...cls])].join(" ")),
+      remove: (/** @type {string[]} */ ...cls) => (this.className = list().filter((c) => !cls.includes(c)).join(" ")),
+    };
+  }
+  get hidden() {
+    return this.hasAttribute("hidden");
+  }
+  set hidden(value) {
+    if (value) this.setAttribute("hidden", "");
+    else this.removeAttribute("hidden");
+  }
+  get disabled() {
+    return this.hasAttribute("disabled");
+  }
+  set disabled(value) {
+    if (value) this.setAttribute("disabled", "");
+    else this.removeAttribute("disabled");
+  }
+  get type() {
+    return this.getAttribute("type") ?? (this.localName === "button" ? "submit" : "text");
+  }
+  get innerHTML() {
+    return this.childNodes.map(serializeNode).join("");
+  }
+  set innerHTML(html) {
+    this.replaceChildren();
+    parseHtmlInto(this, String(html));
+  }
+  focus() {
+    fakeDocument.activeElement = this;
+  }
+  blur() {
+    if (fakeDocument.activeElement === this) fakeDocument.activeElement = null;
+  }
+  /** @param {string} type @param {(event: any) => void} listener */
+  addEventListener(type, listener) {
+    const list = this.listeners.get(type) ?? [];
+    if (!list.includes(listener)) list.push(listener);
+    this.listeners.set(type, list);
+  }
+  /** @param {string} type @param {(event: any) => void} listener */
+  removeEventListener(type, listener) {
+    this.listeners.set(type, (this.listeners.get(type) ?? []).filter((fn) => fn !== listener));
+  }
+  /** @param {FakeEvent} event bubbles up to the root */
+  dispatchEvent(event) {
+    event.target = this;
+    for (let node = /** @type {FakeElement|null} */ (this); node && !event.stopped; node = node.parentElement)
+      for (const listener of [...(node.listeners.get(event.type) ?? [])]) listener.call(node, event);
+    return !event.defaultPrevented;
+  }
+  /** @param {string} selector */
+  matches(selector) {
+    return parseSelector(selector).some((sequence) => matchesSequence(this, sequence, sequence.length - 1));
+  }
+  /** @param {string} selector */
+  closest(selector) {
+    for (let node = /** @type {FakeElement|null} */ (this); node; node = node.parentElement)
+      if (node.matches(selector)) return node;
+    return null;
+  }
+  /** @param {string} selector @returns {FakeElement[]} */
+  querySelectorAll(selector) {
+    /** @type {FakeElement[]} */
+    const found = [];
+    const walk = (/** @type {FakeElement} */ element) => {
+      for (const child of element.children) {
+        if (child.matches(selector)) found.push(child);
+        walk(child);
+      }
+    };
+    walk(this);
+    return found;
+  }
+  /** @param {string} selector */
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+}
+
+class FakeInput extends FakeElement {
+  get value() {
+    return this._value ?? this.getAttribute("value") ?? "";
+  }
+  set value(value) {
+    /** @type {string|undefined} */
+    this._value = String(value);
+  }
+  get checked() {
+    return this._checked ?? this.hasAttribute("checked");
+  }
+  set checked(value) {
+    /** @type {boolean|undefined} */
+    this._checked = Boolean(value);
+  }
+}
+class FakeTextArea extends FakeElement {
+  get value() {
+    return this._value ?? this.textContent;
+  }
+  set value(value) {
+    /** @type {string|undefined} */
+    this._value = String(value);
+  }
+}
+class FakeSelect extends FakeElement {
+  get options() {
+    return this.querySelectorAll("option");
+  }
+  get value() {
+    const values = this.options.map((option) => option.getAttribute("value") ?? option.textContent);
+    if (this._chosen !== undefined && values.includes(this._chosen)) return this._chosen;
+    return values[0] ?? "";
+  }
+  set value(value) {
+    /** @type {string|undefined} */
+    this._chosen = String(value);
+  }
+}
+class FakeButton extends FakeElement {}
+class FakeForm extends FakeElement {}
+class FakeAnchor extends FakeElement {}
+class FakeCanvas extends FakeElement {
+  getContext() {
+    return null;
+  }
+}
+
+/** @param {string} tag @returns {FakeElement} */
+function makeElement(tag) {
+  const name = tag.toLowerCase();
+  const Kind =
+    { input: FakeInput, textarea: FakeTextArea, select: FakeSelect, button: FakeButton, form: FakeForm, a: FakeAnchor, canvas: FakeCanvas }[name] ??
+    FakeElement;
+  const element = new Kind(name);
+  if (name === "template") Object.defineProperty(element, "content", { get: () => element });
+  return element;
+}
+
+/** @param {FakeNode} node @returns {string} */
+function serializeNode(node) {
+  if (node instanceof FakeText) return node.data.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const element = /** @type {FakeElement} */ (node);
+  const attrs = [...element.attrs].map(([name, value]) => ` ${name}="${value.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`).join("");
+  if (VOID_TAGS.has(element.localName)) return `<${element.localName}${attrs}>`;
+  return `<${element.localName}${attrs}>${element.childNodes.map(serializeNode).join("")}</${element.localName}>`;
+}
+
+/** @param {FakeElement} parent @param {string} html */
+function parseHtmlInto(parent, html) {
+  /** @type {FakeElement[]} */
+  const stack = [parent];
+  const token = /<!--[\s\S]*?-->|<\/([a-zA-Z][\w:-]*)\s*>|<([a-zA-Z][\w:-]*)((?:\s+[^\s"'<>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*(\/?)>|([^<]+)|(<)/g;
+  for (const m of html.matchAll(token)) {
+    const top = stack[stack.length - 1];
+    if (m[0].startsWith("<!--")) continue;
+    if (m[1]) {
+      const tag = m[1].toLowerCase();
+      for (let i = stack.length - 1; i > 0; i -= 1)
+        if (stack[i].localName === tag) {
+          stack.length = i;
+          break;
+        }
+    } else if (m[2]) {
+      const element = makeElement(m[2]);
+      for (const a of (m[3] ?? "").matchAll(/([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g))
+        element.setAttribute(a[1], decodeHtml(a[2] ?? a[3] ?? a[4] ?? ""));
+      top.append(element);
+      if (!VOID_TAGS.has(element.localName) && !m[4]) stack.push(element);
+    } else top.append(decodeHtml(m[5] ?? m[6] ?? ""));
+  }
+}
+
+fakeDocument.body = makeElement("body");
+Object.assign(globalThis, {
+  document: fakeDocument,
+  HTMLElement: FakeElement,
+  HTMLInputElement: FakeInput,
+  HTMLTextAreaElement: FakeTextArea,
+  HTMLSelectElement: FakeSelect,
+  HTMLButtonElement: FakeButton,
+  HTMLFormElement: FakeForm,
+  HTMLAnchorElement: FakeAnchor,
+  getComputedStyle: () => ({ paddingLeft: "0", paddingRight: "0", paddingTop: "0", paddingBottom: "0" }),
+});
+
+/** A page root in the stand-in document. */
+function pageRoot() {
+  const root = makeElement("main");
+  fakeDocument.body.append(root);
+  return /** @type {any} */ (root);
+}
+
+/** Type into a field, as a person does: the value changes, then the event. */
+function typeInto(/** @type {any} */ field, /** @type {string} */ value, type = "input") {
+  field.value = value;
+  field.dispatchEvent(new FakeEvent(type));
+}
+
+/** Click, as a browser does: a disabled button takes no click. */
+function click(/** @type {any} */ element) {
+  if (!element) throw new Error("nothing to click");
+  if (element.disabled) return false;
+  element.dispatchEvent(new FakeEvent("click"));
+  return true;
+}
+
+/** Let the answers that were given run through their awaits. */
+async function settle() {
+  for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * A stand-in for fetch whose answers the test gives, in any order.
+ *
+ * @returns {Array<{method: string, url: string, body: any, answered: boolean, answer: (status: number, body?: unknown, position?: string) => void}>}
+ */
+function heldFetch() {
+  /** @type {any[]} */
+  const calls = [];
+  globalThis.fetch = /** @type {any} */ (
+    (/** @type {string} */ url, /** @type {any} */ init = {}) =>
+      new Promise((resolve) => {
+        const call = {
+          method: init.method ?? "GET",
+          url: String(url),
+          body: typeof init.body === "string" ? JSON.parse(init.body) : undefined,
+          answered: false,
+          answer: (/** @type {number} */ status, /** @type {unknown} */ body, /** @type {string|undefined} */ position) => {
+            call.answered = true;
+            resolve(
+              new Response(body === undefined ? null : JSON.stringify(body), {
+                status,
+                headers: position ? { "X-Pixdcon-Position": position } : {},
+              }),
+            );
+          },
+        };
+        calls.push(call);
+      })
+  );
+  return calls;
+}
+
+/** Answer what is still open (503), so no control key stays busy for the next test. */
+async function drain(/** @type {any[]} */ calls) {
+  for (let round = 0; round < 5; round += 1) {
+    await settle();
+    const open = calls.filter((c) => !c.answered);
+    if (open.length === 0) return;
+    for (const call of open) call.answer(503, {});
+  }
+}
+
+/** The first call not answered yet with this method and a URL that contains `part`. */
+function pending(/** @type {any[]} */ calls, /** @type {string} */ method, /** @type {string} */ part) {
+  const call = calls.find((c) => !c.answered && c.method === method && c.url.includes(part));
+  assert.ok(call, `a ${method} request to …${part} was sent`);
+  return call;
+}
+
+const SCENES = [
+  { key: "clock", path: "./scenes/ulanzi/clock.js", pathSource: "config", name: "clock", pretty_name: "Clock", description: "", deviceType: "ulanzi", settingsSchema: {}, resources: { assetDirs: [], stateFields: [] }, status: "ok", error: null },
+  { key: "weather", path: "./scenes/ulanzi/weather.js", pathSource: "config", name: "weather", pretty_name: "Weather", description: "", deviceType: "ulanzi", settingsSchema: {}, resources: { assetDirs: [], stateFields: [] }, status: "ok", error: null },
+];
+
+/**
+ * A page module. Pages use the browser's DOM; they are loaded by a path the
+ * typecheck does not follow, as web/ is checked against the browser and not
+ * against Node's types (jsconfig.json excludes it).
+ *
+ * @param {string} name
+ * @returns {Promise<any>}
+ */
+const loadPage = async (name) => (await import(new URL(`../../web/js/pages/${name}.js`, import.meta.url).href)).page;
+const devicePage = await loadPage("device");
+
+let pageEpochs = 0;
+/**
+ * Load the page's own store (the one the pages read) with a snapshot of a
+ * fresh epoch, from a stream of its own.
+ *
+ * @param {(epoch: string) => any[]} devices
+ * @param {any} [o] snapshot options
+ * @returns {{epoch: string, stream: number}}
+ */
+function bootPages(devices, o = {}) {
+  pageEpochs += 1;
+  const epoch = `e${String(pageEpochs).padStart(7, "0")}`;
+  const stream = openSource(defaultFence(), "stream");
+  const decision = applyDefaultEvent({ type: "snapshot", epoch, seq: 10, stream, data: { ...snapshot(epoch, 10, devices(epoch), o), scenes: SCENES } });
+  assert.equal(decision.action, "apply");
+  return { epoch, stream };
+}
+
+/**
+ * A SettingsState with one int field `n` (or the schema given).
+ *
+ * @param {string} device
+ * @param {string} scene
+ * @param {{epoch: string, incarnation?: number, rev?: number, schema?: any, effective?: Record<string, unknown>, preview?: any}} o
+ */
+function sceneSettings(device, scene, o) {
+  const schema = o.schema ?? { n: { type: "int", label: "N", group: "General", description: "", default: 1, placeholder: "" } };
+  /** @type {Record<string, any>} */
+  const values = {};
+  for (const [key, field] of Object.entries(schema))
+    values[key] = { default: field.default, effective: o.effective?.[key] ?? field.default, source: "default" };
+  return { device, scene, epoch: o.epoch, incarnation: o.incarnation ?? 1, rev: o.rev ?? 1, schema, values, savedFrom: "config", preview: o.preview ?? null };
+}
+
+/** The settings rows of a mounted form, by key. */
+const field = (/** @type {any} */ root, /** @type {string} */ key) => root.querySelector(`.set-body [data-key="${key}"]`);
+const statusText = (/** @type {any} */ root) => root.querySelector(".set-status").textContent;
+const saveButton = (/** @type {any} */ root) => root.querySelector('.set-h [data-act="save"]');
+
+
+setSession("s1");
+
+
+test("r2 finding 2, settings form: after a restart (a new epoch) that keeps the device and its scene, the form drops the old values and loads the scene again", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  const root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  try {
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch, effective: { n: 7 } }), `${epoch}-11`);
+    await settle();
+    assert.equal(field(root, "n")?.value, "7");
+    // pixdcon restarts; its new run lists d1 with the same scene.
+    const restarted = bootPages((e) => [view("d1", { epoch: e })]);
+    await settle();
+    assert.equal(field(root, "n"), null, "no value of the run before stays on screen");
+    assert.match(root.querySelector(".set-body").textContent, /Loading settings for Clock/);
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch: restarted.epoch, effective: { n: 3 } }), `${restarted.epoch}-11`);
+    await settle();
+    assert.equal(field(root, "n")?.value, "3");
+  } finally {
+    devicePage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r2 finding 3, settings form: the draft number keeps rising when the device page is left and opened again, so pixdcon never meets a draft it has seen", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  let rev = 1;
+  /** @type {any} */
+  let root = null;
+  const open = async () => {
+    root = pageRoot();
+    devicePage.mount(root, { name: "d1" });
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch, rev }), `${epoch}-${10 + rev}`);
+    await settle();
+  };
+  const preview = async (/** @type {string} */ value) => {
+    typeInto(field(root, "n"), value);
+    await settle();
+    const put = pending(calls, "PUT", "/settings/clock/preview");
+    rev += 1;
+    put.answer(200, { state: sceneSettings("d1", "clock", { epoch, rev, preview: { session: "s1", draft: put.body.draft } }), rejected: {}, applied: true }, `${epoch}-${10 + rev}`);
+    await settle();
+    return Number(put.body.draft);
+  };
+  await open();
+  try {
+    await preview("2");
+    const before = await preview("3");
+    click(saveButton(root));
+    await settle();
+    rev += 1;
+    pending(calls, "PUT", "/settings/clock").answer(200, { state: sceneSettings("d1", "clock", { epoch, rev, effective: { n: 3 } }), overlaysNotCleared: [] }, `${epoch}-${10 + rev}`);
+    await settle();
+    devicePage.unmount();
+    await settle();
+    // Leaving ended the preview; the next one of the scene waits for that end.
+    pending(calls, "DELETE", "/settings/clock/preview?session=s1").answer(200, sceneSettings("d1", "clock", { epoch, rev }), `${epoch}-${10 + rev}`);
+    await settle();
+    await open();
+    const after = await preview("4");
+    assert.ok(after > before, `the draft after opening the page again (${after}) is newer than the last one sent (${before})`);
+  } finally {
+    devicePage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r2 finding 4, settings form: a Save that comes back after the scene was switched leaves the other scene's edits alone, also when they read the same", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  const root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  try {
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch }), `${epoch}-11`);
+    await settle();
+    typeInto(field(root, "n"), "20");
+    await settle();
+    pending(calls, "PUT", "/settings/clock/preview").answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 2, preview: { session: "s1", draft: 1 } }), rejected: {}, applied: true }, `${epoch}-12`);
+    await settle();
+    assert.equal(click(saveButton(root)), true);
+    await settle();
+    const save = pending(calls, "PUT", "/settings/clock");
+    // The display switches to Weather before the Save is answered.
+    applyDefaultAnswer({ body: view("d1", { epoch, rev: 2, scene: "weather" }), resource: "device:d1", generation: 0, epoch, seq: 13 });
+    await settle();
+    pending(calls, "GET", "/settings/weather").answer(200, sceneSettings("d1", "weather", { epoch }), `${epoch}-14`);
+    await settle();
+    typeInto(field(root, "n"), "20");
+    await settle();
+    pending(calls, "PUT", "/settings/weather/preview").answer(200, { state: sceneSettings("d1", "weather", { epoch, rev: 2, preview: { session: "s1", draft: 2 } }), rejected: {}, applied: true }, `${epoch}-15`);
+    await settle();
+    save.answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 3, effective: { n: 20 } }), overlaysNotCleared: [] }, `${epoch}-16`);
+    await settle();
+    assert.equal(saveButton(root).disabled, false, "Weather's edit is still there to be saved");
+    assert.doesNotMatch(statusText(root), /Saved/);
+    assert.match(statusText(root), /^Previewing 1 change/);
+  } finally {
+    devicePage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r2 finding 5, settings form: a preview's rejection marks only the edit it was sent with; a newer choice stays valid, is previewed and can be saved", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  const colours = (/** @type {string[]} */ options) => ({ color: { type: "enum", label: "Colour", group: "General", description: "", default: "green", placeholder: "", options } });
+  const root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  try {
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch, schema: colours(["red", "green", "blue"]) }), `${epoch}-11`);
+    await settle();
+    typeInto(field(root, "color"), "red", "change");
+    await settle();
+    const first = pending(calls, "PUT", "/settings/clock/preview");
+    // A hot reload takes red away, and blue is chosen before the first answer is back.
+    applyDefaultAnswer({ body: sceneSettings("d1", "clock", { epoch, rev: 3, schema: colours(["green", "blue"]) }), resource: "settings:d1/clock", generation: 0, epoch, seq: 13 });
+    await settle();
+    typeInto(field(root, "color"), "blue", "change");
+    await settle();
+    first.answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 2, schema: colours(["red", "green", "blue"]) }), rejected: { color: "not an option of this setting" }, applied: false }, `${epoch}-12`);
+    await settle();
+    const second = pending(calls, "PUT", "/settings/clock/preview");
+    assert.deepEqual(second.body.values, { color: "blue" }, "the newer choice is previewed, not `{}`");
+    assert.equal(saveButton(root).disabled, false, "and it can be saved");
+  } finally {
+    devicePage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r2 finding 6, settings form: the preview of a scene ends when the display switches to another scene, and every preview the page still holds ends when the page is left", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  const root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  let left = false;
+  try {
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch }), `${epoch}-11`);
+    await settle();
+    typeInto(field(root, "n"), "5");
+    await settle();
+    pending(calls, "PUT", "/settings/clock/preview").answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 2, preview: { session: "s1", draft: 1 } }), rejected: {}, applied: true }, `${epoch}-12`);
+    await settle();
+    applyDefaultAnswer({ body: view("d1", { epoch, rev: 2, scene: "weather" }), resource: "device:d1", generation: 0, epoch, seq: 13 });
+    await settle();
+    pending(calls, "GET", "/settings/weather").answer(200, sceneSettings("d1", "weather", { epoch }), `${epoch}-14`);
+    await settle();
+    devicePage.unmount();
+    left = true;
+    await settle();
+    const ends = calls.filter((c) => c.method === "DELETE" && c.url.includes("/preview"));
+    assert.deepEqual(ends.map((c) => c.url), ["/api/v2/devices/d1/settings/clock/preview?session=s1"]);
+  } finally {
+    if (!left) devicePage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r2 finding 7, B-175: a failed preview and a failed Save are said beside the action, also while an edit is unsaved; a failed preview also in the title status line and on the Display line", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  const root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  try {
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch }), `${epoch}-11`);
+    await settle();
+    typeInto(field(root, "n"), "5");
+    await settle();
+    pending(calls, "PUT", "/settings/clock/preview").answer(500, {});
+    await settle();
+    assert.equal(statusText(root), "Not previewed: pixdcon failed to answer (500).");
+    assert.equal(root.querySelector(".dev-head .sub").textContent, "Settings not previewed: pixdcon failed to answer (500).");
+    assert.equal(root.querySelector(".why .v-disp").textContent, "Settings not previewed: pixdcon failed to answer (500).");
+    assert.equal(click(saveButton(root)), true);
+    await settle();
+    pending(calls, "PUT", "/settings/clock").answer(500, {});
+    await settle();
+    assert.equal(statusText(root), "Not saved: pixdcon failed to answer (500).");
+    // A preview that works again takes the failure away from the title and the Display line.
+    pending(calls, "PUT", "/settings/clock/preview").answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 2, preview: { session: "s1", draft: 9 } }), rejected: {}, applied: true }, `${epoch}-12`);
+    await settle();
+    assert.equal(root.querySelector(".dev-head .sub").textContent, "");
+    assert.doesNotMatch(root.querySelector(".why .v-disp").textContent, /not previewed/);
+    assert.equal(statusText(root), "Not saved: pixdcon failed to answer (500).", "the failed Save is still said");
+  } finally {
+    devicePage.unmount();
+    await drain(calls);
   }
 });

@@ -136,37 +136,85 @@ export function groupsOf(schema) {
 }
 
 /**
+ * Ends of previews on their way, per "<device>/<scene>": a preview of the
+ * same scene, from this form or from the next one (the page was left and
+ * opened again), is sent only after the end, so the end can never overtake
+ * it and end the newer preview.
+ *
+ * @type {Map<string, Promise<void>>}
+ */
+const ending = new Map();
+
+/**
+ * What the form shows, and everything that belongs to it: the scene, the
+ * life of the device its values belong to (the epoch of the run and the
+ * device's incarnation), the edits, the request that runs, the outcome of
+ * the last action and of the last preview. Another scene, a restart of
+ * pixdcon or another life of the device is another scope; an answer that
+ * comes back for a scope that is no longer shown goes to the store (its
+ * fence decides) and changes nothing else: no edit, no busy label, no
+ * outcome, no status line (findings 2, 4, 5 of the first gate).
+ *
+ * @typedef {object} Scope
+ * @property {string|null} scene
+ * @property {string|null} epoch null: not said
+ * @property {number} incarnation 0: not said
+ * @property {ReturnType<typeof createDraftBook>} book what the user typed, numbered by the page's draft counter
+ * @property {string|null} busy "save" | "revert" | "clear" while that request runs
+ * @property {{text: string, cls: string, failed: boolean}|null} outcome the last outcome of Save, Revert or Clear
+ * @property {string|null} previewFailure why the last preview failed; null when it worked
+ * @property {Promise<void>|null} running the preview request on its way
+ * @property {boolean} previewAgain an edit came while a preview ran: send the newest draft after it
+ * @property {boolean} previewed a preview of this scope was sent: pixdcon may hold one for this page
+ * @property {boolean} left the form shows another scope now, or was left
+ */
+
+/**
+ * @param {string|null} scene
+ * @param {{epoch?: string|null, incarnation?: number}|undefined} life
+ * @returns {Scope}
+ */
+function newScope(scene, life) {
+  return {
+    scene,
+    epoch: life?.epoch ?? null,
+    incarnation: Number(life?.incarnation ?? 0),
+    book: createDraftBook(),
+    busy: null,
+    outcome: null,
+    previewFailure: null,
+    running: null,
+    previewAgain: false,
+    previewed: false,
+    left: false,
+  };
+}
+
+/**
  * @param {HTMLElement} host
- * @param {{device: string, session: string|(() => string|null)}} options session: the page's id, or a function that answers it when a request is sent
- * @returns {{setScene: (scene: string|null, name?: string) => void, update: (settingsState: any, context?: {frozen?: boolean, mqttConnected?: boolean, shadow?: boolean, configInvalid?: boolean, overlayOnly?: boolean, waiting?: string|null, builtin?: boolean}) => void, destroy: () => void, hasEdits: () => boolean, end: () => Promise<void>}}
+ * @param {{device: string, session: string|(() => string|null), onPreviewFailure?: (message: string|null) => void}} options session: the page's id, or a function that answers it when a request is sent; onPreviewFailure: called when the last preview failed (its sentence) or works again (null), so the page says it in its title status line and on the Display line (B-175)
+ * @returns {{setScene: (scene: string|null, name?: string, life?: {epoch?: string|null, incarnation?: number}) => void, update: (settingsState: any, context?: {frozen?: boolean, mqttConnected?: boolean, shadow?: boolean, configInvalid?: boolean, overlayOnly?: boolean, waiting?: string|null, builtin?: boolean}) => void, destroy: () => void, hasEdits: () => boolean, end: () => Promise<void>}}
  */
 export function createSettingsForm(host, options) {
   const device = options.device;
   const session = () =>
     typeof options.session === "function" ? options.session() : options.session;
-  /** @type {string|null} */
-  let scene = null;
+  /** @type {Scope} */
+  let scope = newScope(null, undefined);
   let sceneLabel = "";
   /** @type {"none"|"builtin"|"loading"|"failed"|"ready"} */
   let phase = "none";
   let loadError = "";
-  /** What the user typed, numbered by draft (view/drafts.js). */
-  const book = createDraftBook();
-  const edits = book.edits;
-  /** @type {any} */
+  /** The SettingsState of the scope, as the store holds it. @type {any} */
   let current = null;
   /** @type {{frozen?: boolean, mqttConnected?: boolean, shadow?: boolean, configInvalid?: boolean, overlayOnly?: boolean, waiting?: string|null, builtin?: boolean}} */
   let context = {};
   let schemaSignature = "";
   /** key → the row's elements. @type {Map<string, {row: HTMLElement, input: HTMLElement, check?: HTMLElement, hex?: HTMLInputElement, error?: HTMLElement, marker: HTMLElement}>} */
   let rows = new Map();
-  /** "save" | "revert" | "clear" while that request runs. @type {string|null} */
-  let busy = null;
-  let previewRunning = false;
-  let previewAgain = false;
-  /** The last outcome of an action, said in the status slot. @type {{text: string, cls: string}|null} */
-  let outcome = null;
   let destroyed = false;
+  /** What onPreviewFailure was told last. @type {string|null} */
+  let reported = null;
 
   host.innerHTML = `
     <div class="set-h">
@@ -187,150 +235,215 @@ export function createSettingsForm(host, options) {
   const status = q(".set-status");
   const body = q(".set-body");
 
-  const resource = () => `settings:${device}/${scene}`;
-  const base = () =>
-    `/api/v2/devices/${encodeURIComponent(device)}/settings/${encodeURIComponent(String(scene))}`;
+  const resource = (/** @type {Scope} */ of) => `settings:${device}/${of.scene}`;
+  const base = (/** @type {Scope} */ of) =>
+    `/api/v2/devices/${encodeURIComponent(device)}/settings/${encodeURIComponent(String(of.scene))}`;
+  /** Whether what came back for this scope may change the form: it is the one shown. */
+  const shown = (/** @type {Scope} */ of) => !destroyed && of === scope;
+
+  /** Tell the page when the last preview of the scope shown failed, or works again. */
+  function report() {
+    const failure = destroyed ? null : scope.previewFailure;
+    if (failure === reported) return;
+    reported = failure;
+    options.onPreviewFailure?.(failure);
+  }
+
+  /**
+   * The scope is no longer shown. When this page may hold a preview of it,
+   * the preview ends (approved spec 8: switching away and leaving revert
+   * what this page previewed), after the scope's own preview request and
+   * after an end of the same scene that is on its way.
+   *
+   * @param {Scope} of
+   * @returns {Promise<void>}
+   */
+  function leave(of) {
+    of.left = true;
+    const id = session();
+    if (!id || !of.scene || of.scene.startsWith("builtin:")) return Promise.resolve();
+    const held = of === scope && current?.preview?.session === id;
+    if (!of.previewed && !of.running && !held) return Promise.resolve();
+    const key = `${device}/${of.scene}`;
+    const before = [of.running, ending.get(key)];
+    /** @type {Promise<void>} */
+    const done = (async () => {
+      await Promise.all(before);
+      try {
+        applyAnswer(
+          await request("DELETE", `${base(of)}/preview?session=${encodeURIComponent(id)}`, {
+            resource: resource(of),
+          }),
+        );
+      } catch {
+        // The server ends it 5 s after the page's stream is gone (preview rule 2).
+      }
+      if (ending.get(key) === done) ending.delete(key);
+    })();
+    ending.set(key, done);
+    return done;
+  }
 
   /** The settings of the scene that is chosen now, from pixdcon (build rule 1). */
   async function load() {
-    const asked = scene;
+    const mine = scope;
     phase = "loading";
     render();
     try {
-      const answer = await request("GET", base(), { resource: resource() });
-      if (destroyed || asked !== scene) return;
-      applyAnswer(answer);
-      if (phase === "loading" && current === null) {
-        // The answer was not taken (an older copy, another life of the
-        // device); the store's next state brings the form.
-        phase = "loading";
-      }
+      // The store's fence decides; the form shows what the store holds for
+      // its scope, and the page hands that to update().
+      applyAnswer(await request("GET", base(mine), { resource: resource(mine) }));
     } catch (error) {
-      if (destroyed || asked !== scene) return;
+      if (!shown(mine)) return;
       phase = "failed";
       loadError = error instanceof ApiError ? error.message : "The request failed.";
       render();
     }
   }
 
+  /**
+   * One preview request: the newest draft with every edit that parses.
+   * What the answer rejects is marked on the edits that were sent, not on
+   * ones typed since (finding 5).
+   *
+   * @param {Scope} of
+   * @param {string} id
+   */
+  async function sendPreview(of, id) {
+    of.previewed = true;
+    await ending.get(`${device}/${of.scene}`);
+    // Left while it waited: its end is queued behind it, so nothing is sent.
+    if (of.left) return;
+    const plan = of.book.previewPlan(id);
+    try {
+      const answer = await request("PUT", `${base(of)}/preview`, {
+        resource: resource(of),
+        key: `preview:${device}/${of.scene}`,
+        body: plan.body,
+      });
+      applyAnswer(answer);
+      of.book.rejected(plan.sent, answer.body?.rejected);
+      of.previewFailure = null;
+    } catch (error) {
+      of.previewFailure =
+        error instanceof ApiError ? error.message : "The request failed.";
+    }
+  }
+
   /** Send the form's edits as the preview, with the newest draft. One request at a time. */
   async function preview() {
-    if (previewRunning) {
-      previewAgain = true;
+    const mine = scope;
+    if (mine.running) {
+      mine.previewAgain = true;
       return;
     }
     const id = session();
-    if (!id) return;
-    previewRunning = true;
-    previewAgain = false;
-    try {
-      const answer = await request("PUT", `${base()}/preview`, {
-        resource: resource(),
-        key: `preview:${device}/${scene}`,
-        body: book.previewBody(id),
-      });
-      applyAnswer(answer);
-      const rejected = answer.body?.rejected ?? {};
-      for (const [key, reason] of Object.entries(rejected)) {
-        const edit = edits.get(key);
-        if (edit) edit.error = String(reason);
-      }
-      outcome = null;
-    } catch (error) {
-      outcome = {
-        text: `Not previewed: ${error instanceof ApiError ? error.message : "the request failed."}`,
-        cls: "warn",
-      };
-    }
-    previewRunning = false;
+    if (!id || !mine.scene || mine.left) return;
+    mine.previewAgain = false;
+    mine.running = sendPreview(mine, id);
+    await mine.running;
+    mine.running = null;
+    if (!shown(mine)) return;
+    report();
     render();
-    if (previewAgain && !destroyed) void preview();
+    if (mine.previewAgain) void preview();
   }
 
   async function save() {
-    if (busy) return;
-    const id = session();
-    const plan = book.saveBody(id);
+    const mine = scope;
+    if (mine.busy) return;
+    const plan = mine.book.saveBody(session());
     if (!plan) return;
-    busy = "save";
-    outcome = null;
+    mine.busy = "save";
+    mine.outcome = null;
     render();
     try {
-      const answer = await request("PUT", base(), {
-        resource: resource(),
-        key: `save:${device}/${scene}`,
+      const answer = await request("PUT", base(mine), {
+        resource: resource(mine),
+        key: `save:${device}/${mine.scene}`,
         body: plan.body,
       });
       applyAnswer(answer);
       // What was saved leaves the form; what was typed after the click stays.
-      book.saved(plan.committed, plan.body.reset);
+      mine.book.saved(plan.committed, plan.body.reset);
       const notCleared = answer.body?.overlaysNotCleared ?? [];
-      outcome = notCleared.length
+      mine.outcome = notCleared.length
         ? {
             text: `Saved · ${notCleared.length} MQTT ${notCleared.length === 1 ? "overlay" : "overlays"} could not be cleared`,
             cls: "warn",
+            failed: true,
           }
-        : { text: "Saved to config.json", cls: "" };
+        : { text: "Saved to config.json", cls: "", failed: false };
     } catch (error) {
       const message = error instanceof ApiError ? error.message : "The request failed.";
-      outcome = {
+      mine.outcome = {
         text:
           error instanceof ApiError && error.code === "overlay_only_device"
             ? "Not saved: this device is not in config.json. Add it to config.json first."
             : `Not saved: ${message}`,
         cls: "warn",
+        failed: true,
       };
     }
-    busy = null;
+    mine.busy = null;
+    if (!shown(mine)) return;
     render();
-    if (edits.size > 0) void preview();
+    if (mine.book.edits.size > 0) void preview();
   }
 
   async function revert() {
-    if (busy) return;
+    const mine = scope;
+    if (mine.busy) return;
     const id = session();
-    busy = "revert";
-    book.clear();
-    outcome = null;
+    mine.busy = "revert";
+    mine.book.clear();
+    mine.outcome = null;
     render();
     try {
       const answer = await request(
         "DELETE",
-        `${base()}/preview${id ? `?session=${encodeURIComponent(id)}` : ""}`,
-        { resource: resource(), key: `revert:${device}/${scene}` },
+        `${base(mine)}/preview${id ? `?session=${encodeURIComponent(id)}` : ""}`,
+        { resource: resource(mine), key: `revert:${device}/${mine.scene}` },
       );
       applyAnswer(answer);
+      mine.previewFailure = null;
     } catch (error) {
-      outcome = {
+      mine.outcome = {
         text: `Not reverted: ${error instanceof ApiError ? error.message : "the request failed."}`,
         cls: "warn",
+        failed: true,
       };
     }
-    busy = null;
+    mine.busy = null;
+    if (!shown(mine)) return;
+    report();
     render();
   }
 
   async function clearOverlays() {
-    if (busy) return;
-    busy = "clear";
-    outcome = null;
+    const mine = scope;
+    if (mine.busy) return;
+    mine.busy = "clear";
+    mine.outcome = null;
     render();
     try {
-      const answer = await request("DELETE", `${base()}/overlays`, {
-        resource: resource(),
-        key: `clear:${device}/${scene}`,
+      const answer = await request("DELETE", `${base(mine)}/overlays`, {
+        resource: resource(mine),
+        key: `clear:${device}/${mine.scene}`,
       });
       applyAnswer(answer);
       const failed = answer.body?.failed ?? [];
       if (failed.length)
-        outcome = { text: `${failed.length} could not be cleared`, cls: "warn" };
+        mine.outcome = { text: `${failed.length} could not be cleared`, cls: "warn", failed: true };
     } catch (error) {
-      outcome = {
+      mine.outcome = {
         text: `Not cleared: ${error instanceof ApiError ? error.message : "the request failed."}`,
         cls: "warn",
+        failed: true,
       };
     }
-    busy = null;
+    mine.busy = null;
+    if (!shown(mine)) return;
     render();
   }
 
@@ -381,7 +494,7 @@ export function createSettingsForm(host, options) {
   /** Build the rows when the schema changed; values are written by render(). */
   function buildRows() {
     const schema = current?.schema ?? {};
-    const signature = `${scene}|${JSON.stringify(schema)}`;
+    const signature = `${scope.scene}|${JSON.stringify(schema)}`;
     if (signature === schemaSignature) return;
     schemaSignature = signature;
     rows = new Map();
@@ -391,7 +504,9 @@ export function createSettingsForm(host, options) {
           `<div class="grp"><h3>${esc(group)}</h3>${keys.map((key) => rowHtml(key, schema[key])).join("")}</div>`,
       )
       .join("");
-    body.innerHTML = html;
+    // Through setHtml, so its record of what the body shows stays true: the
+    // loading line of the same scene, after a restart, is written again.
+    setHtml(body, html);
     for (const row of body.querySelectorAll("[data-row]")) {
       const key = /** @type {string} */ (row.getAttribute("data-row"));
       const input = /** @type {HTMLElement} */ (row.querySelector("[data-key]"));
@@ -426,6 +541,8 @@ export function createSettingsForm(host, options) {
   function render() {
     if (destroyed) return;
     const frozen = Boolean(context.frozen);
+    const { book, busy, outcome } = scope;
+    const edits = book.edits;
     // Heading
     if (phase === "none") {
       title.textContent = "Settings";
@@ -546,6 +663,11 @@ export function createSettingsForm(host, options) {
     else if (phase === "failed") line = { text: "", cls: "" };
     else if (current && Object.keys(current.schema ?? {}).length === 0)
       line = { text: "This scene has no settings", cls: "" };
+    // Every failure is said beside the action (B-175), also while edits
+    // are unsaved: a failed Save, Revert or Clear, then a failed preview.
+    else if (outcome?.failed) line = outcome;
+    else if (scope.previewFailure)
+      line = { text: `Not previewed: ${scope.previewFailure}`, cls: "warn" };
     else if (jsonError)
       line = {
         text: `${current?.schema?.[jsonError[0]]?.label ?? jsonError[0]} is not valid JSON, so it is not previewed and nothing can be saved yet`,
@@ -581,8 +703,8 @@ export function createSettingsForm(host, options) {
     const input = /** @type {HTMLInputElement} */ (target);
     const raw = input.value ?? "";
     const parsed = parseField(field, raw, input.checked);
-    book.edit(key, raw, parsed);
-    outcome = null;
+    scope.book.edit(key, raw, parsed);
+    if (!scope.outcome?.failed) scope.outcome = null;
     render();
     if (!parsed.error) void preview();
   }
@@ -609,7 +731,7 @@ export function createSettingsForm(host, options) {
         const field = current?.schema?.[key];
         const layer = current?.values?.[key];
         if (!field || !layer) return;
-        book.reset(
+        scope.book.reset(
           key,
           layer.default,
           field.type === "json" ? JSON.stringify(layer.default) : showValue(field, layer.default),
@@ -626,21 +748,31 @@ export function createSettingsForm(host, options) {
   host.addEventListener("click", onClick);
 
   return {
-    setScene(next, name) {
+    /**
+     * The scene the form shows, and the life of the device it belongs to.
+     * Another scene, epoch or incarnation is another scope: what the user
+     * typed for the one before is gone, the preview this page holds of it
+     * ends, and the values are loaded again (finding 2: the store throws
+     * away what it held of the run or the device before; so does the form).
+     */
+    setScene(next, name, life) {
       const label = name ?? next ?? "";
-      if (next === scene) {
+      const epoch = life?.epoch ?? null;
+      const incarnation = Number(life?.incarnation ?? 0);
+      if (next === scope.scene && epoch === scope.epoch && incarnation === scope.incarnation) {
         if (label !== sceneLabel) {
           sceneLabel = label;
           render();
         }
         return;
       }
-      scene = next;
+      void leave(scope);
+      scope = newScope(next, { epoch, incarnation });
       sceneLabel = label;
-      book.clear();
-      outcome = null;
       current = null;
+      loadError = "";
       schemaSignature = "";
+      report();
       if (next === null || next === "") {
         phase = "none";
         render();
@@ -651,7 +783,16 @@ export function createSettingsForm(host, options) {
     },
     update(settingsState, nextContext = {}) {
       context = nextContext;
-      if (scene && !scene.startsWith("builtin:") && settingsState && settingsState.scene === scene) {
+      const scene = scope.scene;
+      const life = Number(settingsState?.incarnation ?? 0);
+      if (
+        scene &&
+        !scene.startsWith("builtin:") &&
+        settingsState &&
+        settingsState.scene === scene &&
+        (scope.epoch === null || settingsState.epoch === scope.epoch) &&
+        (scope.incarnation === 0 || life === 0 || life === scope.incarnation)
+      ) {
         current = settingsState;
         phase = "ready";
       }
@@ -664,22 +805,10 @@ export function createSettingsForm(host, options) {
       host.removeEventListener("click", onClick);
       host.replaceChildren();
     },
-    hasEdits: () => edits.size > 0,
-    async end() {
-      // Leaving the page reverts what this page previewed (approved spec 8).
-      const id = session();
-      if (!scene || scene.startsWith("builtin:") || !id) return;
-      if (edits.size === 0 && !(current?.preview && current.preview.session === id)) return;
-      try {
-        const answer = await request(
-          "DELETE",
-          `${base()}/preview?session=${encodeURIComponent(id)}`,
-          { resource: resource() },
-        );
-        applyAnswer(answer);
-      } catch {
-        // The server ends it 5 s after the page's stream is gone (preview rule 2).
-      }
+    hasEdits: () => scope.book.edits.size > 0,
+    /** Leaving the page ends what it previewed (approved spec 8); scopes left before ended when they were left. */
+    end() {
+      return leave(scope);
     },
   };
 }
