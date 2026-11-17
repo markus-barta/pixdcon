@@ -49,7 +49,7 @@ test("display unplugged: stale after 30 s without a good frame, offline after 2 
   await r.clock.advance(90000); assert.equal(r.health.get("p")?.state, "offline");
   await r.pixoo.setOffline(false);
   r.scheduler.loop("p")?.retryNow();
-  await until(() => r.pixoo.state().frames > 1);
+  await until(() => r.pixoo.state().frames > 1 && r.health.get("p")?.state === "online");
   assert.equal(r.health.get("p")?.state, "online");
 });
 
@@ -450,6 +450,7 @@ test("fake AWTRIX cleanup retries only failed entries, completes the sweep, and 
   await r.clock.advance(AWTRIX_CLEANUP_RETRY_MS - 1);
   assert.ok(r.awtrix.state().apps.old);
   await r.clock.advance(1); await until(() => !r.awtrix.state().apps.old);
+  await driver.probe(); // Queue barrier: the cleanup response must be consumed before rebuilding.
   assert.equal(driver.ready, true); assert.deepEqual(Object.keys(r.awtrix.state().apps), ["pixdcon_u"]);
   const count = r.awtrix.state().requests.length;
   const replacement = createAwtrixDriver(options); t.after(() => replacement.close()); await replacement.init();
@@ -704,6 +705,26 @@ test("shutdown waits for an uncertain OFF in flight before restoring ON and boun
   await hung.clock.advance(2500); assert.deepEqual(await bounded, { clean: false });
   on.resolve(null); await flush();
   assert.equal(hung.mqtt.messages.length, 2); assert.equal(hung.mqtt.listenerCount("connect"), 0);
+});
+
+test("good probes during backoff preserve rejected-frame errors, cycle at ten, and exhaust again without a new OFF", async (t) => {
+  const r = loopRig(t, { deviceError: new DeviceError("frame rejected"), device: { maxPowerCycles: 1, powerCyclePlugin: { topic: "plug" } } });
+  await flush(); await r.clock.advance(64999);
+  assert.equal(r.mqtt.messages.length, 0);
+  assert.equal(r.loop.deviceErrors, 9);
+  await r.clock.advance(1);
+  assert.equal(r.renders(), 10);
+  assert.deepEqual(r.mqtt.messages.map((m) => m.payload), ['{"state":"OFF"}']);
+  await r.clock.advance(10000 + 30000 + 65000);
+  assert.equal(r.loop.status().phase, "exhausted");
+  assert.equal(r.loop.status().powerCycleCount, 1);
+  const frames = r.renders();
+  await r.clock.advance(60000);
+  assert.equal(r.renders(), frames + 1, "the exhausted good probe grants one more round");
+  assert.equal(r.loop.deviceErrors, 1);
+  await r.clock.advance(65000);
+  assert.equal(r.loop.status().phase, "exhausted");
+  assert.equal(r.mqtt.messages.filter((m) => m.payload === '{"state":"OFF"}').length, 1);
 });
 
 test("good probes retry rejected frames without replenishing the exhausted cycle budget", async (t) => {

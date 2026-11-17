@@ -30,7 +30,8 @@
  *  - Built-in activation is checked; failures retry with their own counter
  *    that never triggers a power cycle (D-B04, D-B28). Stop works without a scene (S-34).
  *  - Power cycles used up: phase "exhausted", probing every 60 s, and
- *    a good probe retries rendering without replenishing cycles; only an
+ *    a good probe resets errors and retries rendering without replenishing cycles;
+ *    ordinary backoff probes only end the wait and preserve frame errors. Only an
  *    accepted frame or retryNow() starts the cycle budget over (B-035, S-8).
  *  - An OFF result other than certain error owes ON until QoS-1 confirmation.
  *    Reconnects wake retries; stop keeps trying within its deadline (D-124).
@@ -300,7 +301,6 @@ export class RenderLoop {
       await this.driver.probe();
       if (!this.running) return false;
       this.deps.health.contactOk(this.deps.device.name);
-      this.errors = this.deviceErrors = 0;
       return true;
     } catch (error) {
       if (this.running) this.deps.health.renderFailed(this.deps.device.name, error);
@@ -462,6 +462,7 @@ export class RenderLoop {
               while (this.running && !this.retry && version === this.version) {
                 if (!await this.sleep(LOOP_DEFAULTS.exhaustedProbeMs)) break;
                 if (await this.probe()) {
+                  this.errors = this.deviceErrors = 0;
                   this.reinit = true;
                   this.deps.health.powerCycles(this.deps.device.name, { count: this.cycles, exhausted: false });
                   break;
