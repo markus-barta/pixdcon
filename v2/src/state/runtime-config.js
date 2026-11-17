@@ -86,7 +86,11 @@
 
 import { EventEmitter } from "node:events";
 import { isDeepStrictEqual } from "node:util";
-import { todo } from "../core/todo.js";
+import { NAME_PATTERN, address, validateDevice } from "../config/schema.js";
+import { decideStamp } from "../core/ordering.js";
+import { NotImplementedError } from "../core/todo.js";
+import { freeze, hasDiff } from "../core/values.js";
+import { resolveOutput } from "./precedence.js";
 
 /** @typedef {import("../types.js").EffectiveConfig} EffectiveConfig */
 /** @typedef {import("../types.js").EffectiveDevice} EffectiveDevice */
@@ -195,14 +199,65 @@ export function buildEffectiveConfig(
   mqtt,
   savedAt,
 ) {
-  return todo(
-    "buildEffectiveConfig",
-    config,
-    structural,
-    decide,
-    mqtt,
-    savedAt,
-  );
+  /** @type {ReturnType<typeof buildEffectiveConfig>["rejected"]} */
+  const rejected = [];
+  const blobs = new Map(structural.blobDevices.map((entry) => [entry.name, entry]));
+  const saved = new Map(config.devices.map((entry) => [entry.name, entry]));
+  /** @type {EffectiveDevice[]} */
+  const devices = [];
+  for (const name of new Set([...saved.keys(), ...blobs.keys()])) {
+    const base = saved.get(name);
+    const blob = blobs.get(name);
+    const patch = blob ? overlayDevicePatch(blob).patch : {};
+    let device;
+    let blobKeys = Object.keys(patch);
+    try { device = validateDevice({ ...base, ...patch, name }); }
+    catch (error) {
+      rejected.push({ overlay: "blob", name, problem: String(error) });
+      if (!base) continue;
+      device = base;
+      blobKeys = [];
+    }
+    /** @type {EffectiveDevice["addressSource"]} */
+    let addressSource = blobKeys.includes("ip") ? "blob" : "config";
+    const overlayIp = structural.deviceIps[name];
+    if (Object.hasOwn(structural.deviceIps, name)) {
+      try { device = { ...device, ip: address(overlayIp) }; addressSource = "overlay"; }
+      catch (error) { rejected.push({ overlay: "ip", name, problem: String(error) }); }
+    }
+    const held = structural.deviceHeld.includes(name);
+    const disabled = Object.hasOwn(structural.deviceEnabled, name) && structural.deviceEnabled[name] === false;
+    const enabled = (base?.enabled ?? true) && device.enabled && !disabled && !held;
+    devices.push({
+      name, type: device.type, origin: base ? "config" : "blob",
+      address: device.ip, addressSource,
+      enabled, held,
+      enabledSource: disabled || held && !blobKeys.includes("ip") ? "overlay" : blobKeys.includes("enabled") || held ? "blob" : "config",
+      savedScene: base?.scene ?? null,
+      output: decide({ name, output: base?.output ?? null }),
+      displayName: device.displayName, comment: device.comment,
+      preview: device.preview, minFrameMs: device.minFrameMs,
+      maxPowerCycles: device.maxPowerCycles, powerCyclePlugin: device.powerCyclePlugin,
+      cleanupLegacyApps: device.cleanupLegacyApps, sceneSettings: device.sceneSettings,
+      blobKeys,
+    });
+  }
+  /** @type {Record<string, EffectiveScene>} */
+  const scenes = Object.fromEntries(Object.entries(config.scenes).map(([key, entry]) => [key, { path: entry.path, source: "config" }]));
+  for (const [entries, source] of /** @type {const} */ ([[structural.blobScenes, "blob"], [structural.scenePaths, "overlay"]])) {
+    for (const [key, entry] of Object.entries(entries)) {
+      const path = typeof entry === "string" ? entry : entry?.path;
+      if (!NAME_PATTERN.test(key) || typeof path !== "string" || !path.trim()) {
+        rejected.push({ overlay: source === "blob" ? "blob" : "scene-path", name: key, problem: "Invalid scene path" });
+        continue;
+      }
+      Object.defineProperty(scenes, key, { value: { path: path.trim(), source }, enumerable: true, configurable: true, writable: true });
+    }
+  }
+  return { effective: {
+    savedAt, devices, scenes, mqtt: { ...mqtt },
+    health: { ...config.health }, telemetryIntervalMs: config.telemetryIntervalMs,
+  }, rejected };
 }
 
 /**
@@ -284,6 +339,14 @@ export class RuntimeConfig extends EventEmitter {
   constructor(deps) {
     super();
     this.deps = deps;
+    /** @type {EffectiveConfig|null} */
+    this.effective = null;
+    this.active = false;
+    this.counter = 0;
+    /** @type {Map<string, number>} */
+    this.lives = new Map();
+    /** @type {Array<() => void>} */
+    this.unwire = [];
   }
 
   /**
@@ -293,16 +356,28 @@ export class RuntimeConfig extends EventEmitter {
    * `rev`, and emits "changed" when the diff is not empty.
    */
   start() {
-    return todo("RuntimeConfig.start");
+    if (this.active) return;
+    this.active = true;
+    const rebuild = () => {
+      if (!this.active) return;
+      this.rebuild();
+    };
+    for (const source of [this.deps.config, this.deps.overlays, this.deps.ownership]) {
+      source.on("changed", rebuild);
+      this.unwire.push(() => source.off("changed", rebuild));
+    }
+    this.rebuild();
   }
 
   stop() {
-    return todo("RuntimeConfig.stop");
+    this.active = false;
+    for (const off of this.unwire.splice(0)) off();
   }
 
   /** @returns {EffectiveConfig} frozen */
   get() {
-    return todo("RuntimeConfig.get");
+    if (!this.effective) throw new Error("Runtime config has not started");
+    return this.effective;
   }
 
   /**
@@ -310,12 +385,12 @@ export class RuntimeConfig extends EventEmitter {
    * @returns {EffectiveDevice|undefined} also for a disabled device and for a blob-only device
    */
   device(name) {
-    return todo("RuntimeConfig.device", name);
+    return this.effective?.devices.find((device) => device.name === name);
   }
 
   /** @returns {Record<string, EffectiveScene>} the effective scene registry: config.json, blob scenes, granular paths */
   scenes() {
-    return todo("RuntimeConfig.scenes");
+    return this.effective?.scenes ?? {};
   }
 
   /**
@@ -331,12 +406,12 @@ export class RuntimeConfig extends EventEmitter {
    * @returns {number|undefined} undefined for a name that is not in the effective config
    */
   incarnationOf(name) {
-    return todo("RuntimeConfig.incarnationOf", name);
+    return this.lives.get(name);
   }
 
   /** @returns {number} the highest incarnation handed out so far in this run; 0 before the first device (`Snapshot.incarnations`) */
   incarnations() {
-    return todo("RuntimeConfig.incarnations");
+    return this.counter;
   }
 
   /**
@@ -349,7 +424,9 @@ export class RuntimeConfig extends EventEmitter {
    * @returns {OutputMode}
    */
   outputOf(name) {
-    return todo("RuntimeConfig.outputOf", name);
+    if (!this.active) return "shadow";
+    if (name === null) return this.effective?.devices.some((device) => device.enabled && device.output.mode === "drive") ? "drive" : "shadow";
+    return this.device(name)?.output.mode ?? "shadow";
   }
 
   /**
@@ -362,6 +439,42 @@ export class RuntimeConfig extends EventEmitter {
    * @returns {Record<string, unknown>}
    */
   toV1(sceneOf) {
-    return todo("RuntimeConfig.toV1", sceneOf);
+    return {
+      devices: this.get().devices.filter((device) => device.enabled).map((device) => ({
+        name: device.name, type: device.type, ip: device.address, scene: sceneOf(device.name),
+        displayName: device.displayName, comment: device.comment, preview: device.preview,
+        minFrameMs: device.minFrameMs, maxPowerCycles: device.maxPowerCycles,
+        powerCyclePlugin: device.powerCyclePlugin, cleanupLegacyApps: device.cleanupLegacyApps,
+        sceneSettings: device.sceneSettings,
+      })),
+      scenes: Object.fromEntries(Object.entries(this.scenes()).map(([key, entry]) => [key, { path: entry.path }])),
+    };
+  }
+
+  rebuild() {
+    const { config, overlays, ownership, mqtt, forceShadow, envDefaultOutput, clock } = this.deps;
+    /** @type {import("../types.js").StructuralOverlays} */
+    let structural;
+    try { structural = overlays.structural(); }
+    catch (error) {
+      if (!(error instanceof NotImplementedError)) throw error;
+      structural = { blobDevices: [], blobScenes: {}, scenePaths: {}, deviceIps: {}, deviceEnabled: {}, deviceHeld: [] };
+    }
+    const { effective, rejected } = buildEffectiveConfig(config.get(), structural,
+      (device) => resolveOutput({ forceShadow, deviceOutput: device.output,
+        configDefault: config.get().output.default, envDefault: envDefaultOutput,
+        transition: mqtt.statusBaseTopic !== mqtt.baseTopic, owner: ownership.owner(device.name) }),
+      mqtt, config.file().loadedAt ?? new Date(clock.now()).toISOString());
+    for (const rejection of rejected) this.deps.logger.warn(`[Config] Rejected ${rejection.overlay} for ${rejection.name}: ${rejection.problem}`);
+    const previous = this.effective;
+    const empty = { ...effective, devices: [], scenes: {} };
+    const diff = diffEffectiveConfig(previous ?? empty, effective);
+    if (previous && !hasDiff(diff)) return;
+    const rev = (previous?.rev ?? 0) + 1;
+    if (decideStamp({ source: "effective", position: previous?.rev ?? 0 }, { source: "effective", position: rev }).action !== "apply") return;
+    for (const name of diff.devicesRemoved) this.lives.delete(name);
+    for (const name of diff.devicesAdded) this.lives.set(name, ++this.counter);
+    this.effective = freeze({ ...effective, rev });
+    this.emit("changed", { effective: this.effective, previous: previous ?? freeze({ ...empty, rev: 0 }), diff });
   }
 }

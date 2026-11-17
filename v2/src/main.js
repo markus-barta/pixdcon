@@ -497,6 +497,7 @@ export async function createApp(env = process.env, overrides = {}) {
 
   /** @returns {import("./types.js").ControllerStatus} */
   const controller = () => {
+    checkRestartRequired();
     // Measured as soon as the scheduler and the health model are built. A
     // skeleton is said to be one (`measured: false`) instead of claiming ok.
     const measured = orSkeleton(() => {

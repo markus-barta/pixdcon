@@ -50,7 +50,14 @@
  */
 
 import { EventEmitter } from "node:events";
-import { todo } from "../core/todo.js";
+import { createHash, randomBytes } from "node:crypto";
+import { watch } from "node:fs";
+import { open, readFile, rename } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { ConfigError, HttpError } from "../core/errors.js";
+import { decideStamp } from "../core/ordering.js";
+import { freeze } from "../core/values.js";
+import { diffConfig, parseConfig, serializeConfig, validateConfig, validateDevice } from "./schema.js";
 
 /** @typedef {import("../types.js").Config} Config */
 /** @typedef {import("../types.js").DeviceConfig} DeviceConfig */
@@ -70,6 +77,22 @@ export class ConfigStore extends EventEmitter {
   constructor(options) {
     super();
     this.options = options;
+    this.current = freeze(validateConfig({ devices: [], scenes: {} }).config);
+    /** @type {ConfigFileState} */
+    this.fileState = { path: options.path, rev: 0, valid: false, error: null, loadedAt: null, invalidSince: null, warnings: [] };
+    this.text = "";
+    this.ownHash = "";
+    this.appliedHash = "";
+    this.tail = Promise.resolve();
+    this.stopped = false;
+    this.watching = false;
+    this.life = 0;
+    /** @type {import("node:fs").FSWatcher|null} */
+    this.watcher = null;
+    /** @type {{cancel: () => void}|null} */
+    this.poll = null;
+    /** @type {AbortController|null} */
+    this.debounce = null;
   }
 
   /**
@@ -80,22 +103,22 @@ export class ConfigStore extends EventEmitter {
    * @returns {Promise<ConfigFileState>}
    */
   async load() {
-    return todo("ConfigStore.load");
+    return this.enqueue(() => this.read("startup"));
   }
 
   /** @returns {Config} the running config: the last valid one, frozen */
   get() {
-    return todo("ConfigStore.get");
+    return this.current;
   }
 
   /** @returns {string} directory of config.json; scene paths resolve against it (A-055) */
   baseDir() {
-    return todo("ConfigStore.baseDir");
+    return dirname(this.options.path);
   }
 
   /** @returns {ConfigFileState} */
   file() {
-    return todo("ConfigStore.file");
+    return freeze(structuredClone(this.fileState));
   }
 
   /**
@@ -104,7 +127,10 @@ export class ConfigStore extends EventEmitter {
    * @returns {Promise<{text: string, state: ConfigFileState}>}
    */
   async readRaw() {
-    return todo("ConfigStore.readRaw");
+    return this.enqueue(async () => {
+      await this.read("file");
+      return { text: this.text, state: this.file() };
+    });
   }
 
   /**
@@ -118,7 +144,12 @@ export class ConfigStore extends EventEmitter {
    * @throws {import("../core/errors.js").HttpError} 404 unknown_device (also for a device that exists only in the blob overlay), 409 config_invalid (file on disk unusable), 400 invalid_config (result would be invalid)
    */
   async updateDevice(deviceName, mutate) {
-    return todo("ConfigStore.updateDevice", deviceName, mutate);
+    return this.update((raw) => {
+      const devices = /** @type {Record<string, unknown>[]} */ (raw.devices);
+      const device = devices.find((item) => item.name === deviceName);
+      if (!device) throw new HttpError(404, "unknown_device", `Unknown device: ${deviceName}`);
+      mutate(device);
+    });
   }
 
   /**
@@ -129,7 +160,7 @@ export class ConfigStore extends EventEmitter {
    * @throws {import("../core/errors.js").HttpError} 400 invalid field, 409 duplicate name or config_invalid
    */
   async addDevice(device) {
-    return todo("ConfigStore.addDevice", device);
+    return this.adoptDevice(device);
   }
 
   /**
@@ -145,7 +176,12 @@ export class ConfigStore extends EventEmitter {
    * @throws {import("../core/errors.js").HttpError} 400 invalid field, 409 duplicate name or config_invalid
    */
   async adoptDevice(identity, choice) {
-    return todo("ConfigStore.adoptDevice", identity, choice);
+    const device = validateDevice(identity);
+    return this.update((raw) => {
+      const devices = /** @type {Record<string, unknown>[]} */ (raw.devices);
+      if (devices.some((item) => item.name === device.name)) throw new HttpError(409, "duplicate_name", `Device already exists: ${device.name}`);
+      devices.push({ name: device.name, type: device.type, ip: device.ip, ...structuredClone(choice ?? {}) });
+    });
   }
 
   /**
@@ -155,7 +191,21 @@ export class ConfigStore extends EventEmitter {
    * @returns {Promise<{config: Config, diff: ConfigDiff}>}
    */
   async update(mutate) {
-    return todo("ConfigStore.update", mutate);
+    return this.enqueue(async () => {
+      // Reads and writes share the lane: a read begun before a write can
+      // never finish over that write. Re-read here for an outside edit that
+      // has not yet produced a watch event.
+      await this.read("file");
+      if (!this.fileState.valid) throw new HttpError(409, "config_invalid", "Repair config.json before saving");
+      const raw = /** @type {Record<string, unknown>} */ (JSON.parse(this.text));
+      mutate(raw);
+      try { validateConfig(raw); }
+      catch (error) {
+        if (error instanceof ConfigError) throw new HttpError(400, "invalid_config", error.message, { path: error.path });
+        throw error;
+      }
+      return this.write(serializeConfig(raw));
+    });
   }
 
   /**
@@ -166,7 +216,11 @@ export class ConfigStore extends EventEmitter {
    * @throws {import("../core/errors.js").ConfigError} with line and column; nothing is written
    */
   async replaceRaw(text) {
-    return todo("ConfigStore.replaceRaw", text);
+    parseConfig(text);
+    return this.enqueue(async () => {
+      await this.read("file");
+      return this.write(serializeConfig(JSON.parse(text)));
+    });
   }
 
   /**
@@ -175,7 +229,7 @@ export class ConfigStore extends EventEmitter {
    * @returns {Promise<ConfigFileState>}
    */
   async reload() {
-    return todo("ConfigStore.reload");
+    return this.enqueue(() => this.read("file"));
   }
 
   /**
@@ -185,11 +239,121 @@ export class ConfigStore extends EventEmitter {
    * @returns {Promise<void>}
    */
   async start() {
-    return todo("ConfigStore.start");
+    if (this.watching || this.stopped) return;
+    this.watching = true;
+    const life = ++this.life;
+    const current = () => decideStamp({ source: this.life }, { source: life }).action === "apply" && !this.stopped;
+    const hint = () => {
+      if (!current()) return;
+      this.debounce?.abort();
+      const mine = this.debounce = new AbortController();
+      void this.options.clock.sleep(this.options.debounceMs ?? 500, mine.signal).then(async (elapsed) => {
+        if (!current() || !elapsed || mine.signal.aborted) return;
+        await this.reload();
+      }).catch((error) => this.options.logger.error("[Config] Reload failed", error));
+    };
+    try {
+      this.watcher = watch(this.baseDir(), (_event, file) => {
+        if (!current()) return;
+        if (file === null || String(file) === basename(this.options.path)) hint();
+      });
+      this.watcher.on("error", (error) => {
+        if (!current()) return;
+        this.options.logger.warn(`[Config] Watch failed; polling: ${error.message}`);
+        this.watcher?.close();
+        this.watcher = null;
+      });
+      this.watcher.unref();
+    } catch (error) {
+      this.options.logger.warn(`[Config] Watch unavailable; polling: ${String(error)}`);
+    }
+    // Polling also catches an inode replacement or a lost native event.
+    this.poll = this.options.clock.every(() => {
+      if (!current()) return;
+      void this.reload().catch((error) => this.options.logger.error("[Config] Poll failed", error));
+    }, 1000);
   }
 
   /** Stop watching, finish a write in flight. Safe to call twice (A-065). */
   async stop() {
-    return todo("ConfigStore.stop");
+    this.stopped = true;
+    this.life += 1;
+    this.debounce?.abort();
+    this.poll?.cancel();
+    this.watcher?.close();
+    this.watcher = null;
+    await this.tail;
+  }
+
+  /** @template T @param {() => Promise<T>} work @returns {Promise<T>} */
+  enqueue(work) {
+    const result = this.tail.then(() => {
+      if (this.stopped) throw new HttpError(503, "stopping", "Config store is stopped");
+      return work();
+    });
+    this.tail = result.then(() => {}, () => {});
+    return result;
+  }
+
+  /** @param {"startup"|"file"} origin @returns {Promise<ConfigFileState>} */
+  async read(origin) {
+    try {
+      const text = await readFile(this.options.path, "utf8");
+      if (this.stopped) return this.file();
+      this.text = text;
+      const hash = digest(text);
+      if (hash === this.appliedHash && this.fileState.valid) return this.file();
+      const { config, warnings } = parseConfig(text);
+      this.accept(text, config, warnings, origin);
+    } catch (error) {
+      if (this.stopped) return this.file();
+      const message = error instanceof Error ? error.message : String(error);
+      this.fileState = { ...this.fileState, valid: false,
+        invalidSince: this.fileState.invalidSince ?? new Date(this.options.clock.now()).toISOString(),
+        error: { message, line: error instanceof ConfigError ? error.line : null, column: error instanceof ConfigError ? error.column : null } };
+      this.emit("file", this.file());
+    }
+    return this.file();
+  }
+
+  /** @param {string} text @param {Config} config @param {string[]} warnings @param {"startup"|"file"|"api"} origin */
+  accept(text, config, warnings, origin) {
+    const previous = this.current;
+    const changed = digest(text) !== this.appliedHash;
+    this.text = text;
+    this.appliedHash = digest(text);
+    this.current = freeze(config);
+    this.fileState = { ...this.fileState, valid: true, error: null, invalidSince: null, warnings,
+      rev: this.fileState.rev + (changed ? 1 : 0), loadedAt: new Date(this.options.clock.now()).toISOString() };
+    if (changed) this.emit("changed", { config: this.current, previous, diff: diffConfig(previous, config), origin, rev: this.fileState.rev });
+    this.emit("file", this.file());
+  }
+
+  /** @param {string} text @returns {Promise<{config: Config, diff: ConfigDiff}>} */
+  async write(text) {
+    const { config, warnings } = parseConfig(text);
+    const previous = this.current;
+    const unique = randomBytes(6).toString("hex");
+    const temp = join(this.baseDir(), `.${basename(this.options.path)}.${unique}.tmp`);
+    if (this.text) {
+      const backup = await open(`${temp}.bak`, "wx", 0o600);
+      try { await backup.writeFile(this.text); await backup.sync(); }
+      finally { await backup.close(); }
+      await rename(`${temp}.bak`, `${this.options.path}.bak`);
+    }
+    const file = await open(temp, "wx", 0o600);
+    try { await file.writeFile(text); await file.sync(); }
+    finally { await file.close(); }
+    await rename(temp, this.options.path);
+    const dir = await open(this.baseDir(), "r");
+    try { await dir.sync(); } finally { await dir.close(); }
+    this.ownHash = digest(text);
+    // An admitted write finishes before stop returns. It is applied here,
+    // never again by the file watcher (appliedHash is the own-write fence).
+    this.accept(text, config, warnings, "api");
+    return { config: this.current, diff: diffConfig(previous, config) };
   }
 }
+
+/** @param {string} text @returns {string} */
+function digest(text) { return createHash("sha256").update(text).digest("hex"); }

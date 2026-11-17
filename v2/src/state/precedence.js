@@ -61,8 +61,6 @@
  * Owner: core/state worker.
  */
 
-import { todo } from "../core/todo.js";
-
 /** @typedef {import("../types.js").OverlayRecord} OverlayRecord */
 /** @typedef {import("../types.js").SceneResolution} SceneResolution */
 /** @typedef {import("../types.js").SettingField} SettingField */
@@ -240,7 +238,18 @@ export function resolveBlobWriter(inputs) {
  * @returns {SettingValue}
  */
 export function resolveSetting(field, layers) {
-  return todo("precedence.resolveSetting", field, layers);
+  const fallback = normalizeSettingValue(undefined, field);
+  /** @type {SettingValue} */
+  const result = { default: fallback, effective: fallback, source: "default" };
+  for (const source of /** @type {const} */ (["saved", "overlay", "preview"])) {
+    if (!Object.hasOwn(layers, source)) continue;
+    const value = normalizeSettingValue(layers[source], field);
+    if (value === undefined) continue;
+    result[source] = value;
+    result.effective = value;
+    result.source = source;
+  }
+  return result;
 }
 
 /**
@@ -253,7 +262,43 @@ export function resolveSetting(field, layers) {
  * @returns {unknown}
  */
 export function normalizeSettingValue(raw, field) {
-  return todo("precedence.normalizeSettingValue", raw, field);
+  if (raw === undefined) return structuredClone(field.default);
+  switch (field.type) {
+    case "int":
+    case "float": {
+      if (typeof raw !== "number" && typeof raw !== "string") return undefined;
+      if (typeof raw === "string" && !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(raw.trim())) return undefined;
+      const number = Number(raw);
+      if (!Number.isFinite(number)) return undefined;
+      let value = field.type === "int" ? Math.trunc(number) : number;
+      if (typeof field.min === "number") value = Math.max(field.min, value);
+      if (typeof field.max === "number") value = Math.min(field.max, value);
+      return value;
+    }
+    case "boolean": {
+      if (typeof raw === "boolean") return raw;
+      const text = String(raw).trim().toLowerCase();
+      if (["true", "1", "yes", "on"].includes(text)) return true;
+      if (["false", "0", "no", "off"].includes(text)) return false;
+      return undefined;
+    }
+    case "enum": {
+      const value = String(raw).trim();
+      return (field.options ?? []).some((option) => String(typeof option === "object" ? option.value : option) === value) ? value : undefined;
+    }
+    case "time": {
+      const value = String(raw).trim();
+      if (!/^\d{2}:\d{2}$/.test(value)) return undefined;
+      const [hour, minute] = value.split(":").map(Number);
+      return hour < 24 && minute < 60 ? value : undefined;
+    }
+    case "json":
+      try { return typeof raw === "object" && raw !== null ? structuredClone(raw) : JSON.parse(String(raw)); }
+      catch { return undefined; }
+    case "color":
+    case "string":
+    default: return String(raw).trim();
+  }
 }
 
 /**
@@ -263,7 +308,9 @@ export function normalizeSettingValue(raw, field) {
  * @returns {{value: string, source: "config"|"blob"|"overlay"}}
  */
 export function resolveAddress(configIp, blobIp, overlayIp) {
-  return todo("precedence.resolveAddress", configIp, blobIp, overlayIp);
+  if (overlayIp !== null) return { value: overlayIp, source: "overlay" };
+  if (blobIp !== null) return { value: blobIp, source: "blob" };
+  return { value: configIp, source: "config" };
 }
 
 /**
@@ -275,5 +322,6 @@ export function resolveAddress(configIp, blobIp, overlayIp) {
  * @returns {number}
  */
 export function percentToNative(percent, type) {
-  return todo("precedence.percentToNative", percent, type);
+  const value = Math.max(1, Math.min(100, Number.isFinite(percent) ? percent : 1));
+  return Math.round(type === "ulanzi" ? value * 255 / 100 : value);
 }

@@ -2,134 +2,124 @@
   "owner": "W1",
   "rows": [
     {
-      "site": "src/main.js:211",
-      "id": "work:config.load#1",
-      "input": "config.json as read when the process starts",
-      "metadata": "config revision 1; nothing is built from its content before the read resolved",
-      "fence": "createApp awaits the load before the MQTT namespace, the last will and the gateway are built",
-      "test": "test/contract/composition.test.js: namespace: an invalid config.json at start leaves MQTT off for the run"
+      "site": "src/config/config-store.js:250",
+      "id": "timer:this.options.clock.sleep#1",
+      "input": "file event, timer, or admission of a config read/write",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/main.js:447",
-      "id": "work:scenes.refresh#1",
-      "input": "a changed scene file: its metadata is read again, then the instances of its scenes are replaced",
-      "metadata": "position in the registry lane; the keys of the file are read inside the piece; the lane's signal, handed to the registry call",
-      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for. At shutdown the lane is closed and its signal aborted: the registry commits nothing of an import that comes back after that",
-      "test": "test/contract/ordering.test.js: F9: a scene map change that arrives during the first load"
+      "site": "src/config/config-store.js:250",
+      "id": "then:this.options.clock.sleep().then#1",
+      "input": "file event, timer, or admission of a config read/write",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/main.js:452",
-      "id": "work:sceneRuntime.invalidate#1",
-      "input": "a changed scene file: its metadata is read again, then the instances of its scenes are replaced",
-      "metadata": "position in the registry lane; the keys of the file are read inside the piece",
-      "fence": "createLane runThen (core/ordering.js): the second step of a piece; it is not called when the lane was closed while the import ran",
-      "test": "test/contract/ordering.test.js: N7: closing the lane aborts its signal"
+      "site": "src/config/config-store.js:252",
+      "id": "work:this.reload#1",
+      "input": "file event, timer, or admission of a config read/write",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/main.js:582",
-      "id": "route:server.route#1",
-      "input": "an HTTP request for the controller health (GET /api/health)",
-      "metadata": "none: a question",
+      "site": "src/config/config-store.js:253",
+      "id": "then:this.options.clock.sleep().then().catch#1",
+      "input": "completion of a file operation or failure of a queued read",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
       "fence": "none",
-      "test": "test/contract/http-api.test.js: HTTP: every JSON answer says where it stands",
-      "why": "answers from the state of that moment and changes nothing; the answer carries X-Pixdcon-Position"
+      "test": "test/contract/composition.test.js: config store order:",
+      "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
     },
     {
-      "site": "src/main.js:625",
-      "id": "work:live.publish#1",
-      "input": "nothing arrives here: the controller status goes out to the pages",
-      "metadata": "none",
+      "site": "src/config/config-store.js:256",
+      "id": "watch:watch#1",
+      "input": "file event, timer, or admission of a config read/write",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "test": "test/contract/composition.test.js: config store order:",
+      "was": "ConfigStore.start"
+    },
+    {
+      "site": "src/config/config-store.js:260",
+      "id": "listener:this.watcher.on(\"error\")#1",
+      "input": "file event, timer, or admission of a config read/write",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "test": "test/contract/composition.test.js: config store order:"
+    },
+    {
+      "site": "src/config/config-store.js:271",
+      "id": "timer:this.options.clock.every#1",
+      "input": "file event, timer, or admission of a config read/write",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "test": "test/contract/composition.test.js: config store order:"
+    },
+    {
+      "site": "src/config/config-store.js:273",
+      "id": "work:this.reload#2",
+      "input": "file event, timer, or admission of a config read/write",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "test": "test/contract/composition.test.js: config store order:"
+    },
+    {
+      "site": "src/config/config-store.js:273",
+      "id": "then:this.reload().catch#1",
+      "input": "completion of a file operation or failure of a queued read",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
       "fence": "none",
-      "test": "test/contract/composition.test.js: controller health: the measured status and its reasons are in the snapshot",
-      "why": "not an input: LiveChannel.publish is a synchronous fan-out and returns its seq"
+      "test": "test/contract/composition.test.js: config store order:",
+      "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
     },
     {
-      "site": "src/main.js:670",
-      "id": "work:scenes.sync#1",
-      "input": "a change of the effective scene map: keys added, removed or pointed to another file",
-      "metadata": "position in the registry lane; the registry reads the effective map when the piece runs; the lane's signal, handed to the registry call",
-      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for. At shutdown the lane is closed and its signal aborted: the registry commits nothing of an import that comes back after that",
-      "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
+      "site": "src/config/config-store.js:290",
+      "id": "then:this.tail.then#1",
+      "input": "file event, timer, or admission of a config read/write",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "test": "test/contract/composition.test.js: config store order:",
+      "was": "ConfigStore.load"
     },
     {
-      "site": "src/main.js:679",
-      "id": "work:sceneRuntime.invalidate#2",
-      "input": "a change of the effective scene map: keys added, removed or pointed to another file",
-      "metadata": "position in the registry lane; the registry reads the effective map when the piece runs",
-      "fence": "createLane runThen (core/ordering.js): the second step of a piece; it is not called when the lane was closed while the import ran",
-      "test": "test/contract/ordering.test.js: N7: closing the lane aborts its signal"
+      "site": "src/config/config-store.js:294",
+      "id": "then:result.then#1",
+      "input": "completion of a file operation or failure of a queued read",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "none",
+      "test": "test/contract/composition.test.js: config store order:",
+      "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
     },
     {
-      "site": "src/main.js:733",
-      "id": "listener:runtime.on(\"changed\")#1",
-      "input": "the runtime config's changed event, with its diff",
-      "metadata": "effective rev; only a diff that names scenes leads to work",
-      "fence": "queued into the registry lane, never run in place: createLane (core/ordering.js): one piece at a time, in the order it was asked for",
-      "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
+      "site": "src/config/config-store.js:340",
+      "id": "work:backup.sync#1",
+      "input": "completion of a file operation or failure of a queued read",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "none",
+      "test": "test/contract/composition.test.js: config store order:",
+      "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
     },
     {
-      "site": "src/main.js:746",
-      "id": "work:scenes.load#1",
-      "input": "the first load of every registered scene",
-      "metadata": "position 1 in the registry lane; the lane's signal, handed to the registry call",
-      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for; the lane is drained before settings, state and scheduler start. At shutdown the lane is closed and its signal aborted: the registry commits nothing of an import that comes back after that",
-      "test": "test/contract/ordering.test.js: F9: a scene map change that arrives during the first load"
+      "site": "src/config/config-store.js:345",
+      "id": "work:file.sync#1",
+      "input": "completion of a file operation or failure of a queued read",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "none",
+      "test": "test/contract/composition.test.js: config store order:",
+      "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
     },
     {
-      "site": "src/main.js:762",
-      "id": "timer:clock.every#1",
-      "input": "the 1 s tick of the controller status",
-      "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
-      "fence": "the status is computed from measured inputs (HealthModel.controller) and goes to the pages only when it differs; the tick decides when it is looked at",
-      "test": "test/contract/composition.test.js: controller health: the measured status and its reasons are in the snapshot"
-    },
-    {
-      "site": "src/main.js:792",
-      "id": "timer:clock.sleep#1",
-      "input": "the 2 s limit for scene work that still runs at shutdown",
-      "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
-      "fence": "conservative side: shutdown goes on. The wait is not the fence: the lane is closed before it, which aborts the signal of the piece that runs",
-      "test": "test/contract/composition.test.js: N7 shutdown: a scene import that is still running"
-    },
-    {
-      "site": "src/main.js:823",
-      "id": "timer:setTimeout#1",
-      "input": "the 8 s limit for the whole shutdown",
-      "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
-      "fence": "conservative side: the process exits",
-      "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
-    },
-    {
-      "site": "src/main.js:837",
-      "id": "listener:process.on(\"SIGINT\")#1",
-      "input": "SIGINT of the process",
-      "metadata": "none; the first one wins",
-      "fence": "shutdown() runs once (the exiting flag): a second signal or error is dropped",
-      "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
-    },
-    {
-      "site": "src/main.js:838",
-      "id": "listener:process.on(\"SIGTERM\")#1",
-      "input": "SIGTERM of the process",
-      "metadata": "none; the first one wins",
-      "fence": "shutdown() runs once (the exiting flag): a second signal or error is dropped",
-      "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
-    },
-    {
-      "site": "src/main.js:839",
-      "id": "listener:process.on(\"uncaughtException\")#1",
-      "input": "uncaughtException of the process",
-      "metadata": "none; the first one wins",
-      "fence": "shutdown() runs once (the exiting flag): a second signal or error is dropped",
-      "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
-    },
-    {
-      "site": "src/main.js:843",
-      "id": "listener:process.on(\"unhandledRejection\")#1",
-      "input": "unhandledRejection of the process",
-      "metadata": "none; the first one wins",
-      "fence": "shutdown() runs once (the exiting flag): a second signal or error is dropped",
-      "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
+      "site": "src/config/config-store.js:349",
+      "id": "work:dir.sync#1",
+      "input": "completion of a file operation or failure of a queued read",
+      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "fence": "none",
+      "test": "test/contract/composition.test.js: config store order:",
+      "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
     },
     {
       "site": "src/core/clock.js:20",
@@ -194,76 +184,134 @@
       "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
-      "site": "src/state/v1-ownership.js:219",
-      "id": "subscribe:mqtt.subscribe#1",
-      "input": "v1's device list on <baseTopic>/config/effective, as a retained replay and live",
-      "metadata": "connection number, retain flag as delivered",
-      "fence": "reduceOwnership (state/v1-ownership.js): a message of an older connection and a replay after a live list are dropped; only a list that passed releases a device",
-      "test": "test/contract/ordering.test.js: F3: v1's empty list is held back as a replay"
+      "site": "src/main.js:211",
+      "id": "work:config.load#1",
+      "input": "config.json as read when the process starts",
+      "metadata": "config revision 1; nothing is built from its content before the read resolved",
+      "fence": "createApp awaits the load before the MQTT namespace, the last will and the gateway are built",
+      "test": "test/contract/composition.test.js: namespace: an invalid config.json at start leaves MQTT off for the run"
     },
     {
-      "site": "src/config/config-store.js:83",
-      "id": "contract:ConfigStore.load",
-      "input": "config.json read from disk at start",
-      "metadata": "config revision: the first content the store applies",
-      "fence": "config-store.js Order: a content is applied with the next revision; a file that cannot be used applies nothing",
-      "test": "test/contract/composition.test.js: config store order: an own write is not an outside edit"
+      "site": "src/main.js:447",
+      "id": "work:scenes.refresh#1",
+      "input": "a changed scene file: its metadata is read again, then the instances of its scenes are replaced",
+      "metadata": "position in the registry lane; the keys of the file are read inside the piece; the lane's signal, handed to the registry call",
+      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for. At shutdown the lane is closed and its signal aborted: the registry commits nothing of an import that comes back after that",
+      "test": "test/contract/ordering.test.js: F9: a scene map change that arrives during the first load"
     },
     {
-      "site": "src/config/config-store.js:121",
-      "id": "contract:ConfigStore.updateDevice",
-      "input": "a write command (API request, or the state store saving a choice)",
-      "metadata": "position in the store's write lane; the content the write is made on",
-      "fence": "config-store.js Order: writes are one lane, each on the content the previous one left",
-      "test": "test/contract/overlay-rules.test.js: save rule 2: PATCH device, PUT scene and PUT settings change one device entry"
+      "site": "src/main.js:452",
+      "id": "work:sceneRuntime.invalidate#1",
+      "input": "a changed scene file: its metadata is read again, then the instances of its scenes are replaced",
+      "metadata": "position in the registry lane; the keys of the file are read inside the piece",
+      "fence": "createLane runThen (core/ordering.js): the second step of a piece; it is not called when the lane was closed while the import ran",
+      "test": "test/contract/ordering.test.js: N7: closing the lane aborts its signal"
     },
     {
-      "site": "src/config/config-store.js:132",
-      "id": "contract:ConfigStore.addDevice",
-      "input": "a write command (API request, or the state store saving a choice)",
-      "metadata": "position in the store's write lane; the content the write is made on",
-      "fence": "config-store.js Order: writes are one lane, each on the content the previous one left",
-      "test": "test/contract/overlay-rules.test.js: save rule 2: PATCH device, PUT scene and PUT settings change one device entry"
+      "site": "src/main.js:583",
+      "id": "route:server.route#1",
+      "input": "an HTTP request for the controller health (GET /api/health)",
+      "metadata": "none: a question",
+      "fence": "none",
+      "test": "test/contract/http-api.test.js: HTTP: every JSON answer says where it stands",
+      "why": "answers from the state of that moment and changes nothing; the answer carries X-Pixdcon-Position"
     },
     {
-      "site": "src/config/config-store.js:148",
-      "id": "contract:ConfigStore.adoptDevice",
-      "input": "a write command (API request, or the state store saving a choice)",
-      "metadata": "position in the store's write lane; the content the write is made on",
-      "fence": "config-store.js Order: writes are one lane, each on the content the previous one left",
-      "test": "test/contract/overlay-rules.test.js: save rule 2: PATCH device, PUT scene and PUT settings change one device entry"
+      "site": "src/main.js:626",
+      "id": "work:live.publish#1",
+      "input": "nothing arrives here: the controller status goes out to the pages",
+      "metadata": "none",
+      "fence": "none",
+      "test": "test/contract/composition.test.js: controller health: the measured status and its reasons are in the snapshot",
+      "why": "not an input: LiveChannel.publish is a synchronous fan-out and returns its seq"
     },
     {
-      "site": "src/config/config-store.js:158",
-      "id": "contract:ConfigStore.update",
-      "input": "a write command (API request, or the state store saving a choice)",
-      "metadata": "position in the store's write lane; the content the write is made on",
-      "fence": "config-store.js Order: writes are one lane, each on the content the previous one left",
-      "test": "test/contract/overlay-rules.test.js: save rule 2: PATCH device, PUT scene and PUT settings change one device entry"
+      "site": "src/main.js:671",
+      "id": "work:scenes.sync#1",
+      "input": "a change of the effective scene map: keys added, removed or pointed to another file",
+      "metadata": "position in the registry lane; the registry reads the effective map when the piece runs; the lane's signal, handed to the registry call",
+      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for. At shutdown the lane is closed and its signal aborted: the registry commits nothing of an import that comes back after that",
+      "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
-      "site": "src/config/config-store.js:169",
-      "id": "contract:ConfigStore.replaceRaw",
-      "input": "a write command (API request, or the state store saving a choice)",
-      "metadata": "position in the store's write lane; the content the write is made on",
-      "fence": "config-store.js Order: writes are one lane, each on the content the previous one left",
-      "test": "test/contract/overlay-rules.test.js: save rule 2: PATCH device, PUT scene and PUT settings change one device entry"
+      "site": "src/main.js:680",
+      "id": "work:sceneRuntime.invalidate#2",
+      "input": "a change of the effective scene map: keys added, removed or pointed to another file",
+      "metadata": "position in the registry lane; the registry reads the effective map when the piece runs",
+      "fence": "createLane runThen (core/ordering.js): the second step of a piece; it is not called when the lane was closed while the import ran",
+      "test": "test/contract/ordering.test.js: N7: closing the lane aborts its signal"
     },
     {
-      "site": "src/config/config-store.js:178",
-      "id": "contract:ConfigStore.reload",
-      "input": "config.json read again on request ('Reload from disk')",
-      "metadata": "config revision; content hash",
-      "fence": "config-store.js Order: a read that began before a write of this process finished is dropped and repeated",
-      "test": "test/contract/composition.test.js: config store order: an own write is not an outside edit"
+      "site": "src/main.js:734",
+      "id": "listener:runtime.on(\"changed\")#1",
+      "input": "the runtime config's changed event, with its diff",
+      "metadata": "effective rev; only a diff that names scenes leads to work",
+      "fence": "queued into the registry lane, never run in place: createLane (core/ordering.js): one piece at a time, in the order it was asked for",
+      "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
-      "site": "src/config/config-store.js:188",
-      "id": "contract:ConfigStore.start",
-      "input": "file events of the data directory, the 500 ms debounce, the polling fallback",
-      "metadata": "none for the event and the timers: they are hints; the content that is then read carries its hash",
-      "fence": "config-store.js Order: an event only schedules a read; content with the hash of the own last write is dropped; a stale read is dropped and repeated",
-      "test": "test/contract/composition.test.js: config store order: an own write is not an outside edit"
+      "site": "src/main.js:747",
+      "id": "work:scenes.load#1",
+      "input": "the first load of every registered scene",
+      "metadata": "position 1 in the registry lane; the lane's signal, handed to the registry call",
+      "fence": "createLane (core/ordering.js): one piece at a time, in the order it was asked for; the lane is drained before settings, state and scheduler start. At shutdown the lane is closed and its signal aborted: the registry commits nothing of an import that comes back after that",
+      "test": "test/contract/ordering.test.js: F9: a scene map change that arrives during the first load"
+    },
+    {
+      "site": "src/main.js:763",
+      "id": "timer:clock.every#1",
+      "input": "the 1 s tick of the controller status",
+      "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
+      "fence": "the status is computed from measured inputs (HealthModel.controller) and goes to the pages only when it differs; the tick decides when it is looked at",
+      "test": "test/contract/composition.test.js: controller health: the measured status and its reasons are in the snapshot"
+    },
+    {
+      "site": "src/main.js:793",
+      "id": "timer:clock.sleep#1",
+      "input": "the 2 s limit for scene work that still runs at shutdown",
+      "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
+      "fence": "conservative side: shutdown goes on. The wait is not the fence: the lane is closed before it, which aborts the signal of the piece that runs",
+      "test": "test/contract/composition.test.js: N7 shutdown: a scene import that is still running"
+    },
+    {
+      "site": "src/main.js:824",
+      "id": "timer:setTimeout#1",
+      "input": "the 8 s limit for the whole shutdown",
+      "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
+      "fence": "conservative side: the process exits",
+      "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
+    },
+    {
+      "site": "src/main.js:838",
+      "id": "listener:process.on(\"SIGINT\")#1",
+      "input": "SIGINT of the process",
+      "metadata": "none; the first one wins",
+      "fence": "shutdown() runs once (the exiting flag): a second signal or error is dropped",
+      "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
+    },
+    {
+      "site": "src/main.js:839",
+      "id": "listener:process.on(\"SIGTERM\")#1",
+      "input": "SIGTERM of the process",
+      "metadata": "none; the first one wins",
+      "fence": "shutdown() runs once (the exiting flag): a second signal or error is dropped",
+      "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
+    },
+    {
+      "site": "src/main.js:840",
+      "id": "listener:process.on(\"uncaughtException\")#1",
+      "input": "uncaughtException of the process",
+      "metadata": "none; the first one wins",
+      "fence": "shutdown() runs once (the exiting flag): a second signal or error is dropped",
+      "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
+    },
+    {
+      "site": "src/main.js:844",
+      "id": "listener:process.on(\"unhandledRejection\")#1",
+      "input": "unhandledRejection of the process",
+      "metadata": "none; the first one wins",
+      "fence": "shutdown() runs once (the exiting flag): a second signal or error is dropped",
+      "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:161",
@@ -378,86 +426,6 @@
       "test": "test/contract/ordering.test.js: topic fence: an own write that echoes back after a newer own write"
     },
     {
-      "site": "src/state/runtime-config.js:296",
-      "id": "contract:RuntimeConfig.start",
-      "input": "the changed events of the config store, the overlay service and the ownership feed",
-      "metadata": "none needed: each event only says 'build again'; the build reads all three sources as they are then and raises rev",
-      "fence": "runtime-config.js Order: a pure build per event; the result carries the effective rev",
-      "test": "test/contract/composition.test.js: effective revision:"
-    },
-    {
-      "site": "src/state/state-store.js:115",
-      "id": "contract:StateStore.start",
-      "input": "runtime changed with its diff (devices, saved choice, output), overlay changed, overlay suppression, registry changed",
-      "metadata": "effective rev; generation of the suppression that ended",
-      "fence": "state-store.js Order: decideStamp on the effective rev; a suppression is removed from config.json by its generation",
-      "test": "test/contract/composition.test.js: effective revision:"
-    },
-    {
-      "site": "src/state/state-store.js:182",
-      "id": "contract:StateStore.chooseScene",
-      "input": "a scene choice of the user (API request)",
-      "metadata": "position in the device's command queue; the choice generation it creates",
-      "fence": "one command at a time per device; planSupersede, one atomic save, applySupersede, in that order",
-      "test": "test/contract/overlay-rules.test.js: overlay rule 5: a UI choice with an unconfirmed clear survives a restart"
-    },
-    {
-      "site": "src/state/state-store.js:197",
-      "id": "contract:StateStore.adoptDevice",
-      "input": "a command of the user (API request)",
-      "metadata": "position in the device's command queue",
-      "fence": "one command at a time per device, in the order they arrived; another device never waits",
-      "test": "test/contract/http-api.test.js: requests in order:"
-    },
-    {
-      "site": "src/state/state-store.js:208",
-      "id": "contract:StateStore.clearSceneOverlay",
-      "input": "a command of the user (API request)",
-      "metadata": "position in the device's command queue",
-      "fence": "one command at a time per device, in the order they arrived; another device never waits",
-      "test": "test/contract/http-api.test.js: requests in order:"
-    },
-    {
-      "site": "src/state/state-store.js:222",
-      "id": "contract:StateStore.setMode",
-      "input": "a command of the user (API request)",
-      "metadata": "position in the device's command queue",
-      "fence": "one command at a time per device, in the order they arrived; another device never waits",
-      "test": "test/contract/http-api.test.js: requests in order:"
-    },
-    {
-      "site": "src/state/state-store.js:235",
-      "id": "contract:StateStore.setBrightness",
-      "input": "a command of the user (API request)",
-      "metadata": "position in the device's command queue",
-      "fence": "one command at a time per device, in the order they arrived; another device never waits",
-      "test": "test/contract/http-api.test.js: requests in order:"
-    },
-    {
-      "site": "src/state/state-store.js:245",
-      "id": "contract:StateStore.retry",
-      "input": "a command of the user (API request)",
-      "metadata": "position in the device's command queue",
-      "fence": "one command at a time per device, in the order they arrived; another device never waits",
-      "test": "test/contract/http-api.test.js: requests in order:"
-    },
-    {
-      "site": "src/state/state-store.js:259",
-      "id": "contract:StateStore.reportEffective",
-      "input": "what a render loop reports: phase, scene, frame count",
-      "metadata": "token of the device runtime that reports",
-      "fence": "decideStamp on the runtime token; the scheduler hands the report function out through whileCurrent",
-      "test": "test/contract/ordering.test.js: ordering: a late call of something that was replaced reports into nothing"
-    },
-    {
-      "site": "src/state/state-store.js:278",
-      "id": "contract:StateStore.reportHealth",
-      "input": "the health of a device, from the health model",
-      "metadata": "device name; the health model takes facts only through the current runtime's view",
-      "fence": "a report for a device that is not in the effective config is dropped",
-      "test": "test/smoke/smoke.test.js: render reports in order:"
-    },
-    {
       "site": "src/scenes/settings-service.js:95",
       "id": "contract:SettingsService.start",
       "input": "runtime changed, overlay changed, registry changed",
@@ -504,19 +472,95 @@
       "metadata": "InstanceRef token",
       "fence": "subscribers belong to one instance; a released instance is not called",
       "test": "test/contract/scenes.test.js: instance tokens:"
+    },
+    {
+      "site": "src/state/runtime-config.js:366",
+      "id": "listener:source.on(\"changed\")#1",
+      "input": "saved config, overlay, or ownership changed notice",
+      "metadata": "current source values read at handling time, effective revision",
+      "fence": "active lifecycle check before rebuild; buildEffectiveConfig reads the current sources; decideStamp before installing the next effective revision",
+      "test": "test/contract/composition.test.js: saved choice from outside:",
+      "was": "RuntimeConfig.start"
+    },
+    {
+      "site": "src/state/state-store.js:141",
+      "id": "work:this.sync#1",
+      "input": "synchronous reconciliation or completion of a command",
+      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
+      "fence": "none",
+      "test": "test/contract/composition.test.js: device lives and reports:",
+      "why": "synchronous work already admitted by the runtime handler, error logging, or queue barrier; no separate state input"
+    },
+    {
+      "site": "src/state/state-store.js:163",
+      "id": "then:this.command().catch#1",
+      "input": "synchronous reconciliation or completion of a command",
+      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
+      "fence": "none",
+      "test": "test/contract/composition.test.js: device lives and reports:",
+      "why": "synchronous work already admitted by the runtime handler, error logging, or queue barrier; no separate state input"
+    },
+    {
+      "site": "src/state/state-store.js:165",
+      "id": "listener:this.deps.runtime.on(\"changed\")#1",
+      "input": "runtime/overlay/registry/suppression event or per-device command admission",
+      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
+      "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
+      "test": "test/contract/composition.test.js: device lives and reports:",
+      "was": "StateStore.start"
+    },
+    {
+      "site": "src/state/state-store.js:166",
+      "id": "listener:this.deps.overlays.on(\"changed\")#1",
+      "input": "runtime/overlay/registry/suppression event or per-device command admission",
+      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
+      "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
+      "test": "test/contract/composition.test.js: device lives and reports:"
+    },
+    {
+      "site": "src/state/state-store.js:167",
+      "id": "listener:this.deps.overlays.on(\"suppression\")#1",
+      "input": "runtime/overlay/registry/suppression event or per-device command admission",
+      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
+      "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
+      "test": "test/contract/composition.test.js: device lives and reports:"
+    },
+    {
+      "site": "src/state/state-store.js:168",
+      "id": "listener:this.deps.scenes.on(\"changed\")#1",
+      "input": "runtime/overlay/registry/suppression event or per-device command admission",
+      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
+      "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
+      "test": "test/contract/composition.test.js: device lives and reports:"
+    },
+    {
+      "site": "src/state/state-store.js:443",
+      "id": "then:().then#1",
+      "input": "runtime/overlay/registry/suppression event or per-device command admission",
+      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
+      "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
+      "test": "test/contract/composition.test.js: device lives and reports:",
+      "was": "StateStore.chooseScene"
+    },
+    {
+      "site": "src/state/state-store.js:447",
+      "id": "then:result.then#1",
+      "input": "synchronous reconciliation or completion of a command",
+      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
+      "fence": "none",
+      "test": "test/contract/composition.test.js: device lives and reports:",
+      "why": "synchronous work already admitted by the runtime handler, error logging, or queue barrier; no separate state input"
+    },
+    {
+      "site": "src/state/v1-ownership.js:219",
+      "id": "subscribe:mqtt.subscribe#1",
+      "input": "v1's device list on <baseTopic>/config/effective, as a retained replay and live",
+      "metadata": "connection number, retain flag as delivered",
+      "fence": "reduceOwnership (state/v1-ownership.js): a message of an older connection and a replay after a live list are dropped; only a list that passed releases a device",
+      "test": "test/contract/ordering.test.js: F3: v1's empty list is held back as a replay"
     }
   ],
   "none": [
-    "ConfigStore.get",
-    "ConfigStore.baseDir",
-    "ConfigStore.file",
-    "ConfigStore.readRaw",
-    "ConfigStore.stop",
-    "schema.parseConfig",
-    "schema.validateConfig",
-    "schema.validateDevice",
-    "schema.serializeConfig",
-    "schema.diffConfig",
     "MqttGateway.fromEnv",
     "MqttGateway.status",
     "MqttGateway.unsubscribeAll",
@@ -530,29 +574,24 @@
     "OverlayService.settingValues",
     "OverlayService.controls",
     "OverlayService.planSupersede",
-    "buildEffectiveConfig",
-    "RuntimeConfig.stop",
-    "RuntimeConfig.get",
-    "RuntimeConfig.device",
-    "RuntimeConfig.scenes",
-    "RuntimeConfig.incarnationOf",
-    "RuntimeConfig.incarnations",
-    "RuntimeConfig.outputOf",
-    "RuntimeConfig.toV1",
-    "StateStore.stop",
-    "StateStore.list",
-    "StateStore.get",
-    "StateStore.views",
-    "StateStore.view",
-    "StateStore.runningConfigV1",
-    "StateStore.runtimeStarted",
     "SettingsService.stop",
     "SettingsService.state",
     "SettingsService.toV1",
-    "SettingsService.releaseContext",
-    "precedence.resolveSetting",
-    "precedence.normalizeSettingValue",
-    "precedence.resolveAddress",
-    "precedence.percentToNative"
-  ]
+    "SettingsService.releaseContext"
+  ],
+  "resolved": {
+    "ConfigStore.updateDevice": "Delegates the request to the same ConfigStore.enqueue FIFO as load; this wrapper registers no callback. The enqueue and file/watch sites in this file cover the admitted work and its content hash fence.",
+    "ConfigStore.addDevice": "Delegates the request to the same ConfigStore.enqueue FIFO as load; this wrapper registers no callback. The enqueue and file/watch sites in this file cover the admitted work and its content hash fence.",
+    "ConfigStore.adoptDevice": "Delegates the request to the same ConfigStore.enqueue FIFO as load; this wrapper registers no callback. The enqueue and file/watch sites in this file cover the admitted work and its content hash fence.",
+    "ConfigStore.update": "Delegates the request to the same ConfigStore.enqueue FIFO as load; this wrapper registers no callback. The enqueue and file/watch sites in this file cover the admitted work and its content hash fence.",
+    "ConfigStore.replaceRaw": "Delegates the request to the same ConfigStore.enqueue FIFO as load; this wrapper registers no callback. The enqueue and file/watch sites in this file cover the admitted work and its content hash fence.",
+    "ConfigStore.reload": "Delegates the request to the same ConfigStore.enqueue FIFO as load; this wrapper registers no callback. The enqueue and file/watch sites in this file cover the admitted work and its content hash fence.",
+    "StateStore.adoptDevice": "Delegates to StateStore.command, the same per-device FIFO site as chooseScene; incarnation and active are checked at admission and after awaited work. This wrapper registers no separate callback.",
+    "StateStore.clearSceneOverlay": "Delegates to StateStore.command, the same per-device FIFO site as chooseScene; incarnation and active are checked at admission and after awaited work. This wrapper registers no separate callback.",
+    "StateStore.setMode": "Delegates to StateStore.command, the same per-device FIFO site as chooseScene; incarnation and active are checked at admission and after awaited work. This wrapper registers no separate callback.",
+    "StateStore.setBrightness": "Delegates to StateStore.command, the same per-device FIFO site as chooseScene; incarnation and active are checked at admission and after awaited work. This wrapper registers no separate callback.",
+    "StateStore.retry": "Delegates to StateStore.command, the same per-device FIFO site as chooseScene; incarnation and active are checked at admission and after awaited work. This wrapper registers no separate callback.",
+    "StateStore.reportEffective": "Synchronous report, called through the scheduler runtime view: decideStamp checks the current runtime token before applying the patch. No callback registered here; token rejection exercised by device lives and reports.",
+    "StateStore.reportHealth": "Synchronous report called through the scheduler whileCurrent health view; active and device-existence check before applying. No callback registered here."
+  }
 }
