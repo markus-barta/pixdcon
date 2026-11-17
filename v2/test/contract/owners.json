@@ -17,6 +17,7 @@
     "test/contract/composition.test.js",
     "test/contract/ordering.test.js",
     "test/contract/ordering-model.test.js",
+    "test/contract/ordering-overrides.test.js",
     "test/contract/scene-world.js",
     "test/contract/async-sites.test.js",
     "test/contract/owners.json",
@@ -26,6 +27,7 @@
   "W2": [
     "web/",
     "test/contract/client.test.js",
+    "test/contract/ordering-client.test.js",
     "test/contract/async-sites/W2.json"
   ],
   "W3": [

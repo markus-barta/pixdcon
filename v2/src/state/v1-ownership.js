@@ -38,9 +38,26 @@
  *    "free". A v1 that never published keeps every device in shadow until
  *    the operator ends the transition (statusBaseTopic = baseTopic, then
  *    restart).
- *  - The last received list stays valid while the broker is away. A broker
- *    restart must not blank the displays v2 already drives. After the
- *    reconnect the replay brings the current list.
+ *  - The last received list stays valid while the broker is away, and after
+ *    a reconnect until the new connection delivers a list. A broker restart
+ *    must not blank the displays v2 already drives. After the reconnect the
+ *    replay brings the current list.
+ *    This is the one retained input whose permission outlives a reconnect
+ *    without being delivered again, and it is meant to (the overlay layer's
+ *    rule is the other way round, overlay-service.js M4). An overlay is
+ *    ended by clearing its topic, so a topic that stays silent after a
+ *    reconnect may well be empty. v1's list is never cleared, only
+ *    replaced: v1 publishes a new one at every start and reload, and the
+ *    replay delivers the newest. What the list holds back needs no
+ *    exception: a device it names stays in shadow. What it permits, driving
+ *    the devices it does not name, would otherwise lapse at every reconnect
+ *    of the transition, and for good when a broker comes back without its
+ *    retained store: every display v2 has taken over would go dark until
+ *    v1 is reloaded. The price is stated: when the topic is cleared while
+ *    v2 is away, v2 goes on with the list it had, where a process that has
+ *    just started would keep everything in shadow. `status().connection`
+ *    says on which connection the list was received, so the Health page
+ *    can show a list that the current connection has not delivered.
  *  - A payload that cannot be read (not JSON, no `devices` array) changes
  *    nothing and is logged. A live empty payload (somebody cleared the
  *    topic) means there is no list any more: back to "unknown".
@@ -240,13 +257,14 @@ export class V1Ownership extends EventEmitter {
   /**
    * For the Health page and the log.
    *
-   * @returns {{transition: boolean, known: boolean, receivedAt: import("../types.js").IsoTime|null, devices: string[]}} devices: what v1 lists
+   * @returns {{transition: boolean, known: boolean, receivedAt: import("../types.js").IsoTime|null, connection: number, devices: string[]}} devices: what v1 lists. connection: the gateway connection on which the list was last looked at; lower than the current one: this connection has not delivered a list yet
    */
   status() {
     return {
       transition: this.deps.topics.transition,
       known: this.#feed.known,
       receivedAt: this.#feed.receivedAt,
+      connection: this.#feed.connection,
       devices: [...this.#feed.devices],
     };
   }

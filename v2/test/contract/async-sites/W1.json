@@ -2,7 +2,7 @@
   "owner": "W1",
   "rows": [
     {
-      "site": "src/main.js:205",
+      "site": "src/main.js:211",
       "id": "work:config.load#1",
       "input": "config.json as read when the process starts",
       "metadata": "config revision 1; nothing is built from its content before the read resolved",
@@ -10,7 +10,7 @@
       "test": "test/contract/composition.test.js: namespace: an invalid config.json at start leaves MQTT off for the run"
     },
     {
-      "site": "src/main.js:415",
+      "site": "src/main.js:442",
       "id": "work:scenes.refresh#1",
       "input": "a changed scene file: its metadata is read again, then the instances of its scenes are replaced",
       "metadata": "position in the registry lane; the keys of the file are read inside the piece; the lane's signal, handed to the registry call",
@@ -18,7 +18,7 @@
       "test": "test/contract/ordering.test.js: F9: a scene map change that arrives during the first load"
     },
     {
-      "site": "src/main.js:420",
+      "site": "src/main.js:447",
       "id": "work:sceneRuntime.invalidate#1",
       "input": "a changed scene file: its metadata is read again, then the instances of its scenes are replaced",
       "metadata": "position in the registry lane; the keys of the file are read inside the piece",
@@ -26,7 +26,7 @@
       "test": "test/contract/ordering.test.js: N7: closing the lane aborts its signal"
     },
     {
-      "site": "src/main.js:548",
+      "site": "src/main.js:577",
       "id": "route:server.route#1",
       "input": "an HTTP request for the controller health (GET /api/health)",
       "metadata": "none: a question",
@@ -35,7 +35,7 @@
       "why": "answers from the state of that moment and changes nothing; the answer carries X-Pixdcon-Position"
     },
     {
-      "site": "src/main.js:591",
+      "site": "src/main.js:620",
       "id": "work:live.publish#1",
       "input": "nothing arrives here: the controller status goes out to the pages",
       "metadata": "none",
@@ -44,7 +44,7 @@
       "why": "not an input: LiveChannel.publish is a synchronous fan-out and returns its seq"
     },
     {
-      "site": "src/main.js:612",
+      "site": "src/main.js:665",
       "id": "work:scenes.sync#1",
       "input": "a change of the effective scene map: keys added, removed or pointed to another file",
       "metadata": "position in the registry lane; the registry reads the effective map when the piece runs; the lane's signal, handed to the registry call",
@@ -52,7 +52,7 @@
       "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
-      "site": "src/main.js:621",
+      "site": "src/main.js:674",
       "id": "work:sceneRuntime.invalidate#2",
       "input": "a change of the effective scene map: keys added, removed or pointed to another file",
       "metadata": "position in the registry lane; the registry reads the effective map when the piece runs",
@@ -60,7 +60,7 @@
       "test": "test/contract/ordering.test.js: N7: closing the lane aborts its signal"
     },
     {
-      "site": "src/main.js:675",
+      "site": "src/main.js:728",
       "id": "listener:runtime.on(\"changed\")#1",
       "input": "the runtime config's changed event, with its diff",
       "metadata": "effective rev; only a diff that names scenes leads to work",
@@ -68,7 +68,7 @@
       "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
-      "site": "src/main.js:681",
+      "site": "src/main.js:741",
       "id": "work:scenes.load#1",
       "input": "the first load of every registered scene",
       "metadata": "position 1 in the registry lane; the lane's signal, handed to the registry call",
@@ -76,7 +76,7 @@
       "test": "test/contract/ordering.test.js: F9: a scene map change that arrives during the first load"
     },
     {
-      "site": "src/main.js:697",
+      "site": "src/main.js:757",
       "id": "timer:clock.every#1",
       "input": "the 1 s tick of the controller status",
       "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
@@ -84,7 +84,7 @@
       "test": "test/contract/composition.test.js: controller health: the measured status and its reasons are in the snapshot"
     },
     {
-      "site": "src/main.js:727",
+      "site": "src/main.js:787",
       "id": "timer:clock.sleep#1",
       "input": "the 2 s limit for scene work that still runs at shutdown",
       "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
@@ -92,7 +92,7 @@
       "test": "test/contract/composition.test.js: N7 shutdown: a scene import that is still running"
     },
     {
-      "site": "src/main.js:758",
+      "site": "src/main.js:818",
       "id": "timer:setTimeout#1",
       "input": "the 8 s limit for the whole shutdown",
       "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
@@ -100,7 +100,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:772",
+      "site": "src/main.js:832",
       "id": "listener:process.on(\"SIGINT\")#1",
       "input": "SIGINT of the process",
       "metadata": "none; the first one wins",
@@ -108,7 +108,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:773",
+      "site": "src/main.js:833",
       "id": "listener:process.on(\"SIGTERM\")#1",
       "input": "SIGTERM of the process",
       "metadata": "none; the first one wins",
@@ -116,7 +116,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:774",
+      "site": "src/main.js:834",
       "id": "listener:process.on(\"uncaughtException\")#1",
       "input": "uncaughtException of the process",
       "metadata": "none; the first one wins",
@@ -124,7 +124,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends within 8 s also while a render hangs"
     },
     {
-      "site": "src/main.js:778",
+      "site": "src/main.js:838",
       "id": "listener:process.on(\"unhandledRejection\")#1",
       "input": "unhandledRejection of the process",
       "metadata": "none; the first one wins",
@@ -194,7 +194,7 @@
       "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
-      "site": "src/state/v1-ownership.js:202",
+      "site": "src/state/v1-ownership.js:219",
       "id": "subscribe:mqtt.subscribe#1",
       "input": "v1's device list on <baseTopic>/config/effective, as a retained replay and live",
       "metadata": "connection number, retain flag as delivered",
@@ -314,7 +314,7 @@
       "test": "test/contract/wire.test.js: gateway instance tokens:"
     },
     {
-      "site": "src/overlay/overlay-service.js:271",
+      "site": "src/overlay/overlay-service.js:326",
       "id": "contract:OverlayService.start",
       "input": "every message of the overlay, setting and control topics; the gateway's connect, disconnect and settled events; the 1 s retry tick; the 300 ms debounce of the changed event",
       "metadata": "connection number and retain flag of a message; own writes by number and choice generation",
@@ -322,7 +322,15 @@
       "test": "test/contract/overlay-rules.test.js: overlay service and scene layers:"
     },
     {
-      "site": "src/overlay/overlay-service.js:381",
+      "site": "src/overlay/overlay-service.js:353",
+      "id": "contract:OverlayService.applyOutputs",
+      "input": "the devices of the effective config with their resolved output, from main.js once the runtime config has started and with every \"changed\" event of it",
+      "metadata": "the effective revision of the event it came with; every output is authoritative (config.json, the environment, v1's device list as it passed its fence)",
+      "fence": "scene-layers.js reduce: one output input per device whose output is new or changed (an unchanged one is dropped), one removed input per device that is gone; until the first call every device is in shadow",
+      "test": "test/contract/ordering.test.js: F1: a choice made in shadow is dropped only by an authoritative change to drive"
+    },
+    {
+      "site": "src/overlay/overlay-service.js:471",
       "id": "contract:OverlayService.applySupersede",
       "input": "the outcomes of the clear and of the blob rewrite a choice publishes",
       "metadata": "own-write number, choice generation, connection",
@@ -330,7 +338,7 @@
       "test": "test/contract/ordering.test.js: scene layers: the acknowledgement of an older choice's clear"
     },
     {
-      "site": "src/overlay/overlay-service.js:392",
+      "site": "src/overlay/overlay-service.js:482",
       "id": "contract:OverlayService.clear",
       "input": "an own write on an overlay topic, its acknowledgement and its echo",
       "metadata": "the payload, remembered per topic until its echo; the connection",
@@ -338,7 +346,7 @@
       "test": "test/contract/overlay-rules.test.js: explicit clears and the v1 overlay route:"
     },
     {
-      "site": "src/overlay/overlay-service.js:406",
+      "site": "src/overlay/overlay-service.js:496",
       "id": "contract:OverlayService.clearSettings",
       "input": "an own write on an overlay topic, its acknowledgement and its echo",
       "metadata": "the payload, remembered per topic until its echo; the connection",
@@ -346,7 +354,7 @@
       "test": "test/contract/overlay-rules.test.js: explicit clears and the v1 overlay route:"
     },
     {
-      "site": "src/overlay/overlay-service.js:420",
+      "site": "src/overlay/overlay-service.js:510",
       "id": "contract:OverlayService.publishSettings",
       "input": "an own write on an overlay topic, its acknowledgement and its echo",
       "metadata": "the payload, remembered per topic until its echo; the connection",
@@ -354,7 +362,7 @@
       "test": "test/contract/overlay-rules.test.js: explicit clears and the v1 overlay route:"
     },
     {
-      "site": "src/overlay/overlay-service.js:435",
+      "site": "src/overlay/overlay-service.js:525",
       "id": "contract:OverlayService.publishSceneOverlay",
       "input": "an own write on an overlay topic, its acknowledgement and its echo",
       "metadata": "the payload, remembered per topic until its echo; the connection",
@@ -362,7 +370,7 @@
       "test": "test/contract/overlay-rules.test.js: explicit clears and the v1 overlay route:"
     },
     {
-      "site": "src/overlay/overlay-service.js:447",
+      "site": "src/overlay/overlay-service.js:537",
       "id": "contract:OverlayService.publishControl",
       "input": "an own mode or brightness write, its acknowledgement and its echo",
       "metadata": "the payload, remembered per topic until its echo; the connection",
@@ -370,7 +378,7 @@
       "test": "test/contract/ordering.test.js: topic fence: an own write that echoes back after a newer own write"
     },
     {
-      "site": "src/state/runtime-config.js:253",
+      "site": "src/state/runtime-config.js:296",
       "id": "contract:RuntimeConfig.start",
       "input": "the changed events of the config store, the overlay service and the ownership feed",
       "metadata": "none needed: each event only says 'build again'; the build reads all three sources as they are then and raises rev",
@@ -378,7 +386,7 @@
       "test": "test/contract/composition.test.js: effective revision:"
     },
     {
-      "site": "src/state/state-store.js:106",
+      "site": "src/state/state-store.js:115",
       "id": "contract:StateStore.start",
       "input": "runtime changed with its diff (devices, saved choice, output), overlay changed, overlay suppression, registry changed",
       "metadata": "effective rev; generation of the suppression that ended",
@@ -386,7 +394,7 @@
       "test": "test/contract/composition.test.js: effective revision:"
     },
     {
-      "site": "src/state/state-store.js:173",
+      "site": "src/state/state-store.js:182",
       "id": "contract:StateStore.chooseScene",
       "input": "a scene choice of the user (API request)",
       "metadata": "position in the device's command queue; the choice generation it creates",
@@ -394,7 +402,7 @@
       "test": "test/contract/overlay-rules.test.js: overlay rule 5: a UI choice with an unconfirmed clear survives a restart"
     },
     {
-      "site": "src/state/state-store.js:188",
+      "site": "src/state/state-store.js:197",
       "id": "contract:StateStore.adoptDevice",
       "input": "a command of the user (API request)",
       "metadata": "position in the device's command queue",
@@ -402,7 +410,7 @@
       "test": "test/contract/http-api.test.js: requests in order:"
     },
     {
-      "site": "src/state/state-store.js:199",
+      "site": "src/state/state-store.js:208",
       "id": "contract:StateStore.clearSceneOverlay",
       "input": "a command of the user (API request)",
       "metadata": "position in the device's command queue",
@@ -410,7 +418,7 @@
       "test": "test/contract/http-api.test.js: requests in order:"
     },
     {
-      "site": "src/state/state-store.js:213",
+      "site": "src/state/state-store.js:222",
       "id": "contract:StateStore.setMode",
       "input": "a command of the user (API request)",
       "metadata": "position in the device's command queue",
@@ -418,7 +426,7 @@
       "test": "test/contract/http-api.test.js: requests in order:"
     },
     {
-      "site": "src/state/state-store.js:226",
+      "site": "src/state/state-store.js:235",
       "id": "contract:StateStore.setBrightness",
       "input": "a command of the user (API request)",
       "metadata": "position in the device's command queue",
@@ -426,7 +434,7 @@
       "test": "test/contract/http-api.test.js: requests in order:"
     },
     {
-      "site": "src/state/state-store.js:236",
+      "site": "src/state/state-store.js:245",
       "id": "contract:StateStore.retry",
       "input": "a command of the user (API request)",
       "metadata": "position in the device's command queue",
@@ -434,7 +442,7 @@
       "test": "test/contract/http-api.test.js: requests in order:"
     },
     {
-      "site": "src/state/state-store.js:250",
+      "site": "src/state/state-store.js:259",
       "id": "contract:StateStore.reportEffective",
       "input": "what a render loop reports: phase, scene, frame count",
       "metadata": "token of the device runtime that reports",
@@ -442,7 +450,7 @@
       "test": "test/contract/ordering.test.js: ordering: a late call of something that was replaced reports into nothing"
     },
     {
-      "site": "src/state/state-store.js:269",
+      "site": "src/state/state-store.js:278",
       "id": "contract:StateStore.reportHealth",
       "input": "the health of a device, from the health model",
       "metadata": "device name; the health model takes facts only through the current runtime's view",
@@ -527,6 +535,8 @@
     "RuntimeConfig.get",
     "RuntimeConfig.device",
     "RuntimeConfig.scenes",
+    "RuntimeConfig.incarnationOf",
+    "RuntimeConfig.incarnations",
     "RuntimeConfig.outputOf",
     "RuntimeConfig.toV1",
     "StateStore.stop",

@@ -63,6 +63,10 @@
  * removed by a small atomic write when it ends. While it exists, a replay of
  * the replaced value is stale: it is not shown and it is cleared again.
  *
+ * A blob suppression of an instance that is not the blob's writer
+ * (overlay-service.js W1) is wider: it holds against the blob whatever the
+ * blob says, and of the endings below only the last line applies to it.
+ *
  * It ends only on evidence, never on a timer, on the settle hint, on a
  * connect or because no message arrived (core/ordering.js; the rules S1 to
  * S5 of overlay/overlay-service.js; the code is overlay/scene-layers.js):
@@ -76,7 +80,7 @@
  * @property {number} generation choice generation of the device, rising with every UI choice and never handed out twice in one run of the process, also when the device leaves the config and comes back; an acknowledgement ends only the suppression of its own generation
  * @property {IsoTime} at time of the choice
  * @property {string|null} value the stored value the choice replaced (granular: the payload; blob: the device's scene in the blob). null = not known at the time of the choice: anything stored in this layer is stale
- * @property {string[]} alsoStale other values of this layer that are pixdcon's own doing and never a new command: what a blob rewrite of pixdcon still carries for this device when the choice is made, be it on its way to the broker or already known to sit in the store as an older write. Such a rewrite can reach the broker after a newer blob and put its old value back; a delivery of that value is then recognised, also after a restart. Empty for the granular layer.
+ * @property {string[]} alsoStale other values of this layer that are pixdcon's own doing and never a new command: every scene a blob rewrite of this process has carried for this device up to the choice, on its way then, echoed long before, or of an earlier connection. Such a rewrite can reach the store again at any time (the broker gets to it late, somebody publishes it again) and put its old value back; a delivery of that value is then recognised, also after a restart. Empty for the granular layer, and when the process carried more names than it keeps (`value` is null then: anything stored is stale).
  * @property {OutputMode} output output of the device when the choice was made. A suppression made in shadow never deletes anything on the broker, not even later: it is dropped when an authoritative output change puts the device into drive
  */
 
@@ -225,8 +229,9 @@
  * @property {"config"|"blob"} origin where the entry itself comes from; "blob" = it exists only in the blob overlay and nothing can be saved for it until it is adopted (A-151)
  * @property {string} address effective host[:port]
  * @property {"config"|"blob"|"overlay"} addressSource
- * @property {boolean} enabled false: the entry exists and no runtime is started. config.json's value, made false by a blob entry or a granular overlay that says false; never made true by an overlay
+ * @property {boolean} enabled false: the entry exists and no runtime is started. config.json's value, made false by a blob entry or a granular overlay that says false, or by a hold (`held`); never made true by an overlay
  * @property {"config"|"blob"|"overlay"} enabledSource
+ * @property {boolean} held true: the device's address rests on an overlay that the current connection has not delivered (`StructuralOverlays.deviceHeld`). It is not started; `enabled` is false and `enabledSource` names the overlay
  * @property {string|null} savedScene the saved choice: `scene` of the device in config.json as it is saved now (a legacy `scenes` array read as its first element); null when none is saved and for a device that exists only in the blob. Never an overlay value. A change of it appears in the diff of the runtime config's "changed" event like any other key.
  * @property {OutputDecision} output from config.json, the environment and v1's list only
  * @property {string} displayName
@@ -276,11 +281,12 @@
  * entry by entry with v1's rules (A-070 to A-072).
  *
  * @typedef {object} StructuralOverlays
- * @property {Array<Record<string, unknown> & {name: string}>} blobDevices usable entries of the blob's `devices`, in blob order; an entry patches the device of that name or, with name, type and ip, adds one
- * @property {Record<string, {path: string}>} blobScenes
- * @property {Record<string, string>} scenePaths granular scene path overlays: scene key → path
- * @property {Record<string, string>} deviceIps granular ip overlays: device → host[:port]
- * @property {Record<string, boolean>} deviceEnabled granular enabled overlays: device → false
+ * @property {Array<Record<string, unknown> & {name: string}>} blobDevices usable entries of the blob's `devices`, in blob order; an entry patches the device of that name or, with name, type and ip, adds one. While the blob is not confirmed, an entry holds only what state/runtime-config.js overlayDevicePatch leaves of it then (`enabled` false)
+ * @property {Record<string, {path: string}>} blobScenes empty while the blob is not confirmed
+ * @property {Record<string, string>} scenePaths granular scene path overlays that the current connection delivered: scene key → path
+ * @property {Record<string, string>} deviceIps granular ip overlays that the current connection delivered: device → host[:port]
+ * @property {Record<string, boolean>} deviceEnabled granular enabled overlays: device → false; kept whether the current connection delivered them or not
+ * @property {string[]} deviceHeld devices whose address rests on an overlay that is not confirmed (a granular ip overlay, or the `ip` of a blob entry, also of a device that exists only in the blob): listed with `enabled` false and `held` true, and not started on any address, until the overlay is delivered again, replaced or cleared
  */
 
 // ---------------------------------------------------------------------------
@@ -308,8 +314,9 @@
  * @property {IsoTime} receivedAt when this process received it
  * @property {"replay"|"live"} origin how this value arrived, from the retain flag as delivered and nothing else: replay = a copy from the broker's retained store (stored at an unknown earlier time); live = published while pixdcon was subscribed
  * @property {number} connection gateway connection on which it arrived. Lower than the current connection number: the value was delivered before the last reconnect and has not been delivered again. Nothing is removed because the settle hint passed or because nothing arrived
- * @property {boolean} confirmed true: the connection that delivered it is the current one, or the last one while the broker is away. false: a newer connection exists and has not delivered it. For a scene overlay (device-scene, and the scenes inside the blob) that means it is listed and decides nothing until it is delivered again; every other kind stays in effect (overlay-service.js M4, C1)
- * @property {boolean} inEffect true while it decides what a display shows
+ * @property {boolean} confirmed true: the connection that delivered it is the current one, or the last one while the broker is away. false: a newer connection exists and has not delivered it. Then the record is listed, commands nothing until it is delivered again, and keeps holding back what it held back (`restricts`). The same for every kind (overlay-service.js M4, C1)
+ * @property {boolean} inEffect true while what the record commands is in effect: a scene that decides, a setting value, mode, brightness, a path, an address. Never true while `confirmed` is false
+ * @property {"off"|"held"|null} restricts what the record holds back, confirmed or not: "off" = an `enabled` overlay (or a blob entry) that says false keeps the device off; "held" = the device's address rests on an overlay that is not confirmed, so the device is listed and not started; null = nothing
  * @property {{generation: number, at: IsoTime}|null} supersededBy the UI choice that replaced it, while its clear is on its way. For the blob record: null; the per-device answer is `OverlayService.suppressions(device)`.
  * @property {{pending: boolean, requestedAt: IsoTime|null, attempts: number}} clear
  */
@@ -406,7 +413,8 @@
  * @typedef {object} DeviceState Everything the core knows about one device. Kept by state/state-store.js.
  * @property {string} name
  * @property {DeviceType} type
- * @property {number} rev rises with every change of this device, inside one epoch
+ * @property {number} incarnation which life of this name it is: a number the runtime config hands out, rising, to every device that enters the effective config in this epoch (`RuntimeConfig.incarnationOf`). A device that leaves and comes back under the same name is another incarnation
+ * @property {number} rev rises with every change of this device, inside one incarnation; starts again with a new one
  * @property {EffectiveDevice} runtime the device entry as it runs
  * @property {DesiredState} desired
  * @property {EffectiveState} effective
@@ -419,11 +427,14 @@
  * so a form never falls back to old values (matrix S-1).
  *
  * A client applies a view only when its `epoch` is the one of the snapshot it
- * holds and its `rev` is higher than the one on screen (build rule 3, B-177).
+ * holds, its `incarnation` is not older than the one on screen, and, inside
+ * one incarnation, its `rev` is higher than the one on screen (build rule 3,
+ * B-177; the rules are code, web/js/ordering.js).
  *
  * @typedef {object} DeviceView
  * @property {string} name
  * @property {Epoch} epoch
+ * @property {number} incarnation `DeviceState.incarnation`: tells the views of a device that was removed and added again from those of the device before it, also for a client that missed the removal
  * @property {number} rev
  * @property {string} displayName
  * @property {string} comment
@@ -523,6 +534,7 @@
  * @property {string} device
  * @property {string} scene
  * @property {Epoch} epoch
+ * @property {number} incarnation the incarnation of `device` this state belongs to (`DeviceState.incarnation`)
  * @property {number} rev
  * @property {Record<string, SettingField>} schema
  * @property {Record<string, SettingValue>} values
@@ -600,6 +612,16 @@
  */
 
 /**
+ * Who writes the blob overlay in this run (state/precedence.js
+ * resolveBlobWriter, overlay-service.js W1). One instance per base topic
+ * does: the one that owns the controller topics there. Fixed for the run.
+ *
+ * @typedef {object} BlobWriter
+ * @property {boolean} writer false: this instance publishes nothing to `<base>/overlay/blob`, neither a rewrite nor a clear ("Clear" of the blob answers 409 blob_not_writer), and a UI choice holds against the blob as a whole
+ * @property {"mqtt_off"|"force_shadow"|"v1_writes"|null} reason null for the writer. v1_writes: the transition is on, pixdcon v1 rewrites the blob ("written by pixdcon v1 during the switch-over"); force_shadow: this instance never writes; mqtt_off: no MQTT in this run
+ */
+
+/**
  * @typedef {object} ControllerStatus
  * @property {string} instance "pixdcon2" or "pixdcon2-edge"
  * @property {Epoch} epoch
@@ -610,6 +632,7 @@
  * @property {string[]} reasons why the status is not ok: "display_offline:<name>", "display_stale:<name>", "config_invalid", "mqtt_offline", "restart_required", "watchdog_overdue"
  * @property {boolean} measured false while the health model or the scheduler is not built: `status` then only says that the process answers
  * @property {boolean} forceShadow true when PIXDCON2_FORCE_SHADOW is set: no device of this instance is driven
+ * @property {BlobWriter} blobWriter whether this instance is the one writer of `<base>/overlay/blob` in this run, and if not, why
  * @property {{baseTopic: string, statusBaseTopic: string, settingsBaseTopic: string, discoveryPrefix: string, transition: boolean}} mqttNamespace the topics this process started with; transition = statusBaseTopic differs from baseTopic, so the v1 interlock is on
  * @property {{reason: string, since: IsoTime}|null} restartRequired set while config.json asks for something that is only read at start (today: any key of `mqtt`). Nothing moves on the wire until the process is restarted.
  */
@@ -635,6 +658,7 @@
  * @property {MqttStatus} mqtt
  * @property {ConfigFileState} config
  * @property {DeviceView[]} devices config order, then blob-only devices
+ * @property {number} incarnations how far the incarnation counter of the devices had come when the snapshot was taken: the highest `DeviceState.incarnation` handed out so far in this epoch, 0 before the first. A client that holds a view of an incarnation up to this number whose device the snapshot does not list knows that this device is gone, also when it never got the removal (web/js/ordering.js)
  * @property {SceneMeta[]} scenes
  * @property {Record<DeviceType, BuiltinMode[]>} builtins
  * @property {OverlayRecord[]} overlays
@@ -653,7 +677,7 @@
  *
  * @typedef {{type: "snapshot", seq: number, data: Snapshot}
  *   | {type: "device", seq: number, data: DeviceView}
- *   | {type: "device-removed", seq: number, data: {name: string}}
+ *   | {type: "device-removed", seq: number, data: {name: string, incarnation: number}}
  *   | {type: "preview", seq: number, data: {device: string, width: number, height: number, source: PreviewFrame["source"], receivedAt: IsoTime, frameSeq: number, rgbBase64: string}}
  *   | {type: "overlays", seq: number, data: OverlayRecord[]}
  *   | {type: "settings", seq: number, data: SettingsState}

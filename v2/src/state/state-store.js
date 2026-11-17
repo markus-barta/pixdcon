@@ -20,7 +20,16 @@
  *  - "desired"        ({name, desired, previous, changed: string[]})  scene, mode or brightness changed: the scheduler applies it to that device only
  *  - "device"         (DeviceView)       any visible change; rev already increased
  *  - "device-added"   (DeviceView)
- *  - "device-removed" ({name})
+ *  - "device-removed" ({name, incarnation})   incarnation: the one that left
+ *
+ * Incarnations. Every device that enters the effective config has an
+ * incarnation (RuntimeConfig.incarnationOf): a device that leaves and comes
+ * back under the same name is another one, and counts its `rev` from 1
+ * again. The store takes the number when the device is added, puts it into
+ * every DeviceView, and names it in "device-removed" when that device
+ * leaves. With that a page can tell the views of two devices of one name
+ * apart, also when it was disconnected while one left and the other came
+ * (web/js/ordering.js).
  * Changes of the device entry itself (address, output, minFrameMs, …) reach
  * the scheduler through the runtime config's "changed" event with its diff.
  *

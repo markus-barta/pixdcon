@@ -20,7 +20,10 @@
  * gateway's messages and events and carries out the effects it answers
  * with; it adds no rule of its own for these layers. The other topics
  * (ip, enabled, scene path, settings, mode, brightness) follow M1 to M5 with
- * the same fence per topic.
+ * the same fence per topic, and are kept in the second reducer,
+ * overlay/topic-fence.js (`reduceMirror`): it says for every record what it
+ * commands and what it holds back at this moment (`overrideEffect`), and
+ * which records changed in a step. The service adds no rule there either.
  *
  * THE MIRROR
  *  M1  Per topic, the mirror is the last message delivered that passed the
@@ -30,7 +33,13 @@
  *      a topic on a connection, a replay (retain flag set) for that topic on
  *      the same connection is dropped. A replay shows what the store held
  *      when the subscribe was handled; a live message is newer by definition.
- *  M3  An unchanged value is not a change: no event, no restart (A-079).
+ *  M3  An unchanged record is not a change (A-079): a message that changes
+ *      nothing a reader of the mirror is told causes no event, and one that
+ *      changes nothing a display does causes no restart. A replay that
+ *      confirms a record again after a reconnect, or a live message with
+ *      the value that is stored already, changes what the record says of
+ *      itself (`confirmed`, `connection`, `origin`): one event for the
+ *      list, nothing on the display.
  *  M4  A new connection replaces a record only by what it delivers. Until
  *      then the record stays as it was; its `connection` is lower than the
  *      current one and `confirmed` is false, which is how the Overlays page
@@ -40,18 +49,30 @@
  *      goes missing on a guess can release what it held back (a device
  *      switched off by an overlay would start driving). What v2 cannot know
  *      is a retained topic that was deleted while pixdcon was disconnected
- *      (A-182). What follows from that is decided by what the record does:
- *        - a scene overlay (the granular topic, the device's scene in the
- *          blob) gives a command that overrides the user's choice. It is in
- *          effect only on the connection that delivered it (rule C1 below):
- *          after a reconnect it is listed, decides nothing, and wins again
- *          when the new connection delivers it. A scene overlay that was
- *          cleared while pixdcon was away therefore stops at the reconnect.
- *        - every other record (ip, enabled, scene path, a setting value,
- *          mode, brightness) stays in effect until the topic gets a
- *          message, the user clears it, or the process restarts. Dropping
- *          one of these on a guess would release a device, point it at
- *          another address, change a scene's inputs or un-pause a display.
+ *      (A-182). What follows from that is one rule for every kind of
+ *      record (the fourth cross-read's decision e): after a reconnect, a
+ *      record that the current connection has not delivered again commands
+ *      nothing and keeps holding back what it held back.
+ *        - What a record commands lapses until it is delivered again: a
+ *          scene (the granular topic, the device's scene in the blob; rule
+ *          C1 below), a setting value, mode, brightness, a scene path, the
+ *          address an ip overlay names, and every key a blob entry patches
+ *          or adds. The saved value, the default or config.json decides
+ *          meanwhile, as in a process that has just started. A record that
+ *          was cleared while pixdcon was away therefore stops at the
+ *          reconnect; one that is still stored is back when its replay
+ *          arrives, however late.
+ *        - What a record holds back stays, delivered again or not, because
+ *          lifting it on a guess would let pixdcon touch a display it was
+ *          told to leave alone: `enabled` false keeps the device off, in
+ *          the granular topic and in a blob entry; and a device whose
+ *          address rests on an overlay that is not confirmed is held: it
+ *          is listed and not started, neither on the unconfirmed address
+ *          nor on the one in config.json (a routing guard). It ends by a
+ *          delivered message for its topic, by the user's Clear, or with
+ *          the process.
+ *      While the broker is away nothing lapses: the records of the last
+ *      connection stay as they were until a newer connection exists.
  *      Suppressions are untouched by a reconnect either way.
  *  M5  A value that is not usable is kept, marked invalid with the reason,
  *      and never blocks config.json changes (A-077, A-BUG-06, B-C10). A
@@ -161,12 +182,17 @@
  *      What a rewrite strips stays stripped: a later rewrite never puts a
  *      scene back that an earlier one removed or is removing, also when the
  *      device has gone into shadow meanwhile.
- *  B2  Own writes are correlated by their bytes, and their bytes are their
- *      own: every rewrite carries a mark (the top-level key `_pixdcon`, 16
- *      hex characters derived from a secret of the process; v1 ignores the
- *      key) that nobody else can know before the broker has stored the
- *      write. Rewrites come back in the order they were sent, so only the
- *      oldest one on its way is ever taken for an echo (O1). An own echo
+ *  B2  Own writes are correlated, and by something that is their own:
+ *      every rewrite carries a mark (the top-level key `_pixdcon`: the
+ *      number of the write and a keyed hash, made with a secret of the
+ *      process, over that number and the document; v1 ignores the key and
+ *      keeps it when it rewrites the blob) that nobody else can make before
+ *      the broker has stored the write, and that fits no other document.
+ *      The process can check it at any later time without having kept
+ *      anything, so an own rewrite is known for the life of the process,
+ *      however many followed it. Rewrites come back in the order they were
+ *      sent, so only the oldest one on its way is ever taken for an echo
+ *      (O1). An own echo
  *      says what the store holds and is never a command. When it is the
  *      blob as it should be, it is applied. When it is an older own write
  *      that came back after a newer blob was applied, it is dropped, and
@@ -174,25 +200,53 @@
  *      still carries the old scenes of other devices; a choice made for one
  *      of them meanwhile records those values (`alsoStale`), so they are
  *      recognised as pixdcon's own doing when they are delivered, also after
- *      a restart. A blob with the bytes of any other own rewrite, on its
- *      way, echoed already or of an earlier connection, is that rewrite
- *      come back, whoever published it: never a command (O2). An echo
+ *      a restart. A blob that carries a mark of this process which fits
+ *      its document, be the rewrite on its way, echoed already or of an
+ *      earlier connection, is that rewrite come back, whoever published it:
+ *      never a command (O2). The same document without the mark, or a
+ *      changed document with it, is an outside message. An echo
  *      confirms the generations its own write carries, and nothing else
  *      while a later rewrite is on its way (O3). The service makes the
  *      secret at start (16 random bytes) and hands it to createLayers.
  *  B3  At a disconnect no rewrite is kept to be sent again. After the next
  *      connect the rewrite is built again from the blob the broker replays,
- *      so fields that another publisher changed meanwhile are kept. The
- *      payloads of the rewrites of the connection that ended are remembered
- *      for one purpose: when a later connection delivers exactly one of
- *      them, as a replay or as a live message the broker got to late, it is
- *      pixdcon's own, older write and not a command.
+ *      so fields that another publisher changed meanwhile are kept. When a
+ *      later connection delivers a rewrite of the connection that ended, as
+ *      a replay or as a live message the broker got to late, it is known by
+ *      its mark: pixdcon's own, older write and not a command.
  *  B4  An outside blob that arrives while an own rewrite is on its way was
  *      processed before that rewrite. Its content becomes the blob as it
  *      should be; the scenes of superseded devices stay hidden; and when the
  *      own echo shows that the older rewrite has overwritten it, the blob is
  *      published again from the newer content. v1 lost the outside change
  *      here.
+ *  W1  One writer. All of the above is for the one instance that may write
+ *      the blob (`deps.blobWriter`, fixed for the run by main.js): the
+ *      instance that owns the controller topics under the base topic. That
+ *      is pixdcon v1 while the transition is on (`topics.transition`), this
+ *      instance after it, and never an instance that is forced into shadow
+ *      (the edge lane). Two controllers that rewrite one document lose each
+ *      other's changes, and each takes the other's rewrite for a scene
+ *      command; that the two drive different displays does not help. An
+ *      instance that is not the writer publishes nothing to the blob topic,
+ *      neither a rewrite nor a clear (clear() answers 409 blob_not_writer),
+ *      and nothing that is delivered there ends one of its blob
+ *      suppressions: a UI choice holds against the blob, also when the blob
+ *      names no scene for the device at that moment, until a newer choice
+ *      replaces it, rule S3 f drops it or the device leaves. The writer
+ *      rewrites from what it last saw, so its rewrite can carry any older
+ *      scene of the device, and nothing tells it from a command. The
+ *      suppression is saved; the run that is the writer strips what the
+ *      choice replaced. The granular topic of a device has one writer by
+ *      the interlock already: the instance that drives the device.
+ *
+ * WHAT IS ANNOUNCED (E1). "changed" is not decided by a rule. Both reducers
+ * compare what their readers answer before and after every step and name
+ * what differs; the service passes that on. A record that waits after a
+ * connect, one that the new connection delivers again unchanged, a
+ * suppression the broker confirmed: each is a difference, so each is
+ * announced, and a consumer that computes again only when it is told holds
+ * what the mirror says.
  *
  * OTHER RULES
  *  - Every stored overlay is visible (list()), with "since" and what it
@@ -224,7 +278,8 @@ import { todo } from "../core/todo.js";
  * @typedef {object} OverlayServiceDeps
  * @property {import("../mqtt/mqtt-gateway.js").MqttGateway|null} mqtt null when MQTT is not configured: the layer is empty and controls live in memory
  * @property {ReturnType<typeof import("../mqtt/topics.js").createTopics>} topics
- * @property {(device: string|null) => import("../types.js").OutputMode} outputOf the one resolved output policy (RuntimeConfig.outputOf): "shadow" for an unknown device, for an interlocked one, and before the runtime config is started. null asks for an overlay that belongs to no single device (blob, scene path): "drive" only when this instance drives at least one device
+ * @property {(device: string|null) => import("../types.js").OutputMode} outputOf the one resolved output policy (RuntimeConfig.outputOf): "shadow" for an unknown device, for an interlocked one, and before the runtime config is started. null asks for an overlay that belongs to no single device (a scene path): "drive" only when this instance drives at least one device. Asked for the writes of the other kinds (controls, setting and path clears). The two scene layers do not ask: they are told (applyOutputs), and the blob has its own answer (blobWriter)
+ * @property {boolean} blobWriter this instance is the one writer of `<base>/overlay/blob` in this run (W1): the transition is off and the instance is not forced into shadow. main.js decides it once; the service hands it to createLayers
  * @property {(scene: string) => Record<string, import("../types.js").SettingField>|null} schemaOf null while the scene is unknown or broken
  * @property {() => Array<{device: string, layer: SceneLayer, suppression: SceneSuppression}>} savedSuppressions what config.json holds; read once, in start()
  * @property {import("../types.js").Clock} clock
@@ -276,6 +331,28 @@ export class OverlayService extends EventEmitter {
     return todo("OverlayService.stop");
   }
 
+  /**
+   * The devices of the effective config with their resolved output, as the
+   * runtime config has them now. main.js calls it once the runtime config
+   * is started and with every "changed" event of it; this is the only way
+   * the scene layers learn who is driven (scene-layers.js inputs `output`
+   * and `removed`). Until the first call every device is in shadow, so a
+   * choice publishes nothing and no clear is sent at start on a guess.
+   *
+   * The service compares with what the layers hold and feeds one `output`
+   * input per device whose output is new or changed, and one `removed`
+   * input per device that is no longer listed. That is authoritative
+   * evidence (config.json, the environment, v1's device list): a choice
+   * made in shadow on a device that is driven now is dropped (S3 f), also
+   * when the output changed while the process was down, and the
+   * suppressions of a device that left go with it.
+   *
+   * @param {Array<{name: string, output: import("../types.js").OutputMode}>} devices every device of the effective config, also disabled ones
+   */
+  applyOutputs(devices) {
+    return todo("OverlayService.applyOutputs", devices);
+  }
+
   // -------------------------------------------------------------------------
   // Reading the mirror
   // -------------------------------------------------------------------------
@@ -323,6 +400,15 @@ export class OverlayService extends EventEmitter {
    * checked one by one with v1's rules; unusable ones are left out here and
    * listed as invalid records.
    *
+   * Only what is confirmed commands (M4): a scene path, an ip overlay and
+   * the blob count here when the current connection delivered them. What a
+   * record holds back is in here whether confirmed or not: `deviceEnabled`
+   * false, and `deviceHeld` for a device whose address rests on an overlay
+   * that is not confirmed. For a blob that is not confirmed, `blobDevices`
+   * holds per entry only what state/runtime-config.js overlayDevicePatch
+   * leaves of it then (`enabled` false, and the hold), and `blobScenes` is
+   * empty.
+   *
    * @returns {import("../types.js").StructuralOverlays}
    */
   structural() {
@@ -330,7 +416,9 @@ export class OverlayService extends EventEmitter {
   }
 
   /**
-   * Valid setting overlay values of one device and scene.
+   * Valid setting overlay values of one device and scene, as far as the
+   * current connection delivered them (M4): a value that is not confirmed
+   * is listed by list() and is not in here.
    *
    * @param {string} device
    * @param {string} scene
@@ -341,7 +429,9 @@ export class OverlayService extends EventEmitter {
   }
 
   /**
-   * Retained controls of one device.
+   * Retained controls of one device, as far as the current connection
+   * delivered them (M4). A control this process published itself counts as
+   * delivered on the connection it was published on.
    *
    * @param {string} device
    * @returns {{mode: {value: PlaybackMode, record: OverlayRecord}|null, brightness: {percent: number, record: OverlayRecord}|null}}
@@ -386,7 +476,7 @@ export class OverlayService extends EventEmitter {
    *
    * @param {string} id
    * @returns {Promise<ClearResult>}
-   * @throws {import("../core/errors.js").HttpError} 404 unknown_overlay, 503 mqtt_offline, 409 shadow_output for a device that is not driven, and for the blob or a scene path when this instance drives nothing
+   * @throws {import("../core/errors.js").HttpError} 404 unknown_overlay, 503 mqtt_offline, 409 shadow_output for a device that is not driven and for a scene path when this instance drives nothing, 409 blob_not_writer for the blob when this instance is not its writer (W1)
    */
   async clear(id) {
     return todo("OverlayService.clear", id);

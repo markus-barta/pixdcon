@@ -48,6 +48,15 @@
  *   `supersedes`  is v2's bookkeeping in config.json, never read from a blob.
  * Such keys of a blob entry are ignored and named in the overlay record.
  *
+ * A blob that the current connection has not delivered again commands
+ * nothing and keeps holding back what it held back (overlay/topic-fence.js
+ * has the same rule for the single topics). overlayDevicePatch with
+ * `confirmed: false` is that rule for one blob entry: `enabled` false
+ * stays, every other key waits (`lapsed`), and an entry that carries an
+ * address makes its device `held`: listed, and not started on the address
+ * of config.json on the guess that the blob is gone, nor on the address the
+ * blob gave. A device that exists only in the blob always carries one.
+ *
  * The saved choice. `scene` of a device in config.json is not merged with
  * overlays (the scene has its own precedence), and it is not lost either:
  * every effective device carries it as `savedScene`. The state store takes
@@ -101,6 +110,18 @@ import { todo } from "../core/todo.js";
 export const NOT_OVERLAY_KEYS = Object.freeze(["output", "supersedes"]);
 
 /**
+ * Does a value of `enabled` in an overlay switch the device off? `false`,
+ * and the text "false" in any case and with blanks around it (matrix C-051;
+ * overlay/topic-fence.js saysOff reads the granular topic the same way).
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+const saysOff = (value) =>
+  value === false ||
+  (typeof value === "string" && value.trim().toLowerCase() === "false");
+
+/**
  * What a blob entry may change of a device: every key v1's merge takes,
  * except what would widen the output. Finished code; buildEffectiveConfig
  * merges `patch` over the config.json entry and nothing else of the entry.
@@ -110,14 +131,29 @@ export const NOT_OVERLAY_KEYS = Object.freeze(["output", "supersedes"]);
  *  - `output` and `supersedes` are never taken from an overlay
  *  - `enabled` is taken only when it switches the device off
  *
+ * `confirmed: false` says that the blob was delivered on an earlier
+ * connection and not on the current one. What the entry commands then
+ * waits; what it holds back stays:
+ *
+ *  - `enabled` false is still taken
+ *  - every other key that would be taken is named in `lapsed` instead
+ *  - `held` is true when the entry carries a usable `ip`. Its device is
+ *    listed and not started: not on the address of config.json, on the
+ *    guess that the blob is gone, and not on the address of the entry
+ *
  * @param {Record<string, unknown>} entry one entry of the blob's `devices`
- * @returns {{patch: Record<string, unknown>, ignored: string[]}} ignored: keys that were present and not taken, for the overlay record
+ * @param {{confirmed?: boolean}} [options] confirmed: the current connection delivered the blob, or the last one while the broker is away. Default true
+ * @returns {{patch: Record<string, unknown>, ignored: string[], held: boolean, lapsed: string[]}} ignored: keys that were present and are never taken, for the overlay record. lapsed: keys that wait for the blob to be delivered again. held: the device is not started until then
  */
-export function overlayDevicePatch(entry) {
+export function overlayDevicePatch(entry, options = {}) {
+  const confirmed = options.confirmed !== false;
   /** @type {Record<string, unknown>} */
   const patch = {};
   /** @type {string[]} */
   const ignored = [];
+  /** @type {string[]} */
+  const lapsed = [];
+  let held = false;
   for (const [key, value] of Object.entries(entry)) {
     if (key === "name" || key === "scene" || key === "scenes") continue;
     if (NOT_OVERLAY_KEYS.includes(key)) {
@@ -125,13 +161,20 @@ export function overlayDevicePatch(entry) {
       continue;
     }
     if (key === "enabled") {
-      if (value === false || value === "false") patch.enabled = false;
+      // A restriction: kept, confirmed or not.
+      if (saysOff(value)) patch.enabled = false;
       else ignored.push(key);
       continue;
     }
-    patch[key] = value;
+    if (confirmed) {
+      patch[key] = value;
+      continue;
+    }
+    lapsed.push(key);
+    if (key === "ip" && typeof value === "string" && value.trim() !== "")
+      held = true;
   }
-  return { patch, ignored };
+  return { patch, ignored, held, lapsed };
 }
 
 /**
@@ -273,6 +316,27 @@ export class RuntimeConfig extends EventEmitter {
   /** @returns {Record<string, EffectiveScene>} the effective scene registry: config.json, blob scenes, granular paths */
   scenes() {
     return todo("RuntimeConfig.scenes");
+  }
+
+  /**
+   * Which life of its name a device is in. Every device that enters the
+   * effective config gets the next number of one counter for all devices,
+   * rising inside one run of the process (the first device is 1). A device
+   * that leaves and comes back under the same name gets a new one. The
+   * state store puts it into every DeviceView and the settings service
+   * into every SettingsState, so that a page can tell the two devices
+   * apart (types.js DeviceState.incarnation).
+   *
+   * @param {string} name
+   * @returns {number|undefined} undefined for a name that is not in the effective config
+   */
+  incarnationOf(name) {
+    return todo("RuntimeConfig.incarnationOf", name);
+  }
+
+  /** @returns {number} the highest incarnation handed out so far in this run; 0 before the first device (`Snapshot.incarnations`) */
+  incarnations() {
+    return todo("RuntimeConfig.incarnations");
   }
 
   /**

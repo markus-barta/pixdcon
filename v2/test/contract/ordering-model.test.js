@@ -127,7 +127,7 @@ import {
   sceneInputs,
   withoutMark,
 } from "../../src/overlay/scene-layers.js";
-import { world } from "./scene-world.js";
+import { generator, world } from "./scene-world.js";
 
 const DEVICES = ["D1", "D2", "D3"];
 // PIXDCON2_MODEL_WALKS and PIXDCON2_MODEL_FIRST_SEED change the size and the
@@ -135,6 +135,11 @@ const DEVICES = ["D1", "D2", "D3"];
 const WALKS = Number(process.env.PIXDCON2_MODEL_WALKS) || 1500;
 const FIRST_SEED = Number(process.env.PIXDCON2_MODEL_FIRST_SEED) || 1;
 const STEPS = 140;
+// The long walks: one run of the process that makes far more own rewrites
+// than any list of them could hold (the fourth cross-read's R4-2 was a list
+// of 32).
+const LONG_WALKS = Math.max(12, Math.round(WALKS / 125));
+const LONG_STEPS = 9000;
 
 /**
  * What a run must have met to count: every decision and every way a
@@ -180,33 +185,28 @@ const MUST_SEE = [
   "adversary:ack_lost_with_connection",
   "adversary:granular_cleared_while_disconnected",
   "adversary:blob_cleared_while_disconnected",
+  // The fourth cross-read: a record that only the new connection's late
+  // replay confirms again, with the value it had (R4-1).
+  "r4:record_confirmed_again_by_a_late_replay",
 ];
 
-/**
- * A small seeded generator (mulberry32): the same seed, the same walk.
- *
- * @param {number} seed
- * @returns {() => number} numbers in [0, 1)
- */
-export function generator(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+/** What the long walks must have met on top of that (R4-2). */
+const LONG_MUST_SEE = [
+  "long:100_own_rewrites_in_one_run",
+  "long:copy_of_an_own_rewrite_more_than_32_rewrites_old",
+  "long:replay_of_an_own_rewrite_more_than_32_rewrites_old",
+  "long:more_own_scene_names_than_are_kept",
+];
 
 /**
  * One random walk.
  *
  * @param {number} seed
  * @param {Map<string, number>} seen counts of what the walks met (MUST_SEE)
+ * @param {boolean} [long] a long walk: LONG_STEPS steps, and the process does not restart before the last tenth of them
  * @returns {number} steps taken
  */
-function walk(seed, seen) {
+function walk(seed, seen, long = false) {
   const count = (/** @type {string} */ what) =>
     seen.set(what, (seen.get(what) ?? 0) + 1);
   const random = generator(seed);
@@ -244,6 +244,8 @@ function walk(seed, seen) {
   let late = [];
   /** Every blob rewrite of pixdcon that the broker has stored in this walk: what anybody can have read. @type {Set<string>} */
   const ownBlobs = new Set();
+  /** The blob rewrites of this run of the process, in the order they were sent. @type {string[]} */
+  let ownRun = [];
   /** Devices that came back while a write for them was still on its way. @type {Set<string>} */
   const cameBackEarly = new Set();
   /** Per device and layer: publish time of the newest value a choice replaced. @type {Map<string, number>} */
@@ -325,8 +327,20 @@ function walk(seed, seen) {
           write: effect.write,
           devices: effect.generations.map(({ device }) => device),
         });
+        if (effect.payload !== "") {
+          ownRun.push(effect.payload);
+          if (ownRun.length === 100) count("long:100_own_rewrites_in_one_run");
+        }
+        if (w.state().ownScenesFull.size > 0)
+          count("long:more_own_scene_names_than_are_kept");
       }
     }
+  };
+
+  /** Is this payload a rewrite of this run that more than 32 rewrites followed? @param {string} payload */
+  const longAgo = (payload) => {
+    const at = ownRun.indexOf(payload);
+    return at >= 0 && ownRun.length - at > 32;
   };
 
   /** Feed an input, carry out its effects, check what must hold for every step. @param {import("../../src/overlay/scene-layers.js").LayersInput} input */
@@ -339,8 +353,16 @@ function walk(seed, seen) {
     return result;
   };
 
-  /** Invariants 4, 5 and 6. */
+  /** Invariants 4, 5, 6 and 10. */
   const check = () => {
+    // 10. Every change is announced: a consumer that computes a device
+    // again only when a "changed" effect names it holds what the precedence
+    // over the whole state says, after every single step.
+    const stale = w.stale(DEVICES);
+    if (stale.length > 0)
+      fail(
+        `a consumer that is driven by effects is stale. ${stale.join("; ")}`,
+      );
     const current = w.state().connection;
     for (const device of DEVICES) {
       const inputs = sceneInputs(w.state(), device);
@@ -461,6 +483,8 @@ function walk(seed, seen) {
             ? "adversary:copy_of_own_rewrite_before_its_echo"
             : "adversary:copy_of_earlier_own_rewrite",
         );
+        if (connected && longAgo(payload))
+          count("long:copy_of_an_own_rewrite_more_than_32_rewrites_old");
         // Whatever scenes it names are published once more, now.
         for (const scene of blobScenes(parseOrNull(payload)).values())
           again(scene);
@@ -536,6 +560,22 @@ function walk(seed, seen) {
       trace.push(
         `deliver: ${item.topic} ${item.retain ? "replay" : item.own ? "own echo" : "live"} ${item.payload || "(empty)"}`,
       );
+      if (item.retain) {
+        if (item.topic === "blob" && longAgo(item.payload))
+          count("long:replay_of_an_own_rewrite_more_than_32_rewrites_old");
+        // R4-1: the record is held from an earlier connection, with this
+        // very value. Nothing about the value changes; its say does.
+        const held =
+          item.topic === "blob"
+            ? w.state().blob.base
+            : (w.state().granular.get(item.topic)?.value ?? null);
+        const deliveredOn =
+          item.topic === "blob"
+            ? w.state().blob.delivered
+            : (w.state().granular.get(item.topic)?.delivered ?? 0);
+        if (held === item.payload && deliveredOn < connection)
+          count("r4:record_confirmed_again_by_a_late_replay");
+      }
       if (item.topic === "blob")
         feed({ type: "blob", payload: item.payload, ...meta });
       else
@@ -711,6 +751,7 @@ function walk(seed, seen) {
       connection = 0; // a new process counts its connections from 1
       shownAt = new Map(); // invariant 5 is about one run of the process
       generations = new Map(); // and so is invariant 7
+      ownRun = []; // a new process knows no rewrite of the one before
       cameBackEarly.clear();
       w.restart();
       check();
@@ -798,12 +839,15 @@ function walk(seed, seen) {
     ["readd", 4],
   ];
   const total = weights.reduce((sum, [, weight]) => sum + weight, 0);
-  for (let step = 0; step < STEPS; step++) {
+  const steps = long ? LONG_STEPS : STEPS;
+  for (let step = 0; step < steps; step++) {
     let roll = random() * total;
     for (const [name, weight] of weights) {
       roll -= weight;
       if (roll < 0) {
-        actions[name]();
+        // A long walk is one run of the process for nine tenths of its way.
+        if (!(long && name === "restart" && step < steps * 0.9))
+          actions[name]();
         break;
       }
     }
@@ -923,12 +967,1016 @@ test(`ordering model: ${WALKS} random walks of up to ${STEPS} steps over the sce
     );
   }
   const unknown = [...seen.keys()]
-    .filter((what) => !MUST_SEE.includes(what))
+    .filter((what) => ![...MUST_SEE, ...LONG_MUST_SEE].includes(what))
     .sort();
   assert.deepEqual(
     unknown,
     [],
     "nothing was met that this test does not know about",
+  );
+  if (process.env.PIXDCON2_MODEL_STATS)
+    console.log(`${steps} steps`, Object.fromEntries([...seen].sort()));
+});
+
+test(`ordering model, long: ${LONG_WALKS} walks of ${LONG_STEPS} steps, each one run of the process with more than 100 blob rewrites of its own; an outside client publishes rewrites again that are more than 32 rewrites old, the broker replays them after a reconnect, and more scene names pass through than are kept. Every check of the short walks holds at every step`, () => {
+  /** @type {Map<string, number>} */
+  const seen = new Map();
+  let steps = 0;
+  // Seeds of their own, so that a longer soak does not repeat the short walks.
+  for (let walked = 0; walked < LONG_WALKS; walked++)
+    steps += walk(900_000_000 + FIRST_SEED + walked, seen, true);
+  assert.ok(steps > LONG_WALKS * LONG_STEPS * 0.5);
+  assert.deepEqual(
+    LONG_MUST_SEE.filter((what) => !seen.has(what)),
+    [],
+    "the walks were long enough to pass every limit",
+  );
+  assert.deepEqual(
+    [...seen.keys()]
+      .filter((what) => ![...MUST_SEE, ...LONG_MUST_SEE].includes(what))
+      .sort(),
+    [],
+  );
+  if (process.env.PIXDCON2_MODEL_STATS)
+    console.log(`${steps} steps`, Object.fromEntries([...seen].sort()));
+});
+
+// ---------------------------------------------------------------------------
+// One blob, several controllers (the fourth cross-read's R4-3)
+// ---------------------------------------------------------------------------
+
+/**
+ * pixdcon v1's own overlay module, unchanged: lib/config-overlay.js. It is
+ * loaded by path, so that the type check of v2 does not follow it into v1.
+ *
+ * @type {any}
+ */
+const { ConfigOverlay } = await import(
+  new URL("../../../lib/config-overlay.js", import.meta.url).href
+);
+const V1_BASE = "home/hsb1/pixdcon";
+const QUIET = { info() {}, warn() {}, error() {}, debug() {} };
+
+const FLEET_MUST_SEE = [
+  "fleet:v1_is_the_writer",
+  "fleet:v2_is_the_writer",
+  "fleet:second_v2_drives_too",
+  "fleet:second_v2_is_the_edge_instance",
+  "fleet:choice_while_a_blob_write_of_another_controller_is_in_flight",
+  "fleet:two_controllers_chose_before_either_heard_of_the_other",
+  "fleet:handover_to_v2",
+  "fleet:handover_to_v1",
+  "fleet:transition_ended",
+  "end:choice_saved_by_a_reader_stripped_by_the_writer",
+  "end:choice_made_in_shadow_dropped_at_the_start",
+  "end:blob_holds_a_scene_that_v1_put_back",
+  "v1:rewrite_stored",
+  "v1:rewrite_names_a_scene_for_a_device_a_v2_choice_holds",
+  "v1:rewrite_brings_back_another_scene_than_the_store_held",
+  "v1:restart",
+  "writer:v2_rewrite_delivered_to_the_other_v2",
+  "reader:choice_while_the_blob_names_no_scene_for_the_device",
+  "reader:live_blob_names_a_scene_while_a_choice_holds",
+  "reader:replay_names_a_scene_while_a_choice_holds",
+  "reader:blob_without_the_scene_while_a_choice_holds",
+  "reader:blob_cleared_while_a_choice_holds",
+  "reader:restart_while_a_choice_holds",
+  "reader:choice_made_in_shadow_dropped_by_rule_18",
+  "limit:outside_blob_scene_for_a_device_a_reader_s_choice_holds",
+  "limit:cleared_while_away",
+];
+
+/**
+ * One walk over a broker that several controllers share: pixdcon v1 (its
+ * real ConfigOverlay behind a stand-in for its MQTT service) and two v2
+ * instances with their own secrets, I and J. Exactly one controller is the
+ * blob's writer (scene-layers.js W1):
+ *  - the transition: v1 writes; I drives the displays it has taken over; J
+ *    is a second v2 that drives some too, or the edge instance.
+ *  - after it: I writes; J is the edge instance; there is no v1.
+ * Every display has one driver at a time, or none, and changes hands.
+ * Everybody chooses scenes at any time. An outside client publishes to both
+ * layers. Messages are delayed per controller, connections drop, processes
+ * restart, also v1. And the transition ends, at any moment of a walk that
+ * began in it: v1 is stopped, and I starts again as the writer, on the
+ * config.json it wrote while it was not.
+ *
+ * Checked after every step, for both v2 instances:
+ *  1. One writer. An instance that is not the blob's writer never publishes
+ *     to the blob topic, and whatever reaches the blob topic from a
+ *     controller comes from the one that is the writer at that time.
+ *  2. No rewrite is a command for another one's display. The walk knows
+ *     who published what: a scene in the blob counts as commanded when an
+ *     outside client published it for that device, and a rewrite of a
+ *     controller commands nothing, whatever it carries. An instance that is
+ *     not the writer never shows a blob scene on a device after a choice
+ *     there, unless an outside client commanded it after that choice. This
+ *     is about what a display shows, whatever rule produced it.
+ *     And as the rule itself (scene-layers.js W1): on such an instance a
+ *     blob suppression ends only by a newer choice, by rule 18 or with the
+ *     device, never by anything delivered; while a choice holds, the blob
+ *     decides nothing for that device.
+ *  3. Nothing is published for a display the instance does not drive, and
+ *     everything published or retired names authoritative evidence.
+ *  4. The consumer that is driven by effects agrees with the state.
+ * At rest: the walk comes to rest (no controller answers another's write
+ * with a write of its own, for ever); mirror and store agree on every
+ * instance; and on a display that a v2 drives a new overlay from outside
+ * shows at once and a new choice beats it.
+ *
+ * @param {number} seed
+ * @param {Map<string, number>} seen
+ * @returns {number} steps taken
+ */
+function fleetWalk(seed, seen) {
+  const count = (/** @type {string} */ what) =>
+    seen.set(what, (seen.get(what) ?? 0) + 1);
+  const random = generator(seed);
+  const pick = (/** @type {number} */ n) => Math.floor(random() * n);
+  const chance = (/** @type {number} */ p) => random() < p;
+  /** @type {string[]} */
+  const trace = [];
+  /** @param {string} message */
+  const fail = (message) => {
+    throw new Error(
+      `${message}\n  seed ${seed}, after ${trace.length} steps:\n  ${trace.slice(-(Number(process.env.PIXDCON2_MODEL_TRACE) || 30)).join("\n  ")}`,
+    );
+  };
+
+  const v1Writes = chance(0.6);
+  const secondDrives = v1Writes && chance(0.5);
+  count(v1Writes ? "fleet:v1_is_the_writer" : "fleet:v2_is_the_writer");
+  count(
+    secondDrives
+      ? "fleet:second_v2_drives_too"
+      : "fleet:second_v2_is_the_edge_instance",
+  );
+  /** Who may drive a display, until the transition ends. */
+  let drivers = v1Writes
+    ? secondDrives
+      ? ["v1", "I", "J"]
+      : ["v1", "I"]
+    : ["I"];
+  /** The transition has ended in this walk: v1 is gone, I is the writer. */
+  let ended = false;
+  /** Devices for which I saved a choice while it was not the writer. @type {Set<string>} */
+  const carried = new Set();
+  /** Device → who drives it now; null: nobody. @type {Map<string, string|null>} */
+  const driver = new Map(
+    DEVICES.map((device) => [
+      device,
+      chance(0.15) ? null : drivers[pick(drivers.length)],
+    ]),
+  );
+  /** @param {string} name */
+  const outputsOf = (name) =>
+    Object.fromEntries(
+      DEVICES.map((device) => [
+        device,
+        /** @type {"drive"|"shadow"} */ (
+          driver.get(device) === name ? "drive" : "shadow"
+        ),
+      ]),
+    );
+
+  /** @typedef {{topic: string, payload: string, retain: boolean, own?: boolean}} Message */
+  /**
+   * @typedef {object} V2
+   * @property {"I"|"J"} name
+   * @property {false} v1
+   * @property {boolean} writer for I it becomes true when the transition ends
+   * @property {ReturnType<typeof world>} w
+   * @property {number} connection
+   * @property {boolean} connected
+   * @property {Message[]} downlink
+   * @property {Array<{topic: string, payload: string, write: number}>} uplink
+   * @property {number[]} acks
+   * @property {Array<Message & {connection: number}>} late
+   * @property {Set<string>} held devices for which a choice of this instance holds against the blob (only kept for an instance that is not the writer)
+   */
+  /** @param {"I"|"J"} name @param {boolean} writer @returns {V2} */
+  const v2 = (name, writer) => ({
+    name,
+    v1: false,
+    writer,
+    w: world({ name, blobWriter: writer, outputs: outputsOf(name) }),
+    connection: 0,
+    connected: false,
+    downlink: [],
+    uplink: [],
+    acks: [],
+    late: [],
+    held: new Set(),
+  });
+  const I = v2("I", !v1Writes);
+  const J = v2("J", false);
+  const v2s = [I, J];
+
+  /**
+   * @typedef {object} V1
+   * @property {"v1"} name
+   * @property {true} v1
+   * @property {boolean} connected
+   * @property {Message[]} downlink
+   * @property {Array<{topic: string, payload: string, done?: (error?: Error|null) => void, qos: number}>} uplink
+   * @property {any} overlay
+   */
+  /** @type {V1|null} */
+  const v1 = v1Writes
+    ? {
+        name: "v1",
+        v1: true,
+        connected: false,
+        downlink: [],
+        uplink: [],
+        overlay: null,
+      }
+    : null;
+  const newOverlay = () => {
+    if (!v1) return;
+    v1.overlay?.unsubscribe();
+    v1.overlay = new ConfigOverlay(
+      {
+        get connected() {
+          return v1.connected;
+        },
+        /** v1's MqttService.publish: a topic below the base; QoS 1 unless told otherwise; false when not connected. @param {string} topic @param {string} payload @param {boolean} _retain @param {(error?: Error|null) => void} [done] @param {number} [qos] */
+        publish(topic, payload, _retain, done, qos = 1) {
+          if (!v1.connected) return false;
+          v1.uplink.push({
+            topic: topic === "overlay/blob" ? "blob" : topic.split("/")[2],
+            payload,
+            done,
+            qos,
+          });
+          // QoS 0: done once it is written to the socket.
+          if (qos === 0) done?.(null);
+          return true;
+        },
+        unsubscribeWildcard() {},
+      },
+      V1_BASE,
+      async () => {},
+      { logger: QUIET },
+    );
+  };
+  newOverlay();
+  /** @type {Array<V1|V2>} */
+  const clients = v1 ? [v1, I, J] : [I, J];
+
+  /** The broker's retained store. */
+  const store = {
+    /** @type {Map<string, string>} */ granular: new Map(),
+    /** @type {string|null} */ blob: null,
+  };
+  /** Every scene v1 put into the store with a rewrite, as "<device>/<scene>". @type {Set<string>} */
+  const putBackByV1 = new Set();
+  /** "<device>/<scene>" → the last time an outside client published that scene for that device in the blob. A rewrite of a controller carries scenes and commands none. @type {Map<string, number>} */
+  const commandedAt = new Map();
+  /** Per v2 instance: device → the time of its last choice there that still stands (rule 18 takes it back). @type {Map<string, Map<string, number>>} */
+  const chosenAt = new Map([
+    ["I", new Map()],
+    ["J", new Map()],
+  ]);
+  let now = 0;
+  /** Rewrites of the v2 writer that the broker has stored. @type {string[]} */
+  const writerBlobs = [];
+  let names = 0;
+  const fresh = (/** @type {string} */ prefix) => `${prefix}${++names}`;
+
+  /** Instances that are not the writer and hold a choice for the device. @param {string} device */
+  const holders = (device) =>
+    v2s.filter((c) => !c.writer && c.held.has(device));
+
+  /**
+   * The broker processes a publish: the store takes it, and every client
+   * that is connected gets it, the publisher as its own echo.
+   *
+   * @param {string} topic
+   * @param {string} payload
+   * @param {V1|V2|null} from null: an outside client
+   */
+  const broker = (topic, payload, from) => {
+    if (topic === "blob") {
+      // 1. One writer, at any time.
+      const writer = v1Writes && !ended ? "v1" : "I";
+      if (from && from.name !== writer)
+        fail(
+          `${from.name} published to the blob topic; the writer is ${writer}`,
+        );
+      const before = blobScenes(parseOrNull(store.blob));
+      const after = blobScenes(parseOrNull(payload));
+      if (from?.v1)
+        for (const [device, scene] of after)
+          if (before.get(device) !== scene)
+            putBackByV1.add(`${device}/${scene}`);
+      for (const device of DEVICES) {
+        if (holders(device).length === 0) continue;
+        if (from?.v1 && after.has(device)) {
+          count("v1:rewrite_names_a_scene_for_a_device_a_v2_choice_holds");
+          if (after.get(device) !== before.get(device))
+            count("v1:rewrite_brings_back_another_scene_than_the_store_held");
+        }
+        if (
+          from === null &&
+          after.has(device) &&
+          after.get(device) !== before.get(device)
+        )
+          count(
+            "limit:outside_blob_scene_for_a_device_a_reader_s_choice_holds",
+          );
+      }
+      if (from === null)
+        for (const [device, scene] of after)
+          commandedAt.set(`${device}/${scene}`, ++now);
+      if (from?.v1 && payload !== "") count("v1:rewrite_stored");
+      if (from && !from.v1 && payload !== "") writerBlobs.push(payload);
+      store.blob = payload === "" ? null : payload;
+    } else if (payload === "") store.granular.delete(topic);
+    else store.granular.set(topic, payload);
+    for (const client of clients)
+      if (client.connected)
+        client.downlink.push({
+          topic,
+          payload,
+          retain: false,
+          own: client === from,
+        });
+  };
+
+  /** Is a blob write of another controller in the broker's hands, or on its way to this one? @param {V1|V2} client */
+  const foreignBlobInFlight = (client) =>
+    clients.some(
+      (other) =>
+        other !== client &&
+        other.uplink.some((publish) => publish.topic === "blob"),
+    ) ||
+    client.downlink.some(
+      (item) => item.topic === "blob" && !item.retain && !item.own,
+    );
+
+  /**
+   * What a v2 instance answered: its publishes go onto its wire, and what
+   * must hold for an effect is checked.
+   *
+   * @param {V2} c
+   * @param {number} mark
+   * @param {string} cause
+   */
+  const carry = (c, mark, cause) => {
+    for (const effect of c.w.effects.slice(mark)) {
+      if (effect.type === "retire") {
+        if (["connect", "disconnect", "settled", "tick"].includes(cause))
+          fail(`${c.name}: a ${cause} retired a suppression (${effect.ended})`);
+        if (!mayCause("retire", effect.evidence))
+          fail(`${c.name}: retired on ${effect.evidence}`);
+        if (effect.layer !== "blob") continue;
+        // 2. Nothing that is delivered ends a blob suppression of an
+        // instance that is not the writer.
+        if (!c.writer && !["replaced", "dropped"].includes(effect.ended))
+          fail(
+            `${c.name} is not the blob's writer, and its blob suppression for ${effect.device} ended as ${effect.ended}`,
+          );
+        if (effect.ended === "dropped") {
+          chosenAt.get(c.name)?.delete(effect.device);
+          if (c.held.delete(effect.device) && cause === "output")
+            count("reader:choice_made_in_shadow_dropped_by_rule_18");
+        }
+        continue;
+      }
+      if (effect.type !== "publish-clear" && effect.type !== "publish-blob")
+        continue;
+      if (!c.connected) fail(`${c.name} published while not connected`);
+      if (["connect", "disconnect", "settled"].includes(cause))
+        fail(`${c.name}: a ${cause} published something`);
+      if (
+        !mayCause("publish", effect.evidence, {
+          repeatOf: effect.evidence === "timer" ? "message" : undefined,
+        })
+      )
+        fail(`${c.name}: publish on ${effect.evidence}`);
+      if (effect.type === "publish-clear") {
+        // 3.
+        if (driver.get(effect.device) !== c.name)
+          fail(`${c.name} cleared ${effect.device}, which it does not drive`);
+        c.uplink.push({
+          topic: effect.device,
+          payload: "",
+          write: effect.write,
+        });
+      } else {
+        // 1.
+        if (!c.writer)
+          fail(
+            `${c.name} is not the blob's writer and published to the blob topic`,
+          );
+        for (const { device } of effect.generations) {
+          if (driver.get(device) !== c.name)
+            fail(`${c.name} stripped ${device}, which it does not drive`);
+          if (carried.has(device))
+            count("end:choice_saved_by_a_reader_stripped_by_the_writer");
+        }
+        c.uplink.push({
+          topic: "blob",
+          payload: effect.payload,
+          write: effect.write,
+        });
+      }
+    }
+  };
+
+  /** What must hold for a v2 instance after every step. @param {V2} c */
+  const check = (c) => {
+    // 4.
+    const stale = c.w.stale(DEVICES);
+    if (stale.length > 0)
+      fail(
+        `${c.name}: a consumer that is driven by effects is stale. ${stale.join("; ")}`,
+      );
+    const current = c.w.state().connection;
+    for (const device of DEVICES) {
+      const inputs = sceneInputs(c.w.state(), device);
+      for (const layer of /** @type {const} */ (["granular", "blob"])) {
+        const value = inputs[layer];
+        if (!value) continue;
+        if (value.confirmed !== (value.connection === current))
+          fail(`${c.name} ${device} ${layer}: confirmed is wrong`);
+        if (value.inEffect && !value.confirmed)
+          fail(
+            `${c.name} ${device} ${layer}: in effect without being delivered on connection ${current}`,
+          );
+      }
+      // 2. What the display shows, whatever rule led to it. For I this
+      // goes on after the transition ended, for the choices it saved
+      // before: as the writer it shows a blob scene on such a device only
+      // when an outside client commanded it after the choice.
+      const chosen = chosenAt.get(c.name)?.get(device);
+      if (
+        chosen !== undefined &&
+        inputs.blob?.inEffect &&
+        c.w.shows(device).endsWith("(blob)") &&
+        !((commandedAt.get(`${device}/${inputs.blob.scene}`) ?? 0) > chosen)
+      )
+        fail(
+          `${c.name} shows ${c.w.shows(device)} on ${device}: no outside client has published that scene for it since the choice there; a controller's rewrite carried it`,
+        );
+      // 2. The rule.
+      if (c.held.has(device)) {
+        if (!c.w.state().suppressions.get(device)?.blob)
+          fail(
+            `${c.name}: the choice for ${device} no longer holds against the blob, and nothing said why`,
+          );
+        if (inputs.blob?.inEffect)
+          fail(
+            `${c.name} shows the blob's ${inputs.blob.scene} on ${device} although a choice holds`,
+          );
+        if (c.w.shows(device).endsWith("(blob)"))
+          fail(
+            `${c.name} shows ${c.w.shows(device)} on ${device} although a choice holds`,
+          );
+      }
+    }
+  };
+
+  /** @param {V2} c @param {import("../../src/overlay/scene-layers.js").LayersInput} input */
+  const feedTo = (c, input) => {
+    const mark = c.w.effects.length;
+    const result = c.w.feed(input);
+    carry(c, mark, input.type);
+    check(c);
+    return result;
+  };
+
+  /** @param {V1|V2} client */
+  const replayTo = (client) => {
+    for (const [device, payload] of store.granular)
+      client.downlink.push({ topic: device, payload, retain: true });
+    if (store.blob !== null)
+      client.downlink.push({
+        topic: "blob",
+        payload: store.blob,
+        retain: true,
+      });
+  };
+
+  const anyClient = () => clients[pick(clients.length)];
+  const anyV2 = () => v2s[pick(2)];
+
+  const actions = {
+    outsideGranular() {
+      const device = DEVICES[pick(3)];
+      const stored = store.granular.get(device);
+      const roll = random();
+      const payload =
+        roll < 0.2
+          ? ""
+          : roll < 0.3 && stored !== undefined
+            ? stored
+            : fresh("g");
+      trace.push(`outside: granular ${device} = ${payload || "(clear)"}`);
+      broker(device, payload, null);
+    },
+    outsideBlob() {
+      const roll = random();
+      /** @type {string} */
+      let payload = "";
+      if (roll < 0.1 && writerBlobs.length > 0) {
+        // Somebody publishes a rewrite of the v2 writer again.
+        payload = writerBlobs[pick(writerBlobs.length)];
+      } else if (roll < 0.92) {
+        const base = parseOrEmpty(store.blob);
+        const devices = DEVICES.map((name) => {
+          const existing = (base.devices ?? []).find(
+            (/** @type {any} */ entry) => entry.name === name,
+          );
+          const draw = random();
+          if (draw < 0.4) return { name, scene: fresh("b") };
+          if (draw < 0.6) return { name };
+          return existing ?? { name };
+        });
+        const kept =
+          typeof base[WRITE_MARK] === "string" && chance(0.3)
+            ? { [WRITE_MARK]: base[WRITE_MARK] }
+            : {};
+        payload = JSON.stringify({ devices, note: fresh("n"), ...kept });
+      }
+      trace.push(`outside: blob = ${payload || "(clear)"}`);
+      broker("blob", payload, null);
+    },
+    deliver() {
+      const waiting = clients.filter((client) => client.downlink.length > 0);
+      if (waiting.length === 0) return;
+      const client = waiting[pick(waiting.length)];
+      const candidates = client.downlink
+        .map((item, index) => ({ item, index }))
+        .filter(
+          ({ item, index }) =>
+            item.retain ||
+            client.downlink.findIndex(
+              (other) => !other.retain && other.topic === item.topic,
+            ) === index,
+        );
+      const { item, index } = candidates[pick(candidates.length)];
+      client.downlink.splice(index, 1);
+      trace.push(
+        `deliver to ${client.name}: ${item.topic} ${item.retain ? "replay" : item.own ? "own echo" : "live"} ${item.payload || "(empty)"}`,
+      );
+      if (client.v1) {
+        if (item.topic === "blob")
+          client.overlay._handleBlob(item.payload, { retain: item.retain });
+        else
+          client.overlay._handleGranular(
+            `${V1_BASE}/overlay/device/${item.topic}/scene`,
+            item.payload,
+            { retain: item.retain },
+          );
+        return;
+      }
+      if (item.topic === "blob" && !client.writer && client.held.size > 0) {
+        const scenes = blobScenes(parseOrNull(item.payload));
+        for (const device of client.held)
+          count(
+            item.payload === ""
+              ? "reader:blob_cleared_while_a_choice_holds"
+              : !scenes.has(device)
+                ? "reader:blob_without_the_scene_while_a_choice_holds"
+                : item.retain
+                  ? "reader:replay_names_a_scene_while_a_choice_holds"
+                  : "reader:live_blob_names_a_scene_while_a_choice_holds",
+          );
+      }
+      if (
+        item.topic === "blob" &&
+        !client.writer &&
+        writerBlobs.includes(item.payload)
+      )
+        count("writer:v2_rewrite_delivered_to_the_other_v2");
+      const meta = { retain: item.retain, connection: client.connection };
+      if (item.topic === "blob")
+        feedTo(client, { type: "blob", payload: item.payload, ...meta });
+      else
+        feedTo(client, {
+          type: "granular",
+          device: item.topic,
+          payload: item.payload,
+          ...meta,
+        });
+    },
+    brokerProcess() {
+      const sending = clients.filter((client) => client.uplink.length > 0);
+      if (sending.length === 0) return;
+      const client = sending[pick(sending.length)];
+      if (client.v1) {
+        const publish = /** @type {V1["uplink"][number]} */ (
+          client.uplink.shift()
+        );
+        trace.push(
+          `broker: processes v1's write on ${publish.topic}: ${publish.payload || "(clear)"}`,
+        );
+        broker(publish.topic, publish.payload, client);
+        // QoS 1: the acknowledgement. (QoS 0 was done when it was written.)
+        if (publish.qos !== 0) publish.done?.(null);
+        return;
+      }
+      const publish = /** @type {V2["uplink"][number]} */ (
+        client.uplink.shift()
+      );
+      trace.push(
+        `broker: processes write ${publish.write} of ${client.name} on ${publish.topic}`,
+      );
+      broker(publish.topic, publish.payload, client);
+      client.acks.push(publish.write);
+    },
+    acknowledge() {
+      const c = anyV2();
+      if (c.acks.length === 0) return;
+      const [write] = c.acks.splice(pick(c.acks.length), 1);
+      trace.push(`ack to ${c.name}: write ${write}`);
+      feedTo(c, { type: "published", write, outcome: "confirmed" });
+    },
+    choice() {
+      const client = anyClient();
+      const scene = fresh("c");
+      if (foreignBlobInFlight(client))
+        count(
+          "fleet:choice_while_a_blob_write_of_another_controller_is_in_flight",
+        );
+      if (client.v1) {
+        // v1's UI offers the displays v1 runs.
+        const own = DEVICES.filter((device) => driver.get(device) === "v1");
+        if (own.length === 0) return;
+        const device = own[pick(own.length)];
+        trace.push(`choice at v1: ${device} = ${scene}`);
+        if (v2s.some((c) => c.uplink.length > 0 || c.acks.length > 0))
+          count("fleet:two_controllers_chose_before_either_heard_of_the_other");
+        client.overlay.clearDeviceScene(device, scene);
+        return;
+      }
+      const device = DEVICES[pick(3)];
+      trace.push(`choice at ${client.name}: ${device} = ${scene}`);
+      const named = sceneInputs(client.w.state(), device).blob !== null;
+      const mark = client.w.effects.length;
+      const { plan, decision } = client.w.choose(device, scene);
+      if (decision.action !== "apply")
+        fail(`the choice was not applied: ${decision.reason}`);
+      // The writer's choices are judged by the walks of one instance, with
+      // the one order MQTT cannot give; here only a reader's are followed.
+      if (client.writer) chosenAt.get(client.name)?.delete(device);
+      else chosenAt.get(client.name)?.set(device, ++now);
+      carried.delete(device);
+      if (!client.writer) {
+        if (plan.blob === null)
+          fail(
+            `${client.name} is not the writer, and its choice for ${device} does not hold against the blob`,
+          );
+        client.held.add(device);
+        if (!named)
+          count("reader:choice_while_the_blob_names_no_scene_for_the_device");
+      }
+      carry(client, mark, "choice");
+      check(client);
+    },
+    settle() {
+      const c = anyV2();
+      if (c.connection === 0) return;
+      trace.push(`settle hint at ${c.name}`);
+      feedTo(c, {
+        type: "settled",
+        connection: c.connection,
+        complete: chance(0.8),
+      });
+    },
+    tick() {
+      const client = anyClient();
+      trace.push(`tick at ${client.name}`);
+      // v1: its retry timer.
+      if (client.v1) client.overlay._flushSceneClears();
+      else feedTo(client, { type: "tick" });
+    },
+    disconnect() {
+      const client = anyClient();
+      if (!client.connected) return;
+      client.connected = false;
+      // Some of its publishes on their way still reach the store; the
+      // others, and every acknowledgement, are lost.
+      const reaching = client.uplink.slice(0, pick(client.uplink.length + 1));
+      trace.push(
+        `disconnect of ${client.name} (${reaching.length} of ${client.uplink.length} writes reached the store)`,
+      );
+      for (const publish of reaching)
+        broker(publish.topic, publish.payload, client);
+      client.uplink = [];
+      if (client.v1) {
+        client.downlink = [];
+        client.overlay._onDisconnect();
+        return;
+      }
+      client.late = client.downlink
+        .slice(0, pick(client.downlink.length + 1))
+        .map((item) => ({ ...item, connection: client.connection }));
+      client.downlink = [];
+      client.acks = [];
+      feedTo(client, { type: "disconnect", connection: client.connection });
+    },
+    lateMessage() {
+      const c = anyV2();
+      const item = c.late.shift();
+      if (!item) return;
+      trace.push(
+        `late to ${c.name}: ${item.topic} of connection ${item.connection}`,
+      );
+      const meta = { retain: item.retain, connection: item.connection };
+      const { decision } =
+        item.topic === "blob"
+          ? feedTo(c, { type: "blob", payload: item.payload, ...meta })
+          : feedTo(c, {
+              type: "granular",
+              device: item.topic,
+              payload: item.payload,
+              ...meta,
+            });
+      if (decision.reason !== "superseded_source")
+        fail(
+          `${c.name}: a message of connection ${item.connection} was not dropped`,
+        );
+    },
+    /** @param {V1|V2} [which] */
+    connect(which) {
+      const client = which ?? anyClient();
+      if (client.connected) return;
+      client.connected = true;
+      if (client.v1) {
+        trace.push("connect of v1");
+        replayTo(client);
+        client.overlay._onConnect();
+        return;
+      }
+      client.connection += 1;
+      trace.push(`connect ${client.connection} of ${client.name}`);
+      feedTo(client, { type: "connect", connection: client.connection });
+      replayTo(client);
+    },
+    restart() {
+      const client = anyClient();
+      const reaching = client.connected
+        ? client.uplink.slice(0, pick(client.uplink.length + 1))
+        : [];
+      client.connected = false;
+      trace.push(
+        `restart of ${client.name} (${reaching.length} writes reached the store)`,
+      );
+      for (const publish of reaching)
+        broker(publish.topic, publish.payload, client);
+      client.uplink = [];
+      client.downlink = [];
+      if (client.v1) {
+        // A new v1 process: it knows nothing of what the old one cleared.
+        count("v1:restart");
+        newOverlay();
+        return;
+      }
+      client.acks = [];
+      client.late = [];
+      client.connection = 0;
+      if (!client.writer && client.held.size > 0)
+        count("reader:restart_while_a_choice_holds");
+      client.w.restart();
+      check(client);
+    },
+    /** The last step of the switch-over (knowledge entry, section 10): v1 is stopped, then I is started again and is the blob's writer from then on. */
+    endTransition() {
+      if (!v1 || ended) return;
+      count("fleet:transition_ended");
+      // v1 stops. What it had handed to the broker may still be stored.
+      const reaching = v1.connected
+        ? v1.uplink.slice(0, pick(v1.uplink.length + 1))
+        : [];
+      trace.push(
+        `the transition ends: v1 stops (${reaching.length} of its writes reached the store), I restarts as the blob's writer`,
+      );
+      for (const publish of reaching)
+        broker(publish.topic, publish.payload, v1);
+      v1.connected = false;
+      v1.uplink = [];
+      v1.downlink = [];
+      v1.overlay.unsubscribe();
+      clients.splice(clients.indexOf(v1), 1);
+      ended = true;
+      // The interlock is off from the next start on. A display that v1 or
+      // a second v2 still had is nobody's, or it is I's when the new
+      // process starts: its output changes while nothing of I runs.
+      drivers = ["I"];
+      for (const device of DEVICES) {
+        if (driver.get(device) === "I") continue;
+        const was = driver.get(device);
+        driver.set(device, null);
+        if (was === "J")
+          feedTo(J, { type: "output", device, output: "shadow" });
+        if (chance(0.5)) driver.set(device, "I");
+      }
+      // I stops, too. Its clears on their way reach the store or do not.
+      for (const publish of I.connected
+        ? I.uplink.slice(0, pick(I.uplink.length + 1))
+        : [])
+        broker(publish.topic, publish.payload, I);
+      for (const device of I.held) carried.add(device);
+      for (const device of carried)
+        if (
+          putBackByV1.has(
+            `${device}/${blobScenes(parseOrNull(store.blob)).get(device)}`,
+          )
+        )
+          count("end:blob_holds_a_scene_that_v1_put_back");
+      const file = I.w;
+      I.writer = true;
+      I.connected = false;
+      I.connection = 0;
+      I.uplink = [];
+      I.downlink = [];
+      I.acks = [];
+      I.late = [];
+      I.held.clear();
+      // A new process on the same config.json: the choices, and the
+      // suppressions that were saved with them.
+      I.w = world({
+        name: "I, the writer",
+        blobWriter: true,
+        outputs: outputsOf("I"),
+        choices: Object.fromEntries(file.choices),
+        saved: Object.fromEntries(file.saved),
+      });
+      for (const effect of I.w.effects)
+        if (effect.type === "retire" && effect.ended === "dropped") {
+          carried.delete(effect.device);
+          if (effect.layer === "blob")
+            count("end:choice_made_in_shadow_dropped_at_the_start");
+        }
+      carry(I, 0, "output");
+      check(I);
+    },
+    /** A display changes hands: the old driver lets go, then the new one takes it. @param {string} [device] @param {string|null} [to] */
+    handover(device = DEVICES[pick(3)], to) {
+      const from = driver.get(device) ?? null;
+      const others = [...drivers, null].filter((name) => name !== from);
+      const next = to === undefined ? others[pick(others.length)] : to;
+      if (next === from) return;
+      trace.push(
+        `handover: ${device} from ${from ?? "nobody"} to ${next ?? "nobody"}`,
+      );
+      driver.set(device, null);
+      const old = v2s.find((c) => c.name === from);
+      if (old) feedTo(old, { type: "output", device, output: "shadow" });
+      driver.set(device, next);
+      const taking = v2s.find((c) => c.name === next);
+      if (taking) {
+        count("fleet:handover_to_v2");
+        feedTo(taking, { type: "output", device, output: "drive" });
+      } else if (next === "v1") count("fleet:handover_to_v1");
+    },
+  };
+
+  try {
+    /** @type {Array<[keyof typeof actions, number]>} */
+    const weights = [
+      ["outsideGranular", 8],
+      ["outsideBlob", 10],
+      ["deliver", 34],
+      ["brokerProcess", 18],
+      ["acknowledge", 8],
+      ["choice", 14],
+      ["settle", 3],
+      ["tick", 6],
+      ["disconnect", 3],
+      ["lateMessage", 2],
+      ["connect", 12],
+      ["restart", 1.5],
+      ["handover", 2],
+      ["endTransition", 0.7],
+    ];
+    const total = weights.reduce((sum, [, weight]) => sum + weight, 0);
+    for (let step = 0; step < STEPS; step++) {
+      let roll = random() * total;
+      for (const [name, weight] of weights) {
+        roll -= weight;
+        if (roll < 0) {
+          actions[name]();
+          break;
+        }
+      }
+    }
+
+    // --- the end of the walk: everything in flight arrives -----------------
+    trace.push("— quiesce —");
+    actions.handover("D1", "I");
+    for (const client of clients) actions.connect(client);
+    for (let round = 0; ; round++) {
+      if (round > 200)
+        fail(
+          "the walk does not come to rest: the controllers keep answering each other",
+        );
+      while (clients.some((client) => client.downlink.length > 0))
+        actions.deliver();
+      while (clients.some((client) => client.uplink.length > 0))
+        actions.brokerProcess();
+      while (v2s.some((c) => c.acks.length > 0)) actions.acknowledge();
+      if (clients.some((client) => client.downlink.length > 0)) continue;
+      const marks = v2s.map((c) => c.w.effects.length);
+      for (const c of v2s) feedTo(c, { type: "tick" });
+      if (!ended) v1?.overlay._flushSceneClears();
+      if (
+        clients.every((client) => client.uplink.length === 0) &&
+        v2s.every((c, index) => c.w.effects.length === marks[index])
+      )
+        break;
+    }
+
+    // Mirror and store agree, on every v2 instance.
+    const storedBlob = blobScenes(parseOrNull(store.blob));
+    for (const c of v2s) {
+      for (const device of DEVICES) {
+        const inputs = sceneInputs(c.w.state(), device);
+        const drives = driver.get(device) === c.name;
+        for (const [layer, stored] of /** @type {const} */ ([
+          ["granular", store.granular.get(device)],
+          ["blob", storedBlob.get(device)],
+        ])) {
+          const value = inputs[layer];
+          if (
+            value &&
+            stored === undefined &&
+            value.connection < c.connection
+          ) {
+            count("limit:cleared_while_away");
+            if (value.inEffect)
+              fail(
+                `${c.name} ${device} ${layer}: cleared while away and still in effect`,
+              );
+            continue;
+          }
+          if ((value?.scene ?? undefined) !== stored)
+            fail(
+              `${c.name} ${device} ${layer}: the store holds ${stored}, the mirror ${value?.scene}`,
+            );
+          if (value && !value.confirmed)
+            fail(
+              `${c.name} ${device} ${layer}: stored and not delivered on the connection`,
+            );
+          // What a choice replaced is gone from the store where the
+          // instance may remove it: its own granular topic, and the blob
+          // for the writer.
+          if (
+            drives &&
+            value &&
+            !value.inEffect &&
+            (layer === "granular" || c.writer)
+          )
+            fail(
+              `${c.name} ${device} ${layer}: ${value.scene} is still stored although the choice replaced it`,
+            );
+        }
+      }
+    }
+
+    // Both directions still work on a display that a v2 instance drives.
+    const toggled = fresh("g");
+    trace.push(`epilogue: outside granular D1 = ${toggled}`);
+    broker("D1", toggled, null);
+    while (clients.some((client) => client.downlink.length > 0))
+      actions.deliver();
+    if (I.w.shows("D1") !== `${toggled} (overlay)`)
+      fail(`a new overlay from outside does not show on I: ${I.w.shows("D1")}`);
+    const mark = I.w.effects.length;
+    I.w.choose("D1", "last");
+    carry(I, mark, "choice");
+    check(I);
+    if (I.w.shows("D1") !== "last (config)")
+      fail(`a new choice does not beat the overlay on I: ${I.w.shows("D1")}`);
+    return trace.length;
+  } finally {
+    // v1's module keeps timers; they go with the walk.
+    v1?.overlay.unsubscribe();
+  }
+}
+
+test(`fleet model: ${WALKS} random walks of ${STEPS} steps over one broker with several controllers, pixdcon v1 (its real ConfigOverlay) and two v2 instances with their own secrets; exactly one of them writes the blob. Nobody else publishes to the blob topic, no rewrite is a scene command for another controller's display, a consumer that is driven by effects never goes stale, and the walk comes to rest`, () => {
+  /** @type {Map<string, number>} */
+  const seen = new Map();
+  let steps = 0;
+  for (let seed = FIRST_SEED; seed < FIRST_SEED + WALKS; seed++)
+    steps += fleetWalk(seed, seen);
+  assert.ok(
+    steps > WALKS * STEPS * 0.5,
+    `the walks really walked (${steps} steps)`,
+  );
+  if (WALKS >= 1000)
+    assert.deepEqual(
+      FLEET_MUST_SEE.filter((what) => !seen.has(what)),
+      [],
+      "every arrangement and every hostile order was met at least once",
+    );
+  assert.deepEqual(
+    [...seen.keys()].filter((what) => !FLEET_MUST_SEE.includes(what)).sort(),
+    [],
   );
   if (process.env.PIXDCON2_MODEL_STATS)
     console.log(`${steps} steps`, Object.fromEntries([...seen].sort()));

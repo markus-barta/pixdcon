@@ -32,7 +32,10 @@
  * the current one (overlay-service.js C1). After a reconnect it waits,
  * listed and without a say, until the new connection delivers it. A scene
  * overlay that was cleared while pixdcon was away therefore does not go on
- * overriding the choice (A-182).
+ * overriding the choice (A-182). The same holds for every other overlay
+ * value below (a setting, mode, brightness, an address, a scene path): the
+ * overlay service hands this file only the values the current connection
+ * delivered (overlay-service.js M4).
  *
  * The two layers are independent: a new granular command ends the granular
  * suppression and leaves the blob suppression in place, so when that granular
@@ -51,6 +54,9 @@
  * ADDRESS: config.json < blob overlay < granular overlay (A-073, D-188).
  *
  * OUTPUT: one policy for everything that acts outward, see resolveOutput().
+ *
+ * BLOB WRITER: one instance per base topic may publish to the blob overlay,
+ * see resolveBlobWriter().
  *
  * Owner: core/state worker.
  */
@@ -197,6 +203,35 @@ export function resolveOutput(inputs) {
   if (inputs.transition && inputs.owner !== "free")
     return { mode: "shadow", requested, reason: "ownership_unknown" };
   return { mode: "drive", requested, reason: null };
+}
+
+/**
+ * Who writes the blob overlay (overlay-service.js W1). The blob is one
+ * document for all displays, and a rewrite publishes all of it: two
+ * controllers that rewrite it lose each other's changes and take each
+ * other's rewrite for a scene command. So one instance per base topic
+ * writes it, the one that owns the controller topics there:
+ *   mqtt_off       no MQTT in this run: nothing is written at all
+ *   force_shadow   PIXDCON2_FORCE_SHADOW=1: this instance never writes (edge)
+ *   v1_writes      the transition is on: pixdcon v1 publishes the controller
+ *                  topics under the base topic and rewrites the blob itself
+ * Otherwise this instance is the writer. Every input is fixed for the run
+ * (the environment, and the namespace that is read once at start), so the
+ * answer cannot change while the process lives: v1 is taken to be alive
+ * for as long as the operator has not ended the transition, whatever its
+ * device list says and whether or not it arrived.
+ *
+ * @param {object} inputs
+ * @param {boolean} inputs.mqtt the gateway exists in this run
+ * @param {boolean} inputs.forceShadow PIXDCON2_FORCE_SHADOW=1
+ * @param {boolean} inputs.transition `mqtt.statusBaseTopic` differs from `mqtt.baseTopic`
+ * @returns {import("../types.js").BlobWriter}
+ */
+export function resolveBlobWriter(inputs) {
+  if (!inputs.mqtt) return { writer: false, reason: "mqtt_off" };
+  if (inputs.forceShadow) return { writer: false, reason: "force_shadow" };
+  if (inputs.transition) return { writer: false, reason: "v1_writes" };
+  return { writer: true, reason: null };
 }
 
 /**

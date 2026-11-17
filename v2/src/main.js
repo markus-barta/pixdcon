@@ -22,14 +22,17 @@
  *                                     namespace is not known: MQTT then stays off for this run, so a
  *                                     broken file can never make v2 publish under v1's topics.
  *   5. v1 ownership feed              reads v1's device list during the switch-over
- *   6. overlay service, runtime config   the effective config and the one output policy
+ *   6. overlay service, runtime config   the effective config and the one output policy.
+ *                                     Who writes the blob overlay is decided here too, once
+ *                                     for the run (blobWriter below)
  *   7. scenes, settings, state, health, rendering, status, API
  *
  * START ORDER (v1's order with its faults removed, matrix A-006 to A-020):
  *   1. HTTP server                    first, so no display can delay the UI (A-019)
  *   2. MQTT connect, at most 5 s      optional (A-009, A-011)
  *   3. v1 ownership, overlay service  read the retained layer up to the settle hint, no fixed sleep (A-013)
- *   4. runtime config                 effective devices and scenes, outputs resolved
+ *   4. runtime config                 effective devices and scenes, outputs resolved; the overlay
+ *                                     service is told who is driven (applyOutputs)
  *   5. scene registry, settings       schemas are known before setting overlays are judged for good (A-018).
  *                                     The registry's work runs in one lane (below) and is finished
  *                                     before anything that reads scenes starts
@@ -117,7 +120,10 @@ import {
   loadV1Font,
   readVersion,
 } from "./scenes/v1-shared.js";
-import { normalizeSettingValue } from "./state/precedence.js";
+import {
+  normalizeSettingValue,
+  resolveBlobWriter,
+} from "./state/precedence.js";
 import { RuntimeConfig } from "./state/runtime-config.js";
 import { StateStore } from "./state/state-store.js";
 import { V1Ownership } from "./state/v1-ownership.js";
@@ -245,11 +251,32 @@ export async function createApp(env = process.env, overrides = {}) {
   const outputOf = (device) =>
     orSkeleton(() => runtime.outputOf(device), "shadow");
 
+  /**
+   * The blob overlay is one document for all displays, and it has one
+   * writer: the instance that owns the controller topics under the base
+   * topic (overlay-service.js W1; the decision is precedence.js
+   * resolveBlobWriter). While the transition is on that is pixdcon v1,
+   * which publishes them there and rewrites the blob itself; this instance
+   * then never publishes to the blob topic. An instance that is forced
+   * into shadow never writes it either (the edge lane). Every input is
+   * fixed for the run: the namespace is read once, and the switch comes
+   * from the environment. So the right to write the blob cannot be gained
+   * while the process runs.
+   */
+  const blobWriter = Object.freeze(
+    resolveBlobWriter({
+      mqtt: mqtt !== null,
+      forceShadow,
+      transition: topics.transition,
+    }),
+  );
+
   /** @type {OverlayService} */
   const overlays = new OverlayService({
     mqtt,
     topics,
     outputOf,
+    blobWriter: blobWriter.writer,
     schemaOf: (scene) =>
       orSkeleton(() => scenes.get(scene)?.settingsSchema ?? null, null),
     savedSuppressions: () =>
@@ -487,6 +514,7 @@ export async function createApp(env = process.env, overrides = {}) {
       reasons: measured?.reasons ?? [],
       measured: measured !== null,
       forceShadow,
+      blobWriter,
       mqttNamespace,
       restartRequired,
     };
@@ -501,6 +529,7 @@ export async function createApp(env = process.env, overrides = {}) {
       mqtt: mqttStatus(),
       config: config.file(),
       devices: state.views(),
+      incarnations: runtime.incarnations(),
       scenes: scenes.list(),
       builtins: {
         ulanzi: [...factories.builtinModes.ulanzi],
@@ -592,15 +621,39 @@ export async function createApp(env = process.env, overrides = {}) {
   };
 
   /**
+   * Who is driven, for the two scene layers of the overlay service. Until
+   * the first call they hold every device in shadow.
+   *
+   * @param {import("./types.js").EffectiveConfig} effective
+   */
+  const tellOutputs = (effective) =>
+    orSkeleton(
+      () =>
+        overlays.applyOutputs(
+          effective.devices.map((device) => ({
+            name: device.name,
+            output: device.output.mode,
+          })),
+        ),
+      undefined,
+    );
+
+  /**
    * The effective scene map changed (config.json, blob scenes or a granular
    * path overlay): the registry follows, and the instances of the scenes it
    * names are replaced. Queued in the registry lane: a change that arrives
    * while the first load or an earlier change is still importing waits for
    * it, and is applied after it.
    *
-   * @param {{diff: import("./types.js").EffectiveDiff}} change
+   * The overlay service is told the resolved output of every device with
+   * the same event, and once after the runtime config was started: that is
+   * how the scene layers learn who is driven, and who left
+   * (OverlayService.applyOutputs).
+   *
+   * @param {{effective: import("./types.js").EffectiveConfig, diff: import("./types.js").EffectiveDiff}} change
    */
-  const onRuntimeChanged = ({ diff }) => {
+  const onRuntimeChanged = ({ effective, diff }) => {
+    tellOutputs(effective);
     if (
       diff.scenesAdded.length + diff.scenesRemoved.length === 0 &&
       diff.scenesChanged.length === 0
@@ -666,7 +719,7 @@ export async function createApp(env = process.env, overrides = {}) {
         );
       else if (topics.transition)
         logger.info(
-          `[pixdcon2] Transition: controller topics under ${topics.statusBase}, v1's device list is read from ${topics.v1ConfigEffective}`,
+          `[pixdcon2] Transition: controller topics under ${topics.statusBase}, v1's device list is read from ${topics.v1ConfigEffective}; ${topics.overlayBlob} is written by pixdcon v1 only`,
         );
       const { port: listening } = await server.start();
       await runStep("mqtt.start", () => mqtt?.start(), logger);
@@ -674,6 +727,13 @@ export async function createApp(env = process.env, overrides = {}) {
       await runStep("overlays.start", () => overlays.start(), logger);
       runtime.on("changed", onRuntimeChanged);
       await runStep("runtime.start", () => runtime.start(), logger);
+      // The first effective config: from here on the scene layers know who
+      // is driven. A later change arrives through onRuntimeChanged.
+      await runStep(
+        "overlays.outputs",
+        () => tellOutputs(runtime.get()),
+        logger,
+      );
       // The first load is the first piece in the lane. A scene map change
       // that arrives while it runs queues behind it; the drain waits for
       // both, so everything below starts from a registry that is complete.

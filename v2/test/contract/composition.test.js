@@ -14,7 +14,10 @@ import test from "node:test";
 import { manualClock } from "../../src/core/clock.js";
 import { StatusPublisher } from "../../src/mqtt/status-publisher.js";
 import { createTopics } from "../../src/mqtt/topics.js";
-import { resolveOutput } from "../../src/state/precedence.js";
+import {
+  resolveBlobWriter,
+  resolveOutput,
+} from "../../src/state/precedence.js";
 import { requireNetGuard, startStack } from "../helpers/harness.js";
 
 test("output policy: shadow as soon as one reason for it exists, and unknown ownership is a reason", () => {
@@ -78,6 +81,43 @@ test("output policy: shadow as soon as one reason for it exists, and unknown own
   assert.equal(resolveOutput({ ...driven, owner: "v1" }).mode, "drive");
 });
 
+test("blob writer: one instance per base topic writes the blob overlay. pixdcon v1 while the transition is on, never an instance that is forced into shadow, nobody without MQTT; the answer has no input that can change in a run", () => {
+  const writer = { mqtt: true, forceShadow: false, transition: false };
+  assert.deepEqual(resolveBlobWriter(writer), { writer: true, reason: null });
+  assert.deepEqual(resolveBlobWriter({ ...writer, transition: true }), {
+    writer: false,
+    reason: "v1_writes",
+  });
+  assert.deepEqual(resolveBlobWriter({ ...writer, forceShadow: true }), {
+    writer: false,
+    reason: "force_shadow",
+  });
+  // The edge instance during the transition: both reasons hold, one answer.
+  assert.equal(
+    resolveBlobWriter({ mqtt: true, forceShadow: true, transition: true })
+      .writer,
+    false,
+  );
+  assert.deepEqual(resolveBlobWriter({ ...writer, mqtt: false }), {
+    writer: false,
+    reason: "mqtt_off",
+  });
+  // The transition is what the namespace says, and the namespace is read
+  // once per run (topics.transition): v1's device list is not an input, so
+  // a list that is empty, late or missing makes nobody the writer.
+  assert.deepEqual(Object.keys(writer).sort(), [
+    "forceShadow",
+    "mqtt",
+    "transition",
+  ]);
+  assert.equal(resolveBlobWriter.length, 1);
+  assert.equal(
+    createTopics({ statusBaseTopic: "home/hsb1/pixdcon2" }).transition,
+    true,
+  );
+  assert.equal(createTopics().transition, false);
+});
+
 test("last will: the health topic of the status base, retained, status offline in the v1 shape", () => {
   const v1Names = StatusPublisher.lastWill(createTopics());
   assert.equal(v1Names.topic, "home/hsb1/pixdcon/health");
@@ -111,6 +151,11 @@ test("composition: the namespace of a run is reported, and an unbuilt health mod
     transition: false,
   });
   assert.equal(health.body.restartRequired, null);
+  // Without MQTT in this run nothing is written to the blob overlay.
+  assert.deepEqual(health.body.blobWriter, {
+    writer: false,
+    reason: "mqtt_off",
+  });
   // Until the scheduler and the health model exist, "ok" only means "answers".
   assert.equal(health.body.measured, false);
   assert.deepEqual(health.body.reasons, []);
@@ -176,6 +221,7 @@ test("N7 shutdown: a scene import that is still running when the wait for the re
 
   // The effective scene map changes; the import it starts does not end.
   runtime.emit("changed", {
+    effective: { devices: [] },
     diff: { scenesAdded: ["clock"], scenesRemoved: [], scenesChanged: [] },
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -265,4 +311,10 @@ test.todo(
 );
 test.todo(
   "overlay cannot widen: a blob entry with output drive, or enabled true, for a device that config.json keeps in shadow or disabled changes neither; the record names the ignored keys",
+);
+test.todo(
+  "blob writer of a run: with mqtt.statusBaseTopic different from mqtt.baseTopic the controller status says {writer: false, reason: v1_writes} and no publish reaches <base>/overlay/blob in the whole run; with PIXDCON2_FORCE_SHADOW=1 force_shadow; with both bases equal and a driven display the instance is the writer",
+);
+test.todo(
+  "commands lapse, restrictions stay: after a reconnect whose replay is held back, the effective config is built without the granular ip, the scene paths and the blob's patches, devices and scenes; a display with an ip overlay or a blob ip is held (enabled false, held true), a display that an overlay switched off stays off; the delivered replay puts everything back with one changed event",
 );

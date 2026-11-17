@@ -9,7 +9,8 @@
  * I/O, no clock: the overlay service feeds it the gateway's messages and
  * events and performs the effects. The rules M1 to M5, S1 to S5 and B1 to B4
  * in the header of overlay-service.js are what this file does; C1, G1 and
- * O1 to O3 below were added after the third cross-read.
+ * O1 to O3 below were added after the third cross-read, E1 and W1 after the
+ * fourth, which also made the identity of O1 last as long as the process.
  *
  * WHAT IS HELD PER TOPIC
  *  - what the broker's store holds as far as it was delivered, and on which
@@ -24,9 +25,41 @@
  *    command, live or not. It is still what the store holds until the write
  *    lands, so the mirror takes it, in the place of a replaced value.
  *  - for the blob: the content as it should be (`base`), what the store is
- *    known to hold (`store`), the own rewrites of this connection (`own`)
- *    and those of earlier connections that the store may hold or still get
- *    (`sent`).
+ *    known to hold (`store`), and the own rewrites that are on their way.
+ *    No own rewrite is remembered beyond its echo: it is known again by its
+ *    mark (O1), for as long as the process lives.
+ *
+ * E1  WHAT IS ANNOUNCED. The "changed" effect is not written by any rule of
+ *     this file. After every step `reduce` compares what the readers of
+ *     this file answer before and after: for every device `layersView`
+ *     (both layers with their say, the suppressions, the generation, the
+ *     output, which layer decides, and whether an own write for the device
+ *     is on its way), and for the blob as a document
+ *     `blobView` (its text, whether it can be read, and its standing on the
+ *     connection: the blob also patches devices and adds scenes, and that
+ *     reader follows the same rule). It names the devices for which the
+ *     answer differs, and says whether the blob's does. A change that no
+ *     rule thought of announcing is announced all the same: a record that
+ *     waits after a connect, one that the new connection delivers again
+ *     unchanged, a suppression the broker confirmed. So a consumer that
+ *     computes again only what it is told holds exactly what the precedence
+ *     over the whole state says (ordering-model.test.js checks that after
+ *     every step).
+ *
+ * W1  WHO WRITES THE BLOB. The blob is one document for all devices, and a
+ *     rewrite publishes all of it. Two controllers that rewrite it lose each
+ *     other's changes, and each takes the other's rewrite for a command.
+ *     So one instance writes it, the one that owns the controller topics of
+ *     the base topic (`blobWriter`, fixed for the run): pixdcon v1 while the
+ *     transition is on, v2 after it, the edge instance never. An instance
+ *     that is not the writer publishes nothing to the blob topic, and
+ *     nothing that is delivered there ends one of its blob suppressions:
+ *     the writer rewrites from what it last saw, so its rewrite can carry
+ *     any older scene of a device, and it cannot be told from a command. A
+ *     choice made there holds against the blob until a newer choice
+ *     replaces it, rule 18 drops it or the device leaves. The suppression is
+ *     saved as "anything stored is stale", so the next run that is the
+ *     writer strips whatever the blob then holds for the device.
  *
  * C1  WHO DECIDES. A scene value is in effect only when the connection that
  *     delivered it is the current one, or the last one while the broker is
@@ -54,21 +87,28 @@
  *
  * OWN WRITES OF THE BLOB
  * O1  Every rewrite carries a mark of its own (WRITE_MARK, a top-level key
- *     of the blob that pixdcon v1 and the structural overlays ignore),
- *     derived from a secret of the process. Its bytes are therefore its
- *     identity: nobody else can publish them before the broker has stored
- *     the write. Own rewrites come back in the order they were sent, so
- *     only the oldest one on its way can be echoed: a message with its
- *     exact bytes is its echo. An acknowledgement says the write, and every
- *     rewrite sent before it, is in the store.
- * O2  A blob with the exact bytes of any other own rewrite (a later one on
- *     its way, one that was echoed already, one of an earlier connection)
- *     is that rewrite, whoever published it and when. It says what the
- *     store holds and is never a command: no suppression ends, and the blob
- *     as it should be stays. When the store then differs from the blob as
- *     it should be, the blob is published again. The document alone is not
- *     the identity: the same document without the mark, or with an older
- *     mark, is an outside message like any other.
+ *     of the blob that pixdcon v1 and the structural overlays ignore): the
+ *     number of the write and a keyed hash, made with a secret of the
+ *     process, over that number and the document. The mark is the identity,
+ *     and it is bound to the document: nobody else can make it before the
+ *     broker has stored the write, and it does not fit any other document.
+ *     Nothing has to be remembered to know it again, so no own rewrite is
+ *     ever forgotten while the process lives, however many followed it. Own
+ *     rewrites come back in the order they were sent, so only the oldest
+ *     one on its way can be echoed: a message with its exact bytes is its
+ *     echo. An acknowledgement says the write, and every rewrite sent
+ *     before it, is in the store.
+ * O2  A blob that carries a mark of this process which fits its document,
+ *     and is not the echo that is due (a later rewrite on its way, one that
+ *     was echoed already, one of an earlier connection, of any age), is
+ *     that rewrite, whoever published it and when. It says what the store
+ *     holds and is never a command: no suppression ends, and the blob as it
+ *     should be stays. When the store then differs from the blob as it
+ *     should be, the blob is published again. The document alone is not the
+ *     identity: the same document without the mark, with the mark of
+ *     another rewrite or of another process, or a changed document with an
+ *     old mark, is an outside message like any other. Removing the mark is
+ *     how somebody says: this is my command now.
  * O3  An echo or an acknowledgement confirms exactly the generations its own
  *     write carries. What else a blob shows (a device without a scene has
  *     nothing left to strip) counts only when no rewrite of pixdcon is on
@@ -87,6 +127,16 @@
  * of a broker and of an outside client that copies pixdcon's own writes,
  * with random ones. Both must stay green when this file changes.
  *
+ * WHAT IS KEPT, AND HOW MUCH. Payloads: the blob as it should be, what the
+ * store holds, and the own rewrites on their way, of which there are at
+ * most BLOB_IN_FLIGHT at a time (a further rewrite waits for an echo, a
+ * failure or the end of the connection; nothing is lost by waiting, a
+ * rewrite is built from the state of the moment it is sent). Beside them,
+ * per device, the scene names own rewrites of this process have carried
+ * (`ownScenes`, at most OWN_SCENES names): a choice records them, so that a
+ * new process knows an old rewrite of this one by its values. A device with
+ * more names than that is treated as if every stored value were stale.
+ *
  * WHEN SOMETHING IS PUBLISHED. Only on evidence (core/ordering.js mayCause):
  *  - the clear of a choice on the connection the choice was made on (the
  *    choice is the newest command at that moment). It is repeated on that
@@ -95,6 +145,7 @@
  *    delivered on the current connection.
  *  - a blob rewrite when a delivered own rewrite shows that the store holds
  *    an older own write than the blob as it should be.
+ * To the blob topic only by the instance that is its writer (W1).
  * Never because a connection came up, the settle hint passed or a timer
  * fired without such evidence: a blind clear after a reconnect could delete
  * a command that was stored while pixdcon was away and has not been
@@ -102,13 +153,15 @@
  *
  * WHEN A SUPPRESSION ENDS (S3), always with the evidence named:
  *   outside_command    an outside live message on the layer, with no own
- *                      write outstanding
+ *                      write outstanding (blob: for its writer only, W1)
  *   stored_while_away  a replay with a value the suppression does not hide,
  *                      in a blob that is not a rewrite of pixdcon itself
+ *                      (blob: for its writer only)
  *   confirmed          the broker acknowledged or echoed the clear or the
  *                      rewrite of the same generation
  *   nothing_to_strip   blob: a delivered blob has no scene for the device,
- *                      and no rewrite of pixdcon is on its way
+ *                      and no rewrite of pixdcon is on its way (for its
+ *                      writer only)
  *   replaced           a newer choice
  *   dropped            an authoritative output change from shadow to drive
  *                      after a choice made in shadow; the device left the
@@ -117,7 +170,7 @@
  * Owner: core/state worker.
  */
 
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { apply, drop, hold } from "../core/ordering.js";
 import { isSuperseded } from "../state/precedence.js";
@@ -157,9 +210,7 @@ import { isSuperseded } from "../state/precedence.js";
  * @property {number} delivered connection on which `base` was last delivered; 0 = never
  * @property {"replay"|"live"|null} origin
  * @property {number} live
- * @property {Array<{write: number, payload: string, generations: Array<{device: string, generation: number}>, landed: boolean}>} outstanding own rewrites sent on the current connection whose echo has not arrived, oldest first. landed: the broker acknowledged it
- * @property {string[]} own the rewrites pixdcon sent on the current connection, on their way or echoed already (the last OWN_MEMORY of them; an empty payload has no identity and is not kept). A blob with exactly these bytes is that rewrite, whoever published it (O2)
- * @property {string[]} sent own rewrites of earlier connections that the store may hold, or may still get: the one the store was last known to hold when a connection ended, and those that were on their way then (the last OWN_MEMORY of them). Kept across connections, for the life of the process
+ * @property {Array<{write: number, payload: string, generations: Array<{device: string, generation: number}>, landed: boolean}>} outstanding own rewrites sent on the current connection whose echo has not arrived, oldest first, at most BLOB_IN_FLIGHT. landed: the broker acknowledged it
  * @property {boolean} wait
  */
 
@@ -167,13 +218,16 @@ import { isSuperseded } from "../state/precedence.js";
  * @typedef {object} LayersState
  * @property {number} connection current connection number; 0 = never connected
  * @property {boolean} connected
- * @property {string} secret what the write marks of this process are derived from (O1); random per run, never leaves the process
+ * @property {string} secret what the write marks of this process are made with (O1); random per run, never leaves the process
+ * @property {boolean} blobWriter this instance is the one that may publish to the blob topic (W1); fixed for the run
  * @property {number} writes number of the last own write
  * @property {Map<string, GranularTopic>} granular device → topic
  * @property {BlobTopic} blob
  * @property {Map<string, {granular?: ActiveSuppression, blob?: ActiveSuppression}>} suppressions
  * @property {Map<string, number>} generations device → generation of its last choice. Never taken back in a process, also when the device leaves the config (G1)
  * @property {Map<string, OutputMode>} outputs device → resolved output; a device that is not listed is in shadow
+ * @property {Map<string, string[]>} ownScenes device → the scene names own rewrites of this process have carried for it, in the order they first did; at most OWN_SCENES. Never taken back in a process
+ * @property {Set<string>} ownScenesFull devices for which own rewrites carried more names than are kept, or a name too long to keep: for them every stored value counts as pixdcon's own doing
  */
 
 /**
@@ -204,10 +258,11 @@ import { isSuperseded } from "../state/precedence.js";
  * @typedef {{type: "publish-clear", device: string, generation: number, write: number, evidence: EvidenceKind}
  *   | {type: "publish-blob", payload: string, generations: Array<{device: string, generation: number}>, write: number, evidence: EvidenceKind}
  *   | {type: "retire", device: string, layer: SceneLayer, generation: number, ended: "outside_command"|"stored_while_away"|"confirmed"|"nothing_to_strip"|"replaced"|"dropped", evidence: EvidenceKind}
- *   | {type: "changed", devices: string[]}
+ *   | {type: "changed", devices: string[], blob: boolean}
  *   | {type: "warn", message: string}} LayersEffect
- * publish-clear: retained empty payload to the device's granular topic. publish-blob: the whole blob, retained; "" clears it.
+ * publish-clear: retained empty payload to the device's granular topic. publish-blob: the whole blob, retained; "" clears it. Only an instance that is the blob's writer ever answers with it (W1).
  * retire: the suppression ended; the state store removes it from config.json.
+ * changed: the devices for which a reader of this file answers something else than before the step (`layersView`), and whether the blob as a document does (`blobView`: its text, or its standing; the structural overlays are built from it) (E1). At most one per step, the last effect, names sorted. Derived by `reduce`, never written by a rule.
  */
 
 /** @returns {GranularTopic} */
@@ -221,8 +276,16 @@ const newTopic = () => ({
 });
 
 /**
- * @param {{saved?: Array<{device: string, layer: SceneLayer, suppression: SceneSuppression}>, outputs?: Record<string, OutputMode>, secret?: string}} [options]
- * saved: the suppressions config.json holds (S5): taken before the first message. outputs: the resolved output per device at start. secret: random bytes of this run of the process, as text (the overlay service passes 16 of them); the write marks are derived from it.
+ * A process starts with every device in shadow: no device has an output
+ * until an `output` input says so (the overlay service feeds one per device
+ * once the runtime config has resolved it, and with every later change).
+ * So nothing can be published on a guess at start, and a device whose
+ * output changed while the process was down is told like any other change:
+ * a choice made in shadow, saved, on a device that is driven now is dropped
+ * by the `output` input, as S3 f says, and not left behind.
+ *
+ * @param {{saved?: Array<{device: string, layer: SceneLayer, suppression: SceneSuppression}>, secret?: string, blobWriter?: boolean}} [options]
+ * saved: the suppressions config.json holds (S5): taken before the first message. secret: random bytes of this run of the process, as text (the overlay service passes 16 of them); the write marks are made with it. blobWriter: this instance may publish to the blob topic (W1); default true, the overlay service passes what main.js decided for the run.
  * @returns {LayersState}
  */
 export function createLayers(options = {}) {
@@ -231,6 +294,7 @@ export function createLayers(options = {}) {
     connection: 0,
     connected: false,
     secret: options.secret ?? "",
+    blobWriter: options.blobWriter ?? true,
     writes: 0,
     granular: new Map(),
     blob: {
@@ -243,13 +307,13 @@ export function createLayers(options = {}) {
       origin: null,
       live: 0,
       outstanding: [],
-      own: [],
-      sent: [],
       wait: false,
     },
     suppressions: new Map(),
     generations: new Map(),
-    outputs: new Map(Object.entries(options.outputs ?? {})),
+    outputs: new Map(),
+    ownScenes: new Map(),
+    ownScenesFull: new Set(),
   };
   for (const { device, layer, suppression } of options.saved ?? []) {
     const entry = state.suppressions.get(device) ?? {};
@@ -338,20 +402,65 @@ export function withoutMark(blob) {
 }
 
 /**
- * The mark of an own rewrite: 16 hex characters that nobody outside the
- * process can know before the broker has stored the write. So a blob with
- * the exact bytes of a rewrite that is still on its way can only be that
- * rewrite's echo, and a byte-identical copy can only come after it.
+ * A JSON value as text that does not depend on the order of its keys, so
+ * that a document reads the same however somebody wrote it down again.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    );
+    return `{${entries
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * The mark of an own rewrite (O1): the number of the write, and 16 hex
+ * characters of a keyed hash over that number and the document. Nobody
+ * outside the process can make it before the broker has stored the write,
+ * and it fits no other document. The process can check it at any later
+ * time without having kept anything about the write.
  *
  * @param {LayersState} state
  * @param {number} write number of the own write
- * @returns {string}
+ * @param {Record<string, any>} document the blob without a mark
+ * @returns {string} "<write, base 36>.<16 hex>"
  */
-const markOf = (state, write) =>
-  createHash("sha256")
-    .update(`${state.secret}\n${write}`)
+const markOf = (state, write, document) =>
+  `${write.toString(36)}.${createHmac("sha256", state.secret)
+    .update(`${write}\n${canonical(document)}`)
     .digest("hex")
-    .slice(0, 16);
+    .slice(0, 16)}`;
+
+/**
+ * Is this payload a blob rewrite of this very process: does it carry a mark
+ * that this process made for exactly this document (O1, O2)? Any own
+ * rewrite is known this way, the first as well as the last, on any
+ * connection. An empty payload has no identity: anybody's clear looks the
+ * same.
+ *
+ * @param {LayersState} state
+ * @param {string} payload
+ * @returns {number} the number of the own write, or 0
+ */
+export function ownWriteOf(state, payload) {
+  const blob = parseBlob(payload);
+  const mark = blob?.[WRITE_MARK];
+  if (blob === null || typeof mark !== "string") return 0;
+  const match = /^([0-9a-z]{1,11})\.[0-9a-f]{16}$/.exec(mark);
+  if (!match) return 0;
+  const write = parseInt(match[1], 36);
+  if (!(write >= 1 && write <= state.writes)) return 0;
+  const document = /** @type {Record<string, any>} */ (withoutMark(blob));
+  return markOf(state, write, document) === mark ? write : 0;
+}
 
 /**
  * The blob without `scene` and the legacy `scenes` array of the given
@@ -436,6 +545,126 @@ export function sceneInputs(state, device) {
 }
 
 /**
+ * Everything the readers of this file answer about one device: the inputs
+ * of the scene precedence as they are resolved (both layers with their
+ * say), what a choice has put in their way, and what follows from the two
+ * layers alone. `reduce` compares it before and after every step (E1).
+ *
+ * @typedef {object} LayersView
+ * @property {LayerValue|null} granular
+ * @property {LayerValue|null} blob
+ * @property {{granular: (SceneSuppression & {confirmed: boolean})|null, blob: (SceneSuppression & {confirmed: boolean})|null}} suppressions as OverlayService.suppressions(device) answers them
+ * @property {number} generation generation of the device's last choice in this run; 0 = none
+ * @property {OutputMode|null} output null: the device is not in the effective config
+ * @property {{layer: SceneLayer, scene: string}|null} decides the layer whose value is in effect, the granular one first, before the scene is checked against the registry; null: no overlay decides, the user's choice does
+ * @property {{granular: boolean, blob: boolean}} writing an own write for the device is on its way: a clear of its granular topic, a blob rewrite that strips its scene (`OverlayRecord.clear.pending`). It ends with the echo, with a failure and with the connection
+ */
+
+/**
+ * @param {LayersState} state
+ * @param {string} device
+ * @returns {LayersView}
+ */
+export function layersView(state, device) {
+  const { granular, blob } = sceneInputs(state, device);
+  /** @param {ActiveSuppression|undefined} active */
+  const told = (active) =>
+    active
+      ? {
+          generation: active.generation,
+          at: active.at,
+          value: active.value,
+          alsoStale: [...active.alsoStale],
+          output: active.output,
+          confirmed: active.confirmed,
+        }
+      : null;
+  const entry = state.suppressions.get(device);
+  return {
+    granular,
+    blob,
+    suppressions: { granular: told(entry?.granular), blob: told(entry?.blob) },
+    generation: state.generations.get(device) ?? 0,
+    output: state.outputs.get(device) ?? null,
+    decides: granular?.inEffect
+      ? { layer: "granular", scene: granular.scene }
+      : blob?.inEffect
+        ? { layer: "blob", scene: blob.scene }
+        : null,
+    writing: {
+      granular: (state.granular.get(device)?.outstanding.length ?? 0) > 0,
+      blob: state.blob.outstanding.some((write) =>
+        write.generations.some((carried) => carried.device === device),
+      ),
+    },
+  };
+}
+
+/**
+ * What a reader is told about the blob as a document, beside the scenes it
+ * names: the structural overlays are built from its text (blob devices and
+ * scenes, overlay-service.js structural()), and count while it is confirmed.
+ *
+ * @typedef {object} BlobView
+ * @property {string} text the blob as it should be (`base`)
+ * @property {boolean} valid false: it is not a JSON object; it is listed and says nothing (M5)
+ * @property {boolean} confirmed the connection that delivered it is the current one, or the last one while the broker is away
+ * @property {"replay"|"live"|null} origin
+ * @property {number} connection connection on which it was delivered
+ */
+
+/**
+ * @param {LayersState} state
+ * @returns {BlobView|null} null: no blob is held
+ */
+export function blobView(state) {
+  const { blob } = state;
+  if (blob.base === null) return null;
+  return {
+    text: blob.base,
+    valid: blob.valid,
+    confirmed: blob.delivered === state.connection,
+    origin: blob.origin,
+    connection: blob.delivered,
+  };
+}
+
+/**
+ * Every device the state says anything about.
+ *
+ * @param {LayersState} state
+ * @returns {Iterable<string>}
+ */
+function* devicesOf(state) {
+  yield* state.granular.keys();
+  yield* state.blob.scenes.keys();
+  yield* state.suppressions.keys();
+  yield* state.generations.keys();
+  yield* state.outputs.keys();
+}
+
+/**
+ * E1: the devices for which a reader answers something else after a step
+ * than before it. This is the only source of the "changed" effect.
+ *
+ * @param {LayersState} before
+ * @param {LayersState} after
+ * @returns {string[]} sorted
+ */
+export function changedDevices(before, after) {
+  const devices = new Set([...devicesOf(before), ...devicesOf(after)]);
+  return [...devices]
+    .filter(
+      (device) =>
+        !isDeepStrictEqual(
+          layersView(before, device),
+          layersView(after, device),
+        ),
+    )
+    .sort();
+}
+
+/**
  * The suppressions config.json has to hold: those whose clear or rewrite the
  * broker has not confirmed.
  *
@@ -486,25 +715,18 @@ export function planChoice(state, device, choice) {
   /** @type {string|null} */
   const blobValue = blobKnown ? (blob.scenes.get(device) ?? null) : null;
   // Values a rewrite of pixdcon itself can put back into the store for this
-  // device, or has put back already: the rewrites that are on their way,
-  // the one the store is known to hold, and those of an earlier connection
-  // that may have reached the store. If one of these values is delivered
-  // later it is that own, older write, never a new command.
-  const ownPayloads = [
-    ...blob.own,
-    ...(blob.storeOwn && blob.store ? [blob.store] : []),
-    ...blob.sent,
-  ].filter((payload) => payload !== "");
-  const alsoStale = [
-    ...new Set(
-      ownPayloads
-        .map((payload) => blobScenes(parseBlob(payload)).get(device))
-        .filter(
-          /** @returns {scene is string} */ (scene) =>
-            scene !== undefined && scene !== blobValue,
-        ),
-    ),
-  ];
+  // device, or has put back already: every scene an own rewrite of this
+  // process has carried for it, on its way now, echoed long ago, or of an
+  // earlier connection. Anybody can publish such a rewrite again at any
+  // time, and the broker may get to one late. If one of these values is
+  // delivered later it is that own, older write, never a new command; the
+  // choice records them, so a new process knows them too.
+  const everything = state.ownScenesFull.has(device);
+  const alsoStale = everything
+    ? []
+    : (state.ownScenes.get(device) ?? []).filter(
+        (scene) => scene !== blobValue,
+      );
   return {
     device,
     generation,
@@ -522,8 +744,18 @@ export function planChoice(state, device, choice) {
   /** @returns {SceneSuppression|null} */
   function blobSuppression() {
     const base = { generation, at: choice.at, output: choice.output };
-    // No blob known on this connection: whatever is stored is stale.
-    if (!blobKnown) return { ...base, value: null, alsoStale };
+    // W1: an instance that is not the blob's writer cannot remove anything
+    // from it, and what the writer publishes next may carry any older scene
+    // of the device. The choice holds against the blob as a whole, also
+    // when the blob names no scene for the device right now. It is saved
+    // that way (`value` null: anything stored is stale), so the run that is
+    // the writer removes whatever the blob then holds for the device, the
+    // older scene a rewrite of the other writer has put back included.
+    if (!state.blobWriter) return { ...base, value: null, alsoStale: [] };
+    // No blob known on this connection, or more own values than are kept:
+    // whatever is stored is stale.
+    if (!blobKnown || everything)
+      return { ...base, value: null, alsoStale: [] };
     if (blobValue !== null) return { ...base, value: blobValue, alsoStale };
     // The blob is known and names no scene for the device: nothing to
     // replace, unless an own rewrite still carries one.
@@ -546,6 +778,11 @@ export function reduce(state, input) {
   /** @type {LayersEffect[]} */
   const effects = [];
   const decision = step(next, input, effects);
+  // E1: what changed is read off the two states, never listed by a rule.
+  const devices = changedDevices(state, next);
+  const blob = !isDeepStrictEqual(blobView(state), blobView(next));
+  if (devices.length > 0 || blob)
+    effects.push({ type: "changed", devices, blob });
   return { state: next, decision, effects };
 }
 
@@ -560,7 +797,7 @@ function step(state, input, effects) {
     case "connect":
       if (input.connection <= state.connection)
         return drop("superseded_source");
-      newConnection(state, input.connection, effects);
+      newConnection(state, input.connection);
       // Nothing is published, nothing is forgotten and no suppression ends
       // because a connection came up. What changes is who may decide: a
       // scene value counts on the connection that delivered it (C1), so
@@ -588,7 +825,7 @@ function step(state, input, effects) {
 
     case "granular":
     case "blob": {
-      const stale = adoptConnection(state, input.connection, effects);
+      const stale = adoptConnection(state, input.connection);
       if (stale) return stale;
       const decision =
         input.type === "granular"
@@ -633,7 +870,6 @@ function step(state, input, effects) {
         }
       }
       publishOwed(state, effects, "config");
-      effects.push({ type: "changed", devices: [input.device] });
       return apply();
     }
 
@@ -662,12 +898,11 @@ function step(state, input, effects) {
  *
  * @param {LayersState} state
  * @param {number} connection
- * @param {LayersEffect[]} effects
  * @returns {Decision|null} a drop, or null to go on
  */
-function adoptConnection(state, connection, effects) {
+function adoptConnection(state, connection) {
   if (connection < state.connection) return drop("superseded_source");
-  if (connection > state.connection) newConnection(state, connection, effects);
+  if (connection > state.connection) newConnection(state, connection);
   else if (!state.connected) return drop("superseded_source");
   return null;
 }
@@ -679,21 +914,17 @@ function adoptConnection(state, connection, effects) {
  * their topic. Whether the store still holds them cannot be asked (MQTT has
  * no message for "this topic is empty"), so they get their say back by
  * being delivered and by nothing else: no hint, no time. Suppressions are
- * not touched; they do not depend on the connection.
+ * not touched; they do not depend on the connection. Nothing is announced
+ * here: that these records wait now is a difference between the state
+ * before and after, and `reduce` finds it (E1).
  *
  * @param {LayersState} state
  * @param {number} connection
- * @param {LayersEffect[]} effects
  */
-function newConnection(state, connection, effects) {
+function newConnection(state, connection) {
   if (state.connected) endConnection(state);
   state.connection = connection;
   state.connected = true;
-  const waiting = new Set(state.blob.valid ? state.blob.scenes.keys() : []);
-  for (const [device, topic] of state.granular)
-    if (topic.value !== null) waiting.add(device);
-  if (waiting.size > 0)
-    effects.push({ type: "changed", devices: [...waiting] });
 }
 
 /**
@@ -710,25 +941,11 @@ function endConnection(state) {
     topic.outstanding = [];
     topic.wait = false;
   }
-  // B3: nothing is sent again. The payloads are kept for one purpose: to
-  // recognise one of them when the next connection delivers it, as a replay
-  // or, should the broker get to it that late, as a live message.
-  // What earlier connections left stays as well, up to OWN_MEMORY payloads:
-  // a connection that ends before it delivered the blob has told nothing,
-  // and the broker may get to a write of any connection that has ended.
-  state.blob.sent = [
-    ...new Set(
-      [
-        ...state.blob.sent,
-        ...(state.blob.storeOwn && state.blob.store !== null
-          ? [state.blob.store]
-          : []),
-        ...state.blob.own,
-      ].filter((payload) => payload !== ""),
-    ),
-  ].slice(-OWN_MEMORY);
+  // B3: nothing is sent again, and nothing has to be kept: when a later
+  // connection delivers one of these rewrites, as a replay or, should the
+  // broker get to it that late, as a live message, it is known by its mark
+  // (O1), like every other rewrite of this process.
   state.blob.outstanding = [];
-  state.blob.own = [];
   state.blob.wait = false;
   state.blob.store = null;
   state.blob.storeOwn = false;
@@ -781,7 +998,6 @@ function retire(state, effects, device, layer, ended, evidence) {
       ended,
       evidence,
     });
-  effects.push({ type: "changed", devices: [device] });
 }
 
 /**
@@ -823,7 +1039,6 @@ function granularMessage(state, message, effects) {
     state.granular.set(device, topic);
   }
   const suppression = suppressionOf(state, device, "granular");
-  const before = topic.value;
 
   if (message.retain) {
     if (topic.live === state.connection) return drop("replay_after_live"); // M2
@@ -847,8 +1062,6 @@ function granularMessage(state, message, effects) {
         "stored_while_away",
         "message",
       ); // S3 b
-    if (before !== payload)
-      effects.push({ type: "changed", devices: [device] });
     return apply(
       suppressionOf(state, device, "granular") ? "superseded" : "current",
     );
@@ -870,7 +1083,6 @@ function granularMessage(state, message, effects) {
       // Somebody else cleared the topic (S3 a).
       retire(state, effects, device, "granular", "outside_command", "message");
     }
-    if (before !== null) effects.push({ type: "changed", devices: [device] });
     return apply(own ? "own_echo" : "current");
   }
 
@@ -891,14 +1103,14 @@ function granularMessage(state, message, effects) {
   topic.origin = "live";
   if (suppression)
     retire(state, effects, device, "granular", "outside_command", "message"); // S3 a
-  if (before !== payload) effects.push({ type: "changed", devices: [device] });
   return apply();
 }
 
 /**
  * The devices whose scene the blob may be rewritten without: an active
  * suppression of the blob layer, made while the device was driven, on a
- * device that is driven now (S4).
+ * device that is driven now (S4). None for an instance that is not the
+ * blob's writer (W1).
  *
  * @param {LayersState} state
  * @returns {Set<string>}
@@ -906,6 +1118,7 @@ function granularMessage(state, message, effects) {
 function strippable(state) {
   /** @type {Set<string>} */
   const devices = new Set();
+  if (!state.blobWriter) return devices;
   for (const [device, entry] of state.suppressions) {
     if (
       entry.blob &&
@@ -921,37 +1134,75 @@ function strippable(state) {
  * @param {LayersState} state
  * @param {string|null} text the new `base`
  * @param {"replay"|"live"} origin
- * @returns {string[]} devices whose scene in the blob changed
  */
 function setBase(state, text, origin) {
   const blob = state.blob;
-  const previous = blob.scenes;
   const parsed = parseBlob(text);
   blob.base = text;
   blob.valid = text === null || parsed !== null;
   blob.scenes = blobScenes(parsed);
   blob.delivered = state.connection;
   blob.origin = origin;
-  return [...new Set([...previous.keys(), ...blob.scenes.keys()])].filter(
-    (device) => previous.get(device) !== blob.scenes.get(device),
-  );
 }
 
-/** How many of its own rewrites of the current connection the service remembers (O2). */
-const OWN_MEMORY = 32;
+/** How many own rewrites of the blob may be on their way at a time. */
+export const BLOB_IN_FLIGHT = 16;
+
+/** How many scene names of own rewrites are kept per device, and how long one may be. */
+export const OWN_SCENES = 64;
+const OWN_SCENE_LENGTH = 256;
 
 /**
- * Is this payload, byte for byte, a rewrite pixdcon sent itself: on the
- * current connection (on its way, or echoed already), or on an earlier one
- * (it may have reached the store, or may still reach it)? An empty payload
- * has no identity: anybody's clear looks the same.
+ * A rewrite is about to be sent: remember, per device, the scenes it
+ * carries. They are what this process can put back into the store, at any
+ * later time, through this very rewrite (planChoice `alsoStale`).
  *
- * @param {BlobTopic} blob
- * @param {string} payload
- * @returns {boolean}
+ * @param {LayersState} state
+ * @param {Record<string, any>} document
  */
-const isOwnRewrite = (blob, payload) =>
-  payload !== "" && (blob.own.includes(payload) || blob.sent.includes(payload));
+function rememberOwnScenes(state, document) {
+  for (const [device, scene] of blobScenes(document)) {
+    if (state.ownScenesFull.has(device)) continue;
+    const known = state.ownScenes.get(device) ?? [];
+    if (known.includes(scene)) continue;
+    if (known.length >= OWN_SCENES || scene.length > OWN_SCENE_LENGTH) {
+      // More than is kept: from now on every stored value of the device
+      // counts as pixdcon's own doing, which is the conservative side.
+      state.ownScenesFull.add(device);
+      state.ownScenes.delete(device);
+      continue;
+    }
+    state.ownScenes.set(device, [...known, scene]);
+  }
+}
+
+/**
+ * What a delivered blob that is not a rewrite of pixdcon says about the
+ * suppressions of the blob layer (S3 a, b and d). Only for the instance
+ * that writes the blob: for every other one nothing that is delivered
+ * there ends a suppression (W1).
+ *
+ * @param {LayersState} state
+ * @param {LayersEffect[]} effects
+ * @param {"replay"|"live"} origin
+ * @param {boolean} own the blob is a rewrite of this process: it names nothing new
+ */
+function judgeBlobSuppressions(state, effects, origin, own) {
+  if (!state.blobWriter) return;
+  const blob = state.blob;
+  for (const [device, entry] of [...state.suppressions]) {
+    if (!entry.blob) continue;
+    const scene = blob.scenes.get(device);
+    if (scene === undefined)
+      retire(state, effects, device, "blob", "nothing_to_strip", "message"); // S3 d
+    // O2: what pixdcon wrote itself is never a command, whatever it names.
+    else if (own) continue;
+    else if (origin === "live")
+      retire(state, effects, device, "blob", "outside_command", "message"); // S3 a
+    else if (!isSuperseded({ value: scene, origin: "replay" }, entry.blob))
+      retire(state, effects, device, "blob", "stored_while_away", "message"); // S3 b
+  }
+}
 
 /**
  * @param {LayersState} state
@@ -967,7 +1218,7 @@ function blobMessage(state, message, effects) {
     if (blob.live === state.connection) return drop("replay_after_live"); // M2
     if (blob.outstanding.length > 0) return drop("before_own_write");
     if (payload === "") return drop("empty_replay");
-    const own = isOwnRewrite(blob, payload);
+    const own = ownWriteOf(state, payload) > 0;
     if (own && !isBlobAsItShouldBe(state, payload)) {
       // The store holds a rewrite of pixdcon itself that is older than the
       // blob as it should be (B4 across a reconnect). It is evidence of what
@@ -982,28 +1233,13 @@ function blobMessage(state, message, effects) {
       });
       return drop("older_own_write");
     }
-    const changed = setBase(state, payload, "replay");
+    setBase(state, payload, "replay");
     blob.store = payload;
     blob.storeOwn = own;
-    if (!blob.valid) {
-      // M5: kept raw. It names no scene and ends no suppression.
-      if (changed.length > 0)
-        effects.push({ type: "changed", devices: changed });
-      return hold("invalid_blob");
-    }
-    for (const [device, entry] of [...state.suppressions]) {
-      if (!entry.blob) continue;
-      const scene = blob.scenes.get(device);
-      if (scene === undefined)
-        retire(state, effects, device, "blob", "nothing_to_strip", "message"); // S3 d
-      // O2: what pixdcon wrote itself is never a command, whatever it names.
-      else if (
-        !own &&
-        !isSuperseded({ value: scene, origin: "replay" }, entry.blob)
-      )
-        retire(state, effects, device, "blob", "stored_while_away", "message"); // S3 b
-    }
-    if (changed.length > 0) effects.push({ type: "changed", devices: changed });
+    // M5: an unusable blob is kept raw. It names no scene and ends no
+    // suppression.
+    if (!blob.valid) return hold("invalid_blob");
+    judgeBlobSuppressions(state, effects, "replay", own);
     return apply();
   }
 
@@ -1043,13 +1279,13 @@ function blobMessage(state, message, effects) {
   }
 
   const older = blob.outstanding.length > 0;
-  if (isOwnRewrite(blob, payload)) {
-    // O2: byte for byte a rewrite of pixdcon itself, and not the echo that
-    // is due: a later one that is still on its way, one that was echoed
-    // already, or one of the connection before. Whoever published these
-    // bytes, and when: they are what the store holds at this moment, and
-    // they are never a command. No suppression ends, and the blob as it
-    // should be stays what it is.
+  if (ownWriteOf(state, payload) > 0) {
+    // O2: a rewrite of this process, known by its mark, and not the echo
+    // that is due: a later one that is still on its way, one that was
+    // echoed already, however long ago, or one of a connection before.
+    // Whoever published it, and when: it is what the store holds at this
+    // moment, and it is never a command. No suppression ends, and the blob
+    // as it should be stays what it is.
     blob.store = payload;
     blob.storeOwn = true;
     // Own rewrites on their way will overwrite it; their echoes tell.
@@ -1063,57 +1299,34 @@ function blobMessage(state, message, effects) {
       return drop("older_own_write");
     }
     // The store holds the blob as it should be, delivered on this connection.
-    const changed = setBase(state, payload, "live");
-    for (const [device, entry] of [...state.suppressions]) {
-      if (entry.blob && !blob.scenes.has(device))
-        retire(state, effects, device, "blob", "nothing_to_strip", "message"); // S3 d
-    }
-    if (changed.length > 0) effects.push({ type: "changed", devices: changed });
+    setBase(state, payload, "live");
+    judgeBlobSuppressions(state, effects, "live", true);
     return apply("own_twin");
   }
 
   if (payload === "") {
     // Somebody cleared the blob.
-    const changed = setBase(state, null, "live");
+    setBase(state, null, "live");
     blob.store = "";
     blob.storeOwn = false;
     // Nothing is left to strip, unless an own rewrite is still on its way:
     // the broker processed this clear before it, so the rewrite puts a blob
     // back, with the scenes it carries. The suppressions stay to hide them,
     // and the blob is cleared again once the own echo shows it.
-    if (!older)
-      for (const [device, entry] of [...state.suppressions])
-        if (entry.blob)
-          retire(state, effects, device, "blob", "nothing_to_strip", "message");
-    if (changed.length > 0) effects.push({ type: "changed", devices: changed });
+    if (!older) judgeBlobSuppressions(state, effects, "live", false);
     return apply(older ? "before_own_write" : "current");
   }
 
-  const changed = setBase(state, payload, "live");
+  setBase(state, payload, "live");
   blob.store = payload;
   blob.storeOwn = false;
-  if (!blob.valid) {
-    if (changed.length > 0) effects.push({ type: "changed", devices: changed });
-    return hold("invalid_blob");
-  }
-  if (!older) {
-    // S3 a: a new command for every device it names a scene for.
-    for (const [device, entry] of [...state.suppressions]) {
-      if (!entry.blob) continue;
-      retire(
-        state,
-        effects,
-        device,
-        "blob",
-        blob.scenes.has(device) ? "outside_command" : "nothing_to_strip",
-        "message",
-      );
-    }
-  }
-  // else B4: processed by the broker before an own rewrite that is still on
+  if (!blob.valid) return hold("invalid_blob");
+  // S3 a: without an own rewrite on its way, a new command for every device
+  // it names a scene for, as far as this instance may judge that (W1).
+  // Else B4: processed by the broker before an own rewrite that is still on
   // its way. Its content is the new base; the scenes of superseded devices
   // stay hidden, and the rewrite is built again from this content.
-  if (changed.length > 0) effects.push({ type: "changed", devices: changed });
+  if (!older) judgeBlobSuppressions(state, effects, "live", false);
   return apply(older ? "before_own_write" : "current");
 }
 
@@ -1156,12 +1369,7 @@ function ownBlobLanded(state, effects, own) {
     // and the store's content is the base, delivered on this connection.
     if (!isBlobAsItShouldBe(state, own.payload)) return false;
   }
-  const changed = setBase(
-    state,
-    own.payload === "" ? null : own.payload,
-    "live",
-  );
-  if (changed.length > 0) effects.push({ type: "changed", devices: changed });
+  setBase(state, own.payload === "" ? null : own.payload, "live");
   return true;
 }
 
@@ -1217,7 +1425,6 @@ function published(state, result, effects) {
       topic.value = null;
       topic.delivered = state.connection;
       confirm(state, effects, device, "granular", generation);
-      effects.push({ type: "changed", devices: [device] });
     } else if (result.outcome === "failed") {
       topic.outstanding.splice(index, 1);
       topic.wait = true;
@@ -1290,7 +1497,6 @@ function choice(state, plan, effects) {
     };
   }
   if (entry.granular || entry.blob) state.suppressions.set(device, entry);
-  effects.push({ type: "changed", devices: [device] });
 }
 
 /**
@@ -1310,12 +1516,12 @@ function adoptStore(state, effects) {
   const content = blob.store === "" ? null : blob.store;
   if (blob.delivered === state.connection && blob.base === content) return;
   if (!isBlobAsItShouldBe(state, blob.store)) return;
-  const changed = setBase(state, content, blob.origin ?? "live");
+  setBase(state, content, blob.origin ?? "live");
+  if (!state.blobWriter) return; // W1: nothing delivered ends a suppression
   for (const [device, entry] of [...state.suppressions]) {
     if (entry.blob && !blob.scenes.has(device))
       retire(state, effects, device, "blob", "nothing_to_strip", "message");
   }
-  if (changed.length > 0) effects.push({ type: "changed", devices: changed });
 }
 
 /**
@@ -1360,9 +1566,16 @@ function publishOwed(state, effects, evidence) {
 
   const blob = state.blob;
   adoptStore(state, effects);
+  // W1: only one instance writes the blob. Every other one leaves it as it
+  // is; its suppressions hide what they have to.
+  if (!state.blobWriter) return;
   // Without the store's content as delivered on this connection there is no
   // evidence that anything has to be written.
   if (blob.wait || blob.store === null || !blob.valid) return;
+  // No more than BLOB_IN_FLIGHT rewrites are on their way at a time. What is
+  // owed is not lost: it is built again, from the state of that moment,
+  // when an echo, a failure or the end of the connection has made room.
+  if (blob.outstanding.length >= BLOB_IN_FLIGHT) return;
   const wanted = wantedBlob(state);
   const stored = parseBlob(blob.store);
   if (wanted === null) {
@@ -1405,16 +1618,15 @@ function publishOwed(state, effects, evidence) {
       generation: /** @type {ActiveSuppression} */ (entry.blob).generation,
     }));
   const write = ++state.writes;
-  // O1: every rewrite carries its own mark, so its bytes are its identity.
+  // O1: every rewrite carries its own mark, made for this document. It is
+  // known by it for the life of the process; nothing else is kept of it
+  // beyond its echo, except the scenes it carries (planChoice).
+  const document = /** @type {Record<string, any>} */ (withoutMark(wanted));
   const payload = JSON.stringify({
-    ...wanted,
-    [WRITE_MARK]: markOf(state, write),
+    ...document,
+    [WRITE_MARK]: markOf(state, write, document),
   });
+  rememberOwnScenes(state, document);
   blob.outstanding.push({ write, payload, generations, landed: false });
-  // O2: remembered beyond its echo, so these bytes are known as pixdcon's
-  // own for as long as the connection lives.
-  blob.own = [...blob.own.filter((sent) => sent !== payload), payload].slice(
-    -OWN_MEMORY,
-  );
   effects.push({ type: "publish-blob", payload, generations, write, evidence });
 }

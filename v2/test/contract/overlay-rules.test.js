@@ -40,7 +40,7 @@ test.todo(
   "overlay rule 7: an overlay naming an unknown scene is listed as invalid and the choice stays on the display",
 );
 test.todo(
-  "overlay rule 8: an unchanged overlay message causes no event and no device restart",
+  "overlay rule 8: an overlay message that changes nothing causes no event and no device restart; one that only confirms a record again after a reconnect, or repeats the stored value live, causes one event for the overlay list and nothing on the display",
 );
 test.todo(
   "overlay rule 9: shadow output: a UI choice changes the preview and publishes nothing",
@@ -120,7 +120,7 @@ test.todo(
   "overlay service and scene layers: the service feeds every gateway message, connect, disconnect, settle hint and publish outcome to the reducer and carries out exactly the effects it answers with, against the in-memory broker with holdRetained",
 );
 test.todo(
-  "mirror after a reconnect (M4): a record that the new connection has not delivered stays listed, with the older connection number and confirmed false; the settle hint removes nothing; a clear from outside removes it; what the record decides meanwhile is rule 19 for a scene overlay and rule 20 for every other kind",
+  "mirror after a reconnect (M4): a record that the new connection has not delivered stays listed, with the older connection number and confirmed false; the settle hint removes nothing; a clear from outside removes it; what the record does meanwhile is rule 19 for a scene overlay, rule 20 for what the other kinds command and rule 24 for what they hold back",
 );
 test.todo(
   "own control writes: a mode or brightness change from the UI that echoes back after a newer one does not undo it; a control that was certainly not sent goes back to what the broker holds",
@@ -137,14 +137,26 @@ test.todo(
   "overlay rule 19 (N3, A-182): a retained scene overlay that is cleared while pixdcon is disconnected stops deciding after the reconnect: the display shows the choice, the Overlays page lists the record as not confirmed, nothing is published; with the overlay still stored and its replay held back (holdRetained) the display returns to it when the replay is delivered",
 );
 test.todo(
-  "overlay rule 20 (N3): an enabled overlay, an ip overlay, a setting overlay and a retained control that are not delivered again after a reconnect stay in effect, listed as not confirmed; a suppression is saved before and after the reconnect",
+  "overlay rule 20 (R4-5): a setting overlay, mode, brightness and a scene path overlay that are cleared while pixdcon is disconnected stop at the reconnect: the saved value, play, the scene's own brightness and config.json's path apply, as in a process that has just started; the records are listed as not confirmed; with the replay held back (holdRetained) each is back in effect when it is delivered; while the broker is away nothing changes; a suppression is saved before and after the reconnect",
 );
 test.todo(
   "overlay rule 21 (N1): remove a device in the raw config and add it again while the clear of its last choice is on its way, then choose again: the new choice sends its own clear with a higher generation, and the late acknowledgement of the old clear leaves its suppression in config.json",
 );
 test.todo(
-  "overlay rule 22 (N2): every blob rewrite on the wire carries the _pixdcon mark, two rewrites never share one, and pixdcon v1's merge ignores the key; an outside client that publishes the document of a rewrite that is on its way, and one that publishes the bytes of an earlier rewrite, end no suppression",
+  "overlay rule 22 (N2, R4-2): every blob rewrite on the wire carries the _pixdcon mark, two rewrites never share one, and pixdcon v1's merge ignores the key; an outside client that publishes the document of a rewrite that is on its way, and one that publishes an earlier rewrite again, the very first of a long run included, end no suppression; the same document without the mark is a command",
 );
 test.todo(
-  "overlay service start: the secret for the write marks is made once per run and never leaves the process; the reducer's own, sent and outstanding lists are fed from the gateway's publish outcomes in the order they resolve",
+  "overlay rule 23 (R4-3): one writer of the blob. With the transition on (mqtt.statusBaseTopic differs from mqtt.baseTopic), and with PIXDCON2_FORCE_SHADOW=1, a UI choice on a driven display clears its granular topic and publishes nothing to <base>/overlay/blob; a blob that another controller publishes afterwards, with any scene for that display, does not show on it, live or after a restart; Clear of the blob answers 409 blob_not_writer; after the transition the same saved suppression strips the blob",
+);
+test.todo(
+  "overlay rule 24 (R4-5): what holds back stays. An enabled overlay that says false keeps the display off across a reconnect although its replay is held back, and although it was cleared while pixdcon was away, until a message for its topic is delivered or the user clears it; a display with an ip overlay that is not confirmed is held: listed, not started, no request to the overlay's address and none to the one in config.json",
+);
+test.todo(
+  "overlay rule 25 (R4-5): a blob that is not confirmed after a reconnect patches no device key, adds no device and no scene; an entry with enabled false keeps its display off and an entry with ip holds it; when the blob is delivered again everything it says is back",
+);
+test.todo(
+  "overlay rule 26 (R4-1): every change of what an overlay record does is announced once: the service's changed event names a device when its records wait after a connect, and again when the replay confirms them without changing a value; a state store that computes only on that event shows what GET /api/v2/overlays lists",
+);
+test.todo(
+  "overlay service start: the secret for the write marks is made once per run and never leaves the process; whether this instance is the blob's writer is handed to the reducer once (deps.blobWriter); publish outcomes reach the reducer in the order they resolve; the six other kinds of retained topic go through reduceMirror, and structural(), settingValues() and controls() answer from overrideEffect",
 );

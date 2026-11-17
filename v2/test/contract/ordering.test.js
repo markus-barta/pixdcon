@@ -28,8 +28,14 @@ import {
   whileCurrent,
 } from "../../src/core/ordering.js";
 import {
+  BLOB_IN_FLIGHT,
+  OWN_SCENES,
   WRITE_MARK,
   blobScenes,
+  blobView,
+  changedDevices,
+  layersView,
+  ownWriteOf,
   planChoice,
   savedSuppressions,
   sceneInputs,
@@ -825,6 +831,7 @@ test("F3: the ownership module is the fence and nothing else: accept() takes a g
     transition: true,
     known: false,
     receivedAt: null,
+    connection: 0,
     devices: [],
   });
 
@@ -850,6 +857,48 @@ test("F3: the ownership module is the fence and nothing else: accept() takes a g
   assert.deepEqual(changes, [["*"]], "one change: from unknown to a list");
   assert.equal(warnings.length, 1);
   assert.deepEqual(ownership.status().devices, ["D"]);
+});
+
+test("R4-5 sibling, the one stated exception: v1's device list keeps its say across a reconnect until the new connection delivers a list. What it holds back stays, what it permits stays too, and its connection tells that it has not been delivered again", () => {
+  /** v1's retained config/effective, with the devices it runs. @param {...string} names */
+  const v1List = (...names) =>
+    JSON.stringify({ devices: names.map((name) => ({ name })), scenes: {} });
+  let feed = createOwnershipFeed();
+  feed = reduceOwnership(feed, {
+    payload: v1List("D-v1"),
+    retain: true,
+    connection: 1,
+    receivedAt: T0,
+  }).feed;
+  assert.equal(ownerOf(feed, true, "D-v1"), "v1");
+  assert.equal(ownerOf(feed, true, "D-v2"), "free");
+
+  // Connection 2 is up and has delivered nothing for the topic: the feed
+  // has no input for a connect, so nothing changes. Unlike an overlay
+  // (overlay-service.js M4) the list is never cleared in operation, only
+  // replaced, and its replay brings the newest one.
+  assert.equal(reduceOwnership.length, 2, "inputs: the feed and a message");
+  assert.equal(outputFor(ownerOf(feed, true, "D-v1")).reason, "v1_owner");
+  assert.equal(outputFor(ownerOf(feed, true, "D-v2")).mode, "drive");
+  assert.equal(
+    feed.connection,
+    1,
+    "received on connection 1; the current one is 2",
+  );
+
+  // The replay of connection 2: v1 has taken D-v2 back meanwhile.
+  const replay = reduceOwnership(feed, {
+    payload: v1List("D-v1", "D-v2"),
+    retain: true,
+    connection: 2,
+    receivedAt: T0,
+  });
+  assert.deepEqual(replay.changed, ["D-v2"]);
+  assert.equal(
+    outputFor(ownerOf(replay.feed, true, "D-v2")).reason,
+    "v1_owner",
+  );
+  assert.equal(replay.feed.connection, 2);
 });
 
 // ---------------------------------------------------------------------------
@@ -1306,7 +1355,11 @@ for (const [what, reason, twinOf] of /** @type {const} */ ([
 test("N2 siblings (O1): every rewrite carries its own mark, so its bytes are its identity. Echoes are taken oldest first, also when the acknowledgements arrive the other way round", () => {
   const { w, p1, p2 } = n2();
   const marks = [p1, p2].map((write) => JSON.parse(write.payload)[WRITE_MARK]);
-  assert.match(marks[0], /^[0-9a-f]{16}$/);
+  assert.match(
+    marks[0],
+    /^[0-9a-z]+\.[0-9a-f]{16}$/,
+    "the number of the write, and a keyed hash over it and the document",
+  );
   assert.notEqual(marks[0], marks[1]);
 
   // The broker acknowledges P2 first: P2 is in the store, so P1 is too,
@@ -1427,8 +1480,7 @@ test("N2 siblings (O2): a blob with the exact bytes of an own rewrite is that re
   assert.equal(w.since(mark, "publish-blob").length, 1);
 
   // An empty payload has no identity: a clear is anybody's clear.
-  assert.equal(w.state().blob.own.includes(""), false);
-  assert.equal(w.state().blob.sent.includes(""), false);
+  assert.equal(ownWriteOf(w.state(), ""), 0);
 });
 
 test("N2 siblings (O2): an own rewrite of a connection that ended, which the broker gets to only after the next connection has subscribed, arrives there as a live message. It is known by its bytes: no command, no suppression ends, and the blob is published again as it should be", () => {
@@ -1580,7 +1632,7 @@ test("N3 (A-182): a scene overlay that was cleared while pixdcon was disconnecte
   const connected = w.connect(2);
   assert.deepEqual(
     connected.effects,
-    [{ type: "changed", devices: ["D"] }],
+    [{ type: "changed", devices: ["D"], blob: false }],
     "the state store is told to compute again",
   );
   assert.equal(w.shows("D"), "home3 (config)", "at once, on no hint");
@@ -1684,6 +1736,950 @@ test("N3 siblings: an overlay that is still stored wins again the moment it is d
 });
 
 // ---------------------------------------------------------------------------
+// Cross-read round 4: R4-1, R4-2, R4-3 on the scene layers. Each test is the
+// sequence the review ran against the round-4 commit, and the sequences next
+// to it.
+// ---------------------------------------------------------------------------
+
+for (const layer of /** @type {const} */ (["granular", "blob"])) {
+  test(`R4-1, ${layer} layer: an overlay that the new connection delivers again, after the connect was announced, is announced too. A consumer that computes a device only when a "changed" effect names it shows tv again, as the precedence over the whole state does`, () => {
+    const w = world({ outputs: { D: "drive" }, choices: { D: "home3" } });
+    const deliver = (
+      /** @type {{retain: boolean, connection: number}} */ meta,
+    ) =>
+      layer === "granular"
+        ? w.granular("D", "tv", meta)
+        : w.blob({ devices: [{ name: "D", scene: "tv" }] }, meta);
+    const tv = layer === "granular" ? "tv (overlay)" : "tv (blob)";
+    w.connect(1);
+    deliver({ retain: false, connection: 1 });
+    assert.equal(w.follows("D"), tv);
+
+    // The reconnect. Its "changed" effect is consumed at once: this is the
+    // 300 ms debounce running out before the broker replays anything.
+    const connect = w.connect(2);
+    assert.deepEqual(
+      connect.effects.filter((effect) => effect.type === "changed"),
+      [{ type: "changed", devices: ["D"], blob: layer === "blob" }],
+      "the record waits from now on: announced",
+    );
+    assert.equal(w.follows("D"), "home3 (config)");
+
+    // The late replay of the very same value. Nothing about the value
+    // changed; who may decide did.
+    const replay = deliver({ retain: true, connection: 2 });
+    assert.equal(replay.decision.action, "apply");
+    assert.deepEqual(
+      replay.effects.filter((effect) => effect.type === "changed"),
+      [{ type: "changed", devices: ["D"], blob: layer === "blob" }],
+      "delivered on the current connection: it decides again, and that is announced",
+    );
+    assert.equal(w.shows("D"), tv);
+    assert.equal(w.follows("D"), tv, "the consumer follows");
+    assert.deepEqual(w.stale(["D"]), []);
+
+    // The same value once more, live. How a record arrived is part of what
+    // the Overlays page lists, so that is announced, once, and changes
+    // nothing a display does. The same message again changes nothing at
+    // all, and announces nothing (M3).
+    const live = deliver({ retain: false, connection: 2 });
+    assert.deepEqual(live.effects, [
+      { type: "changed", devices: ["D"], blob: layer === "blob" },
+    ]);
+    assert.equal(w.shows("D"), tv);
+    const again = deliver({ retain: false, connection: 2 });
+    assert.deepEqual(again.effects, [], "the same message again: no effect");
+    assert.deepEqual(w.stale(["D"]), []);
+  });
+}
+
+test("R4-1 sibling, the blob as a document: a blob that names no scene and only patches a device is not confirmed after a reconnect and is confirmed again by its replay. Both are announced, although no scene layer of any device changed and the text is the same", () => {
+  const w = world({ outputs: { D: "drive" }, choices: { D: "home3" } });
+  const patchOnly = { devices: [{ name: "D", minFrameMs: 250 }] };
+  const announced = [{ type: "changed", devices: [], blob: true }];
+  w.connect(1);
+  assert.deepEqual(
+    w.blob(patchOnly, { retain: true, connection: 1 }).effects,
+    announced,
+  );
+  assert.equal(blobView(w.state())?.confirmed, true);
+
+  // The reconnect: what the blob patches waits, like a scene it names.
+  assert.deepEqual(w.connect(2).effects, announced);
+  assert.equal(blobView(w.state())?.confirmed, false);
+  assert.deepEqual(
+    w.blob(patchOnly, { retain: true, connection: 2 }).effects,
+    announced,
+    "the same text again: its standing changed, and that is said",
+  );
+  assert.deepEqual(blobView(w.state()), {
+    text: JSON.stringify(patchOnly),
+    valid: true,
+    confirmed: true,
+    origin: "replay",
+    connection: 2,
+  });
+  assert.deepEqual(w.stale(["D"]), []);
+
+  // A blob that cannot be read is listed and says nothing; a cleared one
+  // is gone. Both are announced.
+  const unreadable = w.blob("not json", { retain: false, connection: 2 });
+  assert.equal(unreadable.decision.action, "hold");
+  assert.deepEqual(unreadable.effects, announced);
+  assert.equal(blobView(w.state())?.valid, false);
+  assert.deepEqual(
+    w.blob("", { retain: false, connection: 2 }).effects,
+    announced,
+  );
+  assert.equal(blobView(w.state()), null);
+  assert.deepEqual(w.stale(["D"]), []);
+});
+
+test("R4-1 siblings: every way a layer's say can change without its value changing is announced: a suppression that ends on an acknowledgement, a choice in shadow that is dropped, a device that leaves, a disconnect followed by a newer connection. The consumer that is driven by effects never goes stale", () => {
+  const w = world({
+    outputs: { D1: "drive", D2: "shadow" },
+    choices: { D1: "saved1", D2: "saved2" },
+  });
+  const devices = ["D1", "D2"];
+  /** @param {string} step */
+  const followed = (step) =>
+    assert.deepEqual(w.stale(devices), [], `after: ${step}`);
+  const live = { retain: false, connection: 1 };
+  w.connect(1);
+  followed("connect");
+  w.blob(
+    {
+      devices: [
+        { name: "D1", scene: "A1" },
+        { name: "D2", scene: "A2" },
+      ],
+    },
+    { retain: true, connection: 1 },
+  );
+  w.granular("D2", "G2", { retain: true, connection: 1 });
+  followed("replays");
+  assert.equal(w.follows("D1"), "A1 (blob)");
+  assert.equal(w.follows("D2"), "G2 (overlay)");
+
+  // A choice on each: the layers lose their say, the values stay.
+  const chosen = w.choose("D1", "C1");
+  followed("choice on the driven device");
+  w.choose("D2", "C2");
+  followed("choice on the device in shadow");
+  assert.equal(w.follows("D2"), "C2 (config)");
+
+  // The rewrite lands: by its acknowledgement first, then by its echo.
+  const rewrite = chosen.effects.find(
+    (effect) => effect.type === "publish-blob",
+  );
+  assert.ok(rewrite && rewrite.type === "publish-blob");
+  w.feed({ type: "published", write: rewrite.write, outcome: "confirmed" });
+  followed("acknowledgement of the rewrite");
+  w.blob(rewrite.payload, live);
+  followed("echo of the rewrite");
+  w.granular("D1", "", live);
+  followed("echo of the clear");
+
+  // The device in shadow becomes driven: its choice made in shadow is
+  // dropped, and what is stored shows again (rule 18).
+  w.feed({ type: "output", device: "D2", output: "drive" });
+  followed("shadow to drive");
+  assert.equal(w.follows("D2"), "G2 (overlay)");
+
+  // The broker goes away and comes back; nothing is delivered again.
+  w.disconnect(1);
+  followed("disconnect");
+  assert.equal(w.follows("D2"), "G2 (overlay)", "still in effect while away");
+  w.connect(2);
+  followed("a newer connection");
+  assert.equal(w.follows("D2"), "C2 (config)", "the record waits");
+  w.settle(2);
+  w.feed({ type: "tick" });
+  followed("hint and tick");
+
+  // The device leaves and comes back.
+  w.remove("D2");
+  followed("removed");
+  w.add("D2", "drive", "again2");
+  followed("added again");
+  assert.equal(w.follows("D2"), "again2 (config)");
+  w.granular("D2", "G2", { retain: true, connection: 2 });
+  followed("late replay");
+  assert.equal(w.follows("D2"), "G2 (overlay)");
+});
+
+/**
+ * R4-2 as the review ran it, for any number of rewrites: every round an
+ * outside blob, a choice on D1 that strips it, and the echoes. The first
+ * rewrite carries D2 = A2, the others D2 = B2. Then a choice on D2.
+ *
+ * @param {number} rounds
+ */
+function manyRewrites(rounds) {
+  const live = { retain: false, connection: 1 };
+  const w = world({
+    outputs: { D1: "drive", D2: "drive" },
+    choices: { D1: "C1", D2: "C2" },
+  });
+  w.connect(1);
+  /** @type {string[]} */
+  const rewrites = [];
+  for (let round = 0; round < rounds; round++) {
+    w.blob(
+      {
+        devices: [
+          { name: "D1", scene: "A1" },
+          { name: "D2", scene: round === 0 ? "A2" : "B2" },
+        ],
+        note: round,
+      },
+      live,
+    );
+    const [rewrite] = w
+      .choose("D1", "C1")
+      .effects.filter((effect) => effect.type === "publish-blob");
+    assert.ok(rewrite && rewrite.type === "publish-blob");
+    rewrites.push(rewrite.payload);
+    w.blob(rewrite.payload, live);
+    w.granular("D1", "", live);
+  }
+  const [last] = w
+    .choose("D2", "C2")
+    .effects.filter((effect) => effect.type === "publish-blob");
+  assert.ok(last && last.type === "publish-blob");
+  rewrites.push(last.payload);
+  w.blob(last.payload, live);
+  w.granular("D2", "", live);
+  assert.equal(w.shows("D2"), "C2 (config)");
+  assert.equal(w.saved.size, 0, "every clear and rewrite is confirmed");
+  return { w, rewrites, live };
+}
+
+test("R4-2: the bytes of the first own rewrite, published again by somebody after 33 more rewrites, are still that rewrite. D2 keeps C2, the blob is published over, and nothing about the 34 rewrites is kept to know it", () => {
+  const { w, rewrites, live } = manyRewrites(33);
+  assert.equal(rewrites.length, 34);
+  assert.equal(ownWriteOf(w.state(), rewrites[0]) > 0, true);
+
+  const mark = w.effects.length;
+  const copy = w.blob(rewrites[0], live);
+  assert.deepEqual(copy.decision, {
+    action: "drop",
+    reason: "older_own_write",
+  });
+  assert.equal(w.shows("D2"), "C2 (config)", "A2 does not come back");
+  assert.deepEqual(w.since(mark, ...RETIRING), []);
+  const [repair] = w.since(mark, "publish-blob");
+  assert.equal(repair.evidence, "message");
+  assert.deepEqual(blobScenes(JSON.parse(repair.payload)), new Map());
+  assert.deepEqual(w.stale(["D1", "D2"]), []);
+
+  // What the state holds of its own writes does not grow with them.
+  const blob = /** @type {Record<string, unknown>} */ (
+    /** @type {unknown} */ (w.state().blob)
+  );
+  assert.deepEqual(
+    Object.keys(blob).filter((key) => Array.isArray(blob[key])),
+    ["outstanding"],
+    "no list of past rewrites",
+  );
+  assert.equal(w.state().blob.outstanding.length, 1, "the repair");
+  assert.deepEqual(
+    [...w.state().ownScenes],
+    [["D2", ["A2", "B2"]]],
+    "per device, the scene names own rewrites carried",
+  );
+});
+
+test("R4-2 siblings: 150 rewrites, and every one of them is known again, on the same connection, as a replay after a reconnect, and as a late live message. None of them is ever a command", () => {
+  const { w, rewrites, live } = manyRewrites(149);
+  assert.equal(rewrites.length, 150);
+  // On the same connection, oldest first and newest first.
+  for (const payload of [...rewrites, ...rewrites.toReversed()]) {
+    const { decision } = w.blob(payload, live);
+    assert.equal(
+      ["older_own_write", "own_twin"].includes(decision.reason),
+      true,
+      `not a command: ${decision.reason}`,
+    );
+    assert.equal(w.shows("D2"), "C2 (config)");
+    assert.equal(w.shows("D1"), "C1 (config)");
+    assert.equal(w.state().blob.outstanding.length <= BLOB_IN_FLIGHT, true);
+  }
+  // After a reconnect the store holds the very first one.
+  w.disconnect(1);
+  w.connect(2);
+  assert.deepEqual(
+    w.blob(rewrites[0], { retain: true, connection: 2 }).decision,
+    { action: "drop", reason: "older_own_write" },
+  );
+  assert.equal(w.shows("D2"), "C2 (config)");
+  // And the broker gets to another one of the old connection only now.
+  const late = w.blob(rewrites[75], { retain: false, connection: 2 });
+  assert.equal(
+    ["older_own_write", "own_twin"].includes(late.decision.reason),
+    true,
+  );
+  assert.equal(w.shows("D2"), "C2 (config)");
+  assert.deepEqual(
+    w.since(0, "retire").filter((e) => e.ended === "outside_command"),
+    [],
+  );
+  assert.deepEqual(w.stale(["D1", "D2"]), []);
+});
+
+test("R4-2 siblings (O1, O2): the mark is bound to the document. The same document written down another way is still that rewrite; a changed document with the old mark, the document without a mark, a mark of another write, of another process or one that is no mark at all are outside messages: that is how somebody gives a command", () => {
+  /** @param {(blob: Record<string, any>, other: Record<string, any>) => unknown} edit */
+  const variant = (edit) => {
+    const { w, rewrites, live } = manyRewrites(3);
+    const blob = JSON.parse(rewrites[0]);
+    const payload = edit(blob, JSON.parse(rewrites[1]));
+    const result = w.blob(
+      typeof payload === "string" ? payload : JSON.stringify(payload),
+      live,
+    );
+    return { w, result, shows: w.shows("D2") };
+  };
+
+  // Keys in another order, indented: the same document, the same mark.
+  const again = variant((blob) =>
+    JSON.stringify(
+      {
+        [WRITE_MARK]: blob[WRITE_MARK],
+        note: blob.note,
+        devices: blob.devices,
+      },
+      null,
+      2,
+    ),
+  );
+  assert.equal(again.result.decision.reason, "older_own_write");
+  assert.equal(again.shows, "C2 (config)");
+
+  /** @type {Array<[string, (blob: Record<string, any>, other: Record<string, any>) => unknown]>} */
+  const outside = [
+    ["the mark removed", (blob) => withoutMark(blob)],
+    [
+      "the mark of another own rewrite",
+      (blob, other) => ({ ...blob, [WRITE_MARK]: other[WRITE_MARK] }),
+    ],
+    [
+      "a mark of another process",
+      (blob) => ({ ...blob, [WRITE_MARK]: "1.0123456789abcdef" }),
+    ],
+    ["a mark that is none", (blob) => ({ ...blob, [WRITE_MARK]: { w: 1 } })],
+    [
+      "a number no write of this process has",
+      (blob) => ({
+        ...blob,
+        [WRITE_MARK]: `zzzz.${blob[WRITE_MARK].split(".")[1]}`,
+      }),
+    ],
+    [
+      "the old mark on a changed document",
+      (blob) => ({ ...blob, note: "edited" }),
+    ],
+  ];
+  for (const [what, edit] of outside) {
+    const { result, shows, w } = variant(edit);
+    assert.deepEqual(
+      result.decision,
+      { action: "apply", reason: "current" },
+      `${what}: an outside message`,
+    );
+    assert.equal(shows, "A2 (blob)", `${what}: a command, it wins`);
+    assert.deepEqual(w.stale(["D1", "D2"]), []);
+  }
+});
+
+test("R4-2 siblings (restart): a choice records every scene own rewrites of this process ever carried for its device, also the one of 40 rewrites ago. A new process knows the old rewrite by that value; with more names than are kept, every stored value is stale", () => {
+  const live = { retain: false, connection: 1 };
+  const { w, rewrites } = manyRewrites(40);
+  // A new outside blob, and a choice on D2 whose rewrite does not land.
+  w.blob({ devices: [{ name: "D1" }, { name: "D2", scene: "N2" }] }, live);
+  const { plan } = w.choose("D2", "C3");
+  assert.deepEqual(
+    [plan.blob?.value, plan.blob?.alsoStale],
+    ["N2", ["A2", "B2"]],
+    "A2 is of the very first rewrite",
+  );
+  // Somebody restores the first rewrite; pixdcon restarts before its repair.
+  w.restart();
+  w.connect(1);
+  w.blob(rewrites[0], { retain: true, connection: 1 });
+  assert.equal(w.shows("D2"), "C3 (config)", "A2 is known as pixdcon's own");
+  assert.equal(w.saved.has("D2/blob"), true);
+
+  // More scene names than are kept per device.
+  const many = world({
+    outputs: { D1: "drive", D2: "drive" },
+    choices: { D1: "C1", D2: "C2" },
+  });
+  many.connect(1);
+  /** @type {string[]} */
+  const sent = [];
+  for (let round = 0; round <= OWN_SCENES; round++) {
+    many.blob(
+      {
+        devices: [
+          { name: "D1", scene: "A1" },
+          { name: "D2", scene: `S${round}` },
+        ],
+      },
+      live,
+    );
+    const [rewrite] = many
+      .choose("D1", "C1")
+      .effects.filter((effect) => effect.type === "publish-blob");
+    sent.push(rewrite.payload);
+    many.blob(rewrite.payload, live);
+    many.granular("D1", "", live);
+  }
+  assert.equal(many.state().ownScenesFull.has("D2"), true);
+  assert.equal(many.state().ownScenes.has("D2"), false);
+  const full = many.choose("D2", "C2").plan;
+  assert.deepEqual(
+    [full.blob?.value, full.blob?.alsoStale],
+    [null, []],
+    "anything stored is stale",
+  );
+  many.restart();
+  many.connect(1);
+  many.blob(sent[3], { retain: true, connection: 1 });
+  assert.equal(many.shows("D2"), "C2 (config)");
+});
+
+test(`R4-2 siblings (payloads): at most ${BLOB_IN_FLIGHT} own rewrites are on their way. One more waits, is not lost, and is sent, built from the content of that moment, when an echo has made room`, () => {
+  const live = { retain: false, connection: 1 };
+  const w = world({ outputs: { D1: "drive" }, choices: { D1: "s1" } });
+  w.connect(1);
+  w.blob({ devices: [{ name: "D1", scene: "A1" }], note: 0 }, live);
+  /** @type {string[]} */
+  const sent = w
+    .choose("D1", "C1")
+    .effects.filter((effect) => effect.type === "publish-blob")
+    .map((effect) => /** @type {any} */ (effect).payload);
+  // Outside blobs that the broker processed before the first echo: each is
+  // new content, and each time the rewrite is built again.
+  for (let note = 1; sent.length < BLOB_IN_FLIGHT; note++) {
+    const more = w.blob({ devices: [{ name: "D1", scene: "A1" }], note }, live);
+    assert.equal(more.decision.reason, "before_own_write");
+    sent.push(
+      ...more.effects
+        .filter((effect) => effect.type === "publish-blob")
+        .map((effect) => /** @type {any} */ (effect).payload),
+    );
+  }
+  assert.equal(w.state().blob.outstanding.length, BLOB_IN_FLIGHT);
+  const waiting = w.blob(
+    { devices: [{ name: "D1", scene: "A1" }], note: "one more" },
+    live,
+  );
+  assert.deepEqual(
+    waiting.effects.filter((effect) => effect.type === "publish-blob"),
+    [],
+    "no room: nothing is sent",
+  );
+  w.feed({ type: "tick" });
+  assert.equal(w.state().blob.outstanding.length, BLOB_IN_FLIGHT);
+  assert.equal(w.shows("D1"), "C1 (config)", "and nothing shows meanwhile");
+
+  // The first echo makes room.
+  const echo = w.blob(sent[0], live);
+  assert.equal(echo.decision.reason, "older_own_echo");
+  const [next] = echo.effects.filter(
+    (effect) => effect.type === "publish-blob",
+  );
+  assert.ok(next && next.type === "publish-blob");
+  assert.deepEqual(documentOf(next.payload), {
+    devices: [{ name: "D1" }],
+    note: "one more",
+  });
+  assert.equal(w.state().blob.outstanding.length, BLOB_IN_FLIGHT);
+  // Everything comes back; the store ends as it should be.
+  for (const payload of [...sent.slice(1), next.payload]) w.blob(payload, live);
+  assert.equal(w.state().blob.outstanding.length, 0);
+  assert.equal(w.state().blob.store, next.payload);
+  assert.equal(w.saved.has("D1/blob"), false);
+  assert.deepEqual(w.stale(["D1"]), []);
+});
+
+// --- R4-3: one blob, several controllers -----------------------------------
+
+const TWO_SCENES = {
+  devices: [
+    { name: "D1", scene: "A1" },
+    { name: "D2", scene: "A2" },
+  ],
+};
+
+for (const [roles, iWrites] of /** @type {const} */ ([
+  ["I is the blob's writer, J is not", true],
+  ["neither is the writer (pixdcon v1 is)", false],
+])) {
+  test(`R4-3, two controllers with their own secrets, ${roles}: concurrent choices on D1 (driven by I) and D2 (driven by J). Only the writer rewrites the blob; no rewrite is a scene command for the other one's device, on the connection, after a reconnect or after a restart`, () => {
+    const i = world({
+      name: "controller I",
+      blobWriter: iWrites,
+      outputs: { D1: "drive", D2: "shadow" },
+      choices: { D1: "saved1", D2: "saved2" },
+    });
+    const j = world({
+      name: "controller J",
+      blobWriter: false,
+      outputs: { D1: "shadow", D2: "drive" },
+      choices: { D1: "saved1", D2: "saved2" },
+    });
+    for (const w of [i, j]) {
+      w.connect(1);
+      w.blob(TWO_SCENES, { retain: true, connection: 1 });
+    }
+    // Both choose before either has heard of the other's choice.
+    const p1 = i
+      .choose("D1", "C1")
+      .effects.find((effect) => effect.type === "publish-blob");
+    const p2 = j
+      .choose("D2", "C2")
+      .effects.find((effect) => effect.type === "publish-blob");
+    assert.equal(Boolean(p1), iWrites, "I rewrites only as the writer");
+    assert.equal(p2, undefined, "J never publishes to the blob topic");
+    // Each still clears the granular topic of the device it drives.
+    assert.deepEqual(
+      [i, j].map((w) => w.since(0, "publish-clear").map((e) => e.device)),
+      [["D1"], ["D2"]],
+    );
+
+    // The broker stores what was published; both receive it in order.
+    const stored =
+      p1 && p1.type === "publish-blob"
+        ? p1.payload
+        : JSON.stringify(TWO_SCENES);
+    if (iWrites) {
+      i.blob(stored, { retain: false, connection: 1 });
+      const seen = j.blob(stored, { retain: false, connection: 1 });
+      assert.deepEqual(seen.decision, { action: "apply", reason: "current" });
+      assert.deepEqual(
+        seen.effects.filter((effect) => effect.type !== "changed"),
+        [],
+        "I's rewrite retires and publishes nothing at J",
+      );
+    }
+    i.granular("D1", "", { retain: false, connection: 1 });
+    j.granular("D2", "", { retain: false, connection: 1 });
+    assert.equal(i.shows("D1"), "C1 (config)");
+    assert.equal(
+      j.shows("D2"),
+      "C2 (config)",
+      "A2 is still in the blob, hidden",
+    );
+    assert.deepEqual(
+      [j.saved.has("D2/blob"), j.saved.get("D2/blob")?.value],
+      [true, null],
+      "saved, against anything the blob holds",
+    );
+
+    // J misses what follows, reconnects and gets the store's content.
+    j.disconnect(1);
+    j.connect(2);
+    const replay = j.blob(stored, { retain: true, connection: 2 });
+    assert.deepEqual(
+      replay.effects.filter((effect) => effect.type !== "changed"),
+      [],
+    );
+    assert.equal(j.shows("D2"), "C2 (config)");
+
+    // Both restart on the same store.
+    for (const [w, device, choice] of /** @type {const} */ ([
+      [i, "D1", "C1 (config)"],
+      [j, "D2", "C2 (config)"],
+    ])) {
+      w.restart();
+      w.connect(1);
+      w.settle(1);
+      w.blob(stored, { retain: true, connection: 1 });
+      w.feed({ type: "tick" });
+      assert.equal(w.shows(device), choice);
+      assert.deepEqual(w.stale(["D1", "D2"]), []);
+    }
+    assert.deepEqual(
+      j.since(0, "publish-blob"),
+      [],
+      "J published nothing to the blob topic, start to end",
+    );
+    assert.equal(i.since(0, "publish-blob").length > 0, iWrites);
+  });
+}
+
+/**
+ * pixdcon v1's own overlay module (lib/config-overlay.js, unchanged), with a
+ * stand-in for its MQTT service that keeps what it publishes.
+ */
+async function v1Overlay() {
+  /** @type {any} */
+  const { ConfigOverlay } = await import(
+    new URL("../../../lib/config-overlay.js", import.meta.url).href
+  );
+  /** @type {Array<{topic: string, payload: string}>} */
+  const writes = [];
+  const quiet = { info() {}, warn() {}, error() {}, debug() {} };
+  const mqtt = {
+    connected: true,
+    /** @param {string} topic @param {string} payload @param {boolean} _retain @param {(error?: Error|null) => void} [done] */
+    publish(topic, payload, _retain, done) {
+      writes.push({ topic, payload });
+      done?.(null);
+      return true;
+    },
+    unsubscribeWildcard() {},
+  };
+  const overlay = new ConfigOverlay(mqtt, "home/hsb1/pixdcon", async () => {}, {
+    logger: quiet,
+  });
+  return {
+    overlay,
+    writes,
+    /** The blob rewrites v1 published. */
+    rewrites: () =>
+      writes
+        .filter((write) => write.topic === "overlay/blob")
+        .map((write) => write.payload),
+  };
+}
+
+test("R4-3, pixdcon v1 and v2 on one blob, with v1's real ConfigOverlay: v2 chooses C1 for D1 while v1 chooses for D2. v1 rewrites the blob and still carries D1 = A1; for v2 that is no command, live or after a restart, and v2 has published nothing to the blob topic", async () => {
+  const marked = { ...TWO_SCENES, _pixdcon: "previous-process" };
+  const live = { retain: false, connection: 1 };
+  // The transition: v1 is the blob's writer, v2 is not.
+  const w = world({
+    blobWriter: false,
+    outputs: { D1: "drive", D2: "shadow" },
+    choices: { D1: "saved1" },
+  });
+  w.connect(1);
+  w.blob(marked, { retain: true, connection: 1 });
+  const v1 = await v1Overlay();
+  try {
+    v1.overlay._handleBlob(JSON.stringify(marked), { retain: true });
+
+    const chosen = w.choose("D1", "C1");
+    assert.deepEqual(
+      chosen.effects.filter((effect) => effect.type === "publish-blob"),
+      [],
+      "v2 leaves the blob to v1",
+    );
+    assert.deepEqual(
+      w.since(0, "publish-clear").map((effect) => effect.device),
+      ["D1"],
+      "and clears the topic of the device it drives",
+    );
+    v1.overlay.clearDeviceScene("D2", "C2");
+    const [old] = v1.rewrites();
+    assert.deepEqual(JSON.parse(old), {
+      devices: [{ name: "D1", scene: "A1" }, { name: "D2" }],
+      _pixdcon: "previous-process",
+    });
+
+    w.granular("D1", "", live);
+    const mark = w.effects.length;
+    const seen = w.blob(old, live);
+    assert.deepEqual(seen.decision, { action: "apply", reason: "current" });
+    assert.equal(w.shows("D1"), "C1 (config)", "v1's rewrite is no command");
+    assert.deepEqual(w.since(mark, ...RETIRING, ...PUBLISHING), []);
+    assert.deepEqual(
+      [w.saved.has("D1/blob"), w.saved.get("D1/blob")?.value],
+      [true, null],
+      "still saved, against anything the blob holds",
+    );
+    assert.deepEqual(w.stale(["D1", "D2"]), []);
+
+    // v2 restarts; the store holds v1's rewrite.
+    w.restart();
+    w.connect(1);
+    w.blob(old, { retain: true, connection: 1 });
+    w.settle(1);
+    w.feed({ type: "tick" });
+    assert.equal(w.shows("D1"), "C1 (config)");
+    assert.deepEqual(w.since(0, "publish-blob"), []);
+
+    // What still works on a device v2 drives: the Home Assistant toggle.
+    w.granular("D1", "tv", live);
+    assert.equal(w.shows("D1"), "tv (overlay)");
+  } finally {
+    v1.overlay.unsubscribe();
+  }
+});
+
+test("R4-3 sibling, why a value is not enough: v1 rewrites from the blob it last saw. Its rewrite carries a scene for D1 that is older than the one v2's choice replaced. Nothing that is delivered on the blob topic ends the suppression of an instance that is not the writer", async () => {
+  const live = { retain: false, connection: 1 };
+  const before = {
+    devices: [
+      { name: "D1", scene: "Z1" },
+      { name: "D2", scene: "A2" },
+    ],
+  };
+  const w = world({
+    blobWriter: false,
+    outputs: { D1: "drive", D2: "shadow" },
+    choices: { D1: "saved1" },
+  });
+  w.connect(1);
+  w.blob(before, { retain: true, connection: 1 });
+  const v1 = await v1Overlay();
+  try {
+    v1.overlay._handleBlob(JSON.stringify(before), { retain: true });
+    // An outside client sets D1 to A1. v2 has it; v1 has not received it yet.
+    w.blob(TWO_SCENES, live);
+    assert.equal(w.shows("D1"), "A1 (blob)");
+    w.choose("D1", "C1");
+    w.granular("D1", "", live);
+    assert.equal(w.saved.get("D1/blob")?.value, null);
+    // v1's choice for D2, built from the blob v1 holds: D1 = Z1.
+    v1.overlay.clearDeviceScene("D2", "C2");
+    const [rewrite] = v1.rewrites();
+    assert.equal(blobScenes(JSON.parse(rewrite)).get("D1"), "Z1");
+
+    const mark = w.effects.length;
+    w.blob(rewrite, live);
+    assert.equal(
+      w.shows("D1"),
+      "C1 (config)",
+      "Z1 is not the value the choice replaced, and it is no command",
+    );
+    assert.deepEqual(w.since(mark, ...RETIRING, ...PUBLISHING), []);
+
+    // Whatever else arrives there: another scene, none, a clear, a replay.
+    w.blob({ devices: [{ name: "D1", scene: "X1" }] }, live);
+    w.blob({ devices: [{ name: "D1" }] }, live);
+    w.blob("", live);
+    w.disconnect(1);
+    w.connect(2);
+    w.blob(
+      { devices: [{ name: "D1", scene: "Y1" }] },
+      { retain: true, connection: 2 },
+    );
+    assert.deepEqual(w.since(mark, ...RETIRING, ...PUBLISHING), []);
+    assert.equal(w.shows("D1"), "C1 (config)");
+    assert.equal(w.saved.has("D1/blob"), true);
+    assert.deepEqual(w.stale(["D1", "D2"]), []);
+  } finally {
+    v1.overlay.unsubscribe();
+  }
+});
+
+test("R4-3 siblings: a choice made by an instance that is not the writer holds against the blob also when the blob names no scene for the device then; it ends by a newer choice, by rule 18 and when the device leaves; and the next run, as the writer, strips whatever the blob then holds for the device, also an older scene that the other writer's rewrite put back", () => {
+  const live = { retain: false, connection: 1 };
+  const w = world({
+    blobWriter: false,
+    outputs: { D1: "drive", D3: "shadow", D4: "shadow" },
+    choices: { D1: "s1", D3: "s3", D4: "s4" },
+  });
+  w.connect(1);
+  w.blob({ devices: [{ name: "D1" }, { name: "D3", scene: "A3" }] }, live);
+  const { plan } = w.choose("D1", "C1");
+  assert.deepEqual(
+    plan.blob && [plan.blob.value, plan.blob.output],
+    [null, "drive"],
+    "nothing to replace now, and still a suppression",
+  );
+  w.granular("D1", "", live);
+  // The writer publishes a blob with a scene for D1.
+  w.blob(
+    {
+      devices: [
+        { name: "D1", scene: "X1" },
+        { name: "D3", scene: "A3" },
+      ],
+    },
+    live,
+  );
+  assert.equal(w.shows("D1"), "C1 (config)");
+  assert.equal(
+    w.shows("D3"),
+    "A3 (blob)",
+    "a device without a choice follows the blob",
+  );
+
+  // A newer choice replaces the suppression; it is still one.
+  let mark = w.effects.length;
+  w.choose("D1", "C1b");
+  assert.deepEqual(
+    w.since(mark, "retire").map((effect) => [effect.layer, effect.ended]),
+    [["blob", "replaced"]],
+    "the granular one ended with the echo of its clear",
+  );
+  assert.equal(w.saved.get("D1/blob")?.value, null);
+  // Rule 18 for the device in shadow.
+  w.choose("D3", "C3");
+  assert.equal(w.shows("D3"), "C3 (config)");
+  mark = w.effects.length;
+  w.feed({ type: "output", device: "D3", output: "drive" });
+  assert.deepEqual(
+    w.since(mark, "retire").map((effect) => [effect.layer, effect.ended]),
+    [
+      ["granular", "dropped"],
+      ["blob", "dropped"],
+    ],
+  );
+  assert.equal(w.shows("D3"), "A3 (blob)");
+  // A choice in shadow that is still saved when the run ends.
+  w.choose("D4", "C4");
+  assert.equal(w.saved.get("D4/blob")?.output, "shadow");
+  assert.deepEqual(w.since(0, "publish-blob"), []);
+
+  // The transition ends: the next run is the writer, on the same file, and
+  // drives D4 too. Meanwhile the other writer has put an older scene of D1
+  // back into the blob, Z1, which is not what any choice here replaced.
+  const next = world({
+    blobWriter: true,
+    outputs: { D1: "drive", D3: "drive", D4: "drive" },
+    choices: { D1: "C1b", D3: "C3", D4: "C4" },
+    saved: Object.fromEntries(w.saved),
+  });
+  // The process is told who is driven. D4's choice was made in shadow: it
+  // is dropped by that, although the output changed while nothing ran.
+  assert.deepEqual(
+    next
+      .since(0, "retire")
+      .map((effect) => [effect.device, effect.layer, effect.ended]),
+    [
+      ["D4", "granular", "dropped"],
+      ["D4", "blob", "dropped"],
+    ],
+  );
+  assert.equal(next.saved.has("D4/blob"), false);
+  next.connect(1);
+  const replay = next.blob(
+    {
+      devices: [
+        { name: "D1", scene: "Z1" },
+        { name: "D3", scene: "A3" },
+        { name: "D4", scene: "A4" },
+      ],
+    },
+    { retain: true, connection: 1 },
+  );
+  assert.equal(next.shows("D1"), "C1b (config)", "Z1 is stale like anything");
+  assert.equal(
+    next.shows("D4"),
+    "A4 (blob)",
+    "rule 18: the stored overlay shows",
+  );
+  const [strip] = replay.effects.filter(
+    (effect) => effect.type === "publish-blob",
+  );
+  assert.ok(strip && strip.type === "publish-blob");
+  assert.deepEqual(documentOf(strip.payload), {
+    devices: [
+      { name: "D1" },
+      { name: "D3", scene: "A3" },
+      { name: "D4", scene: "A4" },
+    ],
+  });
+  next.blob(strip.payload, live);
+  assert.equal(next.saved.has("D1/blob"), false);
+  // From here on a blob scene for D1 is a new command again.
+  next.blob({ devices: [{ name: "D1", scene: "N1" }] }, live);
+  assert.equal(next.shows("D1"), "N1 (blob)");
+});
+
+test("R4-3 siblings: the edge instance, with every device in shadow and not the writer, publishes nothing whatever happens; and no input can make an instance the writer during a run", () => {
+  const live = { retain: false, connection: 1 };
+  const edge = world({
+    blobWriter: false,
+    outputs: { D1: "shadow", D2: "shadow" },
+  });
+  edge.connect(1);
+  edge.blob(TWO_SCENES, { retain: true, connection: 1 });
+  edge.granular("D1", "G1", { retain: true, connection: 1 });
+  edge.choose("D1", "preview");
+  edge.choose("D2", "preview");
+  edge.blob({ devices: [{ name: "D1", scene: "B1" }] }, live);
+  edge.granular("D1", "", live);
+  edge.feed({ type: "tick" });
+  edge.disconnect(1);
+  edge.connect(2);
+  edge.blob(TWO_SCENES, { retain: true, connection: 2 });
+  edge.feed({ type: "tick" });
+  assert.deepEqual(edge.since(0, ...PUBLISHING), []);
+  assert.equal(edge.shows("D1"), "preview (config)");
+  assert.equal(edge.state().blobWriter, false);
+  // Becoming driven does not make it the writer either.
+  edge.feed({ type: "output", device: "D1", output: "drive" });
+  edge.choose("D1", "again");
+  edge.blob(TWO_SCENES, live);
+  assert.deepEqual(edge.since(0, "publish-blob"), []);
+  assert.equal(edge.state().blobWriter, false);
+});
+
+test("E1: what `reduce` announces is the difference between the two states and nothing else: `changedDevices` over the readers' answers. A step that changes no answer announces nothing; one that changes an answer no rule thought of is announced", () => {
+  const w = world({ outputs: { D: "drive", E: "drive" }, choices: {} });
+  w.connect(1);
+  const before = w.state();
+  const delivered = w.granular("D", "A", { retain: true, connection: 1 });
+  assert.deepEqual(changedDevices(before, delivered.state), ["D"]);
+  assert.deepEqual(delivered.effects, [
+    { type: "changed", devices: ["D"], blob: false },
+  ]);
+  assert.deepEqual(layersView(w.state(), "D"), {
+    granular: {
+      scene: "A",
+      confirmed: true,
+      inEffect: true,
+      origin: "replay",
+      connection: 1,
+    },
+    blob: null,
+    suppressions: { granular: null, blob: null },
+    generation: 0,
+    output: "drive",
+    decides: { layer: "granular", scene: "A" },
+    writing: { granular: false, blob: false },
+  });
+  // Nothing a reader answers changes: a hint, a tick, an unknown publish.
+  for (const input of /** @type {const} */ ([
+    { type: "settled", connection: 1, complete: true },
+    { type: "tick" },
+    { type: "published", write: 99, outcome: "confirmed" },
+  ]))
+    assert.deepEqual(w.feed(input).effects, []);
+  // Two devices in one step, named once, sorted.
+  const both = w.blob(
+    {
+      devices: [
+        { name: "E", scene: "B" },
+        { name: "D", scene: "B" },
+      ],
+    },
+    { retain: true, connection: 1 },
+  );
+  assert.deepEqual(both.effects, [
+    { type: "changed", devices: ["D", "E"], blob: true },
+  ]);
+  // An answer that is not a scene: the generation of a choice.
+  const again = w.choose("E", "B");
+  assert.deepEqual(
+    again.effects.at(-1),
+    { type: "changed", devices: ["E"], blob: false },
+    "the last effect of a step",
+  );
+  assert.deepEqual(layersView(w.state(), "E").writing, {
+    granular: true,
+    blob: true,
+  });
+  // A clear that was certainly not sent: nothing a display shows changes,
+  // and it is still said, because the clear is no longer on its way.
+  const [clear] = again.effects.filter(
+    (effect) => effect.type === "publish-clear",
+  );
+  assert.ok(clear && clear.type === "publish-clear");
+  assert.deepEqual(
+    w.feed({ type: "published", write: clear.write, outcome: "failed" })
+      .effects,
+    [{ type: "changed", devices: ["E"], blob: false }],
+  );
+  assert.equal(layersView(w.state(), "E").writing.granular, false);
+});
+
+// ---------------------------------------------------------------------------
 // Own writes on a plain topic (mode, brightness, a cleared setting)
 // ---------------------------------------------------------------------------
 
@@ -1762,6 +2758,7 @@ const effectiveDevice = (
   addressSource: "config",
   enabled: true,
   enabledSource: "config",
+  held: false,
   savedScene: "clock",
   output: { mode: "drive", requested: "drive", reason: null },
   displayName: "",
@@ -1948,6 +2945,7 @@ test("F6: what a changed key of an effective device needs, as the scheduler gets
   for (const key of [
     "type",
     "enabled",
+    "held",
     "minFrameMs",
     "maxPowerCycles",
     "powerCyclePlugin",

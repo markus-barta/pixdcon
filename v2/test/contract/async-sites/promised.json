@@ -107,6 +107,11 @@
       "owner": "W1"
     },
     {
+      "name": "OverlayService.applyOutputs",
+      "file": "src/overlay/overlay-service.js",
+      "owner": "W1"
+    },
+    {
       "name": "SettingsService.start",
       "file": "src/scenes/settings-service.js",
       "owner": "W1"

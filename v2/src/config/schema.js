@@ -109,6 +109,7 @@ const CHANGE_IMPACT = new Map(
     ["address", "restart"],
     ["output", "restart"],
     ["enabled", "restart"],
+    ["held", "restart"],
     ["minFrameMs", "restart"],
     ["maxPowerCycles", "restart"],
     ["powerCyclePlugin", "restart"],
@@ -131,7 +132,7 @@ const CHANGE_IMPACT = new Map(
  * effective config (types.js EffectiveDiff), so a key that a blob entry
  * patches counts like one changed in config.json. It gets the function
  * through `Factories.changeImpact` (main.js), not by importing this file.
- *  - "restart": the driver or the loop must be rebuilt (type, address, output, enabled, minFrameMs, powerCyclePlugin, maxPowerCycles, cleanupLegacyApps)
+ *  - "restart": the driver or the loop must be rebuilt (type, address, output, enabled, held, minFrameMs, powerCyclePlugin, maxPowerCycles, cleanupLegacyApps). `held` goes with `enabled`: a device whose address rests on an overlay that is not confirmed is listed and not started
  *  - "apply":   pushed into the running loop (sceneSettings; the scene itself arrives through the state store's "desired" event)
  *  - "view":    shown only, nothing running changes by the key itself (displayName, comment, preview.showGrid, origin, blobKeys, addressSource, enabledSource, and savedScene: the state store turns a new saved choice into a "desired" event when it changes what shows)
  *  - "preview": the preview poller is re-armed (preview.pollMs)
