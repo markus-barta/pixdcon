@@ -41,7 +41,7 @@ test("a display that is offline at the start does not delay the UI or the other 
 
 test("display unplugged: stale after 30 s without a good frame, offline after 2 min, online again after the first good frame", async (t) => {
   const r = await rig(t);
-  await until(() => r.pixoo.state().frames === 1);
+  await until(() => r.previews.get("p"));
   await r.pixoo.setOffline(true);
   await r.clock.advance(500); await until(() => r.health.get("p")?.lastError !== null);
   await r.clock.advance(29500); assert.equal(r.health.get("p")?.state, "stale");
@@ -458,4 +458,113 @@ test("preview snapshots copy accepted pixels, keep unchanged-frame age and seque
   await clock.advance(500); previews.put("p", frame, "runtime"); assert.equal(events.length, 2);
   assert.deepEqual(previews.toV1().p, { width: 64, height: 64, data: Buffer.from(rgb).toString("base64"), source: "runtime", intervalMs: 0, updatedAt: new Date(clock.now()).toISOString() });
   previews.put("p", { width: 64, height: 64, rgb: new Uint8Array(1) }, "runtime"); assert.equal(previews.get("p")?.seq, 3);
+});
+
+test("mode changes during a stop request and scene failures cannot strand the new target in an old wait", async (t) => {
+  const heldPower = deferred();
+  const stopped = loopRig(t, { target: { mode: "stop" } });
+  stopped.loop.driver.setPower = async () => { await heldPower.promise; };
+  await flush(); stopped.loop.apply({ mode: "play" }); heldPower.resolve(null); await flush();
+  assert.equal(stopped.loop.status().phase, "running"); assert.equal(stopped.renders(), 1);
+  const heldRender = deferred();
+  const r = loopRig(t, { render: () => heldRender.promise }); await flush();
+  r.loop.apply({ mode: "stop" }); heldRender.reject(new SceneError("old target")); await flush();
+  assert.equal(r.loop.status().phase, "stopped"); assert.equal(r.health.get("p")?.lastError, null);
+});
+
+test("a paused runtime applies brightness without another frame and adopts a ready replacement at the next probe boundary", async (t) => {
+  const r = await rig(t, { start: false });
+  const p = /** @type {any} */ (r.states.get("p")); p.desired.mode.value = "pause";
+  const u = /** @type {any} */ (r.states.get("u")); u.desired.scene.scene = "blue";
+  await r.scheduler.start(); await until(() => r.previews.get("p"));
+  r.choose("p", { brightness: { override: 88 } }); await until(() => r.pixoo.state().brightness === 88);
+  assert.equal(r.pixoo.state().frames, 1);
+  r.generations.red = 1;
+  await r.clock.advance(10000); await until(() => r.pixoo.state().frames === 2 && r.scheduler.loop("p")?.status().phase === "paused");
+  assert.equal(r.released.length, 1); assert.equal(r.scheduler.loop("p")?.status().phase, "paused");
+});
+
+test("an interrupted power cycle still sends ON and a broker outage consumes no cycle attempt", async (t) => {
+  const error = new DeviceError("offline");
+  const r = loopRig(t, { deviceError: error, probeError: error, device: { powerCyclePlugin: { topic: "plug" } } }); await flush();
+  await r.clock.advance(151000); assert.equal(r.mqtt.messages.length, 1);
+  const stopping = r.loop.stop(); await flush(); assert.deepEqual(await stopping, { clean: true });
+  assert.deepEqual(r.mqtt.messages.map((m) => m.payload), ['{"state":"OFF"}', '{"state":"ON"}']);
+  const offline = loopRig(t, { deviceError: error, probeError: error, device: { powerCyclePlugin: { topic: "plug" } } });
+  offline.mqtt.connected = false; await flush(); await offline.clock.advance(200000);
+  assert.equal(offline.loop.status().powerCycleCount, 0); assert.equal(offline.mqtt.messages.length, 0);
+});
+
+test("scheduler retires disabled devices, preserves previews, re-arms only the changed feed and uses the injected change classifier", async (t) => {
+  const r = await rig(t); await until(() => r.previews.get("p") && r.health.get("u")?.state === "online");
+  const p = r.scheduler.loop("p"); const u = r.scheduler.loop("u");
+  /** @type {string[]} */
+  const classified = [];
+  r.factories.changeImpact = (key) => { classified.push(key); return key === "preview.pollMs" ? "preview" : "view"; };
+  r.change(r.devices.map((/** @type {any} */ d) => d.name === "u" ? { ...d, preview: { ...d.preview, pollMs: 1000 } } : d), { devicesChanged: { u: ["preview.pollMs"] } });
+  await flush(); assert.deepEqual(classified, ["preview.pollMs"]); assert.equal(r.scheduler.loop("p"), p); assert.equal(r.scheduler.loop("u"), u);
+  assert.equal(r.previews.feeds.get("u")?.pollMs, 1000);
+  r.factories.changeImpact = () => "restart";
+  r.change(r.devices.map((/** @type {any} */ d) => d.name === "p" ? { ...d, enabled: false } : d), { devicesChanged: { p: ["enabled"] } });
+  await until(() => !r.scheduler.loop("p"));
+  assert.ok(r.previews.get("p")); assert.equal(r.health.get("p"), undefined); assert.equal(r.scheduler.status().devices, 1);
+});
+
+test("watchdog restarts a dead runtime only and reports its measured liveness", async (t) => {
+  const r = await rig(t); await until(() => r.pixoo.state().frames > 0);
+  const p = r.scheduler.loop("p"); const u = r.scheduler.loop("u");
+  assert.ok(p); const stopping = p.stop(); await flush(); await stopping;
+  await r.clock.advance(1000); await until(() => r.tokens.get("p") === 2);
+  assert.equal(r.scheduler.loop("u"), u); assert.equal(r.scheduler.status().restarts, 1);
+  assert.equal(r.scheduler.status().loopsAlive, 2);
+});
+
+test("watchdog recovers a failed runtime factory while the other display renders", async (t) => {
+  const r = await rig(t, { start: false }); const factory = r.factories.createDriver;
+  let failed = true;
+  r.factories.createDriver = (device, deps) => { if (device.name === "p" && failed) throw new DeviceError("factory failed"); return factory(device, deps); };
+  await r.scheduler.start(); await until(() => r.health.get("u")?.state === "online");
+  assert.equal(r.health.get("p")?.lastError?.message, "factory failed");
+  assert.equal(r.scheduler.status().devices, 2); assert.equal(r.scheduler.status().loopsAlive, 1);
+  failed = false; await r.clock.advance(10000); await until(() => r.previews.get("p"));
+  assert.equal(r.scheduler.status().loopsAlive, 2); assert.equal(r.scheduler.status().restarts, 1);
+});
+
+test("retired scene pass-throughs cannot select a channel on the replacement display", async (t) => {
+  const held = deferred(); let first = true;
+  let lateError = /** @type {unknown} */ (null);
+  const r = await rig(t, { render: async (/** @type {string} */ _, /** @type {string} */ device, /** @type {any} */ surface) => {
+    if (device === "p" && first) { first = false; await held.promise; try { await surface.channel(7); } catch (error) { lateError = error; } }
+    await surface.paint(3); return null;
+  } }); await until(() => r.renderCalls.has("p"));
+  r.change(r.devices.map((/** @type {any} */ d) => d.name === "p" ? { ...d, minFrameMs: 900 } : d), { devicesChanged: { p: ["minFrameMs"] } });
+  await flush(); held.resolve(null); await until(() => r.tokens.get("p") === 2);
+  assert.ok(lateError instanceof DeviceError); assert.notEqual(r.pixoo.state().channel, 7);
+});
+
+test("watchdog replaces an overdue render, honors a long planned wake-up and leaves the other runtime alive", async (t) => {
+  const held = deferred(); let first = true;
+  const r = await rig(t, { start: false, delay: 120000, render: async (/** @type {string} */ _, /** @type {string} */ name, /** @type {any} */ surface) => {
+    if (name === "p" && first) { first = false; await held.promise; }
+    await surface.paint(3); return 120000;
+  } });
+  for (const device of r.devices) device.output = { mode: "shadow", requested: "shadow", reason: "config" };
+  await r.scheduler.start(); await flush();
+  await r.clock.advance(67000); await until(() => r.tokens.get("p") === 2);
+  assert.equal(r.tokens.get("u"), 1); assert.equal(r.scheduler.status().restarts, 1);
+  assert.equal(r.scheduler.status().loopsAlive, 2);
+  held.resolve(null); await flush();
+});
+
+test("scene brightness gets false on refusal and retries its last requested level at the next frame", async (t) => {
+  /** @type {boolean[]} */
+  const results = [];
+  const r = loopRig(t, { brightnessError: new DeviceError("brightness"), render: async (/** @type {any} */ sink) => {
+    results.push(await sink.requestBrightness(42));
+    await sink.show({ kind: "frame", frame: { width: 64, height: 64, rgb: new Uint8Array(12288) } });
+    return null;
+  } }); await flush();
+  assert.deepEqual(results, [false]); assert.equal(r.loop.status().appliedBrightness, null);
+  r.options.brightnessError = null;
+  await r.clock.advance(500); assert.equal(r.loop.status().appliedBrightness, 42); assert.deepEqual(results, [false, true]);
 });

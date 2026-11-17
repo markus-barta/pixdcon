@@ -47,7 +47,7 @@
       "input": "gateway reconnect",
       "metadata": "poller object identity, active flag and last measured snapshot",
       "fence": "current() checked after every read and before each publish; stop invalidates the poller; reconnect repeats measured data; timer only paces reads",
-      "test": "test/smoke/drivers-render.test.js: telemetry in order:"
+      "test": "test/smoke/drivers-render.test.js: telemetry on fake displays publishes native snapshots"
     },
     {
       "site": "src/health/telemetry.js:80",
@@ -55,7 +55,7 @@
       "input": "publish acknowledgement",
       "metadata": "poller object identity, active flag and last measured snapshot",
       "fence": "current() checked after every read and before each publish; stop invalidates the poller; reconnect repeats measured data; timer only paces reads",
-      "test": "test/smoke/drivers-render.test.js: telemetry in order:"
+      "test": "test/smoke/drivers-render.test.js: telemetry on fake displays publishes native snapshots"
     },
     {
       "site": "src/health/telemetry.js:85",
@@ -63,7 +63,7 @@
       "input": "publish acknowledgement",
       "metadata": "poller object identity, active flag and last measured snapshot",
       "fence": "current() checked after every read and before each publish; stop invalidates the poller; reconnect repeats measured data; timer only paces reads",
-      "test": "test/smoke/drivers-render.test.js: telemetry in order:"
+      "test": "test/smoke/drivers-render.test.js: telemetry on fake displays publishes native snapshots"
     },
     {
       "site": "src/health/telemetry.js:110",
@@ -90,7 +90,7 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends"
     },
     {
-      "site": "src/render/render-loop.js:260",
+      "site": "src/render/render-loop.js:268",
       "id": "timer:this.deps.clock.sleep#2",
       "input": "pacing, stop deadline or plug wait",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -98,7 +98,7 @@
       "test": "test/smoke/drivers-render.test.js: backoff 1, 2, 4"
     },
     {
-      "site": "src/render/render-loop.js:292",
+      "site": "src/render/render-loop.js:300",
       "id": "work:mqtt.publish#1",
       "input": "plug publish outcome",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -106,7 +106,7 @@
       "test": "test/smoke/drivers-render.test.js: 10 failed renders with a plug configured:"
     },
     {
-      "site": "src/render/render-loop.js:299",
+      "site": "src/render/render-loop.js:307",
       "id": "work:mqtt.publish#2",
       "input": "plug publish outcome",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -114,7 +114,7 @@
       "test": "test/smoke/drivers-render.test.js: 10 failed renders with a plug configured:"
     },
     {
-      "site": "src/render/render-loop.js:363",
+      "site": "src/render/render-loop.js:374",
       "id": "work:this.deps.scenes.acquire#1",
       "input": "scene instance acquired asynchronously",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
@@ -122,7 +122,7 @@
       "test": "test/smoke/smoke.test.js: render reports in order:"
     },
     {
-      "site": "src/render/scheduler.js:147",
+      "site": "src/render/scheduler.js:157",
       "id": "listener:this.deps.runtime.on(\"changed\")#1",
       "input": "effective config change",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -130,7 +130,7 @@
       "test": "test/smoke/drivers-render.test.js: scheduler in order:"
     },
     {
-      "site": "src/render/scheduler.js:148",
+      "site": "src/render/scheduler.js:158",
       "id": "listener:this.deps.state.on(\"desired\")#1",
       "input": "desired device command",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -138,7 +138,7 @@
       "test": "test/smoke/drivers-render.test.js: scheduler in order:"
     },
     {
-      "site": "src/render/scheduler.js:149",
+      "site": "src/render/scheduler.js:159",
       "id": "listener:this.deps.state.on(\"retry\")#1",
       "input": "explicit retry command",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -146,7 +146,7 @@
       "test": "test/smoke/drivers-render.test.js: scheduler in order:"
     },
     {
-      "site": "src/render/scheduler.js:150",
+      "site": "src/render/scheduler.js:160",
       "id": "listener:this.deps.health.on(\"health\")#1",
       "input": "derived health measurement",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -154,12 +154,12 @@
       "test": "test/smoke/smoke.test.js: render reports in order:"
     },
     {
-      "site": "src/render/scheduler.js:153",
+      "site": "src/render/scheduler.js:163",
       "id": "timer:this.deps.clock.every#1",
       "input": "watchdog tick",
       "metadata": "effective revision, per-device lane position and runtime token",
       "fence": "decideStamp on effective revision; per-device createLane; runtime reports use whileCurrent; watchdog only acts on measured liveness",
-      "test": "test/smoke/drivers-render.test.js: scheduler in order:"
+      "test": "test/smoke/drivers-render.test.js: watchdog replaces an overdue render"
     }
   ],
   "none": []

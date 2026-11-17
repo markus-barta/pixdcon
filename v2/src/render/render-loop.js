@@ -158,7 +158,10 @@ export class RenderLoop {
       this.alive = false;
       void this.driver.close();
       // A stuck render must not keep its subscriptions alive during shutdown.
-      if (this.instance) void this.deps.scenes.release(this.instance).catch((error) => this.deps.logger.error("[RenderLoop] release", error));
+      if (this.instance) {
+        const instance = this.instance; this.instance = null;
+        void this.deps.scenes.release(instance).catch((error) => this.deps.logger.error("[RenderLoop] release", error));
+      }
     }
     return { clean };
   }
@@ -173,11 +176,13 @@ export class RenderLoop {
     const changed = Object.entries(patch).some(([key, value]) => this.target[/** @type {keyof LoopTarget} */ (key)] !== value);
     const playAgain = patch.mode === "play" && this.target.mode === "play";
     if (!changed && !playAgain) return;
-    if (patch.scene !== undefined && patch.scene !== this.target.scene) this.effective.showingSince = null;
-    if (patch.mode === "play" || patch.scene !== undefined && patch.scene !== this.target.scene) this.reinit = true;
+    if (playAgain) this.retry = true;
+    const sceneChanged = patch.scene !== undefined && patch.scene !== this.target.scene;
+    if (sceneChanged) this.effective.showingSince = null;
+    if (patch.mode === "play" || sceneChanged) this.reinit = true;
+    if (sceneChanged || patch.mode !== undefined) this.pausedFrame = false;
     this.target = { ...this.target, ...patch };
     this.version += 1;
-    this.pausedFrame = false;
     this.sleeper?.abort();
   }
 
@@ -225,7 +230,7 @@ export class RenderLoop {
     this.deviceErrors = 0;
     this.cycles = 0;
     this.deps.health.powerCycles(name, { count: 0, exhausted: false });
-    this.report({ frameCount: this.effective.frameCount + 1, showingSince: this.effective.showingSince ?? this.iso(), scene: this.target.scene });
+    this.report({ frameCount: this.effective.frameCount + 1, showingSince: this.effective.showingSince ?? this.iso(), scene: this.instance?.scene ?? this.target.scene });
   }
 
   /** @param {number} native @returns {Promise<boolean>} */
@@ -233,8 +238,11 @@ export class RenderLoop {
     if (!Number.isFinite(native) || !this.running) return false;
     this.lastSceneBrightness = native;
     this.report({ lastBrightness: this.percent(native) });
-    await this.applyBrightness();
-    return true;
+    try { await this.applyBrightness(); return true; }
+    catch (error) {
+      if (this.running) this.deps.health.renderFailed(this.deps.device.name, error);
+      return false;
+    }
   }
 
   /** @param {number} native */
@@ -317,6 +325,8 @@ export class RenderLoop {
         const target = { ...this.target };
         const builtin = isBuiltin(target.scene);
         const custom = !!target.scene && !builtin;
+        // A paused scene has frame boundaries too: a new instance gets one fresh frame.
+        if (target.mode === "pause" && this.instance && !this.deps.scenes.isCurrent(this.instance)) this.pausedFrame = false;
         this.deps.health.expect(this.deps.device.name, { framesDue: target.mode === "play" && custom, hasScene: !!target.scene });
         try {
           await this.applyBrightness();
@@ -331,7 +341,7 @@ export class RenderLoop {
               await this.driver.blank();
               if (!this.running || version !== this.version) continue;
               await this.driver.setPower(false);
-              if (!this.running) continue;
+              if (!this.running || version !== this.version) continue;
               this.deps.health.contactOk(this.deps.device.name);
               this.quietKey = key; this.reinit = true;
               const { width, height } = this.driver.info;
@@ -344,6 +354,7 @@ export class RenderLoop {
               if (!this.running || version !== this.version) continue;
               this.deps.health.contactOk(this.deps.device.name);
               this.quietKey = key; this.reinit = false;
+              this.errors = 0;
             }
             this.report({ phase: "builtin", scene: target.scene, nextRetryAt: null });
           } else if (!custom || target.mode === "pause" && this.pausedFrame) {
@@ -380,6 +391,7 @@ export class RenderLoop {
           if (await this.sleep(LOOP_DEFAULTS.probeIntervalMs)) await this.probe();
         } catch (error) {
           if (!this.running) break;
+          if (version !== this.version || this.retry) continue;
           const classified = error instanceof DeviceError || error instanceof SceneError ? error : new SceneError(error instanceof Error ? error.message : String(error), { cause: error, phase: "render" });
           this.deps.health.renderFailed(this.deps.device.name, classified);
           this.errors += 1;

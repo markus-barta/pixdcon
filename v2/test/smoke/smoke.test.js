@@ -609,21 +609,27 @@ test("pixdcon 2 boots against the fakes and the in-memory broker, answers, and s
 });
 
 // --- Phase 3: the walks ------------------------------------------------------------------------
+// Blocked W5: scene resource detection and V1SceneAdapter state redirection are skeletons.
 test.todo(
   "shadow state files: a scene with a state field writes below the data directory, never beside the scene; also under an alias key and as a copy",
 );
+// Blocked W1/W5: effective output construction and the real scene path are skeletons.
 test.todo(
   "PIXDCON2_FORCE_SHADOW=1: no fake receives a request although config.json says drive",
 );
+// Blocked W5: ScenesWatcher, registry and SceneRuntime.invalidate/acquire are skeletons.
 test.todo(
   "a scene file that changes is reloaded for the displays running it; a broken edit keeps the last good version",
 );
+// Blocked W5/W1: replacement loading and instance-scoped MQTT/settings contexts are skeletons.
 test.todo(
   "hot reload with a replacement whose init fails: the running instance keeps its MQTT and settings subscriptions; only the replacement's are released",
 );
+// Blocked W5: per-device module evaluation belongs to SceneRuntime/V1SceneAdapter.
 test.todo(
   "two displays run the same scene: module-level state of the scene file is not shared between them",
 );
+// Blocked W1: gateway reconnect/replay and overlay pending-clear reconciliation are skeletons.
 test.todo(
   "MQTT gone and back: displays keep rendering, retained state is read again, pending clears are sent",
 );
@@ -637,6 +643,7 @@ test("stop: the process ends within 8 s also while a render hangs", async (t) =>
   await r.clock.advance(6000); assert.deepEqual(await stopping, { clean: false });
   assert.equal(r.loop.status().alive, false);
   held.resolve(null); await flush(); assert.equal(r.loop.status().frameCount, 0);
+  assert.equal(r.calls.filter((call) => call.op === "release").length, 1);
 });
 
 test("render reports in order: a render that hung and comes back after its device runtime was rebuilt reports no good frame, no phase and no preview for the new runtime", async (t) => {
