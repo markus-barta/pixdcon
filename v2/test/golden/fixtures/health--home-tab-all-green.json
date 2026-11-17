@@ -135,7 +135,7 @@
     }
   ],
   "frames": 1,
-  "note": "home tab all green; v1 reference drawing, frozen inputs.",
+  "note": "The HOME tab shows green WLAN, Zigbee and service markers, an orange 52°C boiler reading and FBH-WC ON.",
   "ping": {
     "192.168.1.5": true,
     "192.168.1.8": true,

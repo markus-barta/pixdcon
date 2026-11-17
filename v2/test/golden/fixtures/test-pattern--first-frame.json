@@ -8,5 +8,5 @@
   "mqtt": [],
   "http": [],
   "frames": 1,
-  "note": "first frame; v1 reference drawing, frozen inputs."
+  "note": "Two red pixels form a vertical dot at x1 on rows 3 and 4 of an otherwise black display."
 }

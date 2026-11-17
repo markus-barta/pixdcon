@@ -129,7 +129,7 @@
   ],
   "http": [],
   "frames": 1,
-  "note": "lock disconnected amber dot; v1 reference drawing, frozen inputs.",
+  "note": "An amber dot beside the upper lock icon marks a disconnected lock above the boiler graph and other home readings.",
   "ping": {
     "192.168.1.186": true,
     "192.168.1.244": true

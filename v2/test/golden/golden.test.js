@@ -119,6 +119,34 @@ test("fixtures: every scenario file names its scene, device type, time and time 
   }
 });
 
+test("fixtures: every picture has a distinct sentence describing its visible contents", async () => {
+  const notes = new Set();
+  for (const file of (await readdir(FIXTURES_DIR)).filter((name) =>
+    name.endsWith(".json"),
+  )) {
+    const { note } = await loadScenario(file);
+    assert.equal(typeof note, "string", `${file}: review note required`);
+    const sentence = note ?? "";
+    assert.match(sentence, /^[A-Z].+[.!?]$/, `${file}: complete sentence`);
+    assert.equal(
+      (sentence.match(/[.!?](?=\s|$)/g) ?? []).length,
+      1,
+      `${file}: one sentence`,
+    );
+    assert.doesNotMatch(
+      sentence,
+      /v1 reference drawing|frozen inputs|example scenario/i,
+      `${file}: describe the picture`,
+    );
+    assert.equal(
+      notes.has(sentence),
+      false,
+      `${file}: distinct picture description`,
+    );
+    notes.add(sentence);
+  }
+});
+
 // --- Phase 3: one golden frame per line. Names are the scenario and frame file names. -------------
 // Ulanzi (payload + 32×8 picture)
 test("clock--default-with-seconds", async (t) => {
@@ -194,6 +222,7 @@ test("home3--no-data-after-start", async (t) => {
 /** @param {import('node:test').TestContext} t @param {string} name */
 async function goldenCase(t, name) {
   const scenario = await loadScenario(`${name}.json`);
+  t.diagnostic(scenario.note ?? "");
   const expected = await renderScenario(t, scenario, { reference: true });
   const actual = await renderScenario(
     t,

@@ -141,7 +141,7 @@
     }
   ],
   "frames": 1,
-  "note": "heizung tab chain mismatch; v1 reference drawing, frozen inputs.",
+  "note": "The HEIZUNG tab shows a green boiler ON, red FBH-WC FEHLER and a warning that heating is running above a red alarm glow.",
   "ping": {
     "192.168.1.5": true,
     "192.168.1.8": true,

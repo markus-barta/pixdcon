@@ -133,7 +133,7 @@
   ],
   "http": [],
   "frames": 1,
-  "note": "day all fresh uv chart; v1 reference drawing, frozen inputs.",
+  "note": "The HOME dashboard shows fresh indoor temperatures, a 72% battery, a rising white chart and a yellow UV value of 4.",
   "ping": {
     "192.168.1.186": true,
     "192.168.1.244": true

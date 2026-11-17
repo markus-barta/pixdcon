@@ -135,7 +135,7 @@
     }
   ],
   "frames": 1,
-  "note": "second device starts its own glow; v1 reference drawing, frozen inputs.",
+  "note": "A second device starts its HOME tab with the same green glow as a fresh device and healthy status markers.",
   "ping": {
     "192.168.1.5": true,
     "192.168.1.8": true,

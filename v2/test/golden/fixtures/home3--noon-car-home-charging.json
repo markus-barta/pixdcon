@@ -153,7 +153,7 @@
   ],
   "http": [],
   "frames": 1,
-  "note": "noon car home charging; v1 reference drawing, frozen inputs.",
+  "note": "The home3 dashboard shows a car at home, its battery at 66%, a charging 72% house battery and the magenta boiler trace.",
   "ping": {
     "192.168.1.186": true,
     "192.168.1.244": true

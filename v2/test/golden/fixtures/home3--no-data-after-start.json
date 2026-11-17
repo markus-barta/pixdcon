@@ -8,6 +8,6 @@
   "mqtt": [],
   "http": [],
   "frames": 1,
-  "note": "no data after start; v1 reference drawing, frozen inputs.",
+  "note": "Grey lock and car icons, empty battery outlines and dash placeholders show that no sensor data has arrived yet.",
   "ping": {}
 }

@@ -117,7 +117,7 @@
   ],
   "http": [],
   "frames": 1,
-  "note": "night everything stale; v1 reference drawing, frozen inputs.",
+  "note": "The night dashboard keeps the last temperature and energy readings while red crosses mark stale sensor and UV data.",
   "ping": {
     "192.168.1.186": true,
     "192.168.1.244": true

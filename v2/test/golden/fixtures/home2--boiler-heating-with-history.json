@@ -125,7 +125,7 @@
   ],
   "http": [],
   "frames": 1,
-  "note": "boiler heating with history; v1 reference drawing, frozen inputs.",
+  "note": "The home2 dashboard adds a magenta boiler trace with several history steps beside the temperature and battery panels.",
   "ping": {
     "192.168.1.186": true,
     "192.168.1.244": true

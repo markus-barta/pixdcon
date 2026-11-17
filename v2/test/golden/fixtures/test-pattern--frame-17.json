@@ -8,5 +8,5 @@
   "mqtt": [],
   "http": [],
   "frames": 17,
-  "note": "frame 17; v1 reference drawing, frozen inputs."
+  "note": "The two red pixels have moved to x17 on rows 3 and 4 while the rest of the display stays black."
 }

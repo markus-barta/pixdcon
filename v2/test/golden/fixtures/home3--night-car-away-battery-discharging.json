@@ -174,7 +174,7 @@
   ],
   "http": [],
   "frames": 1,
-  "note": "night car away battery discharging; v1 reference drawing, frozen inputs.",
+  "note": "The night home3 dashboard dims the away-car icon and shows a red 35% house battery with zero solar production.",
   "ping": {
     "192.168.1.186": true,
     "192.168.1.244": true
