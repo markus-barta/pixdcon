@@ -304,9 +304,12 @@ export class SceneRuntime {
     this.closed = true;
     for (const entry of this.entries.values()) entry.generation++;
     this.entries.clear();
-    await Promise.allSettled([...this.pending]);
-    await Promise.all(
-      [...this.instances].map((instance) => this.release(instance)),
+    // Fence admitted instances before yielding to pending init work. A
+    // hanging init must not leave installed scenes open to another frame.
+    const releases = [...this.instances].map((instance) =>
+      this.release(instance),
     );
+    await Promise.allSettled([...this.pending]);
+    await Promise.all(releases);
   }
 }

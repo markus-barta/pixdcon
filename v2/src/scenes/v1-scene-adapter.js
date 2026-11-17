@@ -57,7 +57,8 @@
  * fields come from the content of the scene file (scene-registry.js), not
  * from its key: an alias of home3 under another key and a copy of home3 are
  * redirected exactly like home3 itself (B-183). STATE_FIELD_PATTERNS is the
- * complete list of what the registry looks for. A driven device keeps the
+ * complete list of what the registry looks for; shadow also sets these
+ * fields if metadata missed them. A driven device keeps the
  * scene's own path, so the history continues across the switch-over.
  *
  * Owner: fixtures + edge lane worker.
@@ -167,6 +168,8 @@ export async function createV1Instance(target, deps) {
   let active = true;
   /** @type {Promise<void>|null} */
   let releasing = null;
+  /** @type {Set<Promise<number|null>>} */
+  const frames = new Set();
   /** @type {Set<() => void>} */
   const unsubscribers = new Set();
   const settings = deps.settingsContext(ref);
@@ -240,6 +243,9 @@ export async function createV1Instance(target, deps) {
     active = false;
     releasing = (async () => {
       try {
+        // No new frame can enter after active=false. Destroy must not race
+        // a render that still uses the scene's state or surface.
+        await Promise.allSettled([...frames]);
         if (typeof scene.destroy === "function") await scene.destroy(context());
       } catch (error) {
         log(error);
@@ -262,9 +268,12 @@ export async function createV1Instance(target, deps) {
     return releasing;
   };
   try {
-    if (deps.shadowStateDir && deps.resources.stateFields.length) {
+    if (deps.shadowStateDir) {
       await mkdir(deps.shadowStateDir, { recursive: true });
-      for (const field of deps.resources.stateFields) {
+      for (const field of new Set([
+        ...STATE_FIELD_PATTERNS,
+        ...deps.resources.stateFields,
+      ])) {
         // Keys may come from mounted files; encode path components rather than trusting them.
         scene[field] = join(
           deps.shadowStateDir,
@@ -288,13 +297,25 @@ export async function createV1Instance(target, deps) {
           ...ref,
           phase: "render",
         });
+      // Register before invoking scene code, including a synchronous render
+      // that asks its caller to release. Release sees every admitted frame.
+      const frame = Promise.resolve().then(async () => {
+        try {
+          const delay = await scene.render(surface);
+          return typeof delay === "number" &&
+            Number.isFinite(delay) &&
+            delay > 0
+            ? delay
+            : null;
+        } catch (error) {
+          throw classify(error, "render");
+        }
+      });
+      frames.add(frame);
       try {
-        const delay = await scene.render(surface);
-        return typeof delay === "number" && Number.isFinite(delay) && delay > 0
-          ? delay
-          : null;
-      } catch (error) {
-        throw classify(error, "render");
+        return await frame;
+      } finally {
+        frames.delete(frame);
       }
     },
   };

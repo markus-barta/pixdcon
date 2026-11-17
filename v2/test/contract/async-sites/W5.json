@@ -58,7 +58,7 @@
       "test": "test/contract/scenes.test.js: scene runtime order:"
     },
     {
-      "site": "src/scenes/v1-scene-adapter.js:205",
+      "site": "src/scenes/v1-scene-adapter.js:208",
       "id": "subscribe:settings.subscribe#1",
       "input": "scene settings or MQTT callback",
       "metadata": "InstanceRef token and runtime entry generation",
@@ -66,7 +66,7 @@
       "test": "test/contract/scenes.test.js: v1 scene contract:"
     },
     {
-      "site": "src/scenes/v1-scene-adapter.js:219",
+      "site": "src/scenes/v1-scene-adapter.js:222",
       "id": "subscribe:mqtt.subscribe#1",
       "input": "scene settings or MQTT callback",
       "metadata": "InstanceRef token and runtime entry generation",
@@ -74,7 +74,7 @@
       "test": "test/contract/scenes.test.js: v1 scene contract:"
     },
     {
-      "site": "src/scenes/v1-scene-adapter.js:223",
+      "site": "src/scenes/v1-scene-adapter.js:226",
       "id": "subscribe:mqtt.subscribeWildcard#1",
       "input": "scene settings or MQTT callback",
       "metadata": "InstanceRef token and runtime entry generation",

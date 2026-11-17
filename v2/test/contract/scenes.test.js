@@ -28,6 +28,7 @@ import { DeviceError, SceneError } from "../../src/core/errors.js";
 import {
   createV1Instance,
   checkV1Module,
+  STATE_FIELD_PATTERNS,
 } from "../../src/scenes/v1-scene-adapter.js";
 import {
   createPixooSurface,
@@ -219,6 +220,60 @@ test("v1 scene contract: failures classify render and init; failed init releases
     );
     await instance.release();
   }
+});
+
+test("scene release: release and shutdown await an admitted render, including rejection, before destroy and subscription cleanup", async (t) => {
+  const globals = /** @type {any} */ (globalThis);
+  for (const shutdown of [false, true]) {
+    for (const fail of [false, true]) {
+      /** @type {string[]} */
+      const calls = [];
+      globals.__releaseCalls = calls;
+      const frame = Promise.withResolvers();
+      const started = Promise.withResolvers();
+      const { runtime, contexts } = await runtimePeer(`export default {
+        init(ctx) { ctx.mqtt.subscribe('input', () => {}); ctx.settings.subscribe(() => {}); },
+        async render(surface) {
+          surface.started(); await surface.frame;
+          globalThis.__releaseCalls.push('render finished');
+          if (surface.fail) throw Error('render failed');
+          return 25;
+        }, destroy() { globalThis.__releaseCalls.push('destroy'); }
+      };`);
+      t.after(async () => {
+        frame.resolve(undefined);
+        await runtime.releaseAll();
+      });
+      const instance = await runtime.acquire("scene", "device");
+      const rendering = instance.renderFrame({
+        deviceName: "device",
+        frame: frame.promise,
+        fail,
+        started: () => started.resolve(undefined),
+      });
+      const rendered = fail
+        ? assert.rejects(rendering, /render failed/)
+        : rendering;
+      await started.promise;
+      const releasing = shutdown
+        ? runtime.releaseAll()
+        : runtime.release(instance);
+      await assert.rejects(
+        instance.renderFrame({ deviceName: "device" }),
+        /released/,
+      );
+      assert.deepEqual(calls, [], "destroy cannot overtake a render in flight");
+      assert.equal(contexts.subscriptions.size, 1);
+      frame.resolve(undefined);
+      await rendered;
+      await releasing;
+      assert.deepEqual(calls, ["render finished", "destroy"]);
+      assert.equal(contexts.subscriptions.size, 0);
+      assert.equal(contexts.settings.size, 0);
+      await runtime.releaseAll();
+    }
+  }
+  delete globals.__releaseCalls;
 });
 
 test("v1 scene surface: Pixoo passthrough, AWTRIX payload, legacy screen shape, and refused frames", async () => {
@@ -906,4 +961,48 @@ test("resources: the adapter redirects declared state fields before init for ali
   );
   await driven.release();
   assert.equal(await readFile(original, "utf8"), "drive-history");
+});
+
+test("shadow state fallback: every known field is redirected before init when registry metadata omits it, alongside extra declared fields", async () => {
+  await mkdir(OUT_DIR, { recursive: true });
+  const dataDir = await mkdtemp(join(OUT_DIR, "shadow-fallback-"));
+  const original = join(dataDir, "v1-history.json");
+  await writeFile(original, "v1 history must survive");
+  for (const declared of [[], ["_customStatePath"]]) {
+    const fields = [...new Set([...STATE_FIELD_PATTERNS, ...declared])];
+    const paths = new Map();
+    const exported = {
+      ...Object.fromEntries(fields.map((field) => [field, original])),
+      /** @this {Record<string, any>} */
+      async init() {
+        for (const field of fields) {
+          paths.set(field, this[field]);
+          await writeFile(this[field], "shadow history");
+        }
+      },
+      render() {},
+    };
+    const instance = await createV1Instance(
+      {
+        ref: { scene: "alias", device: "device", token: "fallback" },
+        moduleNamespace: { default: exported },
+      },
+      {
+        ...sceneContexts(),
+        settingsTopic: () => "settings",
+        logger: silentLogger,
+        shadowStateDir: join(dataDir, "shadow"),
+        resources: { assetDirs: [], stateFields: declared },
+      },
+    );
+    for (const field of fields) {
+      assert.equal(
+        paths.get(field),
+        join(dataDir, "shadow", `alias-${field}.json`),
+      );
+      assert.equal(await readFile(paths.get(field), "utf8"), "shadow history");
+    }
+    await instance.release();
+    assert.equal(await readFile(original, "utf8"), "v1 history must survive");
+  }
 });
