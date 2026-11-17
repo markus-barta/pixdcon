@@ -2,30 +2,6 @@
   "owner": "W5",
   "rows": [
     {
-      "site": "src/scenes/scene-registry.js:71",
-      "id": "contract:SceneRegistry.load",
-      "input": "scene files imported to read their metadata",
-      "metadata": "position in main.js's registry lane; the file token of each file",
-      "fence": "scene-registry.js Order: called from the lane only, one at a time; reads the effective scene map when it runs",
-      "test": "test/contract/scenes.test.js: registry order:"
-    },
-    {
-      "site": "src/scenes/scene-registry.js:79",
-      "id": "contract:SceneRegistry.refresh",
-      "input": "scene files imported to read their metadata",
-      "metadata": "position in main.js's registry lane; the file token of each file",
-      "fence": "scene-registry.js Order: called from the lane only, one at a time; reads the effective scene map when it runs",
-      "test": "test/contract/scenes.test.js: registry order:"
-    },
-    {
-      "site": "src/scenes/scene-registry.js:90",
-      "id": "contract:SceneRegistry.sync",
-      "input": "scene files imported to read their metadata",
-      "metadata": "position in main.js's registry lane; the file token of each file",
-      "fence": "scene-registry.js Order: called from the lane only, one at a time; reads the effective scene map when it runs",
-      "test": "test/contract/scenes.test.js: registry order:"
-    },
-    {
       "site": "src/scenes/scene-runtime.js:179",
       "id": "work:this.load#1",
       "input": "a per-device scene module import",
@@ -200,16 +176,36 @@
       "metadata": "InstanceRef and frame promise registered before yielding",
       "fence": "active checked at admission; release revokes new admissions and waits for already registered frames before destroy",
       "test": "test/contract/scenes.test.js: scene release: release and shutdown unsubscribe immediately"
+    },
+    {
+      "site": "src/scenes/scene-registry.js:87",
+      "id": "work:this.refresh#1",
+      "input": "scene metadata import or delegated registry work completion",
+      "metadata": "main registry lane position, import URL token and lane AbortSignal",
+      "fence": "one registry lane; update stages all keys privately and checks signal after every await before one atomic commit or changed event",
+      "test": "test/contract/scenes.test.js: registry shutdown:",
+      "was": "SceneRegistry.load"
+    },
+    {
+      "site": "src/scenes/scene-registry.js:95",
+      "id": "work:this.sync#1",
+      "input": "scene metadata import or delegated registry work completion",
+      "metadata": "main registry lane position, import URL token and lane AbortSignal",
+      "fence": "one registry lane; update stages all keys privately and checks signal after every await before one atomic commit or changed event",
+      "test": "test/contract/scenes.test.js: registry shutdown:",
+      "was": "SceneRegistry.refresh"
+    },
+    {
+      "site": "src/scenes/scene-registry.js:239",
+      "id": "import:import#1",
+      "input": "scene metadata import or delegated registry work completion",
+      "metadata": "main registry lane position, import URL token and lane AbortSignal",
+      "fence": "one registry lane; update stages all keys privately and checks signal after every await before one atomic commit or changed event",
+      "test": "test/contract/scenes.test.js: registry shutdown:",
+      "was": "SceneRegistry.sync"
     }
   ],
-  "none": [
-    "SceneRegistry.list",
-    "SceneRegistry.get",
-    "SceneRegistry.fileOf",
-    "SceneRegistry.keysOfFile",
-    "SceneRegistry.check",
-    "normalizeSchema"
-  ],
+  "none": [],
   "resolved": {
     "SceneRuntime.release": "Exact-instance teardown: synchronously revokes holder/generation, then awaits only that instance release and removes its own identity/context in finally. Independent frame-drain completions are consumed and inventoried in v1-scene-adapter.js.",
     "SceneRuntime.releaseAll": "Final synchronous closed/generation fence, followed only by joining captured pending and release promises. Their inputs are inventoried at scene-runtime load and adapter release; nothing is admitted after closed."

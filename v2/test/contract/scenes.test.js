@@ -19,10 +19,16 @@ import {
   writeFile,
   readFile,
   readlink,
+  symlink,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ScenesWatcher } from "../../src/scenes/scenes-watcher.js";
+import {
+  SceneRegistry,
+  normalizeSchema,
+} from "../../src/scenes/scene-registry.js";
+import { createLane } from "../../src/core/ordering.js";
 import { SceneRuntime } from "../../src/scenes/scene-runtime.js";
 import { OUT_DIR } from "../helpers/golden.js";
 import { DeviceError, SceneError } from "../../src/core/errors.js";
@@ -1479,14 +1485,76 @@ test("scene reload scheduling: a hanging replacement init leaves the registry la
   assert.equal(control.destroyed, true);
   assert.equal(runtime.instances.size, 0);
 });
-// Blocker: scene-registry.js reserved for architect round 4; request w5-to-w1-1.md.
-test.todo(
-  "resources: home3 reports assetDirs [home3-assets] and stateFields [_boilerStatePath]; so do an alias key for the same file and a copy of it",
-);
-// Blocker: same reserved registry implementation (w5-to-w1-1.md).
-test.todo(
-  "resources: home, funkeykid, health and the Ulanzi scenes report no asset folder and no state field",
-);
+test("resources: home3 reports assetDirs [home3-assets] and stateFields [_boilerStatePath]; so do an alias key for the same file and a copy of it", async () => {
+  installSharedResolution();
+  await mkdir(OUT_DIR, { recursive: true });
+  const dir = await mkdtemp(join(OUT_DIR, "registry-copy-"));
+  await ensureDataLinks(dir, silentLogger);
+  // Preserve the shared scene's ../../lib imports and its asset directory.
+  await mkdir(join(dir, "scenes/pixoo"), { recursive: true });
+  const original = join(sharedPaths().scenesDir, "pixoo/home3.js");
+  const copy = join(dir, "scenes/pixoo/copy.mjs");
+  await writeFile(copy, await readFile(original, "utf8"));
+  await symlink(
+    join(sharedPaths().scenesDir, "pixoo/home3-assets"),
+    join(dir, "scenes/pixoo/home3-assets"),
+    "dir",
+  );
+  installSharedResolution({ extraDirs: [dir] });
+  const { registry } = await registryPeer({
+    home3: { path: original, source: "config" },
+    alias: { path: original, source: "overlay" },
+    copy: { path: copy, source: "config" },
+  });
+  await registry.load();
+  for (const meta of registry.list()) {
+    assert.equal(meta.status, "ok", meta.error ?? meta.key);
+    assert.deepEqual(meta.resources, {
+      assetDirs: ["home3-assets"],
+      stateFields: ["_boilerStatePath"],
+    });
+  }
+  assert.deepEqual(registry.keysOfFile(original), ["home3", "alias"]);
+  assert.deepEqual(
+    registry.keysOfFile(
+      join(sharedPaths().scenesDir, "pixoo/home3-assets/a/nested.png"),
+    ),
+    ["home3", "alias"],
+  );
+  assert.deepEqual(
+    registry.keysOfFile(
+      join(sharedPaths().scenesDir, "pixoo/home3-assets-other/picture.png"),
+    ),
+    [],
+  );
+  assert.equal(registry.get("alias")?.pathSource, "overlay");
+});
+
+test("resources: home, funkeykid, health and the Ulanzi scenes report no asset folder and no state field", async () => {
+  installSharedResolution();
+  const entries = Object.fromEntries(
+    [
+      "pixoo/home",
+      "pixoo/funkeykid",
+      "pixoo/health",
+      "ulanzi/clock",
+      "ulanzi/clock_with_homestats",
+      "ulanzi/test-pattern",
+    ].map((key) => [
+      key,
+      {
+        path: join(sharedPaths().scenesDir, key + ".js"),
+        source: /** @type {const} */ ("config"),
+      },
+    ]),
+  );
+  const { registry } = await registryPeer(entries);
+  await registry.load();
+  for (const meta of registry.list()) {
+    assert.equal(meta.status, "ok", meta.error ?? meta.key);
+    assert.deepEqual(meta.resources, { assetDirs: [], stateFields: [] });
+  }
+});
 test("shared files: a scene on the data mount resolves ../../lib and ../../assets through the links pixdcon 2 creates, and `sharp` comes from v2's own packages", async () => {
   await mkdir(OUT_DIR, { recursive: true });
   const dataDir = await mkdtemp(join(OUT_DIR, "scene-links-"));
@@ -1519,10 +1587,55 @@ test("shared files: a scene on the data mount resolves ../../lib and ../../asset
 });
 
 // --- Ordering (knowledge entry, section 3.0) ---
-// Blocker: reserved registry and W1 registry-lane integration (w5-to-w1-1.md).
-test.todo(
-  "registry order: load, refresh and sync are called from main.js's lane only, read the effective scene map when they run, and a failed import keeps the last good metadata",
-);
+test("registry order: load, refresh and sync use the registry lane, read the current effective map and retain last-good metadata on failed import", async () => {
+  const peer = await registryPeer();
+  const { registry, dir } = peer;
+  const lane = createLane();
+  await writeFile(
+    join(dir, "a.mjs"),
+    'export default { name: "Alpha", render() {} };',
+  );
+  peer.set({ a: { path: "a.mjs", source: "config" } });
+  const initial = lane.run("load", () => registry.load());
+  await initial;
+  assert.equal(registry.get("a")?.name, "Alpha");
+  await writeFile(join(dir, "a.mjs"), 'throw new Error("broken edit");');
+  await lane.run("refresh", () => registry.refresh(["a"]));
+  assert.equal(registry.get("a")?.name, "Alpha");
+  assert.equal(registry.get("a")?.status, "broken");
+  assert.match(registry.get("a")?.error ?? "", /broken edit/);
+  await writeFile(
+    join(dir, "b.mjs"),
+    'export const name="Beta"; export function render() {}',
+  );
+  const held = registryGate();
+  void lane.run("hold", () => held.promise);
+  const pending = lane.run("sync", () =>
+    registry.sync({ added: ["b"], removed: ["a"], changed: [] }),
+  );
+  peer.set({ b: { path: "b.mjs", source: "overlay" } });
+  held.resolve();
+  await pending;
+  assert.deepEqual(
+    registry.list().map((meta) => meta.key),
+    ["b"],
+  );
+  assert.equal(registry.get("b")?.pretty_name, "Beta");
+  assert.equal(registry.fileOf("b"), join(dir, "b.mjs"));
+  assert.equal(registry.get("a"), undefined);
+  assert.equal(registry.fileOf("a"), undefined);
+  assert.equal(registry.check("b", "ulanzi"), null);
+  assert.equal(registry.check(null, "pixoo"), null);
+  assert.match(registry.check("missing", "pixoo") ?? "", /Unknown scene/);
+  assert.equal(registry.check("builtin:clock", "pixoo"), null);
+  assert.match(
+    registry.check("builtin:clock", "ulanzi") ?? "",
+    /Unknown built-in/,
+  );
+  const exposed = registry.list();
+  exposed[0].name = "mutated";
+  assert.equal(registry.get("b")?.name, "Beta");
+});
 test("scene runtime order: one pending load per scene and device; an instance whose load finishes after it was released or replaced is destroyed and not handed out; MQTT and settings callbacks of a released instance are not called", async (t) => {
   // The deferred init belongs to the imported scene. Resolving it after stop
   // proves that its subscriptions cannot escape the runtime's generation fence.
@@ -1983,4 +2096,206 @@ test("shadow state fallback: every known field is redirected before init when re
     await instance.release();
     assert.equal(await readFile(original, "utf8"), "v1 history must survive");
   }
+});
+
+/** @param {Record<string, import('../../src/types.js').EffectiveScene>} [initial] */
+async function registryPeer(initial = {}) {
+  await mkdir(OUT_DIR, { recursive: true });
+  const dir = await mkdtemp(join(OUT_DIR, "registry-"));
+  let entries = initial;
+  const registry = new SceneRegistry({
+    baseDir: () => dir,
+    scenes: () => entries,
+    findBuiltin: (type, key) =>
+      type === "pixoo" && key === "builtin:clock"
+        ? { key, label: "Clock" }
+        : null,
+    normalizeSettingValue: (value) => value,
+    logger: silentLogger,
+  });
+  return {
+    registry,
+    dir,
+    set(/** @type {typeof initial} */ next) {
+      entries = next;
+    },
+  };
+}
+
+function registryGate() {
+  let resolve = () => {};
+  const promise = new Promise((done) => {
+    resolve = () => done(undefined);
+  });
+  return { promise, resolve };
+}
+
+test("registry shutdown: load, refresh and sync commit nothing, emit nothing and resolve without keys when aborted during import", async (t) => {
+  for (const method of ["load", "refresh", "sync"]) {
+    const { registry, dir, set } = await registryPeer();
+    set({
+      a: { path: "a.mjs", source: "config" },
+      b: { path: "b.mjs", source: "config" },
+    });
+    await writeFile(
+      join(dir, "a.mjs"),
+      'export default { name: "Old A", render() {} };',
+    );
+    await writeFile(
+      join(dir, "b.mjs"),
+      'export default { name: "Old B", render() {} };',
+    );
+    await registry.load();
+    const before = registry.list();
+    /** @type {unknown[]} */ const events = [];
+    registry.on("changed", (event) => events.push(event));
+    const entered = registryGate(),
+      held = registryGate();
+    const slot = `__registry_${method}`;
+    const globals = /** @type {any} */ (globalThis);
+    globals[slot] = { entered: entered.resolve, wait: held.promise };
+    t.after(() => {
+      held.resolve();
+      delete globals[slot];
+    });
+    await writeFile(
+      join(dir, "a.mjs"),
+      'export default { name: "New A", render() {} };',
+    );
+    await writeFile(
+      join(dir, "b.mjs"),
+      `globalThis['${slot}'].entered(); await globalThis['${slot}'].wait; export default { name: "New B", render() {} };`,
+    );
+    const abort = new AbortController();
+    const pending =
+      method === "load"
+        ? registry.load({ signal: abort.signal })
+        : method === "refresh"
+          ? registry.refresh(["a", "b"], { signal: abort.signal })
+          : registry.sync(
+              { added: [], removed: [], changed: ["a", "b"] },
+              { signal: abort.signal },
+            );
+    await entered.promise;
+    abort.abort();
+    held.resolve();
+    assert.deepEqual(await pending, { keys: [] });
+    assert.deepEqual(
+      registry.list(),
+      before,
+      "no partial commit of the earlier import",
+    );
+    assert.deepEqual(events, []);
+    assert.deepEqual(
+      await registry.sync(
+        { added: [], removed: ["a"], changed: [] },
+        { signal: abort.signal },
+      ),
+      { keys: [] },
+    );
+    assert.deepEqual(registry.list(), before);
+  }
+});
+
+test("registry metadata: defaults use the injected normalizer; invalid schemas and missing render stay visible as broken", async () => {
+  const { registry, dir, set } = await registryPeer();
+  /** @type {unknown[]} */ const normalized = [];
+  registry.deps.normalizeSettingValue = (raw, field) => {
+    normalized.push([raw, field.type, field.min, field.max]);
+    return raw === "invalid" ? undefined : Number(raw);
+  };
+  const sources = {
+    good: 'export default { deviceType: "pixoo", settingsSchema: { count: { type: "int", default: "4", min: 1, max: 5 } }, render() {} };',
+    invalid:
+      'export default { settingsSchema: { value: { default: "invalid" } }, render() {} };',
+    bounds:
+      'export default { settingsSchema: { value: { type: "int", min: 5, max: 1 } }, render() {} };',
+    noRender: 'export default { name: "Visible" };',
+    shape: "export default { settingsSchema: [], render() {} };",
+  };
+  for (const [key, source] of Object.entries(sources))
+    await writeFile(join(dir, `${key}.mjs`), source);
+  set(
+    Object.fromEntries(
+      Object.keys(sources).map((key) => [
+        key,
+        { path: `${key}.mjs`, source: "config" },
+      ]),
+    ),
+  );
+  await registry.load();
+  assert.equal(registry.get("good")?.settingsSchema.count.default, 4);
+  assert.deepEqual(normalized[0], ["4", "int", 1, 5]);
+  assert.equal(
+    registry.check("good", "ulanzi"),
+    null,
+    "deviceType is a filter, not a restriction",
+  );
+  for (const key of ["invalid", "bounds", "noRender", "shape"]) {
+    assert.equal(registry.get(key)?.status, "broken");
+    assert.ok(registry.check(key, "pixoo"));
+  }
+  const { schema, problems } = normalizeSchema({ text: {} });
+  assert.deepEqual(problems, []);
+  assert.deepEqual(schema.text, {
+    type: "string",
+    label: "text",
+    group: "General",
+    description: "",
+    default: undefined,
+    placeholder: "",
+  });
+  for (const invalid of [
+    42,
+    [],
+    { x: null },
+    { x: { type: "unknown" } },
+    { x: { type: "enum", options: [] } },
+    { x: { min: Infinity } },
+    { x: { step: 0 } },
+  ])
+    assert.ok(normalizeSchema(invalid).problems.length);
+});
+
+test("registry refresh: unchanged scenes are not reimported, errors recover, and removed keys stay removed", async (t) => {
+  const { registry, dir, set } = await registryPeer();
+  const globals = /** @type {any} */ (globalThis);
+  globals.__registryCount = { a: 0, b: 0 };
+  t.after(() => {
+    delete globals.__registryCount;
+  });
+  for (const key of ["a", "b"])
+    await writeFile(
+      join(dir, `${key}.mjs`),
+      `globalThis.__registryCount.${key}++; export default { render() {} };`,
+    );
+  set({
+    a: { path: "a.mjs", source: "config" },
+    b: { path: "b.mjs", source: "config" },
+  });
+  await registry.load();
+  /** @type {unknown[]} */ const events = [];
+  registry.on("changed", (event) => events.push(event));
+  assert.deepEqual(await registry.refresh(["a"]), { keys: [] });
+  assert.deepEqual(globals.__registryCount, { a: 2, b: 1 });
+  assert.deepEqual(events, []);
+  await writeFile(join(dir, "a.mjs"), "export default { render: null };");
+  await registry.refresh(["a"]);
+  assert.equal(registry.get("a")?.status, "broken");
+  await writeFile(
+    join(dir, "a.mjs"),
+    'export default { name: "Recovered", render() {} };',
+  );
+  await registry.refresh(["a"]);
+  assert.equal(registry.get("a")?.status, "ok");
+  assert.equal(registry.get("a")?.error, null);
+  set({ b: { path: "b.mjs", source: "config" } });
+  assert.deepEqual(
+    await registry.sync({ added: [], removed: ["a"], changed: [] }),
+    { keys: ["a"] },
+  );
+  assert.deepEqual(
+    registry.list().map((meta) => meta.key),
+    ["b"],
+  );
 });
