@@ -91,8 +91,7 @@ export function openEnlargedPreview(device, opener, options = {}) {
     }
     const pv = previewState(state, view);
     preview.draw(pv.frame, { veil: pv.veil, reason: pv.reason, spinner: pv.spinner });
-    const rect = stage.getBoundingClientRect();
-    const scale = Math.max(1, Math.floor(Math.min((rect.width - 32) / size.width, (rect.height - 32) / size.height)));
+    const scale = preview.scale();
     const status = deviceStatus(view, state);
     const frame = state.previews.get(view.name);
     const received = frame?.receivedAt

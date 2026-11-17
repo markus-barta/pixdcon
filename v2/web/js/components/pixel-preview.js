@@ -1,4 +1,4 @@
-/* global document */
+/* global document, getComputedStyle */
 /**
  * Component: pixel preview.
  *
@@ -20,7 +20,7 @@ const GRID = 0.85;
 /**
  * @param {HTMLElement} host
  * @param {{scale: number|"fit", grid: boolean, veil?: number, size?: {width: number, height: number}, label?: string}} options veil: opacity of the offline veil (0.55 table, 0.6 device page); size: the display's size, for the box before the first frame
- * @returns {{draw: (frame: {width: number, height: number, rgb: Uint8Array|null}|null, state: {veil: boolean, reason: string|null, spinner?: boolean}) => void, destroy: () => void, setGrid: (grid: boolean) => void, resize: () => void}}
+ * @returns {{draw: (frame: {width: number, height: number, rgb: Uint8Array|null}|null, state: {veil: boolean, reason: string|null, spinner?: boolean}) => void, destroy: () => void, setGrid: (grid: boolean) => void, resize: () => void, scale: () => number}}
  */
 export function createPixelPreview(host, options) {
   const canvas = document.createElement("canvas");
@@ -38,11 +38,11 @@ export function createPixelPreview(host, options) {
   /** @param {number} width @param {number} height @returns {number} */
   function scaleFor(width, height) {
     if (options.scale !== "fit") return options.scale;
-    const rect = host.getBoundingClientRect();
-    return Math.max(
-      1,
-      Math.floor(Math.min(rect.width / width, rect.height / height)),
-    );
+    // The box inside the host's padding (the enlarged view's stage has 16 px).
+    const style = getComputedStyle(host);
+    const across = host.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const down = host.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+    return Math.max(1, Math.floor(Math.min(across / width, down / height)));
   }
 
   /**
@@ -131,5 +131,7 @@ export function createPixelPreview(host, options) {
     resize() {
       last = null;
     },
+    /** @returns {number} the whole-number scale of the last drawing */
+    scale: () => last?.scale ?? 1,
   };
 }

@@ -19,7 +19,7 @@
       "test": "test/contract/client.test.js: client previews:"
     },
     {
-      "site": "web/js/components/enlarged-preview.js:167",
+      "site": "web/js/components/enlarged-preview.js:166",
       "id": "listener:document.addEventListener(\"keydown\")#1",
       "input": "Esc and the arrow keys in the enlarged view",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -28,7 +28,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/components/enlarged-preview.js:168",
+      "site": "web/js/components/enlarged-preview.js:167",
       "id": "listener:zoom.addEventListener(\"click\")#1",
       "input": "Previous, Next, Close, a click beside the image",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -37,7 +37,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/components/enlarged-preview.js:169",
+      "site": "web/js/components/enlarged-preview.js:168",
       "id": "listener:zoom.addEventListener(\"dblclick\")#1",
       "input": "a double click on the image",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -46,7 +46,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/components/enlarged-preview.js:170",
+      "site": "web/js/components/enlarged-preview.js:169",
       "id": "listener:window.addEventListener(\"resize\")#1",
       "input": "the window resized",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -55,7 +55,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/components/enlarged-preview.js:171",
+      "site": "web/js/components/enlarged-preview.js:170",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the enlarged view",
       "metadata": "none: the store calls it after a change it applied",

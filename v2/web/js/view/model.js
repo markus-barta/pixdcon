@@ -455,7 +455,8 @@ export function sourceLines(state, view) {
 
   if (
     (scene.source === "overlay" || scene.source === "blob") &&
-    view.desired?.output !== "shadow"
+    view.desired?.output !== "shadow" &&
+    (choice.scene ?? null) !== null
   ) {
     const mqttOff = state.mqtt?.state !== "connected";
     const notWriter =
