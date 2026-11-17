@@ -22,6 +22,7 @@ import { startFakeAwtrix } from "../../dev/fake-awtrix.js";
 import { systemClock } from "../../src/core/clock.js";
 import { manualClock } from "../../src/core/clock.js";
 import { createLogger } from "../../src/core/logger.js";
+import { startStack, waitFor } from "../helpers/harness.js";
 import { createTopics } from "../../src/mqtt/topics.js";
 import {
   expireAfterSeconds,
@@ -536,10 +537,38 @@ function telemetryAnswer(client, topic) {
     client.on("message", listener);
   });
 }
-// Blocker: W1 MqttGateway, OverlayService, RuntimeConfig and StateStore retained bootstrap.
-test.todo(
-  "retained bootstrap: devices start with mode and brightness already applied, without a fixed sleep",
-);
+test("retained bootstrap: devices start with mode and brightness already applied, without a fixed sleep", async (t) => {
+  const clock = manualClock();
+  const began = clock.now();
+  const topics = createTopics();
+  const stack = await startStack(t, {
+    clock,
+    config: (raw) => {
+      raw.devices = [raw.devices[1]];
+    },
+    prepare: async ({ broker }) => {
+      await broker.inject(topics.mode("ulanzi-t"), "pause", { retain: true });
+      await broker.inject(topics.brightnessOverride("ulanzi-t"), "17", {
+        retain: true,
+      });
+    },
+  });
+  const { state, scheduler } = stack.app.modules;
+  assert.equal(state.view("ulanzi-t").desired.mode.value, "pause");
+  assert.equal(state.view("ulanzi-t").desired.brightness.override, 17);
+  await waitFor(() => scheduler.loop("ulanzi-t")?.status().phase === "paused");
+  assert.equal(stack.awtrix.state().updates, 1);
+  assert.equal(stack.awtrix.state().brightness, Math.round((17 * 255) / 100));
+  const requests = stack.awtrix.state().requests;
+  const brightness = requests.indexOf("POST /api/settings"),
+    frame = requests.indexOf("POST /api/custom");
+  assert.ok(brightness >= 0 && frame > brightness);
+  assert.equal(
+    clock.now(),
+    began,
+    "startup needed no virtual settle/debounce wait",
+  );
+});
 
 /** Real loopback MQTT transport; recorded W1/W3 views and injected publish outcomes.
  * @param {import("node:test").TestContext} t

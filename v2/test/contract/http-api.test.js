@@ -941,10 +941,42 @@ test("GET /api/health: 200 with status degraded while a display is offline, 503 
   assert.equal(failed.body.status, "failed");
   assert.ok(failed.body.reasons.includes("watchdog_overdue"));
 });
-// Blocker: W1 ConfigStore.load/reload and state views remain skeletons.
-test.todo(
-  "config: an invalid config.json keeps the last valid config running and the UI reachable, also at start",
-);
+test("config: an invalid config.json keeps the last valid config running and the UI reachable, also at start", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, { mqtt: false, clock });
+  const before = stack.app.modules.runtime.get();
+  await writeFile(stack.configPath, "{ broken");
+  const reload = await stack.api("/api/v2/config/reload", { body: {} });
+  assert.equal(reload.status, 200);
+  assert.equal(reload.body.valid, false);
+  assert.ok(reload.body.error.message);
+  assert.equal(stack.app.modules.runtime.get(), before);
+  assert.equal((await stack.api("/api/v2/devices")).body.length, 2);
+  assert.equal((await stack.api("/api/health")).status, 200);
+  const rejected = await stack.api("/api/v2/config/raw", {
+    method: "PUT",
+    body: { text: "{ broken" },
+  });
+  assert.equal(rejected.status, 400);
+  assert.equal(await readFile(stack.configPath, "utf8"), "{ broken");
+  const invalid = await startStack(t, {
+    mqtt: false,
+    clock,
+    configText: "{ broken",
+  });
+  assert.equal(
+    (await invalid.api("/api/v2/config/raw")).body.state.valid,
+    false,
+  );
+  assert.deepEqual((await invalid.api("/api/v2/devices")).body, []);
+  const repaired = await invalid.api("/api/v2/config/raw", {
+    method: "PUT",
+    body: { text: '{"devices":[],"scenes":{}}' },
+  });
+  assert.equal(repaired.status, 200);
+  assert.equal(repaired.body.state.valid, true);
+  assert.ok((await invalid.api("/api/health")).body.restartRequired);
+});
 
 // --- Ordering (knowledge entry, section 3.0) ---
 test("position: the X-Pixdcon-Position of a write's answer is not lower than the seq of the live events the write caused, and never later than the last event published before its body was built", async (t) => {
