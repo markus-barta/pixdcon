@@ -27,8 +27,17 @@
  *    all when the frame did not change, except to refresh `receivedAt`.
  *  - "ping" every 15 s keeps proxies from closing the stream and lets the page
  *    notice a dead connection within 20 s ("No answer from pixdcon since …").
- *  - A page names itself with `session=<id>`. When its stream closes, its
- *    settings previews end after the grace time (settings-service.js).
+ *  - A page names itself with `session=<id>`. When its last stream closes,
+ *    its settings previews end after the grace time (settings-service.js).
+ *    A page that reconnects opens its new stream before the old one is seen
+ *    as closed, so the channel counts the open streams of a session:
+ *    `onSession(session, true)` when the first one opens,
+ *    `onSession(session, false)` only when none is left. The close of an
+ *    older stream never reports a page as gone that has a newer stream.
+ *  - The id is the envelope. The page takes epoch and seq of every event
+ *    from `id:`, so every event, also one whose payload has no epoch inside
+ *    (removal, preview, overlays), can be ordered and told from an earlier
+ *    run (web/js/ordering.js).
  *  - A slow reader is cut off instead of growing a queue in memory; it
  *    reconnects and gets a snapshot.
  *
@@ -44,7 +53,7 @@ import { todo } from "../core/todo.js";
  * @typedef {object} LiveChannelDeps
  * @property {import("../types.js").Epoch} epoch
  * @property {() => Omit<Snapshot, "seq"|"epoch">} snapshot built by main.js from the stores
- * @property {(session: string, connected: boolean) => void} onSession
+ * @property {(session: string, connected: boolean) => void} onSession true: the session's first stream opened; false: its last stream closed
  * @property {import("../types.js").Clock} clock
  * @property {import("../types.js").Logger} logger
  * @property {number} [ringSize] events kept for replay, default 500

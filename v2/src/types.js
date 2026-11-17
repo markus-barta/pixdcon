@@ -63,19 +63,21 @@
  * removed by a small atomic write when it ends. While it exists, a replay of
  * the replaced value is stale: it is not shown and it is cleared again.
  *
- * It ends only on evidence, never on a timer, on the settle hint or because
- * no message arrived (overlay/overlay-service.js, rules S1 to S5):
- *  - the broker confirmed the clear (or blob rewrite) that carries the same `generation`
- *  - an outside client published to the layer while pixdcon was connected (a new command)
- *  - a replay carries another value than `value` (stored while pixdcon was away: a new command)
- *  - blob only: a blob arrives that has no scene for the device
- *  - a newer choice replaces it; the device leaves config.json; the device becomes driven after a choice made in shadow
+ * It ends only on evidence, never on a timer, on the settle hint, on a
+ * connect or because no message arrived (core/ordering.js; the rules S1 to
+ * S5 of overlay/overlay-service.js; the code is overlay/scene-layers.js):
+ *  - the broker confirmed, or echoed, the clear (or blob rewrite) that carries the same `generation`
+ *  - an outside client published to the layer while pixdcon was connected, and not before an own write that was still on its way (a new command)
+ *  - a replay carries a value that is neither `value` nor in `alsoStale` (stored while pixdcon was away: a new command)
+ *  - blob only: a delivered blob has no scene for the device
+ *  - a newer choice replaces it; the device leaves the effective config; an authoritative output change puts the device into drive after a choice made in shadow
  *
  * @typedef {object} SceneSuppression
  * @property {number} generation choice generation of the device, rising with every UI choice; an acknowledgement ends only the suppression of its own generation
  * @property {IsoTime} at time of the choice
  * @property {string|null} value the stored value the choice replaced (granular: the payload; blob: the device's scene in the blob). null = not known at the time of the choice: anything stored in this layer is stale
- * @property {OutputMode} output output of the device when the choice was made. A suppression made in shadow never deletes anything on the broker, not even later: it is dropped when the device becomes driven
+ * @property {string[]} alsoStale other values of this layer that are pixdcon's own doing and never a new command: what a blob rewrite of pixdcon still carries for this device when the choice is made, be it on its way to the broker or already known to sit in the store as an older write. Such a rewrite can reach the broker after a newer blob and put its old value back; a delivery of that value is then recognised, also after a restart. Empty for the granular layer.
+ * @property {OutputMode} output output of the device when the choice was made. A suppression made in shadow never deletes anything on the broker, not even later: it is dropped when an authoritative output change puts the device into drive
  */
 
 /**
@@ -155,6 +157,7 @@
 /**
  * @typedef {object} ConfigFileState State of config.json on disk, for the raw editor and the title line.
  * @property {string} path
+ * @property {number} rev revision of the running config: rises with every content the store applies (an own write, an outside edit, a reload); 0 before the first load
  * @property {boolean} valid false: the file on disk is unusable and the last valid config keeps running
  * @property {{message: string, line: number|null, column: number|null}|null} error
  * @property {IsoTime|null} loadedAt when the running config was loaded or written
@@ -183,9 +186,14 @@
  *
  * `mode` is "shadow" as soon as one of these holds, in this order:
  *   force_shadow        PIXDCON2_FORCE_SHADOW=1
- *   config              the device, `output.default` or PIXDCON2_DEFAULT_OUTPUT asks for shadow
+ *   config              the device in config.json, `output.default` or PIXDCON2_DEFAULT_OUTPUT asks for shadow
  *   v1_owner            transition: v1 still lists the device ("still driven by pixdcon v1")
  *   ownership_unknown   transition: v1's list is not known yet. Unknown means shadow.
+ *
+ * Every input is authoritative: the environment, config.json, v1's list as
+ * it passed its fence. The overlay layer is not an input: `output` is not an
+ * overlay key, so no stored MQTT message can put a device into drive, and
+ * none can release one by going missing.
  *
  * @typedef {object} OutputDecision
  * @property {OutputMode} mode
@@ -199,10 +207,17 @@
  * the drivers, telemetry and the status topics work from; none of them reads
  * the saved config for a device or rebuilds this from overlay records.
  *
- * A blob entry may patch every key of a device and may add a device that
- * config.json does not have (A-071, C-055). Such a device has origin "blob".
- * The scene is not in here: it has its own precedence over time
- * (`DesiredState.scene`).
+ * A blob entry may patch the keys of a device that v1 knows and may add a
+ * device that config.json does not have (A-071, C-055). Such a device has
+ * origin "blob". An overlay can never widen what config.json and the
+ * environment allow (state/runtime-config.js overlayDevicePatch): `output`
+ * and the `supersedes` bookkeeping are not overlay keys, and `enabled` can
+ * only be set to false by an overlay.
+ *
+ * The scene in effect is not in here: it has its own precedence over time
+ * (`DesiredState.scene`). The saved choice is, as `savedScene`: it is one of
+ * the inputs of that precedence, and this is how it reaches the state store,
+ * at the first build and with every later change.
  *
  * @typedef {object} EffectiveDevice
  * @property {string} name
@@ -210,9 +225,10 @@
  * @property {"config"|"blob"} origin where the entry itself comes from; "blob" = it exists only in the blob overlay and nothing can be saved for it until it is adopted (A-151)
  * @property {string} address effective host[:port]
  * @property {"config"|"blob"|"overlay"} addressSource
- * @property {boolean} enabled false: the entry exists and no runtime is started
+ * @property {boolean} enabled false: the entry exists and no runtime is started. config.json's value, made false by a blob entry or a granular overlay that says false; never made true by an overlay
  * @property {"config"|"blob"|"overlay"} enabledSource
- * @property {OutputDecision} output
+ * @property {string|null} savedScene the saved choice: `scene` of the device in config.json as it is saved now (a legacy `scenes` array read as its first element); null when none is saved and for a device that exists only in the blob. Never an overlay value. A change of it appears in the diff of the runtime config's "changed" event like any other key.
+ * @property {OutputDecision} output from config.json, the environment and v1's list only
  * @property {string} displayName
  * @property {string} comment
  * @property {{showGrid: boolean, pollMs: number}} preview
@@ -236,7 +252,8 @@
  * v1 ownership feed. Frozen; a change produces a new object and a diff.
  *
  * @typedef {object} EffectiveConfig
- * @property {number} rev rises with every change
+ * @property {number} rev rises with every change; a consumer that follows the "changed" event applies an effective config only when its rev is higher than the one it holds
+ * @property {IsoTime} savedAt when the config.json content this was built from was loaded or written ("since" of a scene that comes from the saved choice)
  * @property {EffectiveDevice[]} devices config order, then blob-only devices in blob order; disabled devices are included with enabled false
  * @property {Record<string, EffectiveScene>} scenes
  * @property {number} telemetryIntervalMs from config.json; the blob cannot change global keys (A-072)
@@ -245,8 +262,10 @@
  */
 
 /**
- * Same shape as ConfigDiff, computed on the effective entries: device keys
- * are the keys of EffectiveDevice ("address", "output", "minFrameMs", …).
+ * Same shape as ConfigDiff, computed on the effective entries
+ * (state/runtime-config.js diffEffectiveConfig): device keys are the keys of
+ * EffectiveDevice ("address", "output", "minFrameMs", "savedScene", …), with
+ * "preview.pollMs" and "preview.showGrid" for the two preview options.
  * config/schema.js changeImpact() classifies them.
  *
  * @typedef {ConfigDiff} EffectiveDiff
@@ -288,7 +307,7 @@
  * @property {string|null} problem why it is not valid or not in effect, e.g. "unknown device", "unknown scene", "no schema for this key yet"
  * @property {IsoTime} receivedAt when this process received it
  * @property {"replay"|"live"} origin how this value arrived, from the retain flag as delivered and nothing else: replay = a copy from the broker's retained store (stored at an unknown earlier time); live = published while pixdcon was subscribed
- * @property {number} connection gateway connection on which it arrived
+ * @property {number} connection gateway connection on which it arrived. Lower than the current connection number: the value was delivered before the last reconnect and has not been delivered again. It stays in effect; nothing is removed because the settle hint passed or because nothing arrived
  * @property {boolean} inEffect true while it decides what a display shows
  * @property {{generation: number, at: IsoTime}|null} supersededBy the UI choice that replaced it, while its clear is on its way. For the blob record: null; the per-device answer is `OverlayService.suppressions(device)`.
  * @property {{pending: boolean, requestedAt: IsoTime|null, attempts: number}} clear
@@ -550,11 +569,24 @@
  * @property {(device: {name: string, type: DeviceType, address: string}, sink: import("./scenes/v1-device-facade.js").SurfaceSink) => Promise<import("./scenes/v1-device-facade.js").SceneSurface>} createSurface fixtures worker → render loop: the object a v1 scene draws on, by device type; the v1 font is loaded once
  * @property {typeof import("./drivers/awtrix-raster.js").rasterizeAwtrixApp} rasterizeAwtrixApp fixtures worker → shadow driver, preview store, fake AWTRIX
  * @property {{ulanzi: typeof import("./mqtt/ha-discovery.js").ulanziDiscovery, pixoo: typeof import("./mqtt/ha-discovery.js").pixooDiscovery}} discovery API worker → telemetry collector
+ * @property {typeof import("./config/schema.js").changeImpact} changeImpact core worker → scheduler: what a changed key of an effective device needs (restart, apply, view, preview)
+ * @property {typeof import("./state/precedence.js").normalizeSettingValue} normalizeSettingValue core worker → scene registry: schema defaults go through the same rules as setting values
  */
 
 // ---------------------------------------------------------------------------
 // Controller
 // ---------------------------------------------------------------------------
+
+/**
+ * Where an answer or event stands in the order of one run: the epoch and
+ * the seq of the live channel. Text form "<epoch>-<seq>" (event ids, the
+ * `since` cursor, the `X-Pixdcon-Position` header). Positions of different
+ * epochs cannot be compared.
+ *
+ * @typedef {object} ServerPosition
+ * @property {Epoch} epoch
+ * @property {number} seq
+ */
 
 /**
  * @typedef {object} MqttStatus
@@ -596,7 +628,7 @@
  * first event of the live channel.
  *
  * @typedef {object} Snapshot
- * @property {Epoch} epoch a client that holds another epoch throws away what it has and starts from this snapshot
+ * @property {Epoch} epoch a client that holds another epoch throws away what it has and starts from this snapshot, provided the snapshot comes from the newest stream or bootstrap request the client has started (web/js/ordering.js)
  * @property {number} seq position in the live channel of this epoch; events with a lower or equal seq are already included
  * @property {ControllerStatus} controller
  * @property {MqttStatus} mqtt
@@ -609,7 +641,14 @@
 
 /**
  * Events of the live channel (GET /api/v2/events, server-sent events).
- * `id:` of every event is "<epoch>-<seq>"; `event:` is the type below.
+ * `id:` of every event is "<epoch>-<seq>"; `event:` is the type below. The
+ * id is the envelope: the client takes epoch and seq of every event from
+ * it, whatever the payload contains, and adds the generation of the stream
+ * it arrived on (web/js/live.js LiveEnvelope).
+ *
+ * Every JSON answer of the API carries the same position as the header
+ * `X-Pixdcon-Position: <epoch>-<seq>`: the epoch of the run and the seq of
+ * the last live event published before the answer was built (ServerPosition).
  *
  * @typedef {{type: "snapshot", seq: number, data: Snapshot}
  *   | {type: "device", seq: number, data: DeviceView}

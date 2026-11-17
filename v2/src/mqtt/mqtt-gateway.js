@@ -54,6 +54,21 @@
  *  - A handler that throws or rejects is logged and never stops the delivery
  *    to other owners (C-039).
  *
+ * Order (core/ordering.js). The gateway is where MQTT input gets its
+ * identity, and it guarantees what the fences of its consumers rest on:
+ *  - connection numbers only rise. "connect" for a connection is emitted
+ *    before its first message is delivered, "disconnect" after its last.
+ *  - a handler is called synchronously, in the order the packets arrived on
+ *    the connection; for one topic that is the order the broker processed
+ *    them. The gateway never reorders, batches or delays messages.
+ *  - the own echo of a publish is delivered like any message, on the
+ *    connection it was published on, and never on a later one.
+ *  - settle() and "settled" are a hint. No consumer may release, retire,
+ *    drive or publish because of them.
+ *  - the timers in here (reconnect every 5 s, connect timeout, the settle
+ *    timeout, the acknowledgement timeout) decide when something is tried or
+ *    given up, never what is stored on the broker.
+ *
  * Events (EventEmitter):
  *   "status"      (MqttStatus)
  *   "connect"     ({connection: number})
@@ -82,7 +97,7 @@ import { todo } from "../core/todo.js";
 /**
  * @typedef {object} PublishResult
  * @property {boolean} ok
- * @property {"confirmed"|"sent"|"offline"|"error"} outcome confirmed = broker acknowledged (QoS 1); sent = handed to the client (QoS 0); offline = not connected, or the connection ended before the acknowledgement
+ * @property {"confirmed"|"sent"|"offline"|"timeout"|"error"} outcome confirmed = broker acknowledged (QoS 1); sent = handed to the client (QoS 0); offline = not connected, or the connection ended before the acknowledgement; timeout = no acknowledgement within the time on a connection that is still up (the broker may have stored the message: only its echo or the end of the connection tells); error = it was certainly not sent
  * @property {number} connection connection it was sent on; 0 when it was never sent
  * @property {string|null} error
  */

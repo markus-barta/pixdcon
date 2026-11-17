@@ -1,0 +1,91 @@
+{
+  "owner": "W2",
+  "rows": [
+    {
+      "site": "web/js/main.js:20",
+      "id": "fetch:fetch#1",
+      "input": "the answer of GET /api/health when the page loads",
+      "metadata": "none yet",
+      "fence": "none",
+      "test": "test/contract/client.test.js: client boot:",
+      "why": "skeleton only: it writes one line of text. Phase 3 replaces it by the bootstrap through api.js and the store's fence"
+    },
+    {
+      "site": "web/js/api.js:60",
+      "id": "contract:api.request",
+      "input": "the answer of a request",
+      "metadata": "generation of the request for its resource; epoch and seq of X-Pixdcon-Position",
+      "fence": "ordering.js beginRequest and openSource before the request is sent; the store decides with decideView, decideAnswer or decideSnapshot",
+      "test": "test/contract/client.test.js: client api:"
+    },
+    {
+      "site": "web/js/components/settings-form.js:39",
+      "id": "contract:components/settings-form.createSettingsForm",
+      "input": "the answers of the form's preview and save requests",
+      "metadata": "draft number of the form; rev of the SettingsState in the answer",
+      "fence": "ordering.js decideView; an answer for an older draft than the one on screen is not shown",
+      "test": "test/contract/client.test.js: client settings form:"
+    },
+    {
+      "site": "web/js/live.js:60",
+      "id": "contract:live.connectLive",
+      "input": "the events of the live stream, its open and its error, the 5 s reconnect timer, the 20 s silence timer",
+      "metadata": "epoch and seq from the event id; generation of the stream",
+      "fence": "ordering.js openSource for every new stream; the store applies an event only through decideEvent; the two timers change only the connection state that is shown",
+      "test": "test/contract/client.test.js: client live:"
+    },
+    {
+      "site": "web/js/store.js:69",
+      "id": "contract:store.applySnapshot",
+      "input": "a snapshot: the bootstrap answer, or the first event of a stream",
+      "metadata": "epoch, seq, generation of its source",
+      "fence": "ordering.js decideSnapshot",
+      "test": "test/contract/ordering.test.js: F5: a snapshot that a newer source has overtaken"
+    },
+    {
+      "site": "web/js/store.js:77",
+      "id": "contract:store.applyEvent",
+      "input": "a live event",
+      "metadata": "epoch, seq, stream generation; a view inside carries its own epoch and rev",
+      "fence": "ordering.js decideEvent, then decideView for a view",
+      "test": "test/contract/ordering.test.js: F5: an event is applied only on the newest stream"
+    },
+    {
+      "site": "web/js/store.js:89",
+      "id": "contract:store.applyAnswer",
+      "input": "the answer of a request",
+      "metadata": "request generation, epoch and seq; rev for a view",
+      "fence": "ordering.js decideView or decideAnswer",
+      "test": "test/contract/ordering.test.js: F5: views and answers"
+    }
+  ],
+  "none": [
+    "api.isBusy",
+    "api.onBusy",
+    "components/enlarged-preview.openEnlargedPreview",
+    "components/pixel-preview.createPixelPreview",
+    "components/recovery-dialog.openRecoveryDialog",
+    "format.clock",
+    "format.ago",
+    "format.percent",
+    "format.grouped",
+    "theme.currentTheme",
+    "theme.setTheme",
+    "pages/config-raw.mount",
+    "pages/config-raw.unmount",
+    "pages/config.mount",
+    "pages/config.unmount",
+    "pages/device.mount",
+    "pages/device.unmount",
+    "pages/devices.mount",
+    "pages/devices.unmount",
+    "pages/health.mount",
+    "pages/health.unmount",
+    "pages/overlays.mount",
+    "pages/overlays.unmount",
+    "router.startRouter",
+    "store.getState",
+    "store.fence",
+    "store.subscribe"
+  ]
+}

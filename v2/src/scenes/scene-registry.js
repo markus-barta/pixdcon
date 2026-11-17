@@ -32,6 +32,19 @@
  *    redirect of state files and the copy route work from that, so they hold
  *    for an alias key and for a copy as well (B-183)
  *
+ * Order (core/ordering.js). load(), refresh() and sync() import files and
+ * take time. main.js calls them from one lane, one at a time, in the order
+ * they were asked for (the first load, then every change of the effective
+ * scene map and every changed file), so the registry never has two of them
+ * running and an earlier, slower import cannot finish after a later one.
+ * Each of them reads the effective scene map when it runs, not when it was
+ * asked for. Nothing else calls them. list(), get(), fileOf(), keysOfFile()
+ * and check() answer from what the last finished call left.
+ *
+ * Schema defaults are normalised with the injected `normalizeSettingValue`
+ * (state/precedence.js through main.js), the same function that judges
+ * setting values; this file does not import it.
+ *
  * Events (EventEmitter): "changed" ({keys: string[]}) when metadata or status of scenes changed.
  *
  * Owner: fixtures + edge lane worker.
@@ -45,8 +58,8 @@ import { todo } from "../core/todo.js";
 
 export class SceneRegistry extends EventEmitter {
   /**
-   * @param {{baseDir: () => string, scenes: () => Record<string, import("../types.js").EffectiveScene>, findBuiltin: import("../types.js").Factories["findBuiltin"], logger: import("../types.js").Logger}} deps
-   * `scenes` returns the effective map (RuntimeConfig.scenes); `findBuiltin` answers whether a device type has a built-in mode
+   * @param {{baseDir: () => string, scenes: () => Record<string, import("../types.js").EffectiveScene>, findBuiltin: import("../types.js").Factories["findBuiltin"], normalizeSettingValue: import("../types.js").Factories["normalizeSettingValue"], logger: import("../types.js").Logger}} deps
+   * `scenes` returns the effective map (RuntimeConfig.scenes); `findBuiltin` answers whether a device type has a built-in mode; `normalizeSettingValue` judges schema defaults
    */
   constructor(deps) {
     super();

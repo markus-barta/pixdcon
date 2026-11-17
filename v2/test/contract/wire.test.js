@@ -309,3 +309,14 @@ test.todo(
 test.todo(
   "gateway last will: the will of the CONNECT packet is the health topic of the status base the process started with",
 );
+
+// --- Ordering (knowledge entry, section 3.0) ---
+test.todo(
+  "gateway order: connect is emitted before the first message of a connection and disconnect after its last; a handler is called synchronously, in the order the packets arrived; connection numbers only rise",
+);
+test.todo(
+  "gateway publish outcome: no acknowledgement in time on a connection that stays up answers timeout; error only when the message was certainly not sent; the own echo arrives on the connection it was published on",
+);
+test.todo(
+  "gateway timers: the reconnect, the connect timeout and the settle timeout change the status and the hint only; no subscriber is called because one of them fired",
+);

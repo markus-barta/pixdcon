@@ -28,6 +28,24 @@
  *    and with the 30 s republish. The discovery payloads name this topic
  *    next to the controller health (ha-discovery.js), so one display that is
  *    down takes its own entities down and nobody else's.
+ *  - Availability is retired, not abandoned. A retained "online" that
+ *    nobody takes back would keep the entities of a display available for
+ *    ever while the controller is healthy. So when this instance stops
+ *    driving a display for which it published "online" (the device left the
+ *    effective config, was disabled, or its output changed from drive to
+ *    shadow, also by the v1 interlock), it publishes "offline" for it once
+ *    more, retained, and only then forgets it. This is the last message of
+ *    the driving phase and the one publish for a device that is not driven;
+ *    it says less, never more. It is owed until the broker confirmed it:
+ *    after a reconnect it is sent again. On a clean stop every display this
+ *    instance drives is retired the same way. planAvailability() below is
+ *    the rule, finished code.
+ *    What this cannot cover is a process that dies, or a device that is
+ *    removed while the process is down: then the last will takes the
+ *    controller health down, and after the next start the discovery
+ *    payloads' `expire_after` (ha-discovery.js, now on the Ulanzi sensors
+ *    too) ends the entities of a display that nobody publishes telemetry
+ *    for.
  *  - A device that left the config leaves both lists (C-028).
  *  - `state.devices[].scene` is the scene on the display and is published at
  *    once when it changes, not only every 100 frames (C-081). Added fields per
@@ -76,6 +94,39 @@ import { todo } from "../core/todo.js";
  * @property {number} [intervalMs] default 30000
  */
 
+/**
+ * What to publish on the per-device availability topics, as a pure function
+ * of what this instance last published and what it drives now.
+ *
+ * @param {Map<string, "online"|"offline">|Record<string, "online"|"offline">} published the last payload the broker confirmed per device, in this process
+ * @param {Array<{name: string, driven: boolean, health: import("../types.js").HealthState|null}>} devices the devices of the effective config; driven = enabled and output drive; a device that left the config is simply not in the list
+ * @returns {Array<{device: string, payload: "online"|"offline", retire: boolean}>} in the order of `devices`, then retirements of devices that left. retire = the device is no longer driven: after the broker confirmed this "offline" the device is forgotten
+ */
+export function planAvailability(published, devices) {
+  const last =
+    published instanceof Map ? published : new Map(Object.entries(published));
+  /** @type {Array<{device: string, payload: "online"|"offline", retire: boolean}>} */
+  const plan = [];
+  const listed = new Set();
+  for (const device of devices) {
+    listed.add(device.name);
+    if (device.driven) {
+      plan.push({
+        device: device.name,
+        payload: device.health === "offline" ? "offline" : "online",
+        retire: false,
+      });
+    } else if (last.get(device.name) === "online") {
+      plan.push({ device: device.name, payload: "offline", retire: true });
+    }
+  }
+  for (const [device, payload] of last) {
+    if (!listed.has(device) && payload === "online")
+      plan.push({ device, payload: "offline", retire: true });
+  }
+  return plan;
+}
+
 export class StatusPublisher {
   /**
    * The last will for the gateway: the health topic of this process's status
@@ -117,7 +168,7 @@ export class StatusPublisher {
     return todo("StatusPublisher.start");
   }
 
-  /** Publish running false and health "offline", then stop the timers. */
+  /** Publish running false and health "offline", retire the availability of every display this instance drives ("offline"), then stop the timers. */
   async stop() {
     return todo("StatusPublisher.stop");
   }
@@ -133,10 +184,11 @@ export class StatusPublisher {
   }
 
   /**
-   * Availability of one driven display, for <base>/<device>/availability.
+   * Availability of one display, for <base>/<device>/availability: the entry
+   * of planAvailability() for it.
    *
    * @param {string} device
-   * @returns {"online"|"offline"|null} null for a device this instance does not drive: nothing is published
+   * @returns {"online"|"offline"|null} null: nothing to publish. That is a device this instance does not drive and has no "online" to take back for
    */
   buildAvailability(device) {
     return todo("StatusPublisher.buildAvailability", device);

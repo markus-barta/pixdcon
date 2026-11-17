@@ -14,6 +14,17 @@
  *  - names the page with a session id; the server ends this page's settings
  *    previews when the connection is gone
  *
+ * Order (ordering.js). Every connect and every reconnect creates a new
+ * EventSource and takes a new stream generation (`openSource(fence,
+ * "stream")`); the browser's own retry is never left running. Every event
+ * is handed on as an envelope: its type and data, the epoch and seq parsed
+ * from the event id "<epoch>-<seq>" (never from the payload: removal,
+ * preview and overlay events have no epoch inside), and the generation of
+ * the stream it arrived on. An event of a stream that was replaced, also one
+ * that was already queued when the stream was closed, carries the old
+ * generation and is dropped by the store. An event whose id cannot be read
+ * is not handed on.
+ *
  * Owner: UI worker.
  */
 
@@ -28,10 +39,21 @@ import { todo } from "./todo.js";
  */
 
 /**
+ * One live event as the store gets it.
+ *
+ * @typedef {object} LiveEnvelope
+ * @property {string} type
+ * @property {string} epoch from the event id
+ * @property {number} seq from the event id
+ * @property {number} stream generation of the stream it arrived on
+ * @property {any} data
+ */
+
+/**
  * @param {object} handlers
- * @param {(event: {type: string, seq: number, data: any}) => void} handlers.onEvent every event, in seq order
+ * @param {(event: LiveEnvelope) => void} handlers.onEvent every event, in the order of its stream
  * @param {(state: LiveState) => void} handlers.onState connection state changes
- * @param {{log?: boolean}} [options] log: also receive log lines (Health page)
+ * @param {{log?: boolean, fence: import("./ordering.js").ClientFence}} options log: also receive log lines (Health page); fence: the store's fence, from which stream generations are taken
  * @returns {{session: string, close: () => void, state: () => LiveState}}
  */
 export function connectLive(handlers, options) {

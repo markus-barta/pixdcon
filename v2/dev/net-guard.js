@@ -27,6 +27,12 @@
  *  - a Node child process gets the guard too, whatever environment and
  *    arguments it was started with: the guard adds `--import <this file>` to
  *    the child's NODE_OPTIONS. Without this a child was a way out.
+ *  - in a test run a Node child also gets the run's hard deadline
+ *    (test/helpers/deadline.js): when this process has
+ *    PIXDCON2_TEST_DEADLINE_PRELOAD and PIXDCON2_TEST_DEADLINE_AT, set by
+ *    test/helpers/run.js, both are passed on and the preload is added. A
+ *    child that outlives its test, also one that left the run's process
+ *    group, then ends itself at the deadline.
  *  - a worker thread gets the guard too. A worker has its own copies of the
  *    net, dns and dgram modules, so the patches of the parent do not reach
  *    it, and Node passes a parent's `--import` on only to some kinds of
@@ -113,9 +119,27 @@ function blocked(kind, target, message, extra = {}) {
  * @returns {string}
  */
 function withPreload(current) {
-  if (current?.includes(PRELOAD)) return current;
-  return current ? `${current} ${PRELOAD}` : PRELOAD;
+  let options = current ?? "";
+  for (const preload of [PRELOAD, deadlinePreload()]) {
+    if (preload && !options.includes(preload))
+      options = options ? `${options} ${preload}` : preload;
+  }
+  return options;
 }
+
+/** @returns {string|null} `--import` of the test run's deadline module, when this process is part of a test run */
+function deadlinePreload() {
+  const url = process.env.PIXDCON2_TEST_DEADLINE_PRELOAD;
+  return url && process.env.PIXDCON2_TEST_DEADLINE_AT
+    ? `--import=${url}`
+    : null;
+}
+
+/** Environment variables of a test run that a Node child must get, whatever environment it was given. */
+const DEADLINE_VARIABLES = /** @type {const} */ ([
+  "PIXDCON2_TEST_DEADLINE_AT",
+  "PIXDCON2_TEST_DEADLINE_PRELOAD",
+]);
 
 /**
  * Work out where a Socket.connect() call is going. Handles the three public
@@ -198,6 +222,12 @@ function installSpawn() {
       );
       if (index === -1) pairs.push(`NODE_OPTIONS=${value}`);
       else pairs[index] = `NODE_OPTIONS=${value}`;
+      if (deadlinePreload()) {
+        // A deadline the child was given itself stays as it is.
+        for (const name of DEADLINE_VARIABLES)
+          if (!pairs.some((pair) => pair.startsWith(`${name}=`)))
+            pairs.push(`${name}=${process.env[name]}`);
+      }
       options.envPairs = pairs;
     }
     return originalSpawn.call(this, options);
@@ -230,6 +260,8 @@ function installSpawn() {
       const options = hasOptions ? { ...last } : {};
       const env = { ...(options.env ?? process.env) };
       env.NODE_OPTIONS = withPreload(env.NODE_OPTIONS);
+      if (deadlinePreload())
+        for (const name of DEADLINE_VARIABLES) env[name] ??= process.env[name];
       options.env = env;
       const rest = hasOptions ? args.slice(0, -1) : args;
       return original(...rest, options);

@@ -33,6 +33,27 @@ test("HTTP: every documented route is declared exactly once", async (t) => {
   assert.ok(declared.includes("GET /api/health"));
 });
 
+test("HTTP: every JSON answer says where it stands: X-Pixdcon-Position carries the epoch of the run and the seq of the live channel", async (t) => {
+  const stack = await startStack(t, { mqtt: false });
+  for (const [path, status] of /** @type {const} */ ([
+    ["/api/health", 200],
+    ["/api/v2/devices", 501], // an error answer is an answer too
+  ])) {
+    const response = await fetch(`${stack.base}${path}`);
+    assert.equal(response.status, status, path);
+    const position = response.headers.get("x-pixdcon-position");
+    assert.match(String(position), /^[0-9a-f]{8}-\d+$/, path);
+    assert.equal(
+      position,
+      `${stack.app.epoch}-0`,
+      "the run's epoch; seq 0 while the live channel has published nothing",
+    );
+  }
+  // A static file is not state: it has no position.
+  const page = await fetch(`${stack.base}/`);
+  assert.equal(page.headers.get("x-pixdcon-position"), null);
+});
+
 test("HTTP: the error envelope, 404, 405, 415 and the skeleton's 501", async (t) => {
   const stack = await startStack(t, { mqtt: false });
 
@@ -140,4 +161,15 @@ test.todo(
 );
 test.todo(
   "config: an invalid config.json keeps the last valid config running and the UI reachable, also at start",
+);
+
+// --- Ordering (knowledge entry, section 3.0) ---
+test.todo(
+  "position: the X-Pixdcon-Position of a write's answer is not lower than the seq of the live events the write caused",
+);
+test.todo(
+  "live channel sessions: a page that reconnects opens its new stream before the old one closes; the session is reported gone only when its last stream closed",
+);
+test.todo(
+  "requests in order: two writes for one device are applied in the order they arrived and each answers with its own applied view; writes for two devices do not wait for each other",
 );

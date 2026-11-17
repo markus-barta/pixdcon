@@ -37,6 +37,23 @@
  * Shutdown: stop loops (bounded), then telemetry and previews. The whole
  * process keeps v1's 8 s limit (A-035).
  *
+ * Order (core/ordering.js).
+ *  - runtime "changed" is applied only when `effective.rev` is higher than
+ *    the one the scheduler holds; state "desired" events of one device are
+ *    applied in the order they arrive, in the device's queue.
+ *  - Every device runtime gets a token, a number that rises with every
+ *    runtime the scheduler builds for that device, and the scheduler tells
+ *    the state store (`state.runtimeStarted(name, token)`). What a runtime
+ *    reports reaches the state store, the health model and the preview
+ *    store only through `whileCurrent()` (core/ordering.js): a render that
+ *    hung and comes back after its runtime was replaced (another address,
+ *    another output) reports into nothing. Its frame is not a good frame of
+ *    the new runtime, and its phase does not overwrite the new one.
+ *  - What a key of the diff needs is asked from `factories.changeImpact`
+ *    (config/schema.js through main.js), not worked out here.
+ *  - The watchdog is a timer: it restarts a loop that is dead or overdue by
+ *    its own measured times; it never changes what a device should show.
+ *
  * Owner: drivers worker.
  */
 
@@ -46,7 +63,7 @@ import { todo } from "../core/todo.js";
  * @typedef {object} SchedulerDeps
  * @property {import("../state/state-store.js").StateStore} state desired state per device, and where the loops report
  * @property {import("../state/runtime-config.js").RuntimeConfig} runtime the devices as they run; "changed" with a diff
- * @property {Pick<import("../types.js").Factories, "createDriver"|"createSurface"|"rasterizeAwtrixApp">} factories what the device runtimes are built with (main.js)
+ * @property {Pick<import("../types.js").Factories, "createDriver"|"createSurface"|"rasterizeAwtrixApp"|"changeImpact">} factories what the device runtimes are built with, and the classification of changed keys (main.js)
  * @property {import("../scenes/scene-runtime.js").SceneRuntime} scenes
  * @property {import("./preview-store.js").PreviewStore} previews
  * @property {import("../health/health-model.js").HealthModel} health

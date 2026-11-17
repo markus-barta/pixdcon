@@ -118,13 +118,25 @@ test("composition: the namespace of a run is reported, and an unbuilt health mod
   // The factories every worker builds against are there before any of them starts.
   assert.deepEqual(Object.keys(stack.app.factories).sort(), [
     "builtinModes",
+    "changeImpact",
     "createDriver",
     "createSurface",
     "discovery",
     "findBuiltin",
+    "normalizeSettingValue",
     "rasterizeAwtrixApp",
     "sizeOf",
   ]);
+  // The two policy helpers that cross worker boundaries are handed over,
+  // not imported: the scheduler asks changeImpact, the scene registry
+  // normalises schema defaults with the function that judges setting values.
+  assert.equal(stack.app.factories.changeImpact("address"), "restart");
+  assert.equal(stack.app.factories.changeImpact("savedScene"), "view");
+  assert.equal(typeof stack.app.factories.normalizeSettingValue, "function");
+
+  // Scene work has one lane, and the start drained it.
+  assert.equal(stack.app.modules.registryLane.pending(), 0);
+  assert.equal(stack.app.modules.registryLane.closed(), false);
 });
 
 // --- Phase 3 ---------------------------------------------------------------------------------------
@@ -160,4 +172,30 @@ test.todo(
 );
 test.todo(
   "controller health: the measured status and its reasons are in the snapshot, and a change reaches the live channel as a controller event",
+);
+
+// --- Ordering (knowledge entry, section 3.0; the pure fences are run in ordering.test.js) ---
+test.todo(
+  "saved choice at boot: a process that starts with a saved scene and no overlay drives that scene on its display (effective device savedScene)",
+);
+test.todo(
+  "saved choice from outside: editing only a device's scene in config.json switches that display and restarts nothing; the diff names savedScene",
+);
+test.todo(
+  "registry lane: a path overlay whose import is slow, then a newer path for the same key: the registry ends on the newer one; a change during the first load is applied after it; shutdown waits for the import that runs",
+);
+test.todo(
+  "effective revision: runtime config, state store, scheduler and settings service apply a runtime change only when its rev is higher than the one they hold",
+);
+test.todo(
+  "config store order: an own write is not an outside edit; a file read that began before a write of this process finished is dropped and repeated; a file event alone changes nothing",
+);
+test.todo(
+  "interlock order: v1's list held back as a replay and delivered after a live list on the same connection releases nothing (holdRetained)",
+);
+test.todo(
+  "restriction survives a reconnect: a device that an enabled overlay switched off does not start while the new connection holds its replay back past the settle hint",
+);
+test.todo(
+  "overlay cannot widen: a blob entry with output drive, or enabled true, for a device that config.json keeps in shadow or disabled changes neither; the record names the ignored keys",
 );

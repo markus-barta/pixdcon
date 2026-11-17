@@ -28,7 +28,7 @@ test.todo(
   "overlay rule 3: a scene overlay published live after a UI choice wins again (Home Assistant scene toggle)",
 );
 test.todo(
-  "overlay rule 4: a UI choice made while MQTT is offline holds, and the clear is sent after the reconnect",
+  "overlay rule 4: a UI choice made while MQTT is offline holds; nothing is published because the connection came back, and the stored overlay is cleared when the new connection replays it",
 );
 test.todo(
   "overlay rule 5: a UI choice with an unconfirmed clear survives a restart of pixdcon (supersedes marker in config.json)",
@@ -113,4 +113,21 @@ test.todo(
 );
 test.todo(
   "transition rule 3: for a device the interlock holds back, a UI choice publishes no clear and its scene writes no file beside the scene",
+);
+
+// --- Ordering (knowledge entry, section 3.0; the scene layers are run in ordering.test.js and ordering-model.test.js) ---
+test.todo(
+  "overlay service and scene layers: the service feeds every gateway message, connect, disconnect, settle hint and publish outcome to the reducer and carries out exactly the effects it answers with, against the in-memory broker with holdRetained",
+);
+test.todo(
+  "mirror after a reconnect (M4): a record that the new connection has not delivered stays in effect and shows the older connection number; the settle hint removes nothing; a clear from outside removes it",
+);
+test.todo(
+  "own control writes: a mode or brightness change from the UI that echoes back after a newer one does not undo it; a control that was certainly not sent goes back to what the broker holds",
+);
+test.todo(
+  "held setting overlay: a setting overlay whose scene has no schema yet is kept and takes effect when the registry reports the schema",
+);
+test.todo(
+  "explicit clears and the v1 overlay route: an own write through clear, clearSettings, publishSettings, publishSceneOverlay or publishControl is remembered until its echo; what arrives on its topic before that is older",
 );

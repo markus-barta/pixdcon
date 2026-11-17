@@ -102,13 +102,38 @@ export function diffConfig(previous, next) {
   return todo("schema.diffConfig", previous, next);
 }
 
+/** @type {ReadonlyMap<string, "restart"|"apply"|"view"|"preview">} */
+const CHANGE_IMPACT = new Map(
+  /** @type {Array<[string, "restart"|"apply"|"view"|"preview"]>} */ ([
+    ["type", "restart"],
+    ["address", "restart"],
+    ["output", "restart"],
+    ["enabled", "restart"],
+    ["minFrameMs", "restart"],
+    ["maxPowerCycles", "restart"],
+    ["powerCyclePlugin", "restart"],
+    ["cleanupLegacyApps", "restart"],
+    ["sceneSettings", "apply"],
+    ["displayName", "view"],
+    ["comment", "view"],
+    ["origin", "view"],
+    ["blobKeys", "view"],
+    ["addressSource", "view"],
+    ["enabledSource", "view"],
+    ["savedScene", "view"],
+    ["preview.showGrid", "view"],
+    ["preview.pollMs", "preview"],
+  ]),
+);
+
 /**
  * Which change needs what. The scheduler uses this on the diff of the
  * effective config (types.js EffectiveDiff), so a key that a blob entry
- * patches counts like one changed in config.json.
+ * patches counts like one changed in config.json. It gets the function
+ * through `Factories.changeImpact` (main.js), not by importing this file.
  *  - "restart": the driver or the loop must be rebuilt (type, address, output, enabled, minFrameMs, powerCyclePlugin, maxPowerCycles, cleanupLegacyApps)
  *  - "apply":   pushed into the running loop (sceneSettings; the scene itself arrives through the state store's "desired" event)
- *  - "view":    shown only, nothing running changes (displayName, comment, preview.showGrid, origin, blobKeys, addressSource, enabledSource)
+ *  - "view":    shown only, nothing running changes by the key itself (displayName, comment, preview.showGrid, origin, blobKeys, addressSource, enabledSource, and savedScene: the state store turns a new saved choice into a "desired" event when it changes what shows)
  *  - "preview": the preview poller is re-armed (preview.pollMs)
  * An unknown key answers "restart": the safe side.
  *
@@ -116,5 +141,5 @@ export function diffConfig(previous, next) {
  * @returns {"restart"|"apply"|"view"|"preview"}
  */
 export function changeImpact(key) {
-  return todo("schema.changeImpact", key);
+  return CHANGE_IMPACT.get(key) ?? "restart";
 }

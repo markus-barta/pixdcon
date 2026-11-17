@@ -14,9 +14,19 @@
  *   deadline         every test file's process exits with code 1 (deadline.js)
  *   deadline + 1.5 s whatever is still alive is killed, also a process that
  *                    cannot run a timer any more, and this script exits 1
+ *   runner exit      whatever the run left behind is killed before this
+ *                    script passes the runner's status on: a test can pass
+ *                    and still leave a child process running (a helper it
+ *                    started and forgot), and `--test-force-exit` ends the
+ *                    test file without ending that child
  *
  * The run is its own process group, so "whatever is still alive" is exactly
- * the runner and the processes it started, and nothing of the caller.
+ * the runner and the processes it started, and nothing of the caller. A
+ * Node child that leaves the group (started detached) is not reached by
+ * that; it gets the run's deadline instead: dev/net-guard.js hands every
+ * Node child the deadline preload and the deadline time (the two
+ * PIXDCON2_TEST_DEADLINE_* variables set below), so it ends itself at the
+ * deadline at the latest.
  *
  * PIXDCON2_TEST_DEADLINE_MS and PIXDCON2_TEST_DEADLINE_GRACE_MS change the two
  * times; the harness's own test uses short ones.
@@ -24,7 +34,7 @@
 
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const v2Root = resolve(here, "../..");
@@ -59,6 +69,10 @@ const runner = spawn(
     env: {
       ...process.env,
       PIXDCON2_TEST_DEADLINE_AT: String(started + budgetMs),
+      // For the children of test files (dev/net-guard.js passes it on).
+      PIXDCON2_TEST_DEADLINE_PRELOAD: pathToFileURL(
+        resolve(here, "deadline.js"),
+      ).href,
     },
   },
 );
@@ -93,7 +107,26 @@ runner.on("error", (error) => {
   );
   process.exit(1);
 });
+/** @returns {boolean} true when a process of the run's group is still alive */
+const groupAlive = () => {
+  if (runner.pid === undefined) return false;
+  try {
+    process.kill(-runner.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 runner.on("exit", (code, signal) => {
   clearTimeout(backstop);
+  // The runner is gone; its process group may not be. Nothing of a run is
+  // left behind, whether it passed or failed.
+  if (groupAlive()) {
+    process.stderr.write(
+      "[test] the run left a process behind (a child a test started and did not stop). It is killed now.\n",
+    );
+    signalRun("SIGKILL");
+  }
   process.exit(signal ? 1 : (code ?? 1));
 });

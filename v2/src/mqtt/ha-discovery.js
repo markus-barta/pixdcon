@@ -27,12 +27,16 @@
  *     availability_mode: "all"
  *   Pixoo reachable (its state already says whether the display answers):
  *     availability: [ the controller health entry only ]
- *   both Pixoo entities:
+ *   every entity, Ulanzi and Pixoo:
  *     expire_after: 3 × telemetry interval in seconds, at least 30   // no telemetry, no state
  *
  * So an entity is unavailable when the controller is gone (last will) or its
  * own display is offline, and one display that is down does not touch the
- * entities of another. Changing these fields does not create new entities:
+ * entities of another. `expire_after` is the backstop for what availability
+ * cannot say: a display that nobody publishes telemetry for any more
+ * (removed from the config while the process was down, or after a crash)
+ * loses its state after three intervals, although a retained "online" may
+ * still sit on its availability topic. Changing these fields does not create new entities:
  * Home Assistant updates the existing ones on the next discovery message.
  * Rolling a device back to v1 puts v1's discovery payload back.
  *
@@ -58,10 +62,22 @@ import { todo } from "../core/todo.js";
  * @param {{name: string, address: string}} device address: host or host:port, for configuration_url
  * @param {Record<string, unknown>} stats answer of GET /api/stats; uid and version are read from it
  * @param {import("./topics.js").Topics} topics
+ * @param {{telemetryIntervalMs: number}} options for expire_after
  * @returns {DiscoveryMessage[]} ten messages, in the v1 order
  */
-export function ulanziDiscovery(device, stats, topics) {
-  return todo("ulanziDiscovery", device, stats, topics);
+export function ulanziDiscovery(device, stats, topics, options) {
+  return todo("ulanziDiscovery", device, stats, topics, options);
+}
+
+/**
+ * `expire_after` of every entity: three telemetry intervals in seconds, at
+ * least 30. Finished code, so both builders and their tests agree.
+ *
+ * @param {number} telemetryIntervalMs
+ * @returns {number} seconds
+ */
+export function expireAfterSeconds(telemetryIntervalMs) {
+  return Math.max(30, Math.ceil((3 * telemetryIntervalMs) / 1000));
 }
 
 /**

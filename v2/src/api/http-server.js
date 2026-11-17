@@ -10,6 +10,10 @@
  *  - plain HTTP on WEB_PORT (default 8080), all interfaces, no login
  *  - routes match by method and normalised path; the query string never selects a route
  *  - JSON answers; errors are {"error": "<one sentence>", "code": "<stable_code>", …}
+ *  - every JSON answer carries `X-Pixdcon-Position: <epoch>-<seq>`: the run
+ *    of the process and the seq of the last live event published before the
+ *    answer was built. The page orders an answer against the live stream
+ *    with it (web/js/ordering.js); an answer without it is not applied
  *  - unknown path: 404 "Not found" as plain text (v1); known path, other method: 405
  *  - bodies: a JSON object of at most 1 MiB; 400 invalid_json, 400 json_object_required, 413 body_too_large
  *  - writes need Content-Type: application/json, else 415. A web page on
@@ -89,6 +93,7 @@ export class HttpServer {
    * @param {string} [options.host] default "0.0.0.0"
    * @param {string} options.webRoot directory of the UI files
    * @param {import("../types.js").Logger} options.logger
+   * @param {() => string} [options.position] "<epoch>-<seq>" for the X-Pixdcon-Position header of every JSON answer (main.js: the epoch and the live channel's seq)
    */
   constructor(options) {
     this.options = options;
@@ -215,6 +220,9 @@ export class HttpServer {
         body: () => readJsonBody(req),
       });
       if (result === HANDLED) return;
+      // Read after the handler ran: the answer includes every change the
+      // handler made, so it stands at or after the events of those changes.
+      const position = this.options.position?.();
       const shaped =
         result &&
         typeof result === "object" &&
@@ -222,11 +230,11 @@ export class HttpServer {
         "body" in result
           ? /** @type {{status: number, body: unknown}} */ (result)
           : { status: 200, body: result };
-      sendJson(res, shaped.status, shaped.body ?? {});
+      sendJson(res, shaped.status, shaped.body ?? {}, position);
     } catch (error) {
       if (res.headersSent) throw error;
       const { status, body } = this.#errorBody(error, `${method} ${path}`);
-      sendJson(res, status, body);
+      sendJson(res, status, body, this.options.position?.());
     }
   }
 
@@ -303,14 +311,16 @@ export class HttpServer {
  * @param {import("node:http").ServerResponse} res
  * @param {number} status
  * @param {unknown} body
+ * @param {string} [position] "<epoch>-<seq>", sent as X-Pixdcon-Position
  */
-export function sendJson(res, status, body) {
+export function sendJson(res, status, body, position) {
   // Serialise before the header is written: a value that cannot be serialised
   // must become a 500, not a half-sent response (matrix A-BUG-11).
   const text = JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    ...(position ? { "X-Pixdcon-Position": position } : {}),
   });
   res.end(text);
 }

@@ -93,3 +93,14 @@ test.todo(
 test.todo(
   "shared files: a scene on the data mount resolves ../../lib and ../../assets through the links pixdcon 2 creates, and `sharp` comes from v2's own packages",
 );
+
+// --- Ordering (knowledge entry, section 3.0) ---
+test.todo(
+  "registry order: load, refresh and sync are called from main.js's lane only, read the effective scene map when they run, and a failed import keeps the last good metadata",
+);
+test.todo(
+  "scene runtime order: one pending load per scene and device; an instance whose load finishes after it was released or replaced is destroyed and not handed out; MQTT and settings callbacks of a released instance are not called",
+);
+test.todo(
+  "scenes watcher order: a file event is a hint; the file is read after the debounce, and a change that arrives while a reload runs waits in the lane behind it",
+);

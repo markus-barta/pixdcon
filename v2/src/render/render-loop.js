@@ -44,6 +44,15 @@
  * The loop reports, it does not judge: it tells the health model about every
  * good frame, contact and error, and the state store about its phase.
  *
+ * Order (core/ordering.js). A loop belongs to one device runtime. What it
+ * is given as `health`, `previews` and `report` are the scheduler's views
+ * of them for that runtime (whileCurrent): once the runtime was replaced,
+ * calls through them do nothing. So a render that hung and comes back late
+ * cannot report a good frame, a phase or a preview for the runtime that
+ * took its place. Every sleep and every wait in here is a timer: it decides
+ * when the next frame, probe or plug step happens, never what the display's
+ * state is; that is measured (a frame accepted, a probe answered).
+ *
  * Owner: drivers worker.
  */
 

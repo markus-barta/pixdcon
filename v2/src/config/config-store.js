@@ -29,8 +29,21 @@
  *    "mqtt"), and applies after a restart; main.js then sets
  *    `ControllerStatus.restartRequired`.
  *
+ * Order (core/ordering.js). The saved state has a revision: `file().rev`
+ * rises with every content the store applies, whoever wrote it.
+ *  - Writes are one lane: each is made on the content the previous one left.
+ *  - A file event is a hint that the file may have changed, nothing more.
+ *    The store reads the file 500 ms after the last event and decides on
+ *    what it read: content with the hash of its own last write is dropped
+ *    (own write, A-066); a read that began before a write of this process
+ *    finished is dropped and repeated, so an older content can never be
+ *    applied over a newer one; anything else is an outside edit and is
+ *    applied as a diff, with the next revision.
+ *  - The polling fallback and the debounce are timers: they decide when the
+ *    file is read, never what is in it.
+ *
  * Events (EventEmitter):
- *  - "changed"  ({config: Config, previous: Config, diff: ConfigDiff, origin: "api"|"file"|"startup"})
+ *  - "changed"  ({config: Config, previous: Config, diff: ConfigDiff, origin: "api"|"file"|"startup", rev: number})
  *  - "file"     (ConfigFileState)   validity, load time or warnings changed
  *
  * Owner: core/state worker.

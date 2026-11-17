@@ -1,0 +1,100 @@
+{
+  "owner": "W4",
+  "rows": [
+    {
+      "site": "src/api/http-server.js:155",
+      "id": "listener:server.on(\"connection\")#1",
+      "input": "a TCP connection opened",
+      "metadata": "none",
+      "fence": "none",
+      "test": "test/smoke/smoke.test.js: pixdcon 2 boots against the fakes and the in-memory broker",
+      "why": "bookkeeping of open sockets, so that stop() can end them; no state of pixdcon changes"
+    },
+    {
+      "site": "src/api/http-server.js:157",
+      "id": "listener:socket.on(\"close\")#1",
+      "input": "a TCP connection closed",
+      "metadata": "none",
+      "fence": "none",
+      "test": "test/smoke/smoke.test.js: pixdcon 2 boots against the fakes and the in-memory broker",
+      "why": "bookkeeping of open sockets, so that stop() can end them; no state of pixdcon changes"
+    },
+    {
+      "site": "src/api/http-server.js:161",
+      "id": "listener:server.once(\"error\")#1",
+      "input": "the port cannot be bound",
+      "metadata": "none",
+      "fence": "none",
+      "test": "test/smoke/smoke.test.js: harness: a stack that fails on the way up stops what it had started",
+      "why": "start() rejects with the error; nothing is tried again by itself in the skeleton (the retry of A-117 is a phase-3 item and will be a timer site)"
+    },
+    {
+      "site": "src/api/routes-v1.js:223",
+      "id": "route:server.route#1",
+      "input": "HTTP requests: questions and commands of pages and of outside callers",
+      "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
+      "fence": "a read changes nothing; a write runs in its device's command queue (StateStore) or in the config store's write lane, and answers with the applied state",
+      "test": "test/contract/http-api.test.js: requests in order:"
+    },
+    {
+      "site": "src/api/routes-v2.js:299",
+      "id": "route:server.route#1",
+      "input": "HTTP requests: questions and commands of pages and of outside callers",
+      "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
+      "fence": "a read changes nothing; a write runs in its device's command queue (StateStore) or in the config store's write lane, and answers with the applied state",
+      "test": "test/contract/http-api.test.js: requests in order:"
+    },
+    {
+      "site": "src/api/routes-v1.js:226",
+      "id": "contract:${method} ${path}",
+      "input": "the request of one v1 route",
+      "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
+      "fence": "a read changes nothing; a write runs in its device's command queue (StateStore) or in the config store's write lane, and answers with the applied state",
+      "test": "test/contract/http-api.test.js: v1 routes: request and answer shapes of all 18 routes match the matrix"
+    },
+    {
+      "site": "src/api/routes-v2.js:298",
+      "id": "contract:${method} ${path}",
+      "input": "the request of one v2 route",
+      "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
+      "fence": "a read changes nothing; a write runs in its device's command queue (StateStore) or in the config store's write lane, and answers with the applied state",
+      "test": "test/contract/http-api.test.js: v2 writes answer with the applied DeviceView and a higher rev"
+    },
+    {
+      "site": "src/api/live-channel.js:76",
+      "id": "contract:LiveChannel.handle",
+      "input": "a page opening its stream, with session and since cursor; the stream closing; the 15 s ping timer",
+      "metadata": "session id; cursor <epoch>-<seq>",
+      "fence": "live-channel.js: a cursor of another epoch, or without one, gets a snapshot; streams are counted per session, so the close of an older stream never reports a page as gone",
+      "test": "test/contract/http-api.test.js: boot epoch: every view, snapshot and event id carries the epoch"
+    },
+    {
+      "site": "src/api/live-channel.js:127",
+      "id": "contract:wireLiveChannel",
+      "input": "the events of every store: device, preview, overlays, settings, scenes, config, mqtt, log",
+      "metadata": "each becomes a live event with the next seq of the run's epoch",
+      "fence": "forwarded in the order they are emitted, one seq counter; the preview throttle is a timer that only skips frames",
+      "test": "test/contract/http-api.test.js: live channel: snapshot first, events in seq order"
+    },
+    {
+      "site": "src/mqtt/status-publisher.js:168",
+      "id": "contract:StatusPublisher.start",
+      "input": "state and health changes, runtime changes, the gateway's connect, the 30 s timer",
+      "metadata": "none of its own: every publish is built from the state of the moment it is sent",
+      "fence": "planAvailability (status-publisher.js) for the per-device topics; a timer and a connect only repeat what the state says",
+      "test": "test/contract/mqtt-publications.test.js: status publisher order:"
+    }
+  ],
+  "none": [
+    "LiveChannel.publish",
+    "LiveChannel.seq",
+    "LiveChannel.status",
+    "LiveChannel.stop",
+    "StatusPublisher.stop",
+    "StatusPublisher.buildHealth",
+    "StatusPublisher.buildState",
+    "StatusPublisher.buildAvailability",
+    "ulanziDiscovery",
+    "pixooDiscovery"
+  ]
+}

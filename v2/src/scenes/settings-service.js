@@ -46,6 +46,21 @@
  *  - State is kept per device and scene in nested maps; names cannot collide
  *    (A-186, A-BUG-37).
  *
+ * Order (core/ordering.js).
+ *  - A preview request carries its page's session and draft number: one
+ *    with a draft that is not higher than the highest seen from that page
+ *    for that device and scene is dropped.
+ *  - The grace time after a page's stream closed is a timer. It ends the
+ *    preview, which is the conservative side (the saved values show). It is
+ *    armed by `sessionConnection(session, false)`, which the live channel
+ *    calls only when the page's last stream closed, and cancelled by
+ *    `sessionConnection(session, true)`; a timer of an earlier disconnect
+ *    that fires after the page came back ends nothing.
+ *  - runtime "changed" is applied only when `effective.rev` is higher than
+ *    the one held; overlay and registry "changed" say "compute again".
+ *  - A setting overlay whose scene or key has no schema yet is held, and
+ *    judged when the registry reports the schema.
+ *
  * Events (EventEmitter): "settings" (SettingsState) for a device and scene whose state changed.
  *
  * Owner: core/state worker.

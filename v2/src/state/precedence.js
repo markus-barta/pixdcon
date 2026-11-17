@@ -13,16 +13,19 @@
  *      or `scene` in config.json                           → source "config"
  *   4. nothing                                             → source "fallback", scene null (display idles)
  *
- * SUPERSEDED is decided per layer. A UI choice creates one suppression for
- * the granular layer and one for the blob layer (types.js SceneSuppression;
- * life cycle in overlay/overlay-service.js, rules S1 to S5). A layer's value
- * is superseded while the suppression of that layer exists and the value is
- * what the choice replaced: the record that was in the mirror at the choice,
- * or a replay (retain flag set) of the same value, or any replay when the
- * replaced value is not known. A value that arrived live after the choice is
- * a new command from the outside (the Home Assistant scene toggle) and is
- * never superseded; so is a replay with another value (stored while pixdcon
- * was away). Nothing here looks at arrival order or at a boundary in time.
+ * SUPERSEDED is decided per layer, at the moment a value is delivered, by
+ * the overlay core (overlay/scene-layers.js), which knows what this file
+ * cannot: on which connection a value arrived and which own writes were
+ * still on their way. A UI choice creates one suppression for the granular
+ * layer and one for the blob layer (types.js SceneSuppression). While the
+ * suppression of a layer exists, the layer's value is not in effect. The
+ * suppression ends, and the value wins again, only on evidence: a live
+ * message from outside that was not processed before an own write still on
+ * its way (the Home Assistant scene toggle), or a replay of a value the
+ * suppression does not hide (stored while pixdcon was away). isSuperseded()
+ * below is the one question about values: does this suppression hide that
+ * replayed value? Nothing here looks at arrival order or at a boundary in
+ * time, and the settle hint is not an input.
  *
  * The two layers are independent: a new granular command ends the granular
  * suppression and leaves the blob suppression in place, so when that granular
@@ -56,34 +59,101 @@ import { todo } from "../core/todo.js";
 /** @typedef {import("../types.js").OutputMode} OutputMode */
 
 /**
+ * What one scene layer holds for a device. Built by the overlay service from
+ * its mirror (overlay/scene-layers.js sceneInputs).
+ *
+ * @typedef {object} LayerScene
+ * @property {string} scene the value stored in the layer
+ * @property {boolean} inEffect false: a suppression of this layer exists, the value is replaced by the user's choice
+ * @property {IsoTime} since when this process received the value
+ * @property {string} overlayId id of the overlay record
+ */
+
+/**
  * @typedef {object} SceneInputs
- * @property {string|null} configScene `scene` of the device in the running config; null for a device that exists only in the blob
- * @property {IsoTime} configSince when the running config was loaded
+ * @property {string|null} configScene the saved choice: `EffectiveDevice.savedScene`, the `scene` of the device in config.json; null for none and for a device that exists only in the blob
+ * @property {IsoTime} configSince `EffectiveConfig.savedAt`: when the running config.json content was loaded or written
  * @property {{scene: string|null, at: IsoTime, persisted: boolean}|null} uiChoice choice made in this process
- * @property {{record: OverlayRecord, suppression: SceneSuppression|null}|null} granular the device-scene overlay, if one is stored, and the suppression of the granular layer
- * @property {{scene: string|null, record: OverlayRecord, suppression: SceneSuppression|null}|null} blob scene of this device in the blob overlay, and the suppression of the blob layer
+ * @property {LayerScene|null} granular the device-scene overlay, if one is stored
+ * @property {LayerScene|null} blob scene of this device in the blob overlay, if it names one
  * @property {(scene: string) => string|null} check problem text when a scene cannot run on this device, else null
  */
 
 /**
+ * Who decides what the display shows. Total: every input has an answer.
+ *
  * @param {SceneInputs} inputs
  * @returns {SceneResolution}
  */
 export function resolveScene(inputs) {
-  return todo("precedence.resolveScene", inputs);
+  /** @type {Array<[LayerScene|null, "overlay"|"blob"]>} */
+  const layers = [
+    [inputs.granular, "overlay"],
+    [inputs.blob, "blob"],
+  ];
+  for (const [layer, source] of layers) {
+    // A superseded value and one that cannot run are skipped: the next
+    // source decides, and the Overlays page lists the value with its reason.
+    if (!layer || !layer.inEffect || inputs.check(layer.scene) !== null)
+      continue;
+    return {
+      scene: layer.scene,
+      source,
+      since: layer.since,
+      overlayId: layer.overlayId,
+      problem: null,
+    };
+  }
+  const choice = inputs.uiChoice
+    ? { scene: inputs.uiChoice.scene, since: inputs.uiChoice.at, ui: true }
+    : { scene: inputs.configScene, since: inputs.configSince, ui: false };
+  if (choice.scene === null && !choice.ui)
+    return {
+      scene: null,
+      source: "fallback",
+      since: inputs.configSince,
+      overlayId: null,
+      problem: null,
+    };
+  // The user's choice stays the answer when it cannot run: `problem` says
+  // why, and the display idles (B-069).
+  return {
+    scene: choice.scene,
+    source: choice.ui ? "ui" : "config",
+    since: choice.since,
+    overlayId: null,
+    problem: choice.scene === null ? null : inputs.check(choice.scene),
+  };
 }
 
 /**
- * Is this value of a scene layer stale with respect to the user's choice?
- * See SUPERSEDED above. `value` is the layer's value for the device: the
- * payload of the granular record, or the device's scene inside the blob.
+ * Does this suppression hide that delivered value of its layer? `value` is
+ * the layer's value for the device: the payload of the granular topic, or
+ * the device's scene inside the blob.
  *
- * @param {{value: string|null, origin: OverlayRecord["origin"], receivedAt: IsoTime}} stored
- * @param {SceneSuppression|null} suppression the suppression of the same layer
+ * Only a replay can be hidden by its value: it shows what the store held
+ * when the connection subscribed. It is stale when it is the value the
+ * choice replaced, a value that an own rewrite on its way at the time of the
+ * choice can have put back (`alsoStale`), or anything at all when the choice
+ * did not know what was stored (`value` null). A replay of another value was
+ * stored while pixdcon was away: a new command.
+ *
+ * A live value is never hidden by its value. Whether it is a new command or
+ * older than an own write still on its way is a question of order on the
+ * connection, answered in overlay/scene-layers.js.
+ *
+ * @param {{value: string|null, origin: OverlayRecord["origin"]}} stored
+ * @param {SceneSuppression|null|undefined} suppression the suppression of the same layer
  * @returns {boolean}
  */
 export function isSuperseded(stored, suppression) {
-  return todo("precedence.isSuperseded", stored, suppression);
+  if (!suppression || stored.value === null) return false;
+  if (stored.origin !== "replay") return false;
+  if (suppression.value === null) return true;
+  return (
+    stored.value === suppression.value ||
+    (suppression.alsoStale ?? []).includes(stored.value)
+  );
 }
 
 /**
@@ -93,9 +163,15 @@ export function isSuperseded(stored, suppression) {
  * nothing else: no caller looks at config.json or at an environment variable
  * on its own.
  *
+ * Every input is authoritative (core/ordering.js): the environment,
+ * config.json, and v1's device list as received. The overlay layer is not
+ * an input. A stored MQTT message can never put a device into drive, and
+ * none can take it out of shadow by disappearing: `output` is not an
+ * overlay key (state/runtime-config.js overlayDevicePatch).
+ *
  * @param {object} inputs
  * @param {boolean} inputs.forceShadow PIXDCON2_FORCE_SHADOW=1
- * @param {OutputMode|null} inputs.deviceOutput `output` of the device entry as it runs
+ * @param {OutputMode|null} inputs.deviceOutput `output` of the device entry in config.json; null for a device that exists only in the blob. Never a value from an overlay.
  * @param {OutputMode|null} inputs.configDefault `output.default` of config.json
  * @param {OutputMode} inputs.envDefault PIXDCON2_DEFAULT_OUTPUT, else "drive"
  * @param {boolean} inputs.transition `mqtt.statusBaseTopic` differs from `mqtt.baseTopic`

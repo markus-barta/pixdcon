@@ -474,6 +474,85 @@ test("test deadline: a run that cannot even run a timer is killed, with everythi
   );
 });
 
+test("test runner: a test that passes and leaves a child process behind does not leave it behind; the run still reports the test's result", async (t) => {
+  // --test-force-exit ends a test file's process although a child it
+  // started still runs. The runner exits with the tests' status; before
+  // test/helpers/run.js passes that on, it has to end what is left of the run.
+  const dir = await mkdtemp(join(tmpdir(), "pixdcon2-leak-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const pidFile = join(dir, "pid");
+  await writeFile(
+    join(dir, "leak.test.mjs"),
+    [
+      'import test from "node:test";',
+      'import { spawn } from "node:child_process";',
+      'import { writeFileSync } from "node:fs";',
+      'test("passes, and forgets a child that only holds a timer", () => {',
+      '  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });',
+      "  child.unref();",
+      `  writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+      "});",
+      "",
+    ].join("\n"),
+  );
+
+  const runScript = fileURLToPath(
+    new URL("../helpers/run.js", import.meta.url),
+  );
+  const run = await new Promise((resolveRun) => {
+    execFile(
+      process.execPath,
+      [runScript, join(dir, "leak.test.mjs")],
+      { env: { PATH: process.env.PATH ?? "" }, timeout: 15000 },
+      (error, stdout, stderr) =>
+        resolveRun({
+          code: error ? /** @type {any} */ (error).code : 0,
+          output: `${stdout}${stderr}`,
+        }),
+    );
+  });
+  assert.equal(
+    run.code,
+    0,
+    `the test passed, so the run passes:\n${run.output}`,
+  );
+  assert.match(run.output, /the run left a process behind/);
+
+  const leaked = Number(await readFile(pidFile, "utf8"));
+  assert.ok(leaked > 0, "the test had started its child");
+  await new Promise((resolveTurn) => setTimeout(resolveTurn, 100));
+  assert.throws(
+    () => process.kill(leaked, 0),
+    { code: "ESRCH" },
+    "the leaked child is gone",
+  );
+});
+
+test("test runner: a Node child of a test file gets the run's deadline, so one that leaves the run's process group still ends itself", () => {
+  // The guard of this process hands the deadline on (dev/net-guard.js).
+  // The child reports what it was given; nothing is left running.
+  const child = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      "process.stdout.write(JSON.stringify({ at: process.env.PIXDCON2_TEST_DEADLINE_AT, preload: process.env.PIXDCON2_TEST_DEADLINE_PRELOAD, options: process.env.NODE_OPTIONS }))",
+    ],
+    { env: { PATH: process.env.PATH ?? "" }, timeout: 10000 },
+  );
+  assert.equal(child.status, 0, child.stderr.toString());
+  const given = JSON.parse(child.stdout.toString());
+  assert.equal(
+    given.at,
+    process.env.PIXDCON2_TEST_DEADLINE_AT,
+    "the run's deadline, although the child was given a clean environment",
+  );
+  assert.match(String(given.preload), /test\/helpers\/deadline\.js$/);
+  assert.ok(
+    String(given.options).includes(`--import=${given.preload}`),
+    "and the module that enforces it is preloaded",
+  );
+});
+
 test("manual clock: 30 s and 2 min pass in no time, timers fire in order", async () => {
   const clock = manualClock();
   const start = clock.now();
@@ -616,3 +695,23 @@ test.todo(
   "legacy app cleanup on the fake AWTRIX: every other custom app is deleted once, ours stays",
 );
 test.todo("stop: the process ends within 8 s also while a render hangs");
+
+// --- Ordering (knowledge entry, section 3.0) ---
+test.todo(
+  "render reports in order: a render that hung and comes back after its device runtime was rebuilt reports no good frame, no phase and no preview for the new runtime",
+);
+test.todo(
+  "scheduler in order: a runtime change with a rev that is not higher than the one applied is dropped; desired events of one device are applied in the order they arrive, each device in its own queue",
+);
+test.todo(
+  "telemetry in order: a read that comes back after its device was stopped or rebuilt publishes nothing and counts as no contact; the poll timer only decides when a read starts",
+);
+test.todo(
+  "previews in order: the screen read-back of a replaced driver never overwrites a newer frame",
+);
+test.todo(
+  "drivers in order: a request that timed out is reported once; its late answer is ignored and does not make the driver ready",
+);
+test.todo(
+  "health timers: the 1 s re-derive and the probe only move a display towards stale and offline by the clock; only an accepted frame or an answered probe moves it back",
+);

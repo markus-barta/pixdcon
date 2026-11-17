@@ -30,15 +30,28 @@
  *   2. MQTT connect, at most 5 s      optional (A-009, A-011)
  *   3. v1 ownership, overlay service  read the retained layer up to the settle hint, no fixed sleep (A-013)
  *   4. runtime config                 effective devices and scenes, outputs resolved
- *   5. scene registry, settings       schemas are known before setting overlays are judged for good (A-018)
+ *   5. scene registry, settings       schemas are known before setting overlays are judged for good (A-018).
+ *                                     The registry's work runs in one lane (below) and is finished
+ *                                     before anything that reads scenes starts
  *   6. state store                    desired state per device, sources resolved
  *   7. health, scheduler              all devices concurrently; mode and brightness known before the first frame
  *   8. status publisher, live channel wiring, controller health ticker
  *   9. config and scene watchers      last, with the running config as their baseline (A-BUG-35)
  *
- * Shutdown (A-034 to A-037): stop inputs (watchers, HTTP), stop the scheduler
- * (bounded), release scenes, publish "offline", disconnect MQTT. The whole
- * sequence is limited to 8 s to fit Docker's 10 s grace period.
+ * Shutdown (A-034 to A-037): stop inputs (watchers, HTTP), close and drain
+ * the registry lane, stop the scheduler (bounded), release scenes, publish
+ * "offline", disconnect MQTT. The whole sequence is limited to 8 s to fit
+ * Docker's 10 s grace period.
+ *
+ * ORDER OF ASYNCHRONOUS WORK (core/ordering.js). Whatever reads scene files
+ * takes time and can be asked for again before it has finished: the first
+ * load, a change of the effective scene map (config.json, blob scenes, a
+ * path overlay), a changed scene file. All of it runs in one lane, one piece
+ * at a time, in the order it was asked for, so an earlier and slower import
+ * can never finish after a later one and put its result on top. The lane is
+ * drained before the settings service, the state store and the scheduler
+ * start, and closed and drained at shutdown before scenes are released.
+ * The scene registry and the scene runtime are called from the lane only.
  *
  * Environment:
  *   PIXDCON_CONFIG_PATH       config.json; its directory is the data directory (image default /data/config.json)
@@ -62,9 +75,10 @@ import { LiveChannel, wireLiveChannel } from "./api/live-channel.js";
 import { registerV1Routes } from "./api/routes-v1.js";
 import { registerV2Routes } from "./api/routes-v2.js";
 import { ConfigStore } from "./config/config-store.js";
-import { DEFAULTS } from "./config/schema.js";
+import { DEFAULTS, changeImpact } from "./config/schema.js";
 import { systemClock } from "./core/clock.js";
 import { createLogger } from "./core/logger.js";
+import { createLane } from "./core/ordering.js";
 import { NotImplementedError, runStep } from "./core/todo.js";
 import { rasterizeAwtrixApp } from "./drivers/awtrix-raster.js";
 import { BUILTIN_MODES, findBuiltin } from "./drivers/builtin-modes.js";
@@ -92,11 +106,14 @@ import {
   loadV1Font,
   readVersion,
 } from "./scenes/v1-shared.js";
+import { normalizeSettingValue } from "./state/precedence.js";
 import { RuntimeConfig } from "./state/runtime-config.js";
 import { StateStore } from "./state/state-store.js";
 import { V1Ownership } from "./state/v1-ownership.js";
 
 const SHUTDOWN_LIMIT_MS = 8000;
+/** How long shutdown waits for a scene import that is running; inside the 8 s. */
+const REGISTRY_DRAIN_LIMIT_MS = 2000;
 const CONTROLLER_TICK_MS = 1000;
 
 /** @type {import("./types.js").MqttStatus} */
@@ -270,6 +287,8 @@ export async function createApp(env = process.env, overrides = {}) {
       ulanzi: ulanziDiscovery,
       pixoo: pixooDiscovery,
     }),
+    changeImpact,
+    normalizeSettingValue,
   });
 
   // --- 7. scenes -----------------------------------------------------------
@@ -278,6 +297,7 @@ export async function createApp(env = process.env, overrides = {}) {
     baseDir: () => dataDir,
     scenes: () => orSkeleton(() => runtime.scenes(), {}),
     findBuiltin: factories.findBuiltin,
+    normalizeSettingValue: factories.normalizeSettingValue,
     logger,
   });
   const settings = new SettingsService({
@@ -357,6 +377,13 @@ export async function createApp(env = process.env, overrides = {}) {
         logger,
       })
     : null;
+  // --- the registry lane: scene work one piece at a time, in order ---------
+  const registryLane = createLane({
+    onError: (name, error) => {
+      if (!(error instanceof NotImplementedError))
+        logger.error(`[pixdcon2] Scene registry work failed: ${name}`, error);
+    },
+  });
   const scenesWatcher = new ScenesWatcher({
     dirs: () =>
       orSkeleton(
@@ -368,9 +395,13 @@ export async function createApp(env = process.env, overrides = {}) {
         [],
       ),
     onChange: async (file) => {
-      const keys = scenes.keysOfFile(file);
-      await scenes.refresh(keys);
-      await sceneRuntime.invalidate(keys);
+      await registryLane.run(`scene file changed: ${file}`, async () => {
+        // Read in the lane: the keys of a file are those of the registry as
+        // it is when this piece runs, after everything queued before it.
+        const keys = scenes.keysOfFile(file);
+        await scenes.refresh(keys);
+        await sceneRuntime.invalidate(keys);
+      });
     },
     logger,
   });
@@ -469,6 +500,10 @@ export async function createApp(env = process.env, overrides = {}) {
     port,
     webRoot: resolve(V2_ROOT, "web"),
     logger,
+    // Where an answer stands in the order of this run (types.js
+    // ServerPosition). While the live channel is a skeleton nothing has been
+    // published: seq 0.
+    position: () => `${epoch}-${orSkeleton(() => live.seq(), 0)}`,
   });
   /** @type {import("./api/routes-v1.js").ApiDeps} */
   const apiDeps = {
@@ -542,7 +577,9 @@ export async function createApp(env = process.env, overrides = {}) {
   /**
    * The effective scene map changed (config.json, blob scenes or a granular
    * path overlay): the registry follows, and the instances of the scenes it
-   * names are replaced.
+   * names are replaced. Queued in the registry lane: a change that arrives
+   * while the first load or an earlier change is still importing waits for
+   * it, and is applied after it.
    *
    * @param {{diff: import("./types.js").EffectiveDiff}} change
    */
@@ -552,19 +589,14 @@ export async function createApp(env = process.env, overrides = {}) {
       diff.scenesChanged.length === 0
     )
       return;
-    void (async () => {
-      try {
-        const { keys } = await scenes.sync({
-          added: diff.scenesAdded,
-          removed: diff.scenesRemoved,
-          changed: diff.scenesChanged,
-        });
-        await sceneRuntime.invalidate(keys);
-      } catch (error) {
-        if (!(error instanceof NotImplementedError))
-          logger.error("[pixdcon2] Following a scene map change failed", error);
-      }
-    })();
+    void registryLane.run("scene map changed", async () => {
+      const { keys } = await scenes.sync({
+        added: diff.scenesAdded,
+        removed: diff.scenesRemoved,
+        changed: diff.scenesChanged,
+      });
+      await sceneRuntime.invalidate(keys);
+    });
   };
 
   return {
@@ -589,6 +621,7 @@ export async function createApp(env = process.env, overrides = {}) {
       previews,
       scheduler,
       live,
+      registryLane,
     },
 
     /** @returns {Promise<{port: number}>} */
@@ -618,7 +651,11 @@ export async function createApp(env = process.env, overrides = {}) {
       await runStep("overlays.start", () => overlays.start(), logger);
       runtime.on("changed", onRuntimeChanged);
       await runStep("runtime.start", () => runtime.start(), logger);
-      await runStep("scenes.load", () => scenes.load(), logger);
+      // The first load is the first piece in the lane. A scene map change
+      // that arrives while it runs queues behind it; the drain waits for
+      // both, so everything below starts from a registry that is complete.
+      void registryLane.run("first load", () => scenes.load());
+      await registryLane.drain();
       await runStep("settings.start", () => settings.start(), logger);
       await runStep("state.start", () => state.start(), logger);
       await runStep("health.start", () => health.start(), logger);
@@ -653,6 +690,15 @@ export async function createApp(env = process.env, overrides = {}) {
       await runStep("config.stop", () => config.stop(), logger);
       await runStep("live.stop", () => live.stop(), logger);
       await server.stop();
+      // No new scene work starts; what is running finishes before the
+      // instances it may still touch are released.
+      registryLane.close();
+      const drainLimit = new AbortController();
+      await Promise.race([
+        registryLane.drain(),
+        clock.sleep(REGISTRY_DRAIN_LIMIT_MS, drainLimit.signal),
+      ]);
+      drainLimit.abort(); // the limit's timer does not outlive the wait
       await runStep("scheduler.stop", () => scheduler.stop(), logger);
       await runStep("scenes.release", () => sceneRuntime.releaseAll(), logger);
       await runStep("health.stop", () => health.stop(), logger);

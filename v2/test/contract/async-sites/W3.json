@@ -1,0 +1,156 @@
+{
+  "owner": "W3",
+  "rows": [
+    {
+      "site": "src/drivers/awtrix-driver.js:38",
+      "id": "contract:createAwtrixDriver",
+      "input": "the display's HTTP answers, and the 5 s deadline of each request",
+      "metadata": "the request an answer belongs to; one request at a time per display (the driver's queue)",
+      "fence": "a request that timed out is settled once; its late answer is ignored and does not make the driver ready",
+      "test": "test/smoke/smoke.test.js: drivers in order:"
+    },
+    {
+      "site": "src/drivers/pixoo-driver.js:34",
+      "id": "contract:createPixooDriver",
+      "input": "the display's HTTP answers, and the 5 s deadline of each request",
+      "metadata": "the request an answer belongs to; one request at a time per display (the driver's queue)",
+      "fence": "a request that timed out is settled once; its late answer is ignored and does not make the driver ready",
+      "test": "test/smoke/smoke.test.js: drivers in order:"
+    },
+    {
+      "site": "src/health/health-model.js:95",
+      "id": "contract:HealthModel.start",
+      "input": "the 1 s re-derive tick",
+      "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
+      "fence": "deriveHealth by the clock: time moves a display only towards stale and offline; only an accepted frame or an answered probe moves it back",
+      "test": "test/smoke/smoke.test.js: health timers:"
+    },
+    {
+      "site": "src/health/health-model.js:121",
+      "id": "contract:HealthModel.frameOk",
+      "input": "a fact reported by a device runtime",
+      "metadata": "token of the device runtime",
+      "fence": "whileCurrent (core/ordering.js), handed out by the scheduler per device runtime: a report of a replaced runtime is dropped",
+      "test": "test/contract/ordering.test.js: ordering: a late call of something that was replaced reports into nothing"
+    },
+    {
+      "site": "src/health/health-model.js:130",
+      "id": "contract:HealthModel.contactOk",
+      "input": "a fact reported by a device runtime",
+      "metadata": "token of the device runtime",
+      "fence": "whileCurrent (core/ordering.js), handed out by the scheduler per device runtime: a report of a replaced runtime is dropped",
+      "test": "test/contract/ordering.test.js: ordering: a late call of something that was replaced reports into nothing"
+    },
+    {
+      "site": "src/health/health-model.js:139",
+      "id": "contract:HealthModel.renderFailed",
+      "input": "a fact reported by a device runtime",
+      "metadata": "token of the device runtime",
+      "fence": "whileCurrent (core/ordering.js), handed out by the scheduler per device runtime: a report of a replaced runtime is dropped",
+      "test": "test/contract/ordering.test.js: ordering: a late call of something that was replaced reports into nothing"
+    },
+    {
+      "site": "src/health/health-model.js:148",
+      "id": "contract:HealthModel.expect",
+      "input": "a fact reported by a device runtime",
+      "metadata": "token of the device runtime",
+      "fence": "whileCurrent (core/ordering.js), handed out by the scheduler per device runtime: a report of a replaced runtime is dropped",
+      "test": "test/contract/ordering.test.js: ordering: a late call of something that was replaced reports into nothing"
+    },
+    {
+      "site": "src/health/health-model.js:156",
+      "id": "contract:HealthModel.powerCycles",
+      "input": "a fact reported by a device runtime",
+      "metadata": "token of the device runtime",
+      "fence": "whileCurrent (core/ordering.js), handed out by the scheduler per device runtime: a report of a replaced runtime is dropped",
+      "test": "test/contract/ordering.test.js: ordering: a late call of something that was replaced reports into nothing"
+    },
+    {
+      "site": "src/health/telemetry.js:57",
+      "id": "contract:TelemetryCollector.start",
+      "input": "the poll timer, the display's answers to telemetry reads, the gateway's connect",
+      "metadata": "the device runtime the poller was started for",
+      "fence": "a read that returns after stop(name) publishes nothing and counts as no contact; the timer and the connect only start a read or repeat the last snapshot",
+      "test": "test/smoke/smoke.test.js: telemetry in order:"
+    },
+    {
+      "site": "src/render/preview-store.js:45",
+      "id": "contract:PreviewStore.put",
+      "input": "a frame from a device runtime",
+      "metadata": "token of the device runtime; frame seq per device",
+      "fence": "whileCurrent (core/ordering.js), handed out by the scheduler per device runtime: a report of a replaced runtime is dropped",
+      "test": "test/smoke/smoke.test.js: previews in order:"
+    },
+    {
+      "site": "src/render/preview-store.js:57",
+      "id": "contract:PreviewStore.feedFromDevice",
+      "input": "the poll timer and the screen read-backs of a driven Ulanzi",
+      "metadata": "the feed that asked; one read at a time",
+      "fence": "a read that returns after its feed was stopped is dropped",
+      "test": "test/smoke/smoke.test.js: previews in order:"
+    },
+    {
+      "site": "src/render/render-loop.js:111",
+      "id": "contract:RenderLoop.start",
+      "input": "everything the loop waits for: a scene's render, the driver's answers, sleeps, probes, the plug waits",
+      "metadata": "the loop's target: every wake-up reads it again; reports carry the runtime token",
+      "fence": "render-loop.js Order: timers pace, state comes from measured answers, reports go through the scheduler's whileCurrent views",
+      "test": "test/smoke/smoke.test.js: render reports in order:"
+    },
+    {
+      "site": "src/render/render-loop.js:131",
+      "id": "contract:RenderLoop.apply",
+      "input": "a new target from the scheduler: scene, mode, brightness",
+      "metadata": "position in the device's queue of the scheduler",
+      "fence": "idempotent; the newest target wins at the next frame boundary",
+      "test": "test/smoke/smoke.test.js: switching the scene of one display changes its frames"
+    },
+    {
+      "site": "src/render/render-loop.js:136",
+      "id": "contract:RenderLoop.retryNow",
+      "input": "'Retry now' of the user",
+      "metadata": "none: a wake-up",
+      "fence": "sets a flag the loop reads at its next boundary; twice is once",
+      "test": "test/smoke/smoke.test.js: power cycles used up: slow probing goes on"
+    },
+    {
+      "site": "src/render/render-loop.js:141",
+      "id": "contract:RenderLoop.reloadScene",
+      "input": "the scene's instance was replaced (hot reload)",
+      "metadata": "the instance token the loop holds",
+      "fence": "the loop asks SceneRuntime.isCurrent at its next frame boundary",
+      "test": "test/smoke/smoke.test.js: a scene file that changes is reloaded for the displays running it"
+    },
+    {
+      "site": "src/render/scheduler.js:84",
+      "id": "contract:Scheduler.start",
+      "input": "the state store's desired events, the runtime config's changed events with their diff, the watchdog timer",
+      "metadata": "effective rev; position in a device's queue; the runtime token it hands out per device",
+      "fence": "scheduler.js Order: decideStamp on the rev, one queue per device, whileCurrent for every runtime's reports",
+      "test": "test/smoke/smoke.test.js: scheduler in order:"
+    }
+  ],
+  "none": [
+    "screenToFrame",
+    "createDriver",
+    "createShadowDriver",
+    "deriveHealth",
+    "HealthModel.stop",
+    "HealthModel.register",
+    "HealthModel.unregister",
+    "HealthModel.get",
+    "HealthModel.controller",
+    "TelemetryCollector.stop",
+    "TelemetryCollector.stopAll",
+    "TelemetryCollector.latest",
+    "PreviewStore.get",
+    "PreviewStore.list",
+    "PreviewStore.toV1",
+    "PreviewStore.remove",
+    "RenderLoop.stop",
+    "RenderLoop.status",
+    "Scheduler.stop",
+    "Scheduler.loop",
+    "Scheduler.status"
+  ]
+}

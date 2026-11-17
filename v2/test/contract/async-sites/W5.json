@@ -1,0 +1,102 @@
+{
+  "owner": "W5",
+  "rows": [
+    {
+      "site": "src/scenes/v1-shared.js:160",
+      "id": "import:import#1",
+      "input": "the v1 font module, when the first Pixoo surface is made",
+      "metadata": "none",
+      "fence": "none",
+      "test": "test/golden/golden.test.js: harness: every shared v1 scene loads in v2's process",
+      "why": "loaded once per process and never replaced: main.js keeps the one promise and every surface awaits it"
+    },
+    {
+      "site": "src/scenes/scene-registry.js:71",
+      "id": "contract:SceneRegistry.load",
+      "input": "scene files imported to read their metadata",
+      "metadata": "position in main.js's registry lane; the file token of each file",
+      "fence": "scene-registry.js Order: called from the lane only, one at a time; reads the effective scene map when it runs",
+      "test": "test/contract/scenes.test.js: registry order:"
+    },
+    {
+      "site": "src/scenes/scene-registry.js:79",
+      "id": "contract:SceneRegistry.refresh",
+      "input": "scene files imported to read their metadata",
+      "metadata": "position in main.js's registry lane; the file token of each file",
+      "fence": "scene-registry.js Order: called from the lane only, one at a time; reads the effective scene map when it runs",
+      "test": "test/contract/scenes.test.js: registry order:"
+    },
+    {
+      "site": "src/scenes/scene-registry.js:90",
+      "id": "contract:SceneRegistry.sync",
+      "input": "scene files imported to read their metadata",
+      "metadata": "position in main.js's registry lane; the file token of each file",
+      "fence": "scene-registry.js Order: called from the lane only, one at a time; reads the effective scene map when it runs",
+      "test": "test/contract/scenes.test.js: registry order:"
+    },
+    {
+      "site": "src/scenes/scene-runtime.js:88",
+      "id": "contract:SceneRuntime.acquire",
+      "input": "a scene file imported and an instance initialised, for one scene and device",
+      "metadata": "InstanceRef token; one pending load per scene and device",
+      "fence": "an instance whose load finishes after it was released or replaced is destroyed, not handed out",
+      "test": "test/contract/scenes.test.js: scene runtime order:"
+    },
+    {
+      "site": "src/scenes/scene-runtime.js:121",
+      "id": "contract:SceneRuntime.invalidate",
+      "input": "the scenes whose file or registry entry changed",
+      "metadata": "position in the registry lane; a new file token",
+      "fence": "the replacement is initialised beside the running instance; the loop switches at a frame boundary, or keeps the running one when the replacement fails",
+      "test": "test/contract/scenes.test.js: scene runtime order:"
+    },
+    {
+      "site": "src/scenes/scene-runtime.js:99",
+      "id": "contract:SceneRuntime.release",
+      "input": "a scene's destroy() finishing",
+      "metadata": "InstanceRef token",
+      "fence": "destroy is awaited; the instance's MQTT owner and settings subscribers go afterwards, also when it threw",
+      "test": "test/contract/scenes.test.js: v1 scene contract:"
+    },
+    {
+      "site": "src/scenes/scene-runtime.js:126",
+      "id": "contract:SceneRuntime.releaseAll",
+      "input": "a scene's destroy() finishing",
+      "metadata": "InstanceRef token",
+      "fence": "destroy is awaited; the instance's MQTT owner and settings subscribers go afterwards, also when it threw",
+      "test": "test/contract/scenes.test.js: v1 scene contract:"
+    },
+    {
+      "site": "src/scenes/scenes-watcher.js:41",
+      "id": "contract:ScenesWatcher.start",
+      "input": "file events of the scene directories and asset folders; the 500 ms debounce; the 1 s retry and poll timer",
+      "metadata": "the file path; a stamp per file",
+      "fence": "an event is a hint: after the debounce onChange(file) is called, and main.js queues it into the registry lane",
+      "test": "test/contract/scenes.test.js: scenes watcher order:"
+    },
+    {
+      "site": "src/scenes/v1-scene-adapter.js:137",
+      "id": "contract:createV1Instance",
+      "input": "the scene's own callbacks: the results of init, render and destroy; its MQTT and settings subscriptions",
+      "metadata": "InstanceRef token",
+      "fence": "init is awaited before the first render; after release the instance's subscriptions are gone, so it is not called again",
+      "test": "test/contract/scenes.test.js: v1 scene contract:"
+    }
+  ],
+  "none": [
+    "SceneRegistry.list",
+    "SceneRegistry.get",
+    "SceneRegistry.fileOf",
+    "SceneRegistry.keysOfFile",
+    "SceneRegistry.check",
+    "normalizeSchema",
+    "SceneRuntime.isCurrent",
+    "ScenesWatcher.stop",
+    "checkV1Module",
+    "createPixooSurface",
+    "createUlanziSurface",
+    "ensureDataLinks",
+    "migrateV1Config",
+    "rasterizeAwtrixApp"
+  ]
+}

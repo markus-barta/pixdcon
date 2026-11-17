@@ -24,6 +24,28 @@
  * Changes of the device entry itself (address, output, minFrameMs, …) reach
  * the scheduler through the runtime config's "changed" event with its diff.
  *
+ * The saved choice. What config.json holds as a device's `scene` reaches the
+ * store as `runtime.device(name).savedScene` (types.js EffectiveDevice): at
+ * start(), so a process that starts with a saved scene shows it, and with
+ * every runtime "changed" event whose diff names `savedScene` for a device,
+ * so an edit of config.json from outside that changes nothing but a scene
+ * is followed. A choice made in this process and saved is the same value
+ * arriving that way; it changes nothing, because the store applied it
+ * already. The store never reads the config store for a device.
+ *
+ * Order (core/ordering.js).
+ *  - runtime "changed": applied only when `effective.rev` is higher than
+ *    the one the store holds.
+ *  - overlay "changed" and registry "changed" say "compute again": the store
+ *    reads the overlay service and the registry as they are then.
+ *  - overlay "suppression": removes exactly the generation it names from
+ *    config.json; a suppression of a newer generation in the same layer
+ *    stays.
+ *  - reports of the render side carry the token of the device runtime that
+ *    made them. The scheduler hands out a new token whenever it builds a
+ *    runtime; a report with an older token is dropped (reportEffective).
+ *  - commands of one device run one at a time, in the order they arrived.
+ *
  * Output. The store does not decide whether a device is driven. It shows the
  * decision of the one output policy (`runtime.device(name).output`), with the
  * reason in `desired.outputProblem`, and it acts on it: for a device in
@@ -75,9 +97,10 @@ export class StateStore extends EventEmitter {
   }
 
   /**
-   * Build the first state from the effective config and the overlays known
-   * so far, then follow runtime "changed", overlay "changed" and
-   * "suppression", and registry "changed".
+   * Build the first state from the effective config (devices, their saved
+   * choice and their output) and the overlays known so far, then follow
+   * runtime "changed", overlay "changed" and "suppression", and registry
+   * "changed".
    */
   start() {
     return todo("StateStore.start");
@@ -220,9 +243,22 @@ export class StateStore extends EventEmitter {
   /**
    * @param {string} name
    * @param {Partial<EffectiveState>} patch
+   * @param {number} token token of the device runtime that reports (Scheduler); a report of a runtime that was replaced is dropped
+   * @returns {import("../core/ordering.js").Decision}
    */
-  reportEffective(name, patch) {
-    return todo("StateStore.reportEffective", name, patch);
+  reportEffective(name, patch, token) {
+    return todo("StateStore.reportEffective", name, patch, token);
+  }
+
+  /**
+   * A device runtime was built: from now on only reports with this token
+   * count for the device.
+   *
+   * @param {string} name
+   * @param {number} token higher than every token before it
+   */
+  runtimeStarted(name, token) {
+    return todo("StateStore.runtimeStarted", name, token);
   }
 
   /**

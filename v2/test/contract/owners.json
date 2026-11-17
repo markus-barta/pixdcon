@@ -1,0 +1,63 @@
+{
+  "//": "Who owns which file under v2/ in phase 3 (knowledge entry, section 11). A pattern is a file, or a folder ending in a slash. The longest pattern that matches a file decides. test/contract/async-sites.test.js checks that every file has exactly one owner.",
+  "W1": [
+    "src/types.js",
+    "src/main.js",
+    "src/core/",
+    "src/config/schema.js",
+    "src/config/config-store.js",
+    "src/state/",
+    "src/overlay/",
+    "src/mqtt/mqtt-gateway.js",
+    "src/mqtt/topics.js",
+    "src/scenes/settings-service.js",
+    "dev/async-sites.js",
+    "test/contract/wire.test.js",
+    "test/contract/overlay-rules.test.js",
+    "test/contract/composition.test.js",
+    "test/contract/ordering.test.js",
+    "test/contract/ordering-model.test.js",
+    "test/contract/scene-world.js",
+    "test/contract/async-sites.test.js",
+    "test/contract/owners.json",
+    "test/contract/async-sites/W1.json"
+  ],
+  "W2": [
+    "web/",
+    "test/contract/client.test.js",
+    "test/contract/async-sites/W2.json"
+  ],
+  "W3": [
+    "src/drivers/",
+    "src/render/",
+    "src/health/",
+    "dev/fake-pixoo.js",
+    "dev/fake-awtrix.js",
+    "test/smoke/",
+    "test/contract/async-sites/W3.json"
+  ],
+  "W4": [
+    "src/api/",
+    "src/mqtt/status-publisher.js",
+    "src/mqtt/ha-discovery.js",
+    "test/contract/http-api.test.js",
+    "test/contract/mqtt-publications.test.js",
+    "test/contract/async-sites/W4.json"
+  ],
+  "W5": [
+    "src/scenes/",
+    "src/drivers/awtrix-raster.js",
+    "src/config/migrate-v1.js",
+    "dev/",
+    "test/golden/",
+    "test/helpers/",
+    "test/contract/scenes.test.js",
+    "test/contract/async-sites/W5.json",
+    "package.json",
+    "package-lock.json",
+    "Dockerfile",
+    "Dockerfile.dockerignore",
+    ".gitignore",
+    "jsconfig.json"
+  ]
+}
