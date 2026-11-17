@@ -44,7 +44,7 @@
  * Owner: API + live channel worker.
  */
 
-import { todo } from "../core/todo.js";
+import { HANDLED } from "./http-server.js";
 
 /** @typedef {import("../types.js").LiveEvent} LiveEvent */
 /** @typedef {import("../types.js").Snapshot} Snapshot */
@@ -64,6 +64,15 @@ export class LiveChannel {
   /** @param {LiveChannelDeps} deps */
   constructor(deps) {
     this.deps = deps;
+    this.position = 0;
+    /** @type {Array<{seq: number, type: LiveEvent["type"], wire: string}>} */
+    this.ring = [];
+    /** @type {Map<import("node:http").ServerResponse, {session: string, log: boolean}>} */
+    this.clients = new Map();
+    /** @type {Map<string, number>} */
+    this.sessions = new Map();
+    /** @type {{cancel: () => void}|null} */
+    this.ping = null;
   }
 
   /**
@@ -73,7 +82,39 @@ export class LiveChannel {
    * @returns {symbol} HANDLED
    */
   handle(ctx) {
-    return todo("LiveChannel.handle", ctx);
+    const { res, req, query } = ctx;
+    const session = query.get("session") ?? "";
+    const count = this.sessions.get(session) ?? 0;
+    // Build before taking over the response: a failed snapshot is a JSON error.
+    const cursor = query.get("since") ?? String(req.headers["last-event-id"] ?? "");
+    const prefix = `${this.deps.epoch}-`;
+    const number = cursor.startsWith(prefix) ? cursor.slice(prefix.length) : "";
+    const since = /^\d+$/.test(number) ? Number(number) : -1;
+    const replay = Number.isSafeInteger(since) && since >= 0 && since <= this.position &&
+      since >= (this.ring[0]?.seq ?? this.position + 1) - 1;
+    const initial = replay
+      ? this.ring.filter((event) => event.seq > since)
+      : [{ seq: this.position, type: "snapshot", wire: this.#wire("snapshot", {
+          ...this.deps.snapshot(), epoch: this.deps.epoch, seq: this.position,
+        }, this.position) }];
+    if (session && count === 0) this.deps.onSession(session, true);
+    if (session) this.sessions.set(session, count + 1);
+    this.clients.set(res, { session, log: query.get("log") === "1" });
+    res.on("close", () => this.#remove(res));
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.flushHeaders();
+    for (const event of initial) {
+      if (!this.#send(res, event)) break;
+    }
+    if (!this.ping && this.clients.size) this.ping = this.deps.clock.every(() => {
+      this.publish("ping", { at: new Date(this.deps.clock.now()).toISOString() });
+    }, this.deps.pingMs ?? 15000);
+    return HANDLED;
   }
 
   /**
@@ -84,22 +125,71 @@ export class LiveChannel {
    * @returns {number} its seq
    */
   publish(type, data) {
-    return todo("LiveChannel.publish", type, data);
+    // Serialise once before advancing: failed serialisation consumes no position.
+    const seq = this.position + 1;
+    const event = { seq, type, wire: this.#wire(type, data, seq) };
+    this.position = seq;
+    this.ring.push(event);
+    const limit = Math.max(0, this.deps.ringSize ?? 500);
+    while (this.ring.length > limit) this.ring.shift();
+    for (const res of this.clients.keys()) this.#send(res, event);
+    return seq;
   }
 
   /** @returns {number} seq of the last event */
   seq() {
-    return todo("LiveChannel.seq");
+    return this.position;
   }
 
   /** @returns {{clients: number, sessions: string[]}} */
   status() {
-    return todo("LiveChannel.status");
+    return { clients: this.clients.size, sessions: [...this.sessions.keys()] };
   }
 
   /** Close every stream (shutdown). */
   stop() {
-    return todo("LiveChannel.stop");
+    for (const res of this.clients.keys()) {
+      this.#remove(res);
+      res.end();
+    }
+  }
+
+  /** @param {LiveEvent["type"]} type @param {unknown} data @param {number} seq */
+  #wire(type, data, seq) {
+    return `id: ${this.deps.epoch}-${seq}\nevent: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+  }
+
+  /** @param {import("node:http").ServerResponse} res @param {{type: string, wire: string}} event */
+  #send(res, event) {
+    const client = this.clients.get(res);
+    if (!client) return false;
+    if (event.type === "log" && !client.log) return true;
+    if (res.destroyed || !res.write(event.wire)) {
+      this.#remove(res);
+      res.destroy();
+      return false;
+    }
+    return true;
+  }
+
+  /** @param {import("node:http").ServerResponse} res */
+  #remove(res) {
+    const client = this.clients.get(res);
+    if (!client) return;
+    this.clients.delete(res);
+    if (client.session) {
+      const count = (this.sessions.get(client.session) ?? 1) - 1;
+      if (count) this.sessions.set(client.session, count);
+      else {
+        this.sessions.delete(client.session);
+        try { this.deps.onSession(client.session, false); }
+        catch (error) { this.deps.logger.error("[Live] Session close failed", error); }
+      }
+    }
+    if (!this.clients.size) {
+      this.ping?.cancel();
+      this.ping = null;
+    }
   }
 }
 
@@ -124,5 +214,35 @@ export class LiveChannel {
  * @returns {() => void} unwire
  */
 export function wireLiveChannel(channel, deps) {
-  return todo("wireLiveChannel", channel, deps);
+  /** @type {Array<() => void>} */
+  const stops = [];
+  /** @param {import("node:events").EventEmitter} source @param {string} event @param {(...args: any[]) => void} handler */
+  const follow = (source, event, handler) => {
+    source.on(event, handler);
+    stops.push(() => source.off(event, handler));
+  };
+  follow(deps.state, "device", (view) => channel.publish("device", view));
+  follow(deps.state, "device-added", (view) => channel.publish("device", view));
+  follow(deps.state, "device-removed", (value) => channel.publish("device-removed", value));
+  /** @type {Map<string, number>} */
+  const previews = new Map();
+  follow(deps.previews, "frame", (frame) => {
+    const now = deps.clock.now();
+    if (now - (previews.get(frame.device) ?? -Infinity) < 1000) return;
+    previews.set(frame.device, now);
+    channel.publish("preview", {
+      device: frame.device, width: frame.width, height: frame.height,
+      source: frame.source, receivedAt: frame.receivedAt,
+      frameSeq: frame.seq, rgbBase64: Buffer.from(frame.rgb).toString("base64"),
+    });
+  });
+  follow(deps.overlays, "changed", () => channel.publish("overlays", deps.overlays.list()));
+  follow(deps.settings, "settings", (state) => channel.publish("settings", state));
+  follow(deps.scenes, "changed", () => channel.publish("scenes", deps.scenes.list()));
+  const config = () => channel.publish("config", deps.config.file());
+  follow(deps.config, "file", config);
+  follow(deps.config, "changed", config);
+  if (deps.mqtt) follow(deps.mqtt, "status", (status) => channel.publish("mqtt", status));
+  stops.push(deps.logger.onLine((line) => channel.publish("log", line)));
+  return () => { for (const stop of stops) stop(); };
 }

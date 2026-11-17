@@ -47,15 +47,133 @@
       "why": "read inside the request that asked for it, up to 1 MiB; the request as a whole is the input, and it is fenced where its route runs (the route rows of routes-v1.js and routes-v2.js)"
     },
     {
-      "site": "src/api/routes-v1.js:223",
-      "id": "route:server.route#1",
-      "input": "HTTP requests: questions and commands of pages and of outside callers",
-      "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
-      "fence": "a read changes nothing; a write runs in its device's command queue (StateStore) or in the config store's write lane, and answers with the applied state",
-      "test": "test/contract/http-api.test.js: requests in order:"
+      "site": "src/api/live-channel.js:103",
+      "id": "listener:res.on(\"close\")#1",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/routes-v2.js:299",
+      "site": "src/api/live-channel.js:114",
+      "id": "timer:this.deps.clock.every#1",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:115",
+      "id": "work:this.publish#1",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:221",
+      "id": "listener:source.on#1",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "wireLiveChannel"
+    },
+    {
+      "site": "src/api/live-channel.js:224",
+      "id": "work:channel.publish#1",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:225",
+      "id": "work:channel.publish#2",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:226",
+      "id": "work:channel.publish#3",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:233",
+      "id": "work:channel.publish#4",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:239",
+      "id": "work:channel.publish#5",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:240",
+      "id": "work:channel.publish#6",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:241",
+      "id": "work:channel.publish#7",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:242",
+      "id": "work:channel.publish#8",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:245",
+      "id": "work:channel.publish#9",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:246",
+      "id": "work:channel.publish#10",
+      "input": "stream lifecycle, ping, or store event",
+      "metadata": "session identity; server epoch and monotonic seq",
+      "fence": "session stream counts; immutable current store event in emission order; ping only repeats time",
+      "test": "test/contract/http-api.test.js: live channel:",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/routes-v1.js:223",
       "id": "route:server.route#1",
       "input": "HTTP requests: questions and commands of pages and of outside callers",
       "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
@@ -71,7 +189,7 @@
       "test": "test/contract/http-api.test.js: v1 routes: request and answer shapes of all 18 routes match the matrix"
     },
     {
-      "site": "src/api/routes-v2.js:298",
+      "site": "src/api/routes-v2.js:303",
       "id": "contract:${method} ${path}",
       "input": "the request of one v2 route",
       "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
@@ -79,20 +197,12 @@
       "test": "test/contract/http-api.test.js: v2 writes answer with the applied DeviceView and a higher rev"
     },
     {
-      "site": "src/api/live-channel.js:76",
-      "id": "contract:LiveChannel.handle",
-      "input": "a page opening its stream, with session and since cursor; the stream closing; the 15 s ping timer",
-      "metadata": "session id; cursor <epoch>-<seq>",
-      "fence": "live-channel.js: a cursor of another epoch, or without one, gets a snapshot; streams are counted per session, so the close of an older stream never reports a page as gone",
-      "test": "test/contract/http-api.test.js: boot epoch: every view, snapshot and event id carries the epoch"
-    },
-    {
-      "site": "src/api/live-channel.js:127",
-      "id": "contract:wireLiveChannel",
-      "input": "the events of every store: device, preview, overlays, settings, scenes, config, mqtt, log",
-      "metadata": "each becomes a live event with the next seq of the run's epoch",
-      "fence": "forwarded in the order they are emitted, one seq counter; the preview throttle is a timer that only skips frames",
-      "test": "test/contract/http-api.test.js: live channel: snapshot first, events in seq order"
+      "site": "src/api/routes-v2.js:304",
+      "id": "route:server.route#1",
+      "input": "HTTP requests: questions and commands of pages and of outside callers",
+      "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
+      "fence": "a read changes nothing; a write runs in its device's command queue (StateStore) or in the config store's write lane, and answers with the applied state",
+      "test": "test/contract/http-api.test.js: requests in order:"
     },
     {
       "site": "src/mqtt/status-publisher.js:247",
@@ -104,10 +214,6 @@
     }
   ],
   "none": [
-    "LiveChannel.publish",
-    "LiveChannel.seq",
-    "LiveChannel.status",
-    "LiveChannel.stop",
     "StatusPublisher.stop",
     "StatusPublisher.buildHealth",
     "StatusPublisher.buildState",

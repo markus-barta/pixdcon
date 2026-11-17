@@ -290,6 +290,11 @@ export const V2_ROUTES = Object.freeze([
 export function registerV2Routes(server, deps) {
   /** @type {Record<string, import("./http-server.js").RouteHandler>} */
   const built = {
+    "GET /api/v2/bootstrap": () => ({
+      ...deps.live.deps.snapshot(), epoch: deps.epoch, seq: deps.live.seq(),
+    }),
+    "GET /api/v2/devices": () => deps.state.views(),
+    "GET /api/v2/devices/:name": (ctx) => deps.state.view(ctx.params.name),
     "GET /api/v2/events": (ctx) => deps.live.handle(ctx),
   };
   for (const { method, path, ...meta } of V2_ROUTES) {
