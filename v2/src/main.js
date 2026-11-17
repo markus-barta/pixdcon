@@ -598,13 +598,13 @@ export async function createApp(env = process.env, overrides = {}) {
     "/api/health",
     () => {
       const status = controller();
-      return {
-        status: status.status === "failed" ? 503 : 200,
-        body: {
+      return server.answer(
+        {
           ...status,
           uptimeSeconds: Math.floor((clock.now() - startedAt) / 1000),
         },
-      };
+        status.status === "failed" ? 503 : 200,
+      );
     },
     {
       summary:

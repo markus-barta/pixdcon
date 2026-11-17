@@ -519,7 +519,7 @@ export function registerV2Routes(server, deps) {
     }),
     "POST /api/v2/scenes/:key/copy": async (ctx) =>
       server.answer(await copyScene(deps, ctx.params.key, await ctx.body()), 201),
-    "GET /api/v2/config/raw": async () => server.answer(await deps.config.readRaw()),
+    "GET /api/v2/config/raw": () => deps.config.readRaw((body) => server.answer(body)),
     "PUT /api/v2/config/raw": async (ctx) => {
       const body = await ctx.body();
       keys(body, ["text"]);
@@ -532,7 +532,7 @@ export function registerV2Routes(server, deps) {
     },
     "POST /api/v2/config/reload": async (ctx) => {
       keys(await ctx.body(), []);
-      return server.answer(await deps.config.reload());
+      return deps.config.reload((body) => server.answer(body));
     },
     "GET /api/v2/status": () => server.answer({
       controller: deps.controller(),

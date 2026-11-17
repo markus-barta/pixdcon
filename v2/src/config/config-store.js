@@ -137,13 +137,18 @@ export class ConfigStore extends EventEmitter {
 
   /**
    * Text of config.json as it is on disk, for the raw editor.
+   * Optional capture runs where the body is built, inside the saved-state
+   * lane, before promise continuations can publish newer live events.
    *
-   * @returns {Promise<{text: string, state: ConfigFileState}>}
+   * @template [T={text: string, state: ConfigFileState}]
+   * @param {(body: {text: string, state: ConfigFileState}) => T} [capture]
+   * @returns {Promise<T|{text: string, state: ConfigFileState}>}
    */
-  async readRaw() {
+  async readRaw(capture) {
     return this.enqueue(async () => {
       await this.read("file");
-      return { text: this.text, state: this.file() };
+      const body = { text: this.text, state: this.file() };
+      return capture ? capture(body) : body;
     });
   }
 
@@ -265,11 +270,14 @@ export class ConfigStore extends EventEmitter {
 
   /**
    * Re-read the file now ("Reload from disk").
+   * Optional capture stamps the returned file state inside its command.
    *
-   * @returns {Promise<ConfigFileState>}
+   * @template [T=ConfigFileState]
+   * @param {(body: ConfigFileState) => T} [capture]
+   * @returns {Promise<T|ConfigFileState>}
    */
-  async reload() {
-    return this.enqueue(() => this.read("file"));
+  async reload(capture) {
+    return this.enqueue(() => this.read("file", capture));
   }
 
   /**
@@ -349,20 +357,27 @@ export class ConfigStore extends EventEmitter {
     });
   }
 
-  /** @param {"startup"|"file"} origin @returns {Promise<ConfigFileState>} */
-  async read(origin) {
+  /** @template [T=ConfigFileState]
+   * @param {"startup"|"file"} origin
+   * @param {(body: ConfigFileState) => T} [capture]
+   * @returns {Promise<T|ConfigFileState>} */
+  async read(origin, capture) {
+    const answer = () => {
+      const body = this.file();
+      return capture ? capture(body) : body;
+    };
     let text;
-    /** @type {ReturnType<typeof parseConfig>} */
+    /** @type {ReturnType<typeof parseConfig>|undefined} */
     let parsed;
     try {
       text = await readFile(this.options.path, "utf8");
-      if (this.stopped) return this.file();
-      this.text = text;
-      const hash = digest(text);
-      if (hash === this.appliedHash && this.fileState.valid) return this.file();
-      parsed = parseConfig(text);
+      if (!this.stopped) {
+        this.text = text;
+        if (digest(text) !== this.appliedHash || !this.fileState.valid)
+          parsed = parseConfig(text);
+      }
     } catch (error) {
-      if (this.stopped) return this.file();
+      if (this.stopped) return answer();
       const message = error instanceof Error ? error.message : String(error);
       this.fileState = {
         ...this.fileState,
@@ -377,12 +392,13 @@ export class ConfigStore extends EventEmitter {
         },
       };
       this.emit("file", this.file());
-      return this.file();
+      return answer();
     }
+    if (!parsed) return answer();
     // Observer failures are programming errors, not evidence of a bad file.
     // Propagate them without relabelling valid disk content as invalid.
     this.accept(text, parsed.config, parsed.warnings, origin);
-    return this.file();
+    return answer();
   }
 
   /** @param {string} text @param {Config} config @param {string[]} warnings @param {"startup"|"file"|"api"} origin */

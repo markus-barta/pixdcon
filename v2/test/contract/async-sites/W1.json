@@ -2,7 +2,7 @@
   "owner": "W1",
   "rows": [
     {
-      "site": "src/config/config-store.js:293",
+      "site": "src/config/config-store.js:301",
       "id": "timer:this.options.clock.sleep#1",
       "input": "500 ms file-event debounce expires or is cancelled",
       "metadata": "watch lifecycle and exact debounce AbortController",
@@ -10,7 +10,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:294",
+      "site": "src/config/config-store.js:302",
       "id": "then:this.options.clock.sleep().then#1",
       "input": "500 ms file-event debounce expires or is cancelled",
       "metadata": "watch lifecycle and exact debounce AbortController",
@@ -18,7 +18,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:296",
+      "site": "src/config/config-store.js:304",
       "id": "work:this.reload#1",
       "input": "file content returned by a debounce or polling reload",
       "metadata": "FIFO position in commandLane; applied content hash; stopped flag",
@@ -26,7 +26,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:298",
+      "site": "src/config/config-store.js:306",
       "id": "then:this.options.clock.sleep().then().catch#1",
       "input": "a reload rejects",
       "metadata": "the read that failed",
@@ -35,7 +35,7 @@
       "why": "logs the failure only; no file content or controller state is applied"
     },
     {
-      "site": "src/config/config-store.js:303",
+      "site": "src/config/config-store.js:311",
       "id": "watch:watch#1",
       "input": "native directory event for config.json",
       "metadata": "watch lifecycle and basename; event is a hint",
@@ -44,7 +44,7 @@
       "was": "ConfigStore.start"
     },
     {
-      "site": "src/config/config-store.js:308",
+      "site": "src/config/config-store.js:316",
       "id": "listener:this.watcher.on(\"error\")#1",
       "input": "native watcher fails",
       "metadata": "watch lifecycle",
@@ -52,7 +52,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:323",
+      "site": "src/config/config-store.js:331",
       "id": "timer:this.options.clock.every#1",
       "input": "one-second polling tick",
       "metadata": "watch lifecycle",
@@ -60,7 +60,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:325",
+      "site": "src/config/config-store.js:333",
       "id": "work:this.reload#2",
       "input": "file content returned by a debounce or polling reload",
       "metadata": "FIFO position in commandLane; applied content hash; stopped flag",
@@ -68,7 +68,7 @@
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
-      "site": "src/config/config-store.js:325",
+      "site": "src/config/config-store.js:333",
       "id": "then:this.reload().catch#1",
       "input": "a reload rejects",
       "metadata": "the read that failed",
@@ -77,7 +77,7 @@
       "why": "logs the failure only; no file content or controller state is applied"
     },
     {
-      "site": "src/config/config-store.js:428",
+      "site": "src/config/config-store.js:444",
       "id": "work:backup.sync#1",
       "input": "filesystem durability operation completes",
       "metadata": "the admitted config write's backup handle",
@@ -86,7 +86,7 @@
       "why": "fsync within the admitted write lane; no independently delivered state is applied"
     },
     {
-      "site": "src/config/config-store.js:437",
+      "site": "src/config/config-store.js:453",
       "id": "work:file.sync#1",
       "input": "filesystem durability operation completes",
       "metadata": "the admitted config write's file handle",
@@ -95,7 +95,7 @@
       "why": "fsync within the admitted write lane; no independently delivered state is applied"
     },
     {
-      "site": "src/config/config-store.js:444",
+      "site": "src/config/config-store.js:460",
       "id": "work:dir.sync#1",
       "input": "filesystem durability operation completes",
       "metadata": "the admitted config write's dir handle",

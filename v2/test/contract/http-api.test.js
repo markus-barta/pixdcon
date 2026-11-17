@@ -1774,6 +1774,75 @@ test("overlay records after a reconnect: confirmed, inEffect and restricts pass 
   assert.equal((await api.api("/api/v2/bootstrap")).body.overlays[1].confirmed, false);
 });
 
+test("position: config raw and reload capture their body's position inside the saved-state lane", async (t) => {
+  const stack = await startStack(t, { mqtt: false, clock: manualClock() });
+  const { config, live } = stack.app.modules;
+  for (const path of ["/api/v2/config/raw", "/api/v2/config/reload"]) {
+    let captured = "";
+    const original = config.enqueue.bind(config);
+    const read = config.read.bind(config);
+    const afterBody = (/** @type {any} */ answer) => {
+      captured = `${stack.app.epoch}-${live.seq()}`;
+      // New state reaches the channel after the body exists, before the
+      // config method and HTTP handler return. It cannot date the old body.
+      live.publish("config", config.file());
+      return answer;
+    };
+    const mock = path.endsWith("raw")
+      ? t.mock.method(
+          config,
+          "enqueue",
+          async (/** @type {() => Promise<any>} */ work) =>
+            afterBody(await original(work)),
+        )
+      : t.mock.method(
+          config,
+          "read",
+          async (
+            /** @type {"file"|"startup"} */ origin,
+            /** @type {any} */ capture,
+          ) => afterBody(await read(origin, capture)),
+        );
+    const response = await fetch(
+      `${stack.base}${path}`,
+      path.endsWith("reload")
+        ? {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}",
+          }
+        : {},
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-pixdcon-position"), captured);
+    const body = /** @type {any} */ (await response.json());
+    assert.equal(path.endsWith("raw") ? body.state.valid : body.valid, true);
+    assert.notEqual(captured, `${stack.app.epoch}-${live.seq()}`);
+    mock.mock.restore();
+  }
+});
+
+test("position: controller health is stamped where its body is built", async (t) => {
+  const stack = await startStack(t, { mqtt: false, clock: manualClock() });
+  const { live } = stack.app.modules;
+  const route = stack.app.server.table.find(
+    (route) => route.path === "/api/health",
+  );
+  assert.ok(route);
+  const original = route.handler;
+  let captured = "";
+  route.handler = async (ctx) => {
+    const answer = await original(ctx);
+    captured = `${stack.app.epoch}-${live.seq()}`;
+    live.publish("config", stack.app.modules.config.file());
+    return answer;
+  };
+  const response = await fetch(`${stack.base}/api/health`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-pixdcon-position"), captured);
+  assert.equal(/** @type {any} */ (await response.json()).measured, true);
+});
+
 test("position: a delayed handler's explicit body position wins over newer events, including position zero", async (t) => {
   const api = await recordedApi(t);
   const gate = deferred(), built = deferred();
