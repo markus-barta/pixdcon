@@ -2,7 +2,16 @@
   "owner": "W2",
   "rows": [
     {
-      "site": "web/js/api.js:114",
+      "site": "web/js/api.js:109",
+      "id": "timer:setTimeout#1",
+      "input": "the time bound of one request (REQUEST_TIMEOUT_MS, 15 s), of request and requestFrame",
+      "metadata": "the request it was armed for; it is cleared when that request is done",
+      "fence": "none",
+      "why": "it decides nothing about state: it aborts its own request, which then fails with code timeout like any other failure; the operation that sent it keeps the failure in its slot and frees it (ops.js, rule 4); a bound whose request was done was cleared",
+      "test": "test/contract/client.test.js: r3 api (rule 4):"
+    },
+    {
+      "site": "web/js/api.js:164",
       "id": "fetch:fetch#1",
       "input": "the answer of a request: status and JSON body",
       "metadata": "generation of the request for its resource (beginRequest, or openSource for the bootstrap), taken before it is sent; epoch and seq of X-Pixdcon-Position",
@@ -11,7 +20,7 @@
       "was": "api.request"
     },
     {
-      "site": "web/js/api.js:188",
+      "site": "web/js/api.js:253",
       "id": "fetch:fetch#2",
       "input": "the last frame of one display as bytes (GET /api/v2/devices/<name>/preview)",
       "metadata": "generation of the request for \"frame:<device>\", taken before it is sent; the page epoch and the incarnation of the device when it was sent",
@@ -201,6 +210,14 @@
       "fence": "none",
       "why": "it sends the end of this page's settings previews with navigator.sendBeacon; no answer comes back, and the server also ends them 5 s after the page's last stream closed (preview rule 2)",
       "test": "test/contract/client.test.js: client settings form:"
+    },
+    {
+      "site": "web/js/ops.js:187",
+      "id": "then:outcome.then#1",
+      "input": "the outcome of every operation of the pages: a user action, a load, a retry or a cleanup, success or failure",
+      "metadata": "the slot of the operation (the identity it acts on: device with epoch and incarnation, scene, control, editor, page) and the token it took when it started",
+      "fence": "ops.js run: the outcome changes the slot, and runs the page's done or failed, only while its token is the slot's current one; what the answer brought went to store.applyAnswer (ordering.js) in the operation's own work before, whatever the token",
+      "test": "test/contract/client.test.js: r3 ops (the operation rule):"
     },
     {
       "site": "web/js/pages/config-raw.js:298",
@@ -411,7 +428,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/store.js:697",
+      "site": "web/js/store.js:727",
       "id": "subscribe:main.subscribe#1",
       "input": "a page's subscription, passed on to the default store",
       "metadata": "none: the store calls it after a change it applied",

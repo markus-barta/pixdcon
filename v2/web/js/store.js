@@ -57,7 +57,9 @@
  * inserts or removes rows while they are on screen (approved spec section 8).
  * A timer never changes what the store holds; `tick` only moves the clock
  * that ages ("frame 2 s ago") are computed against, and `setLive` only the
- * connection state that is shown.
+ * connection state that is shown. `setOp` keeps the slots of the operation
+ * registry (ops.js), so every page renders a busy label, a failure or a
+ * note from the same slot, whichever page started the operation.
  *
  * Pure apart from the subscribers it calls: no DOM, no network, no timers.
  * test/contract/client.test.js runs it in Node.
@@ -110,6 +112,20 @@ import {
  * @property {number|null} dataAt epoch ms of the last data that was applied ("values below are from 18:41:52")
  * @property {{message: string, at: number}|null} loadError the first load failed (no snapshot yet)
  * @property {number} now epoch ms the ages on screen are computed against; moved by `tick`
+ * @property {Map<string, OpSlot>} ops the page's operations by slot (ops.js): busy label, kept failure, note. Not data of pixdcon: a new epoch keeps them, and their slot keys name the epoch and device life they belong to
+ */
+
+/**
+ * One slot of the operation registry (ops.js): the identity an action acts
+ * on, and what the page says about its last operation.
+ *
+ * @typedef {object} OpSlot
+ * @property {number} token the operation that is current for the slot; an outcome with another token changes nothing
+ * @property {boolean} busy
+ * @property {string} label the busy label ("Switching to Weather…")
+ * @property {unknown} value what the running operation asked for (a scene, a mode)
+ * @property {string|null} failure why the current operation failed, said beside its action (B-175)
+ * @property {string|null} note what the current operation's success says ("Saved to config.json")
  */
 
 /** Live event types that carry a whole resource (decideEvent's `type`). @type {Set<string>} */
@@ -145,6 +161,7 @@ function initialState() {
     dataAt: null,
     loadError: null,
     now: Date.now(),
+    ops: new Map(),
   };
 }
 
@@ -403,6 +420,7 @@ export function createStore() {
         ...fresh,
         live: state.live,
         now: state.now,
+        ops: state.ops,
       };
     }
     next.epoch = fenceState.epoch;
@@ -620,6 +638,18 @@ export function createStore() {
     setLoadError(error) {
       commit({ ...state, loadError: error });
     },
+    /**
+     * One slot of the operation registry changed (ops.js); changes nothing else.
+     *
+     * @param {string} key
+     * @param {OpSlot|null} slot null: the slot is forgotten
+     */
+    setOp(key, slot) {
+      const ops = new Map(state.ops);
+      if (slot) ops.set(key, slot);
+      else ops.delete(key);
+      commit({ ...state, ops });
+    },
   };
 }
 
@@ -710,4 +740,12 @@ export function setLive(live) {
 /** @param {{message: string, at: number}|null} error */
 export function setLoadError(error) {
   main.setLoadError(error);
+}
+
+/**
+ * @param {string} key
+ * @param {OpSlot|null} slot
+ */
+export function setOp(key, slot) {
+  main.setOp(key, slot);
 }

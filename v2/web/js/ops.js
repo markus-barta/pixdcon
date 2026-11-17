@@ -1,0 +1,212 @@
+/**
+ * Operations: one rule for everything a page sends (PIXD-86, fix round 2).
+ *
+ * Every user action, load, retry and cleanup is an operation in a slot. A
+ * slot is the identity of what the operation acts on, written as a key:
+ *
+ *   scene:<device>@<epoch>/<incarnation>    a control of one life of a device
+ *                                           (scene, mode, brightness, restore,
+ *                                           adopt, retry, patch)
+ *   settings:<device>/<scene>@<epoch>/<incarnation>   Save, Revert, Clear of a form
+ *   load:<device>/<scene>@<epoch>/<incarnation>       the settings values of a scope
+ *   end:<device>/<scene>                    the end of this page's preview of a scene
+ *   copy:<scene>  overlay:<id>  add-device  raw-load  raw-save  raw-reload  log
+ *
+ * The rule, as this module carries it:
+ *  1. An operation takes a token when it starts; the slot's token is the
+ *     operation that is current for it.
+ *  2. Its outcome changes the slot, and runs the caller's `done`, only while
+ *     its token is still the slot's. An obsolete outcome changes nothing on
+ *     screen. What an answer brings goes to the store first, in the
+ *     operation's own work (store.applyAnswer: the fence decides), whether
+ *     or not the operation is still current.
+ *  3. A failure of the current operation is kept in the slot, and the page
+ *     says it beside the action, which stays available to retry (B-175).
+ *  4. Every request has a time bound (api.js REQUEST_TIMEOUT_MS). When it
+ *     runs out, the request fails like any other, and the slot is free.
+ *  5. One busy owner per slot, across all pages and openings: the slots are
+ *     kept in the store (`state.ops`), and `start` ignores a second start
+ *     while the slot is busy, before anything is changed (B-176).
+ *  6. A retry is a new operation in the same slot, with the identity it
+ *     retries (the caller passes it on).
+ *
+ * `start` is for what a person does (rule 5). `follow` is for loads and
+ * cleanups: it always starts, and the operation that ran in the slot
+ * before becomes obsolete. Pages render busy labels, failures and notes
+ * from `op(key)`; the store calls them when a slot changes.
+ *
+ * Owner: UI worker.
+ */
+
+import { ApiError } from "./api.js";
+import { getState, setOp } from "./store.js";
+
+/** @typedef {import("./store.js").OpSlot} OpSlot */
+
+/** @type {OpSlot} */
+const IDLE = Object.freeze({
+  token: 0,
+  busy: false,
+  label: "",
+  value: undefined,
+  failure: null,
+  note: null,
+});
+
+let tokens = 0;
+
+/**
+ * @param {string} key
+ * @returns {OpSlot} the slot, or an idle one
+ */
+export function op(key) {
+  return getState().ops.get(key) ?? IDLE;
+}
+
+/**
+ * @param {string} key
+ * @returns {boolean} an operation of the slot runs
+ */
+export function busy(key) {
+  return op(key).busy;
+}
+
+/**
+ * The slot of a control of one life of a device: another epoch of pixdcon
+ * or another incarnation of the device is another slot, so nothing of an
+ * earlier life (busy, failure) reaches the device that took its name.
+ *
+ * @param {string} control
+ * @param {{name: string, epoch?: string|null, incarnation?: number|string|null}} view the DeviceView
+ * @returns {string}
+ */
+export function deviceSlot(control, view) {
+  return `${control}:${view.name}@${view.epoch ?? ""}/${Number(view.incarnation ?? 0)}`;
+}
+
+/**
+ * @param {unknown} error
+ * @returns {string} one sentence for a person
+ */
+export function failureText(error) {
+  return error instanceof ApiError ? error.message : "The request failed.";
+}
+
+/**
+ * @template T
+ * @typedef {object} OpOptions
+ * @property {string} [label] the busy label
+ * @property {unknown} [value] what the operation asks for (shown while it runs)
+ * @property {(result: T) => (string|null|void)} [done] runs only while the operation is current; what it returns is the slot's note
+ * @property {(error: unknown) => (string|void)} [describe] the failure sentence to keep, when it is not the error's own
+ * @property {(error: unknown) => void} [failed] runs only while the operation is current, after the failure was kept
+ */
+
+/**
+ * A user action: ignored while its slot is busy (rule 5).
+ *
+ * @template T
+ * @param {string} key the slot
+ * @param {(current: () => boolean) => Promise<T>} work the request(s); applies what comes back to the store. `current()` says whether the operation is still the slot's (a step that waited in a lane asks it before it sends)
+ * @param {OpOptions<T>} [options]
+ * @returns {boolean} false: the slot was busy, and nothing was started or changed
+ */
+export function start(key, work, options = {}) {
+  if (busy(key)) return false;
+  run(key, work, options);
+  return true;
+}
+
+/**
+ * A load or a cleanup: it always starts, and an operation of the slot that
+ * still runs becomes obsolete.
+ *
+ * @template T
+ * @param {string} key
+ * @param {(current: () => boolean) => Promise<T>} work
+ * @param {OpOptions<T>} [options]
+ * @returns {Promise<T>} the work itself, for a caller that waits for it (a lane); its failure is kept in the slot already
+ */
+export function follow(key, work, options = {}) {
+  return run(key, work, options);
+}
+
+/**
+ * The slot's operation is no longer wanted (its values came by another way,
+ * its scope was left): what it brings back changes nothing, and what the
+ * slot said is forgotten.
+ *
+ * @param {string} key
+ */
+export function drop(key) {
+  if (getState().ops.has(key)) setOp(key, null);
+}
+
+/**
+ * A page opens afresh: what idle slots of its own said is forgotten; a
+ * slot whose operation runs keeps it (rule 5), and its outcome is said
+ * when it comes.
+ *
+ * @param {(key: string) => boolean} mine
+ */
+export function forgetIdle(mine) {
+  for (const [key, slot] of getState().ops)
+    if (!slot.busy && mine(key)) setOp(key, null);
+}
+
+/**
+ * An edit after a success: the note goes, a failure stays (rule 3).
+ *
+ * @param {string} key
+ */
+export function clearNote(key) {
+  const slot = getState().ops.get(key);
+  if (slot?.note) setOp(key, { ...slot, note: null });
+}
+
+/**
+ * @template T
+ * @param {string} key
+ * @param {(current: () => boolean) => Promise<T>} work
+ * @param {OpOptions<T>} options
+ * @returns {Promise<T>}
+ */
+function run(key, work, options) {
+  tokens += 1;
+  const token = tokens;
+  setOp(key, {
+    token,
+    busy: true,
+    label: options.label ?? "",
+    value: options.value,
+    failure: null,
+    note: null,
+  });
+  const current = () => op(key).token === token;
+  const outcome = (async () => work(current))();
+  outcome.then(
+    (result) => {
+      if (!current()) return;
+      /** @type {string|null} */
+      let note = null;
+      try {
+        note = options.done?.(result) ?? null;
+      } catch {
+        // What the page does with an answer it took cannot undo the answer.
+      }
+      if (!current()) return;
+      setOp(key, { ...op(key), busy: false, failure: null, note });
+    },
+    (error) => {
+      if (!current()) return;
+      setOp(key, {
+        ...op(key),
+        busy: false,
+        failure: options.describe?.(error) || failureText(error),
+        note: null,
+      });
+      options.failed?.(error);
+    },
+  );
+  return outcome;
+}

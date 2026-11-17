@@ -1581,3 +1581,76 @@ test("r2 finding 8, B-176: Restore shows its busy label in reserved width and ig
     await drain(calls);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Fix round 2 (r3): the operation rule. Each test replays a sequence of the
+// gate's second review (findings-r2.md) or a sibling the sweep found
+// (sweep-r3.md), against the real pages.
+// ---------------------------------------------------------------------------
+
+const healthPage = await loadPage("health");
+const overlaysPage = await loadPage("overlays");
+/** A live event into the page's store, on the stream of the snapshot. */
+const live = (/** @type {{epoch: string, stream: number}} */ boot, /** @type {string} */ type, /** @type {number} */ seq, /** @type {any} */ data) =>
+  applyDefaultEvent({ type, epoch: boot.epoch, seq, stream: boot.stream, data });
+const rowLine = (/** @type {any} */ root, /** @type {string} */ which) => root.querySelector(`.dt-row ${which}`).textContent;
+const restoreIn = (/** @type {any} */ root) => root.querySelector('.dt-row [data-act="restore"]');
+const titleLine = (/** @type {any} */ root) => root.querySelector(".dev-head .sub");
+const previewOf = (/** @type {any} */ calls) => calls.filter((/** @type {any} */ c) => c.method === "PUT" && c.url.endsWith("/settings/clock/preview"));
+
+test("r3 ops (the operation rule): an outcome changes its slot only while its token is current; a start while the slot is busy is ignored before anything changes; a failure is kept until the next start; follow and drop make the running operation obsolete", async () => {
+  const ops = await import(new URL("../../web/js/ops.js", import.meta.url).href);
+  /** @type {Array<(value?: unknown) => void>} */
+  const answers = [];
+  /** @type {Array<(error: unknown) => void>} */
+  const fails = [];
+  const held = () => new Promise((resolve, reject) => {
+    answers.push(resolve);
+    fails.push(reject);
+  });
+  const key = "test:ops";
+  let done = 0;
+  const count = () => {
+    done += 1;
+    return "Done";
+  };
+  assert.equal(ops.start(key, held, { label: "Working…", done: count }), true);
+  assert.deepEqual([ops.op(key).busy, ops.op(key).label], [true, "Working…"]);
+  assert.equal(ops.start(key, held, { done: count }), false, "a second start while busy is ignored");
+  assert.equal(answers.length, 1, "and sends nothing");
+  fails[0](new ApiError("pixdcon failed to answer (500).", { status: 500, code: "http_500" }));
+  await settle();
+  assert.deepEqual([ops.op(key).busy, ops.op(key).failure], [false, "pixdcon failed to answer (500)."], "the failure is kept");
+  assert.equal(ops.start(key, held, { done: count }), true, "the action stays available");
+  assert.equal(ops.op(key).failure, null, "a new start takes the old failure away");
+  void ops.follow(key, held);
+  answers[1]("late");
+  await settle();
+  assert.equal(done, 0, "the obsolete outcome ran nothing of the page");
+  assert.equal(ops.op(key).busy, true, "and changed nothing in the slot");
+  answers[2]("now");
+  await settle();
+  assert.deepEqual([ops.op(key).busy, ops.op(key).failure], [false, null]);
+  ops.follow(key, held).catch(() => {});
+  ops.drop(key);
+  fails[3](new Error("late"));
+  await settle();
+  assert.deepEqual([ops.op(key).token, ops.op(key).failure], [0, null], "a dropped slot stays forgotten");
+});
+
+test("r3 api (rule 4): a request that gets no answer fails after 15 s with code timeout and a sentence, and its control key is free again", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const calls = heldFetch();
+  const outcome = request("PUT", "/api/v2/devices/d1/mode", { resource: "device:d1", key: "mode:test", body: { mode: "pause" } }).then(
+    () => null,
+    (error) => error,
+  );
+  await settle();
+  assert.equal(isBusy("mode:test"), true);
+  t.mock.timers.tick(15_000);
+  const error = await outcome;
+  assert.ok(error instanceof ApiError);
+  assert.deepEqual([error.code, error.message], ["timeout", "pixdcon did not answer within 15 s."]);
+  assert.equal(isBusy("mode:test"), false, "the key is free again");
+  await drain(calls);
+});

@@ -6,6 +6,10 @@
  *    second request; the control shows its busy label and ignores the click
  *  - every failure is said (rule 4): a failed request rejects with ApiError,
  *    whose `message` is one sentence to show beside the control that caused it
+ *  - every request has a time bound (the operation rule, ops.js, rule 4):
+ *    pixdcon has REQUEST_TIMEOUT_MS to answer, the body included. Then the
+ *    request is aborted and fails with code "timeout", and its key is free
+ *    again, so a request that hangs never blocks the next one
  *  - answers in order (rule 3): the caller gets the answer with its stamp;
  *    whether it is applied is decided in store.js (ordering.js). The stamp is
  *    where the answer stands: the epoch and seq of the response header
@@ -47,6 +51,9 @@ export class ApiError extends Error {
  * @property {number} seq from X-Pixdcon-Position
  */
 
+/** How long pixdcon has to answer one request, body included (ms). */
+export const REQUEST_TIMEOUT_MS = 15000;
+
 /** @type {Set<string>} */
 const busy = new Set();
 /** @type {Set<(key: string, busy: boolean) => void>} */
@@ -77,6 +84,47 @@ function sentence(status, payload) {
   return `pixdcon refused the request (${status}).`;
 }
 
+/** @returns {ApiError} */
+const timeoutError = () =>
+  new ApiError(`pixdcon did not answer within ${REQUEST_TIMEOUT_MS / 1000} s.`, {
+    status: 0,
+    code: "timeout",
+  });
+
+/**
+ * The time bound of one request. After REQUEST_TIMEOUT_MS the fetch is
+ * aborted and whatever the request still waits for (the answer, its body)
+ * fails with a timeout, also where the network or a stand-in ignores the
+ * abort. The caller ends the bound when the request is done.
+ *
+ * @param {AbortSignal} [outer] the caller's own signal
+ */
+function bound(outer) {
+  const controller = new AbortController();
+  let timedOut = false;
+  /** @type {ReturnType<typeof setTimeout>|undefined} */
+  let timer;
+  /** @type {Promise<never>} */
+  const late = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(timeoutError());
+    }, REQUEST_TIMEOUT_MS);
+  });
+  return {
+    signal: outer ? AbortSignal.any([outer, controller.signal]) : controller.signal,
+    /**
+     * @template T
+     * @param {Promise<T>} work
+     * @returns {Promise<T>}
+     */
+    race: (work) => Promise.race([work, late]),
+    timedOut: () => timedOut,
+    end: () => clearTimeout(timer),
+  };
+}
+
 /**
  * @param {"GET"|"POST"|"PUT"|"PATCH"|"DELETE"} method
  * @param {string} path e.g. "/api/v2/devices/pixoo-159/scene"
@@ -105,20 +153,24 @@ export async function request(method, path, options) {
     busy.add(key);
     announce(key, true);
   }
+  const time = bound(signal);
   try {
     /** @type {Record<string, string>} */
     const headers = { Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     let response;
     try {
-      response = await fetch(path, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        cache: "no-store",
-        signal,
-      });
+      response = await time.race(
+        fetch(path, {
+          method,
+          headers,
+          body: body === undefined ? undefined : JSON.stringify(body),
+          cache: "no-store",
+          signal: time.signal,
+        }),
+      );
     } catch {
+      if (time.timedOut()) throw timeoutError();
       if (signal?.aborted)
         throw new ApiError("Cancelled.", { status: 0, code: "aborted" });
       throw new ApiError("No answer from pixdcon.", {
@@ -127,7 +179,16 @@ export async function request(method, path, options) {
       });
     }
     const position = parsePosition(response.headers.get("X-Pixdcon-Position"));
-    const text = await response.text();
+    let text;
+    try {
+      text = await time.race(response.text());
+    } catch {
+      if (time.timedOut()) throw timeoutError();
+      throw new ApiError("No answer from pixdcon.", {
+        status: 0,
+        code: "unreachable",
+      });
+    }
     /** @type {any} */
     let payload = null;
     if (text !== "") {
@@ -160,6 +221,7 @@ export async function request(method, path, options) {
       seq: position?.seq ?? 0,
     };
   } finally {
+    time.end();
     if (key !== undefined) {
       busy.delete(key);
       announce(key, false);
@@ -183,25 +245,51 @@ export async function request(method, path, options) {
  */
 export async function requestFrame(device, options = {}) {
   const generation = beginRequest(storeFence(), `frame:${device}`);
-  let response;
+  const time = bound(options.signal);
   try {
-    response = await fetch(
-      `/api/v2/devices/${encodeURIComponent(device)}/preview`,
-      { cache: "no-store", signal: options.signal },
-    );
-  } catch {
-    throw new ApiError("No answer from pixdcon.", {
-      status: 0,
-      code: "unreachable",
-    });
+    let response;
+    try {
+      response = await time.race(
+        fetch(`/api/v2/devices/${encodeURIComponent(device)}/preview`, {
+          cache: "no-store",
+          signal: time.signal,
+        }),
+      );
+    } catch {
+      if (time.timedOut()) throw timeoutError();
+      throw new ApiError("No answer from pixdcon.", {
+        status: 0,
+        code: "unreachable",
+      });
+    }
+    if (response.status === 204) return { generation, frame: null };
+    if (!response.ok)
+      throw new ApiError(sentence(response.status, null), {
+        status: response.status,
+        code: `http_${response.status}`,
+      });
+    let bytes;
+    try {
+      bytes = new Uint8Array(await time.race(response.arrayBuffer()));
+    } catch {
+      if (time.timedOut()) throw timeoutError();
+      throw new ApiError("No answer from pixdcon.", {
+        status: 0,
+        code: "unreachable",
+      });
+    }
+    return frameOf(generation, response, bytes);
+  } finally {
+    time.end();
   }
-  if (response.status === 204) return { generation, frame: null };
-  if (!response.ok)
-    throw new ApiError(sentence(response.status, null), {
-      status: response.status,
-      code: `http_${response.status}`,
-    });
-  const bytes = new Uint8Array(await response.arrayBuffer());
+}
+
+/**
+ * @param {number} generation
+ * @param {Response} response
+ * @param {Uint8Array} bytes
+ */
+function frameOf(generation, response, bytes) {
   return {
     generation,
     frame: {
