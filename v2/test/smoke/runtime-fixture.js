@@ -12,6 +12,12 @@ import { HealthModel } from "../../src/health/health-model.js";
 import { PreviewStore } from "../../src/render/preview-store.js";
 import { RenderLoop } from "../../src/render/render-loop.js";
 import { Scheduler } from "../../src/render/scheduler.js";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { SceneRegistry } from "../../src/scenes/scene-registry.js";
+import { SceneRuntime } from "../../src/scenes/scene-runtime.js";
+import { sceneContexts } from "../helpers/scene-context.js";
+import { OUT_DIR } from "../helpers/golden.js";
 
 export const logger = { info() {}, debug() {}, warn() {}, error() {} };
 export const healthConfig = { staleAfterMs: 30000, offlineAfterMs: 120000, probeIntervalMs: 10000 };
@@ -29,6 +35,56 @@ export async function until(predicate, message = "condition") {
   assert.ok(predicate(), message);
 }
 export async function flush() { for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve)); }
+
+/** Real scene registry/runtime and fake displays; W1 views remain injected.
+ * @param {import('node:test').TestContext} t @param {string} source
+ * @param {{shadow?: boolean}} [options] */
+export async function sceneRig(t, source, options = {}) {
+  const r = await rig(t, { start: false, timeoutMs: 5000 });
+  await mkdir(OUT_DIR, { recursive: true });
+  const dir = await mkdtemp(join(OUT_DIR, "scene-smoke-"));
+  const file = join(dir, "scene.js");
+  await writeFile(file, source);
+  if (options.shadow) for (const device of r.devices) device.output.mode = "shadow";
+  /** @type {Record<string, import('../../src/types.js').EffectiveScene>} */
+  const sceneEntries = { red: { path: file, source: "config" }, alias: { path: file, source: "config" } };
+  const registry = new SceneRegistry({ baseDir: () => dir,
+    scenes: () => sceneEntries,
+    findBuiltin: () => null, normalizeSettingValue: (value) => value, logger });
+  await registry.load();
+  const contexts = sceneContexts();
+  const sceneRuntime = new SceneRuntime({ registry, dataDir: dir, logger,
+    outputOf: (device) => r.runtime.device(device)?.output.mode ?? "shadow",
+    settings: /** @type {any} */ ({ runtimeContext: contexts.settingsContext, releaseContext: contexts.releaseContext }),
+    mqttContext: contexts.mqttContext, settingsTopic: (device, scene) => `test/${device}/${scene}/settings` });
+  r.scheduler.deps.scenes = sceneRuntime;
+  t.after(() => sceneRuntime.releaseAll());
+  return { ...r, registry, sceneRuntime, contexts, dir, file, sceneEntries };
+}
+
+/** Subscribe before starting work; preview acceptance follows the driver's answer.
+ * @param {PreviewStore} previews @param {string} device */
+export function nextPreview(previews, device) {
+  return new Promise((resolve) => {
+    const listener = (/** @type {import('../../src/types.js').PreviewFrame} */ frame) => {
+      if (frame.device !== device) return;
+      previews.off("frame", listener); resolve(frame);
+    };
+    previews.on("frame", listener);
+  });
+}
+
+/** @param {EventEmitter} state @param {string} name @param {number} frameCount */
+export function nextFrameReport(state, name, frameCount) {
+  return new Promise((resolve) => {
+    const listener = (/** @type {any} */ report) => {
+      if (report.name !== name || report.patch.frameCount !== frameCount) return;
+      state.off("reported", listener);
+      resolve(report);
+    };
+    state.on("reported", listener);
+  });
+}
 
 export class StubMqtt extends EventEmitter {
   /** @type {Array<{topic: string, payload: any, options: any}>} */
@@ -113,7 +169,7 @@ export async function rig(t, options = {}) {
   const state = Object.assign(new EventEmitter(), {
     get: (/** @type {string} */ name) => states.get(name),
     runtimeStarted(/** @type {string} */ name, /** @type {number} */ token) { tokens.set(name, token); },
-    reportEffective(/** @type {string} */ name, /** @type {any} */ patch, /** @type {number} */ token) { reports.push({ name, patch, token }); },
+    reportEffective(/** @type {string} */ name, /** @type {any} */ patch, /** @type {number} */ token) { reports.push({ name, patch, token }); state.emit("reported", { name, patch, token }); },
     reportHealth(/** @type {string} */ name, /** @type {any} */ view) { healthReports.push({ name, view }); },
   });
   const tokens = new Map();

@@ -13,6 +13,13 @@ import test from "node:test";
 import { EventEmitter } from "node:events";
 import { connectAsync } from "mqtt";
 import { startMemoryBroker } from "../../dev/memory-broker.js";
+import { TelemetryCollector } from "../../src/health/telemetry.js";
+import { HealthModel } from "../../src/health/health-model.js";
+import { createPixooDriver } from "../../src/drivers/pixoo-driver.js";
+import { createAwtrixDriver } from "../../src/drivers/awtrix-driver.js";
+import { startFakePixoo } from "../../dev/fake-pixoo.js";
+import { startFakeAwtrix } from "../../dev/fake-awtrix.js";
+import { systemClock } from "../../src/core/clock.js";
 import { manualClock } from "../../src/core/clock.js";
 import { createLogger } from "../../src/core/logger.js";
 import { createTopics } from "../../src/mqtt/topics.js";
@@ -482,10 +489,53 @@ test("config/effective: the running config in v1's shape includes a blob-only de
   assert.equal(summary.sceneCount, 2);
   assert.equal(summary.configPath, "/recorded/config.json");
 });
-// Blocker: W3 TelemetryCollector.start is a skeleton.
-test.todo(
-  "telemetry: Ulanzi publishes only good reads, Pixoo publishes reachable false; nothing for a shadow device",
-);
+test("telemetry: Ulanzi publishes only good reads, Pixoo publishes reachable false; nothing for a shadow device", async (t) => {
+  const f = await publications(t);
+  const pixoo = await startFakePixoo(); t.after(() => pixoo.stop());
+  const awtrix = await startFakeAwtrix(); t.after(() => awtrix.stop());
+  const logger = { info() {}, warn() {}, debug() {}, error() {} };
+  const p = createPixooDriver({ name: "P", address: pixoo.address, clock: systemClock(), logger });
+  const u = createAwtrixDriver({ name: "U", address: awtrix.address, clock: systemClock(), logger });
+  t.after(() => Promise.all([p.close(), u.close()]));
+  const health = new HealthModel({ clock: f.clock, logger, config: () => ({ staleAfterMs: 30000, offlineAfterMs: 120000, probeIntervalMs: 10000 }) });
+  for (const name of ["P", "U"]) health.register(name, { shadow: false, powerCycleMax: 0, plugTopic: null });
+  const collector = new TelemetryCollector(/** @type {any} */ ({ mqtt: f.gateway, topics: f.topics, health, clock: f.clock, logger, intervalMs: () => 1000, haDiscovery: false }));
+  t.after(() => collector.stopAll());
+  const pFirst = telemetryAnswer(f.reader, f.topics.telemetry("P"));
+  const uFirst = telemetryAnswer(f.reader, f.topics.telemetry("U"));
+  collector.start({ name: "P", type: "pixoo", address: pixoo.address }, p);
+  collector.start({ name: "U", type: "ulanzi", address: awtrix.address }, u);
+  collector.start({ name: "S", type: "pixoo", address: pixoo.address }, /** @type {any} */ ({ info: { drives: false }, readTelemetry() { assert.fail("shadow polled"); } }));
+  const [pGood, uGood] = await Promise.all([pFirst, uFirst]);
+  assert.equal(pGood.reachable, true);
+  assert.equal(pGood.brightness, 50);
+  assert.equal(uGood.bat, 100);
+  assert.equal(f.broker.retained()[f.topics.telemetry("S")], undefined);
+  // Drain publishes before the next manually clocked poll.
+  await new Promise((resolve) => setImmediate(resolve));
+  await pixoo.setOffline(true); await awtrix.setOffline(true);
+  const failedU = Promise.withResolvers();
+  const read = u.readTelemetry;
+  u.readTelemetry = async (options) => { try { return await read(options); } finally { failedU.resolve(undefined); } };
+  const pFailed = telemetryAnswer(f.reader, f.topics.telemetry("P"));
+  await f.clock.advance(1000);
+  const snapshot = await pFailed; await failedU.promise;
+  assert.equal(snapshot.reachable, false);
+  assert.equal(snapshot.brightness, null);
+  assert.deepEqual(JSON.parse(f.broker.retained()[f.topics.telemetry("U")]), uGood);
+});
+
+/** @param {import('mqtt').MqttClient} client @param {string} topic @returns {Promise<any>} */
+function telemetryAnswer(client, topic) {
+  return new Promise((resolve) => {
+    const listener = (/** @type {string} */ name, /** @type {Buffer} */ payload) => {
+      if (name !== topic) return;
+      client.off("message", listener);
+      resolve(JSON.parse(payload.toString()));
+    };
+    client.on("message", listener);
+  });
+}
 // Blocker: W1 gateway/overlay/state and W3 scheduler/loops remain skeletons.
 test.todo(
   "retained bootstrap: devices start with mode and brightness already applied, without a fixed sleep",

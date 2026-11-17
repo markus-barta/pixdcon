@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import dgram from "node:dgram";
 import dns from "node:dns";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -27,7 +27,9 @@ import { startFakePixoo } from "../../dev/fake-pixoo.js";
 import { startMemoryBroker } from "../../dev/memory-broker.js";
 import { blockedAttempts, coverage } from "../../dev/net-guard.js";
 import { manualClock } from "../../src/core/clock.js";
-import { deferred, flush, loopRig, rig, until } from "./runtime-fixture.js";
+import { deferred, flush, loopRig, nextFrameReport, nextPreview, rig, sceneRig, until } from "./runtime-fixture.js";
+import { ScenesWatcher } from "../../src/scenes/scenes-watcher.js";
+import { createLane } from "../../src/core/ordering.js";
 import { requireNetGuard, startStack } from "../helpers/harness.js";
 
 /**
@@ -609,26 +611,105 @@ test("pixdcon 2 boots against the fakes and the in-memory broker, answers, and s
 });
 
 // --- Phase 3: the walks ------------------------------------------------------------------------
-// Blocked W5: scene resource detection and V1SceneAdapter state redirection are skeletons.
-test.todo(
-  "shadow state files: a scene with a state field writes below the data directory, never beside the scene; also under an alias key and as a copy",
-);
+test("shadow state files: a scene with a state field writes below the data directory, never beside the scene; also under an alias key and as a copy", async (t) => {
+  const r = await sceneRig(t, `import { writeFile } from 'node:fs/promises';
+    export default { _boilerStatePath: new URL('./original-history.json', import.meta.url),
+      async init() { await writeFile(this._boilerStatePath, 'history'); },
+      async render(surface) { await surface.paint(7); } };`, { shadow: true });
+  const copy = join(r.dir, "copy.mjs");
+  await writeFile(copy, await readFile(r.file, "utf8"));
+  r.sceneEntries.copy = { path: copy, source: "config" };
+  await r.registry.sync({ added: ["copy"], removed: [], changed: [] });
+  const first = nextPreview(r.previews, "p");
+  await r.scheduler.start(); await first; await flush();
+  for (const scene of ["red", "alias", "copy"]) {
+    if (scene !== "red") {
+      const desired = /** @type {any} */ (r.states.get("p")).desired;
+      r.choose("p", { scene: { ...desired.scene, scene } });
+    }
+    const path = join(r.dir, ".pixdcon2/shadow-state/p", `${scene}-_boilerStatePath.json`);
+    // Wait for the scene's actual write; the loop clock never advances.
+    await until(asyncFile(path), `state file of ${scene}`);
+    assert.equal(await readFile(path, "utf8"), "history");
+  }
+  await assert.rejects(access(join(r.dir, "original-history.json")));
+  assert.equal(r.pixoo.state().requests.length, 0);
+  assert.equal(r.awtrix.state().requests.length, 0);
+});
+
+/** @param {string} path */
+function asyncFile(path) {
+  let present = false;
+  // Access is observed once per event-loop turn without changing loop time.
+  return () => { if (!present) void access(path).then(() => { present = true; }, () => {}); return present; };
+}
 // Blocked W1/W5: effective output construction and the real scene path are skeletons.
 test.todo(
   "PIXDCON2_FORCE_SHADOW=1: no fake receives a request although config.json says drive",
 );
-// Blocked W5: ScenesWatcher, registry and SceneRuntime.invalidate/acquire are skeletons.
-test.todo(
-  "a scene file that changes is reloaded for the displays running it; a broken edit keeps the last good version",
-);
-// Blocked W5/W1: replacement loading and instance-scoped MQTT/settings contexts are skeletons.
-test.todo(
-  "hot reload with a replacement whose init fails: the running instance keeps its MQTT and settings subscriptions; only the replacement's are released",
-);
-// Blocked W5: per-device module evaluation belongs to SceneRuntime/V1SceneAdapter.
-test.todo(
-  "two displays run the same scene: module-level state of the scene file is not shared between them",
-);
+test("a scene file that changes is reloaded for the displays running it; a broken edit keeps the last good version", async (t) => {
+  const r = await sceneRig(t, 'let count=0; export default { async render(surface) { await surface.paint(3 + ++count); } };');
+  const first = nextPreview(r.previews, "p");
+  await r.scheduler.start(); await first; await flush();
+  const lane = createLane();
+  let changed = deferred();
+  const watcher = new ScenesWatcher({ dirs: () => [r.dir], debounceMs: 1, retryMs: 10,
+    logger: { info() {}, warn() {}, error() {}, debug() {} },
+    async onChange(file) {
+      await lane.run("reload", async () => {
+        const keys = r.registry.keysOfFile(file);
+        await r.registry.refresh(keys);
+        await r.sceneRuntime.invalidate(keys);
+        await Promise.allSettled([...r.sceneRuntime.pending]);
+      });
+      changed.resolve(undefined);
+    } });
+  t.after(() => { watcher.stop(); lane.close(); });
+  watcher.start();
+  await writeFile(r.file, 'let count=0; export default { name: "updated", async render(surface) { await surface.paint(20 + ++count); } };');
+  await changed.promise;
+  const updated = nextPreview(r.previews, "p"); await r.clock.advance(500); await updated; await flush();
+  assert.equal(r.pixoo.state().lastFrame?.[0], 21);
+  const good = r.scheduler.loop("p")?.instance;
+  assert.ok(good);
+  changed = deferred();
+  await writeFile(r.file, 'throw new Error("broken edit");');
+  await changed.promise;
+  const kept = nextPreview(r.previews, "p"); await r.clock.advance(500); await kept; await flush();
+  assert.equal(r.scheduler.loop("p")?.instance, good);
+  assert.equal(r.pixoo.state().lastFrame?.[0], 22);
+  assert.equal(r.registry.get("red")?.status, "broken");
+});
+
+test("hot reload with a replacement whose init fails: the running instance keeps its MQTT and settings subscriptions; only the replacement's are released", async (t) => {
+  const source = `let count=0; export default { init(ctx) { ctx.mqtt.subscribe('input', () => {}); ctx.settings.subscribe(() => {}); }, async render(surface) { await surface.paint(++count); } };`;
+  const r = await sceneRig(t, source);
+  const first = nextPreview(r.previews, "p"); await r.scheduler.start(); await first; await flush();
+  const before = [...r.contexts.subscriptions.keys()].sort();
+  const old = r.scheduler.loop("p")?.instance;
+  await writeFile(r.file, source.replace("ctx.settings.subscribe(() => {});", "ctx.settings.subscribe(() => {}); throw Error('failed replacement');"));
+  await r.registry.refresh(["red"]);
+  await r.sceneRuntime.invalidate(["red"]);
+  await Promise.allSettled([...r.sceneRuntime.pending]);
+  assert.deepEqual([...r.contexts.subscriptions.keys()].sort(), before);
+  assert.deepEqual([...r.contexts.settings.keys()].sort(), before);
+  const frame = nextPreview(r.previews, "p"); await r.clock.advance(500); await frame; await flush();
+  assert.equal(r.scheduler.loop("p")?.instance, old);
+  assert.equal(r.pixoo.state().lastFrame?.[0], 2);
+});
+
+test("two displays run the same scene: module-level state of the scene file is not shared between them", async (t) => {
+  const r = await sceneRig(t, 'let count=0; export default { async render(surface) { await surface.paint(++count); } };');
+  const frames = [nextFrameReport(r.state, "p", 1), nextFrameReport(r.state, "u", 1)];
+  await r.scheduler.start(); await Promise.all(frames); await flush();
+  assert.equal(r.pixoo.state().lastFrame?.[0], 1);
+  assert.equal(/** @type {any} */ (r.awtrix.state().apps.pixdcon_u).text, "1");
+  assert.notEqual(r.scheduler.loop("p")?.instance?.ref.token, r.scheduler.loop("u")?.instance?.ref.token);
+  const next = [nextFrameReport(r.state, "p", 2), nextFrameReport(r.state, "u", 2)];
+  await r.clock.advance(500); await Promise.all(next);
+  assert.equal(r.pixoo.state().lastFrame?.[0], 2);
+  assert.equal(/** @type {any} */ (r.awtrix.state().apps.pixdcon_u).text, "2");
+});
 // Blocked W1: gateway reconnect/replay and overlay pending-clear reconciliation are skeletons.
 test.todo(
   "MQTT gone and back: displays keep rendering and keep their scene, mode, brightness and settings while the broker is away; after the reconnect a display that showed an overlay scene, was paused, or had a setting or brightness overlay goes back to it when the broker has replayed it, and stays on the saved values when the overlay was cleared meanwhile; nothing is published because the connection came back, a stale overlay is cleared when it is replayed",

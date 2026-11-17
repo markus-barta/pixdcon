@@ -923,10 +923,27 @@ test("scene copy: the folders in the source's resources.assetDirs are linked bes
     "replace repoints the key and keeps the original file",
   );
 });
-// Blocker: W3 HealthModel.controller and Scheduler.status remain skeletons.
-test.todo(
-  "GET /api/health: 200 with status degraded while a display is offline, 503 when the scheduler watchdog is overdue",
-);
+test("GET /api/health: 200 with status degraded while a display is offline, 503 when the scheduler watchdog is overdue", async (t) => {
+  const clock = manualClock();
+  const stack = await startStack(t, { mqtt: false, clock });
+  const { scheduler, health } = stack.app.modules;
+  // W1's effective config is still reserved: feed W3's supervisor its baseline,
+  // then exercise the production controller and HTTP health route unchanged.
+  scheduler.lastWatchdogAt = new Date(clock.now()).toISOString();
+  stack.app.modules.config.file = () => /** @type {any} */ ({ valid: true });
+  health.register("offline", { shadow: false, powerCycleMax: 0, plugTopic: null });
+  await clock.advance(120000);
+  scheduler.lastWatchdogAt = new Date(clock.now()).toISOString();
+  const degraded = await stack.api("/api/health");
+  assert.equal(degraded.status, 200);
+  assert.equal(degraded.body.status, "degraded");
+  assert.ok(degraded.body.reasons.includes("display_offline:offline"));
+  await clock.advance(scheduler.watchdogIntervalMs * 2 + 1);
+  const failed = await stack.api("/api/health");
+  assert.equal(failed.status, 503);
+  assert.equal(failed.body.status, "failed");
+  assert.ok(failed.body.reasons.includes("watchdog_overdue"));
+});
 // Blocker: W1 ConfigStore.load/reload and state views remain skeletons.
 test.todo(
   "config: an invalid config.json keeps the last valid config running and the UI reachable, also at start",

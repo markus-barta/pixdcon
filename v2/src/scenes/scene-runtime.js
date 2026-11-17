@@ -39,6 +39,8 @@
  *    and supersede follows keep their captured output mode; a caller from a
  *    retired mode cannot acquire the rebuilt loop's instance.
  *  - only the changed file is imported again; the file token is per file (S-18)
+ *  - releaseAll() is final: pending or later acquire/invalidate calls install
+ *    nothing; an instance whose init finishes afterwards is destroyed at once
  *
  * The runtime knows nothing about the v1 contract itself. It asks an adapter
  * (v1-scene-adapter.js is the only one today) to turn a module into a
@@ -286,7 +288,7 @@ export class SceneRuntime {
    * lane. Until a replacement is ready the last good instance stays current.
    *
    * @param {string[]} scenes
-   * @returns {Promise<{devices: string[]}>} devices that run one of them
+   * @returns {Promise<{devices: string[]}>} devices that run one of them; {devices: []} after releaseAll()
    */
   async invalidate(scenes) {
     if (this.closed) return { devices: [] };
@@ -422,7 +424,8 @@ export class SceneRuntime {
     return promise;
   }
 
-  /** Release every instance concurrently (shutdown); apply the remaining frame-drain budget to each.
+  /** Release every instance concurrently (shutdown). Final: nothing is created afterwards.
+   * Apply the remaining frame-drain budget to each.
    * Pending init and mounted destroy remain uncancellable; main owns the absolute shutdown deadline.
    * @param {SceneReleaseOptions} [options] */
   async releaseAll(options) {

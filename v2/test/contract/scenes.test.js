@@ -2299,3 +2299,25 @@ test("registry refresh: unchanged scenes are not reimported, errors recover, and
     ["b"],
   );
 });
+
+test("scene runtime shutdown: after releaseAll pending init is destroyed, and later acquire or invalidate creates nothing", async (t) => {
+  const gate = Promise.withResolvers();
+  const started = Promise.withResolvers();
+  const globals = /** @type {any} */ (globalThis);
+  globals.__finalScene = { gate, started, initialized: 0, destroyed: 0 };
+  const { runtime } = await runtimePeer(`const control = globalThis.__finalScene;
+    export default { async init() { control.initialized++; control.started.resolve(); await control.gate.promise; },
+      render() {}, destroy() { control.destroyed++; } };`);
+  t.after(async () => { gate.resolve(undefined); await runtime.releaseAll(); delete globals.__finalScene; });
+  const acquiring = runtime.acquire("scene", "device");
+  const rejected = assert.rejects(acquiring, SceneError);
+  await started.promise;
+  const stopping = runtime.releaseAll();
+  assert.deepEqual(await runtime.invalidate(["scene"]), { devices: [] });
+  await assert.rejects(runtime.acquire("scene", "other"), /stopped/);
+  gate.resolve(undefined); await stopping; await rejected;
+  assert.equal(globals.__finalScene.initialized, 1);
+  assert.equal(globals.__finalScene.destroyed, 1);
+  assert.equal(runtime.instances.size, 0);
+  assert.equal(runtime.entries.size, 0);
+});

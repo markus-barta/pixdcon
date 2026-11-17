@@ -11,7 +11,7 @@ import { HealthModel } from "../../src/health/health-model.js";
 import { TelemetryCollector } from "../../src/health/telemetry.js";
 import { PreviewStore } from "../../src/render/preview-store.js";
 import { createTopics } from "../../src/mqtt/topics.js";
-import { deferred, flush, healthConfig, logger, loopRig, owedOnRig, rig, StubMqtt, until } from "./runtime-fixture.js";
+import { deferred, flush, healthConfig, logger, loopRig, nextFrameReport, owedOnRig, rig, StubMqtt, until } from "./runtime-fixture.js";
 
 test("both fakes receive frames of their scenes within 2 s of the start", async (t) => {
   const r = await rig(t);
@@ -1270,4 +1270,30 @@ test("quiet probes and recovery waits read the effective health probe interval",
   recovery.loop.deps.probeIntervalMs = () => 2500;
   await flush(); const start = recovery.clock.now(); await recovery.clock.advance(5500);
   assert.equal((recovery.calls.find((c) => c.op === "probe")?.at ?? 0) - start, 5500);
+});
+
+test("held effective display: scheduler retires its runtime without requests to either address, then restarts on replay or clear", async (t) => {
+  const r = await rig(t, { timeoutMs: 5000 });
+  await until(() => r.previews.get("p")); await flush();
+  const overlay = await startFakePixoo(); t.after(() => overlay.stop());
+  const original = r.devices.find((/** @type {any} */ device) => device.name === "p");
+  const held = { ...original, address: overlay.address, enabled: false, held: true };
+  r.change([held, r.devices[1]], { devicesChanged: { p: ["address", "enabled", "held"] } });
+  await r.scheduler.queues.get("p")?.drain();
+  assert.equal(r.scheduler.loop("p"), undefined);
+  const before = r.pixoo.state().requests.length;
+  await r.clock.advance(10000);
+  assert.equal(r.pixoo.state().requests.length, before);
+  assert.equal(overlay.state().requests.length, 0);
+  const replayed = nextFrameReport(r.state, "p", 1);
+  r.change([{ ...held, enabled: true, held: false }, r.devices[1]], { devicesChanged: { p: ["enabled", "held"] } });
+  await replayed; await flush();
+  assert.equal(overlay.state().frames, 1);
+  assert.equal(r.pixoo.state().requests.length, before);
+  const replayCount = overlay.state().requests.length;
+  const cleared = nextFrameReport(r.state, "p", 1);
+  r.change(r.devices, { devicesChanged: { p: ["address"] } });
+  await cleared; await flush();
+  assert.equal(overlay.state().requests.length, replayCount);
+  assert.ok(r.pixoo.state().requests.length > before);
 });

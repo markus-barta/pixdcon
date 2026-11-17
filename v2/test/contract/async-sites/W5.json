@@ -2,7 +2,7 @@
   "owner": "W5",
   "rows": [
     {
-      "site": "src/scenes/scene-runtime.js:179",
+      "site": "src/scenes/scene-runtime.js:181",
       "id": "work:this.load#1",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
@@ -11,7 +11,7 @@
       "was": "SceneRuntime.acquire"
     },
     {
-      "site": "src/scenes/scene-runtime.js:303",
+      "site": "src/scenes/scene-runtime.js:305",
       "id": "work:this.load#2",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
@@ -20,7 +20,7 @@
       "was": "SceneRuntime.invalidate"
     },
     {
-      "site": "src/scenes/scene-runtime.js:349",
+      "site": "src/scenes/scene-runtime.js:351",
       "id": "import:import#1",
       "input": "a per-device scene module import",
       "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
@@ -130,7 +130,7 @@
       "test": "test/contract/scenes.test.js: scene release deadline:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:303",
+      "site": "src/scenes/scene-runtime.js:305",
       "id": "then:this.load().catch#1",
       "input": "replacement load rejection",
       "metadata": "entry generation captured when invalidate scheduled it",
@@ -138,7 +138,7 @@
       "test": "test/contract/scenes.test.js: scene reload warnings:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:421",
+      "site": "src/scenes/scene-runtime.js:423",
       "id": "then:promise.then#1",
       "input": "load success or rejection",
       "metadata": "entry, pending promise and map key",
