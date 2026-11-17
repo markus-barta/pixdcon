@@ -124,16 +124,30 @@ export const ASSET_DIR_PATTERN = /["'`]([A-Za-z0-9._-]+-assets)\//g;
  * @returns {{ok: true, exported: Record<string, unknown>} | {ok: false, problem: string}}
  */
 export function checkV1Module(moduleNamespace) {
-  if (moduleNamespace === null || (typeof moduleNamespace !== "object" && typeof moduleNamespace !== "function")) {
-    return { ok: false, problem: "Scene module must export an object with render()" };
+  if (
+    moduleNamespace === null ||
+    (typeof moduleNamespace !== "object" &&
+      typeof moduleNamespace !== "function")
+  ) {
+    return {
+      ok: false,
+      problem: "Scene module must export an object with render()",
+    };
   }
   const namespace = /** @type {Record<string, unknown>} */ (moduleNamespace);
   const exported = namespace.default || namespace;
-  if (exported === null || (typeof exported !== "object" && typeof exported !== "function") ||
-      typeof /** @type {Record<string, unknown>} */ (exported).render !== "function") {
+  if (
+    exported === null ||
+    (typeof exported !== "object" && typeof exported !== "function") ||
+    typeof (/** @type {Record<string, unknown>} */ (exported).render) !==
+      "function"
+  ) {
     return { ok: false, problem: "Scene module must export render()" };
   }
-  return { ok: true, exported: /** @type {Record<string, unknown>} */ (exported) };
+  return {
+    ok: true,
+    exported: /** @type {Record<string, unknown>} */ (exported),
+  };
 }
 
 /**
@@ -147,7 +161,8 @@ export function checkV1Module(moduleNamespace) {
 export async function createV1Instance(target, deps) {
   const { ref } = target;
   const checked = checkV1Module(target.moduleNamespace);
-  if (!checked.ok) throw new SceneError(checked.problem, { ...ref, phase: "contract" });
+  if (!checked.ok)
+    throw new SceneError(checked.problem, { ...ref, phase: "contract" });
   const scene = Object.create(checked.exported);
   let active = true;
   /** @type {Promise<void>|null} */
@@ -157,54 +172,91 @@ export async function createV1Instance(target, deps) {
   const settings = deps.settingsContext(ref);
   const mqtt = deps.mqttContext(ref);
   /** @param {unknown} error */
-  const log = (error) => deps.logger.warn(`[scene:${ref.scene}:${ref.device}] ${error instanceof Error ? error.message : String(error)}`);
+  const log = (error) =>
+    deps.logger.warn(
+      `[scene:${ref.scene}:${ref.device}] ${error instanceof Error ? error.message : String(error)}`,
+    );
   /** @param {() => unknown} callback */
   const invoke = async (callback) => {
     if (!active) return;
-    try { await callback(); } catch (error) { log(error); }
+    try {
+      await callback();
+    } catch (error) {
+      log(error);
+    }
   };
   /** @returns {V1SceneContext} */
   const context = () => ({
-    logger: deps.logger, deviceName: ref.device, sceneName: ref.scene,
+    logger: deps.logger,
+    deviceName: ref.device,
+    sceneName: ref.scene,
     settingsTopic: deps.settingsTopic(ref.device, ref.scene),
     settings: {
-      get schema() { return structuredClone(settings.schema); },
-      get values() { return structuredClone(settings.values); },
+      get schema() {
+        return structuredClone(settings.schema);
+      },
+      get values() {
+        return structuredClone(settings.values);
+      },
       get: (key) => structuredClone(settings.get(key)),
       all: () => structuredClone(settings.all()),
       subscribe(callback) {
         if (!active) return () => {};
-        const unsubscribe = settings.subscribe((values) => invoke(() => callback(structuredClone(values))));
+        const unsubscribe = settings.subscribe((values) =>
+          invoke(() => callback(structuredClone(values))),
+        );
         unsubscribers.add(unsubscribe);
-        return () => { unsubscribers.delete(unsubscribe); unsubscribe(); };
+        return () => {
+          unsubscribers.delete(unsubscribe);
+          unsubscribe();
+        };
       },
     },
     mqtt: {
       deviceName: mqtt.deviceName,
       subscribe(topic, callback) {
-        if (active) mqtt.subscribe(topic, (payload) => invoke(() => callback(payload)));
+        if (active)
+          mqtt.subscribe(topic, (payload) => invoke(() => callback(payload)));
       },
       subscribeWildcard(pattern, callback) {
-        if (active) mqtt.subscribeWildcard(pattern, (payload, topic) => invoke(() => callback(payload, topic)));
+        if (active)
+          mqtt.subscribeWildcard(pattern, (payload, topic) =>
+            invoke(() => callback(payload, topic)),
+          );
       },
       unsubscribeAll: () => mqtt.unsubscribeAll(),
     },
   });
   /** @param {unknown} error @param {"init"|"render"} phase */
-  const classify = (error, phase) => error instanceof DeviceError ? error : new SceneError(
-    `Scene ${ref.scene} ${phase}: ${error instanceof Error ? error.message : String(error)}`,
-    { ...ref, phase, cause: error },
-  );
+  const classify = (error, phase) =>
+    error instanceof DeviceError
+      ? error
+      : new SceneError(
+          `Scene ${ref.scene} ${phase}: ${error instanceof Error ? error.message : String(error)}`,
+          { ...ref, phase, cause: error },
+        );
   const release = () => {
     if (releasing) return releasing;
     active = false;
     releasing = (async () => {
-      try { if (typeof scene.destroy === "function") await scene.destroy(context()); }
-      catch (error) { log(error); }
-      finally {
-        for (const unsubscribe of unsubscribers) { try { unsubscribe(); } catch (error) { log(error); } }
+      try {
+        if (typeof scene.destroy === "function") await scene.destroy(context());
+      } catch (error) {
+        log(error);
+      } finally {
+        for (const unsubscribe of unsubscribers) {
+          try {
+            unsubscribe();
+          } catch (error) {
+            log(error);
+          }
+        }
         unsubscribers.clear();
-        try { mqtt.unsubscribeAll(); } catch (error) { log(error); }
+        try {
+          mqtt.unsubscribeAll();
+        } catch (error) {
+          log(error);
+        }
       }
     })();
     return releasing;
@@ -214,7 +266,10 @@ export async function createV1Instance(target, deps) {
       await mkdir(deps.shadowStateDir, { recursive: true });
       for (const field of deps.resources.stateFields) {
         // Keys may come from mounted files; encode path components rather than trusting them.
-        scene[field] = join(deps.shadowStateDir, `${encodeURIComponent(ref.scene)}-${encodeURIComponent(field)}.json`);
+        scene[field] = join(
+          deps.shadowStateDir,
+          `${encodeURIComponent(ref.scene)}-${encodeURIComponent(field)}.json`,
+        );
       }
     }
     if (typeof scene.init === "function") await scene.init(context());
@@ -223,13 +278,24 @@ export async function createV1Instance(target, deps) {
     throw classify(error, "init");
   }
   return {
-    ref, scene: ref.scene, device: ref.device, release,
+    ref,
+    scene: ref.scene,
+    device: ref.device,
+    release,
     async renderFrame(surface) {
-      if (!active) throw new SceneError(`Scene ${ref.scene} was released`, { ...ref, phase: "render" });
+      if (!active)
+        throw new SceneError(`Scene ${ref.scene} was released`, {
+          ...ref,
+          phase: "render",
+        });
       try {
         const delay = await scene.render(surface);
-        return typeof delay === "number" && Number.isFinite(delay) && delay > 0 ? delay : null;
-      } catch (error) { throw classify(error, "render"); }
+        return typeof delay === "number" && Number.isFinite(delay) && delay > 0
+          ? delay
+          : null;
+      } catch (error) {
+        throw classify(error, "render");
+      }
     },
   };
 }

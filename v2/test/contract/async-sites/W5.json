@@ -26,7 +26,7 @@
       "test": "test/contract/scenes.test.js: registry order:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:113",
+      "site": "src/scenes/scene-runtime.js:118",
       "id": "work:this.load#1",
       "input": "a per-device scene module import",
       "metadata": "InstanceRef token and runtime entry generation",
@@ -34,7 +34,7 @@
       "test": "test/contract/scenes.test.js: scene runtime order:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:166",
+      "site": "src/scenes/scene-runtime.js:178",
       "id": "work:this.load#2",
       "input": "a per-device scene module import",
       "metadata": "InstanceRef token and runtime entry generation",
@@ -42,7 +42,7 @@
       "test": "test/contract/scenes.test.js: scene runtime order:"
     },
     {
-      "site": "src/scenes/scene-runtime.js:195",
+      "site": "src/scenes/scene-runtime.js:216",
       "id": "import:import#1",
       "input": "a per-device scene module import",
       "metadata": "InstanceRef token and runtime entry generation",
@@ -50,7 +50,7 @@
       "test": "test/contract/scenes.test.js: scene runtime order:"
     },
     {
-      "site": "src/scenes/v1-scene-adapter.js:177",
+      "site": "src/scenes/v1-scene-adapter.js:205",
       "id": "subscribe:settings.subscribe#1",
       "input": "scene settings or MQTT callback",
       "metadata": "InstanceRef token and runtime entry generation",
@@ -58,7 +58,7 @@
       "test": "test/contract/scenes.test.js: v1 scene contract:"
     },
     {
-      "site": "src/scenes/v1-scene-adapter.js:185",
+      "site": "src/scenes/v1-scene-adapter.js:219",
       "id": "subscribe:mqtt.subscribe#1",
       "input": "scene settings or MQTT callback",
       "metadata": "InstanceRef token and runtime entry generation",
@@ -66,7 +66,7 @@
       "test": "test/contract/scenes.test.js: v1 scene contract:"
     },
     {
-      "site": "src/scenes/v1-scene-adapter.js:188",
+      "site": "src/scenes/v1-scene-adapter.js:223",
       "id": "subscribe:mqtt.subscribeWildcard#1",
       "input": "scene settings or MQTT callback",
       "metadata": "InstanceRef token and runtime entry generation",
@@ -74,7 +74,7 @@
       "test": "test/contract/scenes.test.js: v1 scene contract:"
     },
     {
-      "site": "src/scenes/v1-shared.js:162",
+      "site": "src/scenes/v1-shared.js:167",
       "id": "import:import#1",
       "input": "the v1 font module, when the first Pixoo surface is made",
       "metadata": "none",
@@ -83,7 +83,7 @@
       "why": "loaded once per process and never replaced: main.js keeps the one promise and every surface awaits it"
     },
     {
-      "site": "src/scenes/v1-shared.js:204",
+      "site": "src/scenes/v1-shared.js:216",
       "id": "import:import#2",
       "input": "shared reference drawing module imported by the golden harness",
       "metadata": "immutable shared file URL",
@@ -92,7 +92,7 @@
       "test": "test/contract/scenes.test.js: v1 scene surface:"
     },
     {
-      "site": "src/scenes/v1-shared.js:205",
+      "site": "src/scenes/v1-shared.js:219",
       "id": "import:import#3",
       "input": "shared reference drawing module imported by the golden harness",
       "metadata": "immutable shared file URL",
@@ -109,7 +109,7 @@
       "test": "test/contract/scenes.test.js: scenes watcher order:"
     },
     {
-      "site": "src/scenes/scenes-watcher.js:128",
+      "site": "src/scenes/scenes-watcher.js:146",
       "id": "watch:watch#1",
       "input": "native file hints, watcher errors, debounce and retry timers",
       "metadata": "watch generation, current directory inode and per-file observed stamp",
@@ -117,7 +117,7 @@
       "test": "test/contract/scenes.test.js: scenes watcher order:"
     },
     {
-      "site": "src/scenes/scenes-watcher.js:136",
+      "site": "src/scenes/scenes-watcher.js:160",
       "id": "listener:watcher.on(\"error\")#1",
       "input": "native file hints, watcher errors, debounce and retry timers",
       "metadata": "watch generation, current directory inode and per-file observed stamp",
@@ -125,7 +125,7 @@
       "test": "test/contract/scenes.test.js: scenes watcher order:"
     },
     {
-      "site": "src/scenes/scenes-watcher.js:155",
+      "site": "src/scenes/scenes-watcher.js:186",
       "id": "timer:setTimeout#1",
       "input": "native file hints, watcher errors, debounce and retry timers",
       "metadata": "watch generation, current directory inode and per-file observed stamp",
@@ -133,7 +133,7 @@
       "test": "test/contract/scenes.test.js: scenes watcher order:"
     },
     {
-      "site": "src/config/migrate-v1.js:143",
+      "site": "src/config/migrate-v1.js:248",
       "id": "work:file.sync#1",
       "input": "completion of syncing the migration temporary file",
       "metadata": "exclusive temporary FileHandle; one CLI invocation",

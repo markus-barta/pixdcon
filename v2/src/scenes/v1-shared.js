@@ -85,7 +85,8 @@ export function installSharedResolution(options = {}) {
     paths.libDir,
     paths.scenesDir,
     ...(options.extraDirs ?? []),
-  ]) sharedPrefixes.add(pathToFileURL(`${resolve(dir)}/`).href);
+  ])
+    sharedPrefixes.add(pathToFileURL(`${resolve(dir)}/`).href);
   if (hookInstalled) return;
   hookInstalled = true;
   const anchor = pathToFileURL(resolve(V2_ROOT, "package.json")).href;
@@ -93,7 +94,11 @@ export function installSharedResolution(options = {}) {
     resolve(specifier, context, nextResolve) {
       const bare = !/^(\.{0,2}\/|[a-z][a-z0-9+.-]*:)/i.test(specifier);
       const parent = context.parentURL ?? "";
-      if (isBuiltin(specifier) || !bare || ![...sharedPrefixes].some((prefix) => parent.startsWith(prefix))) {
+      if (
+        isBuiltin(specifier) ||
+        !bare ||
+        ![...sharedPrefixes].some((prefix) => parent.startsWith(prefix))
+      ) {
         return nextResolve(specifier, context);
       }
       try {
@@ -177,11 +182,17 @@ export async function ensureDataLinks(dataDir, logger) {
   await mkdir(dataDir, { recursive: true });
   const paths = sharedPaths();
   const created = [];
-  for (const [name, source] of [["lib", paths.libDir], ["assets", paths.assetsDir]]) {
+  for (const [name, source] of [
+    ["lib", paths.libDir],
+    ["assets", paths.assetsDir],
+  ]) {
     const target = resolve(dataDir, name);
-    try { await lstat(target); continue; }
-    catch (error) {
-      if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ENOENT") throw error;
+    try {
+      await lstat(target);
+      continue;
+    } catch (error) {
+      if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ENOENT")
+        throw error;
     }
     try {
       await symlink(source, target, "dir");
@@ -189,7 +200,8 @@ export async function ensureDataLinks(dataDir, logger) {
       logger.info(`Shared scene link created: ${name}`);
     } catch (error) {
       // Another startup can create the link between lstat and symlink.
-      if (/** @type {NodeJS.ErrnoException} */ (error).code !== "EEXIST") throw error;
+      if (/** @type {NodeJS.ErrnoException} */ (error).code !== "EEXIST")
+        throw error;
     }
   }
   return { created };
@@ -201,7 +213,11 @@ export async function ensureDataLinks(dataDir, logger) {
  */
 export async function loadV1ReferenceDrivers() {
   const { libDir } = sharedPaths();
-  const pixoo = await import(pathToFileURL(resolve(libDir, "pixoo-driver.js")).href);
-  const ulanzi = await import(pathToFileURL(resolve(libDir, "ulanzi-driver.js")).href);
+  const pixoo = await import(
+    pathToFileURL(resolve(libDir, "pixoo-driver.js")).href
+  );
+  const ulanzi = await import(
+    pathToFileURL(resolve(libDir, "ulanzi-driver.js")).href
+  );
   return { PixooDriver: pixoo.PixooDriver, UlanziDriver: ulanzi.UlanziDriver };
 }

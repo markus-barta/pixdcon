@@ -75,20 +75,26 @@ export class ScenesWatcher {
    * @param {boolean} baseline */
   poll(baseline) {
     if (!this.running) return;
-    const dirs = new Set(this.deps.dirs().map(dir => resolve(dir)));
+    const dirs = new Set(this.deps.dirs().map((dir) => resolve(dir)));
     for (const [dir, entry] of this.watchers) {
       if (dirs.has(dir)) continue;
       entry.watcher?.close();
       this.watchers.delete(dir);
     }
     for (const [file, timer] of this.debounce) {
-      if (!dirs.has(dirname(file))) { clearTimeout(timer); this.debounce.delete(file); }
+      if (!dirs.has(dirname(file))) {
+        clearTimeout(timer);
+        this.debounce.delete(file);
+      }
     }
-    for (const file of this.stamps.keys()) if (!dirs.has(dirname(file))) this.stamps.delete(file);
+    for (const file of this.stamps.keys())
+      if (!dirs.has(dirname(file))) this.stamps.delete(file);
     for (const dir of dirs) {
       const previous = this.watchers.get(dir);
       let ino = 0;
-      try { ino = statSync(dir).ino; } catch {}
+      try {
+        ino = statSync(dir).ino;
+      } catch {}
       if (previous && previous.ino !== ino) {
         previous.watcher?.close();
         this.watchers.delete(dir);
@@ -103,22 +109,34 @@ export class ScenesWatcher {
           if (stamp) now.set(file, stamp);
         }
       } catch {}
-      const files = new Set([...now.keys(), ...[...this.stamps.keys()].filter(file => dirname(file) === dir)]);
+      const files = new Set([
+        ...now.keys(),
+        ...[...this.stamps.keys()].filter((file) => dirname(file) === dir),
+      ]);
       for (const file of files) {
         const stamp = now.get(file);
-        if (baseline) { if (stamp) this.stamps.set(file, stamp); }
-        else if (this.stamps.get(file) !== stamp) this.schedule(file, false);
+        if (baseline) {
+          if (stamp) this.stamps.set(file, stamp);
+        } else if (this.stamps.get(file) !== stamp) this.schedule(file, false);
       }
     }
   }
 
   /** @param {string} dir @param {string} file */
-  accepts(dir, file) { return basename(dir).endsWith("-assets") || file.endsWith(".js"); }
+  accepts(dir, file) {
+    return basename(dir).endsWith("-assets") || file.endsWith(".js");
+  }
 
   /** @param {string} file @returns {string|undefined} */
   stamp(file) {
-    try { const stat = statSync(file); return stat.isFile() ? `${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}` : undefined; }
-    catch { return undefined; }
+    try {
+      const stat = statSync(file);
+      return stat.isFile()
+        ? `${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** @param {string} dir @param {number} ino */
@@ -127,21 +145,31 @@ export class ScenesWatcher {
       const generation = this.generation;
       const watcher = watch(dir, { persistent: false }, (_event, file) => {
         if (!this.running || this.generation !== generation) return;
-        if (file === null) { this.poll(false); return; }
+        if (file === null) {
+          this.poll(false);
+          return;
+        }
         const name = String(file);
         if (this.accepts(dir, name)) this.schedule(join(dir, name), true);
       });
-      const entry = { ino, watcher: /** @type {import("node:fs").FSWatcher|null} */ (watcher) };
+      const entry = {
+        ino,
+        watcher: /** @type {import("node:fs").FSWatcher|null} */ (watcher),
+      };
       this.watchers.set(dir, entry);
       watcher.on("error", (error) => {
         if (this.watchers.get(dir) !== entry) return;
         watcher.close();
         entry.watcher = null;
-        this.deps.logger.warn(`Scene watch ${dir}: ${error.message}; polling continues`);
+        this.deps.logger.warn(
+          `Scene watch ${dir}: ${error.message}; polling continues`,
+        );
       });
     } catch (error) {
       this.watchers.set(dir, { ino, watcher: null });
-      this.deps.logger.debug(`Scene watch ${dir}: ${error instanceof Error ? error.message : String(error)}; polling continues`);
+      this.deps.logger.debug(
+        `Scene watch ${dir}: ${error instanceof Error ? error.message : String(error)}; polling continues`,
+      );
     }
   }
 
@@ -150,22 +178,30 @@ export class ScenesWatcher {
   schedule(file, reset) {
     if (!this.running) return;
     const pending = this.debounce.get(file);
-    if (pending) { if (!reset) return; clearTimeout(pending); }
+    if (pending) {
+      if (!reset) return;
+      clearTimeout(pending);
+    }
     const generation = this.generation;
     const timer = setTimeout(() => {
       this.debounce.delete(file);
       if (!this.running || this.generation !== generation) return;
       const stamp = this.stamp(file);
       if (this.stamps.get(file) === stamp) return;
-      if (stamp) this.stamps.set(file, stamp); else this.stamps.delete(file);
+      if (stamp) this.stamps.set(file, stamp);
+      else this.stamps.delete(file);
       this.dispatch = this.dispatch.then(async () => {
         if (!this.running || this.generation !== generation) return;
-        try { await this.deps.onChange(file); }
-        catch (error) { this.deps.logger.error(`Scene reload ${file}: ${error instanceof Error ? error.message : String(error)}`); }
+        try {
+          await this.deps.onChange(file);
+        } catch (error) {
+          this.deps.logger.error(
+            `Scene reload ${file}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
       });
     }, this.deps.debounceMs ?? 500);
     timer.unref();
     this.debounce.set(file, timer);
   }
-
 }

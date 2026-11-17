@@ -11,16 +11,33 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, mkdtemp, writeFile, readFile, readlink, rename } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  writeFile,
+  readFile,
+  readlink,
+  rename,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ScenesWatcher } from "../../src/scenes/scenes-watcher.js";
 import { SceneRuntime } from "../../src/scenes/scene-runtime.js";
 import { OUT_DIR } from "../helpers/golden.js";
 import { DeviceError, SceneError } from "../../src/core/errors.js";
-import { createV1Instance, checkV1Module } from "../../src/scenes/v1-scene-adapter.js";
-import { createPixooSurface, createUlanziSurface } from "../../src/scenes/v1-device-facade.js";
-import { sceneContexts, silentLogger, sinkDriver } from "../helpers/scene-context.js";
+import {
+  createV1Instance,
+  checkV1Module,
+} from "../../src/scenes/v1-scene-adapter.js";
+import {
+  createPixooSurface,
+  createUlanziSurface,
+} from "../../src/scenes/v1-device-facade.js";
+import {
+  sceneContexts,
+  silentLogger,
+  sinkDriver,
+} from "../helpers/scene-context.js";
 import {
   ensureDataLinks,
   sharedPaths,
@@ -94,21 +111,43 @@ test("v1 scene contract: init gets a fresh ctx, render gets the device surface, 
   const calls = [];
   let callbacks = 0;
   const ref = { scene: "contract", device: "fake", token: "one" };
-  const instance = await createV1Instance({ ref, moduleNamespace: { default: {
-    /** @param {any} ctx */
-    async init(ctx) {
-      calls.push(ctx);
-      ctx.settings.subscribe(async (/** @type {any} */ values) => { values.value.nested = 999; callbacks++; });
-      ctx.mqtt.subscribe("input", () => { callbacks++; });
+  const instance = await createV1Instance(
+    {
+      ref,
+      moduleNamespace: {
+        default: {
+          /** @param {any} ctx */
+          async init(ctx) {
+            calls.push(ctx);
+            ctx.settings.subscribe(async (/** @type {any} */ values) => {
+              values.value.nested = 999;
+              callbacks++;
+            });
+            ctx.mqtt.subscribe("input", () => {
+              callbacks++;
+            });
+          },
+          /** @param {any} surface */
+          async render(surface) {
+            calls.push(surface);
+            return 25;
+          },
+          /** @param {any} ctx */
+          async destroy(ctx) {
+            calls.push(ctx);
+            throw new Error("destroy failed");
+          },
+        },
+      },
     },
-    /** @param {any} surface */
-    async render(surface) { calls.push(surface); return 25; },
-    /** @param {any} ctx */
-    async destroy(ctx) { calls.push(ctx); throw new Error("destroy failed"); },
-  } } }, {
-    ...contexts, settingsTopic: (device, scene) => `settings/${device}/${scene}`,
-    shadowStateDir: null, resources: { assetDirs: [], stateFields: [] }, logger: silentLogger,
-  });
+    {
+      ...contexts,
+      settingsTopic: (device, scene) => `settings/${device}/${scene}`,
+      shadowStateDir: null,
+      resources: { assetDirs: [], stateFields: [] },
+      logger: silentLogger,
+    },
+  );
   assert.equal(callbacks, 1, "subscriber called at once");
   assert.deepEqual(calls[0].settings.values, { value: { nested: 1 } });
   const surface = { deviceName: "fake" };
@@ -129,20 +168,55 @@ test("v1 scene contract: init gets a fresh ctx, render gets the device surface, 
 
 test("v1 scene contract: failures classify render and init; failed init releases callbacks", async () => {
   const contexts = sceneContexts();
-  const deps = { ...contexts, settingsTopic: () => "settings", shadowStateDir: null,
-    resources: { assetDirs: [], stateFields: [] }, logger: silentLogger };
+  const deps = {
+    ...contexts,
+    settingsTopic: () => "settings",
+    shadowStateDir: null,
+    resources: { assetDirs: [], stateFields: [] },
+    logger: silentLogger,
+  };
   const ref = { scene: "failure", device: "fake", token: "two" };
   assert.equal(checkV1Module({ default: {} }).ok, false);
-  await assert.rejects(createV1Instance({ ref, moduleNamespace: { default: { render() {},
-    /** @param {any} ctx */
-    init(ctx) { ctx.mqtt.subscribe("input", () => {}); throw new Error("bad init"); },
-  } } }, deps), (error) => error instanceof SceneError && error.phase === "init");
+  await assert.rejects(
+    createV1Instance(
+      {
+        ref,
+        moduleNamespace: {
+          default: {
+            render() {},
+            /** @param {any} ctx */
+            init(ctx) {
+              ctx.mqtt.subscribe("input", () => {});
+              throw new Error("bad init");
+            },
+          },
+        },
+      },
+      deps,
+    ),
+    (error) => error instanceof SceneError && error.phase === "init",
+  );
   assert.equal(contexts.subscriptions.size, 0);
   const failure = new DeviceError("refused");
   for (const error of [failure, new Error("scene bug")]) {
-    const instance = await createV1Instance({ ref, moduleNamespace: { render() { throw error; } } }, deps);
-    await assert.rejects(instance.renderFrame({ deviceName: "fake" }), (actual) =>
-      error === failure ? actual === error : actual instanceof SceneError && actual.phase === "render");
+    const instance = await createV1Instance(
+      {
+        ref,
+        moduleNamespace: {
+          render() {
+            throw error;
+          },
+        },
+      },
+      deps,
+    );
+    await assert.rejects(
+      instance.renderFrame({ deviceName: "fake" }),
+      (actual) =>
+        error === failure
+          ? actual === error
+          : actual instanceof SceneError && actual.phase === "render",
+    );
     await instance.release();
   }
 });
@@ -151,12 +225,32 @@ test("v1 scene surface: Pixoo passthrough, AWTRIX payload, legacy screen shape, 
   const driver = sinkDriver();
   /** @type {unknown[]} */
   const calls = [];
-  driver.selectChannel = async (index) => { calls.push(index); };
-  driver.readScreen = async () => ({ width: 32, height: 8, rgb: new Uint8Array(768).fill(128) });
-  const sink = { driver, show: async (/** @type {unknown} */ output) => { calls.push(output); },
-    requestBrightness: async (/** @type {number} */ value) => { calls.push(value); return true; } };
+  driver.selectChannel = async (index) => {
+    calls.push(index);
+  };
+  driver.readScreen = async () => ({
+    width: 32,
+    height: 8,
+    rgb: new Uint8Array(768).fill(128),
+  });
+  const sink = {
+    driver,
+    show: async (/** @type {unknown} */ output) => {
+      calls.push(output);
+    },
+    requestBrightness: async (/** @type {number} */ value) => {
+      calls.push(value);
+      return true;
+    },
+  };
   const { loadV1Font } = await import("../../src/scenes/v1-shared.js");
-  const pixoo = /** @type {any} */ (createPixooSurface({ name: "fake", address: "127.0.0.1" }, sink, await loadV1Font()));
+  const pixoo = /** @type {any} */ (
+    createPixooSurface(
+      { name: "fake", address: "127.0.0.1" },
+      sink,
+      await loadV1Font(),
+    )
+  );
   await pixoo.setChannel(7);
   await pixoo.setBrightness(0);
   assert.deepEqual(calls, [7, 1]);
@@ -166,12 +260,19 @@ test("v1 scene surface: Pixoo passthrough, AWTRIX payload, legacy screen shape, 
   await pixoo.drawRectangleRgba([-1e12, -1e12], [2e12, 2e12], [0, 255, 0]);
   assert.equal(pixoo.buf[1], 255);
   await pixoo.push();
-  const ulanzi = /** @type {any} */ (createUlanziSurface({ name: "fake", address: "127.0.0.1" }, sink));
+  const ulanzi = /** @type {any} */ (
+    createUlanziSurface({ name: "fake", address: "127.0.0.1" }, sink)
+  );
   const app = { text: "hello", custom: { untouched: true } };
   assert.equal(await ulanzi.drawCustom(app), true);
   assert.equal(/** @type {any} */ (calls.at(-1)).app, app);
-  assert.deepEqual((await ulanzi.getScreen()).slice(0, 2), [0x808080, 0x808080]);
-  sink.show = async () => { throw new DeviceError("refused"); };
+  assert.deepEqual(
+    (await ulanzi.getScreen()).slice(0, 2),
+    [0x808080, 0x808080],
+  );
+  sink.show = async () => {
+    throw new DeviceError("refused");
+  };
   await assert.rejects(ulanzi.drawCustom(app), DeviceError);
   await assert.rejects(pixoo.push(), DeviceError);
 });
@@ -183,15 +284,27 @@ async function runtimePeer(source) {
   await writeFile(file, source);
   const contexts = sceneContexts({ value: "initial" });
   const runtime = new SceneRuntime({
-    registry: /** @type {any} */ ({ fileOf: () => file, get: () => ({ resources: { assetDirs: [], stateFields: [] } }) }),
-    settings: /** @type {any} */ ({ runtimeContext: contexts.settingsContext, releaseContext: contexts.releaseContext }),
-    mqttContext: contexts.mqttContext, settingsTopic: () => "settings", outputOf: () => "shadow", dataDir, logger: silentLogger,
+    registry: /** @type {any} */ ({
+      fileOf: () => file,
+      get: () => ({ resources: { assetDirs: [], stateFields: [] } }),
+    }),
+    settings: /** @type {any} */ ({
+      runtimeContext: contexts.settingsContext,
+      releaseContext: contexts.releaseContext,
+    }),
+    mqttContext: contexts.mqttContext,
+    settingsTopic: () => "settings",
+    outputOf: () => "shadow",
+    dataDir,
+    logger: silentLogger,
   });
   return { runtime, contexts, file, dataDir };
 }
 
 test("isolation per device: the scene file is evaluated once per device, so a module-level variable of one device's instance is not seen by another's", async (t) => {
-  const { runtime } = await runtimePeer(`let count = 0; export default { render() { return ++count; } };`);
+  const { runtime } = await runtimePeer(
+    `let count = 0; export default { render() { return ++count; } };`,
+  );
   t.after(() => runtime.releaseAll());
   const first = await runtime.acquire("scene", "first");
   const second = await runtime.acquire("scene", "second");
@@ -210,16 +323,25 @@ test("instance tokens: a replacement instance and the instance it replaces have 
   t.after(() => runtime.releaseAll());
   const old = await runtime.acquire("scene", "device");
   await writeFile(file, source.replace("return 10", "return 20"));
-  assert.deepEqual(await runtime.invalidate(["scene"]), { devices: ["device"] });
+  assert.deepEqual(await runtime.invalidate(["scene"]), {
+    devices: ["device"],
+  });
   const replacement = await runtime.acquire("scene", "device");
   assert.notEqual(old.ref.token, replacement.ref.token);
   assert.equal(runtime.isCurrent(old), false);
   assert.equal(runtime.isCurrent(replacement), true);
-  assert.equal(contexts.subscriptions.size, 2, "old subscriptions survive until its frame boundary");
+  assert.equal(
+    contexts.subscriptions.size,
+    2,
+    "old subscriptions survive until its frame boundary",
+  );
   await runtime.release(old);
   assert.deepEqual([...contexts.subscriptions.keys()], [replacement.ref.token]);
   assert.deepEqual([...contexts.settings.keys()], [replacement.ref.token]);
-  await writeFile(file, `export default { init() { throw Error('bad replacement'); }, render() {} };`);
+  await writeFile(
+    file,
+    `export default { init() { throw Error('bad replacement'); }, render() {} };`,
+  );
   await runtime.invalidate(["scene"]);
   assert.equal(await runtime.acquire("scene", "device"), replacement);
   assert.equal(await replacement.renderFrame({ deviceName: "device" }), 20);
@@ -236,19 +358,32 @@ test.todo(
 test("shared files: a scene on the data mount resolves ../../lib and ../../assets through the links pixdcon 2 creates, and `sharp` comes from v2's own packages", async () => {
   await mkdir(OUT_DIR, { recursive: true });
   const dataDir = await mkdtemp(join(OUT_DIR, "scene-links-"));
-  assert.equal((await ensureDataLinks(dataDir, silentLogger)).created.length, 2);
+  assert.equal(
+    (await ensureDataLinks(dataDir, silentLogger)).created.length,
+    2,
+  );
   assert.deepEqual((await ensureDataLinks(dataDir, silentLogger)).created, []);
   assert.equal(await readlink(join(dataDir, "lib")), sharedPaths().libDir);
-  assert.equal(await readlink(join(dataDir, "assets")), sharedPaths().assetsDir);
+  assert.equal(
+    await readlink(join(dataDir, "assets")),
+    sharedPaths().assetsDir,
+  );
   await mkdir(join(dataDir, "scenes/mounted"), { recursive: true });
   const file = join(dataDir, "scenes/mounted/check.mjs");
-  await writeFile(file, `import sharp from 'sharp'; import { measureText } from '../../lib/pixoo-font.js'; export { sharp, measureText };`);
+  await writeFile(
+    file,
+    `import sharp from 'sharp'; import { measureText } from '../../lib/pixoo-font.js'; export { sharp, measureText };`,
+  );
   installSharedResolution({ extraDirs: [dataDir] });
   const loaded = await import(pathToFileURL(file).href);
   const sharp = (await import("sharp")).default;
   assert.equal(loaded.sharp, sharp);
   assert.equal(loaded.measureText("A").height, 5);
-  assert.ok((await readFile(join(dataDir, "lib/pixoo-image.js"), "utf8")).includes("sharp"));
+  assert.ok(
+    (await readFile(join(dataDir, "lib/pixoo-image.js"), "utf8")).includes(
+      "sharp",
+    ),
+  );
 });
 
 // --- Ordering (knowledge entry, section 3.0) ---
@@ -261,7 +396,9 @@ test("scene runtime order: one pending load per scene and device; an instance wh
   // proves that its subscriptions cannot escape the runtime's generation fence.
   const slot = `__scene_test_${Date.now()}`;
   /** @type {any} */ (globalThis)[slot] = {};
-  t.after(() => { delete /** @type {any} */ (globalThis)[slot]; });
+  t.after(() => {
+    delete (/** @type {any} */ (globalThis)[slot]);
+  });
   const { runtime, contexts } = await runtimePeer(`export default {
     async init(ctx) {
       ctx.mqtt.subscribe('input', () => { globalThis['${slot}'].called = true; });
@@ -271,8 +408,12 @@ test("scene runtime order: one pending load per scene and device; an instance wh
   };`);
   const first = runtime.acquire("scene", "device");
   const second = runtime.acquire("scene", "device");
-  const rejected = Promise.all([assert.rejects(first, /superseded/), assert.rejects(second, /superseded/)]);
-  while (!/** @type {any} */ (globalThis)[slot].ready) await new Promise((resolve) => setImmediate(resolve));
+  const rejected = Promise.all([
+    assert.rejects(first, /superseded/),
+    assert.rejects(second, /superseded/),
+  ]);
+  while (!(/** @type {any} */ (globalThis)[slot].ready))
+    await new Promise((resolve) => setImmediate(resolve));
   assert.equal(contexts.subscriptions.size, 1);
   const stopping = runtime.releaseAll();
   /** @type {any} */ (globalThis)[slot].ready();
@@ -292,30 +433,47 @@ test("scenes watcher order: a file event is a hint; the file is read after the d
   /** @type {string[]} */
   const seen = [];
   let finishFirst = () => {};
-  const first = new Promise(resolve => { finishFirst = () => resolve(undefined); });
-  const watcher = new ScenesWatcher({ dirs: () => [dir], logger: silentLogger, debounceMs: 25, retryMs: 10,
-    async onChange(path) { seen.push((await readFile(path, "utf8")).replace(/^\/\/ /, "")); if (seen.length === 1) await first; },
+  const first = new Promise((resolve) => {
+    finishFirst = () => resolve(undefined);
   });
-  t.after(() => { watcher.stop(); finishFirst(); });
+  const watcher = new ScenesWatcher({
+    dirs: () => [dir],
+    logger: silentLogger,
+    debounceMs: 25,
+    retryMs: 10,
+    async onChange(path) {
+      seen.push((await readFile(path, "utf8")).replace(/^\/\/ /, ""));
+      if (seen.length === 1) await first;
+    },
+  });
+  t.after(() => {
+    watcher.stop();
+    finishFirst();
+  });
   watcher.start();
   watcher.start();
   await writeFile(file, "// first hint");
-  await new Promise(resolve => setTimeout(resolve, 5));
+  await new Promise((resolve) => setTimeout(resolve, 5));
   assert.deepEqual(seen, [], "no read on the native hint");
   await writeFile(file, "// last content before debounce");
   await waitFor(() => seen.length === 1);
   assert.deepEqual(seen, ["last content before debounce"]);
   await writeFile(file, "// changed during the first reload");
-  await new Promise(resolve => setTimeout(resolve, 75));
+  await new Promise((resolve) => setTimeout(resolve, 75));
   assert.equal(seen.length, 1, "the pending reload waits");
   finishFirst();
   await waitFor(() => seen.length === 2);
   assert.equal(seen[1], "changed during the first reload");
-  await new Promise(resolve => setTimeout(resolve, 60));
-  assert.equal(seen.length, 2, "poll and native watch do not report an edit twice");
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(
+    seen.length,
+    2,
+    "poll and native watch do not report an edit twice",
+  );
   await writeFile(file, "// cancelled on stop");
-  watcher.stop(); watcher.stop();
-  await new Promise(resolve => setTimeout(resolve, 50));
+  watcher.stop();
+  watcher.stop();
+  await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(seen.length, 2);
 });
 
@@ -327,8 +485,14 @@ test("scenes watcher recovery: missing/replaced directories and resource picture
   /** @type {string[]} */
   const seen = [];
   let dirs = [dir];
-  const watcher = new ScenesWatcher({ dirs: () => dirs, logger: silentLogger, debounceMs: 10, retryMs: 15,
-    async onChange(path) { seen.push(path); },
+  const watcher = new ScenesWatcher({
+    dirs: () => dirs,
+    logger: silentLogger,
+    debounceMs: 10,
+    retryMs: 15,
+    async onChange(path) {
+      seen.push(path);
+    },
   });
   t.after(() => watcher.stop());
   watcher.start();
@@ -339,13 +503,13 @@ test("scenes watcher recovery: missing/replaced directories and resource picture
   await rename(dir, join(parent, "old-directory"));
   await mkdir(dir);
   await writeFile(file, "// replacement directory");
-  await waitFor(() => seen.filter(path => path === file).length === 2);
+  await waitFor(() => seen.filter((path) => path === file).length === 2);
   await mkdir(assets);
   dirs = [dir, assets];
   const image = join(assets, "picture.png");
   await writeFile(image, "fixture pixels");
   await waitFor(() => seen.includes(image));
-  await new Promise(resolve => setTimeout(resolve, 70));
+  await new Promise((resolve) => setTimeout(resolve, 70));
   assert.equal(seen.length, 3);
 });
 
@@ -353,73 +517,191 @@ test("scenes watcher recovery: missing/replaced directories and resource picture
 async function waitFor(predicate) {
   const deadline = Date.now() + 1500;
   while (!predicate()) {
-    assert.ok(Date.now() < deadline, "scene contract peer did not observe the expected event");
-    await new Promise(resolve => setTimeout(resolve, 2));
+    assert.ok(
+      Date.now() < deadline,
+      "scene contract peer did not observe the expected event",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2));
   }
 }
 
 test("migration file contract: legacy scene choice, unknown keys, shadow default and isolated controller status; source stays byte-identical", async () => {
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
   const cli = promisify(execFile);
   await mkdir(OUT_DIR, { recursive: true });
-  const root = await mkdtemp(join(OUT_DIR, 'migration-'));
-  const input = join(root, 'v1-copy.json'), output = join(root, 'v2-data');
-  const config = { devices: [{ name: ' fake ', type: 'pixoo', ip: ' 127.0.0.1:1234 ', scenes: ['clock', 'other'], enabled: 'false', extra: { retained: true } }],
-    scenes: { clock: { path: 'scenes/clock.js' } }, extraRoot: ['unchanged'] };
+  const root = await mkdtemp(join(OUT_DIR, "migration-"));
+  const input = join(root, "v1-copy.json"),
+    output = join(root, "v2-data");
+  const config = {
+    devices: [
+      {
+        name: " fake ",
+        type: "pixoo",
+        ip: " 127.0.0.1:1234 ",
+        scenes: ["clock", "other"],
+        enabled: "false",
+        extra: { retained: true },
+      },
+    ],
+    scenes: { clock: { path: "scenes/clock.js" } },
+    extraRoot: ["unchanged"],
+  };
   const source = JSON.stringify(config);
   await writeFile(input, source);
-  const command = new URL('../../src/config/migrate-v1.js', import.meta.url).pathname;
+  const command = new URL("../../src/config/migrate-v1.js", import.meta.url)
+    .pathname;
   const result = await cli(process.execPath, [command, input, output]);
   const report = JSON.parse(result.stdout);
-  const migrated = JSON.parse(await readFile(join(output, 'config.json'), 'utf8'));
-  assert.equal(await readFile(input, 'utf8'), source);
-  assert.equal(migrated.devices[0].name, 'fake');
-  assert.equal(migrated.devices[0].ip, '127.0.0.1:1234');
-  assert.equal(migrated.devices[0].scene, 'clock');
+  const migrated = JSON.parse(
+    await readFile(join(output, "config.json"), "utf8"),
+  );
+  assert.equal(await readFile(input, "utf8"), source);
+  assert.equal(migrated.devices[0].name, "fake");
+  assert.equal(migrated.devices[0].ip, "127.0.0.1:1234");
+  assert.equal(migrated.devices[0].scene, "clock");
   assert.equal(migrated.devices[0].enabled, false);
-  assert.equal(migrated.devices[0].output, 'shadow');
-  assert.equal(Object.hasOwn(migrated.devices[0], 'scenes'), false);
+  assert.equal(migrated.devices[0].output, "shadow");
+  assert.equal(Object.hasOwn(migrated.devices[0], "scenes"), false);
   assert.deepEqual(migrated.devices[0].extra, { retained: true });
-  assert.deepEqual(migrated.extraRoot, ['unchanged']);
-  assert.equal(migrated.mqtt.baseTopic, 'home/hsb1/pixdcon');
-  assert.equal(migrated.mqtt.settingsBaseTopic, 'pixdcon');
-  assert.equal(migrated.mqtt.statusBaseTopic, 'home/hsb1/pixdcon2');
-  assert.equal(migrated.output.default, 'shadow');
+  assert.deepEqual(migrated.extraRoot, ["unchanged"]);
+  assert.equal(migrated.mqtt.baseTopic, "home/hsb1/pixdcon");
+  assert.equal(migrated.mqtt.settingsBaseTopic, "pixdcon");
+  assert.equal(migrated.mqtt.statusBaseTopic, "home/hsb1/pixdcon2");
+  assert.equal(migrated.output.default, "shadow");
   assert.match(report.warnings[0], /only the first/);
   assert.ok(report.changes.length >= 8);
-  assert.equal(await readlink(join(output, 'lib')), sharedPaths().libDir);
-  assert.equal(await readlink(join(output, 'assets')), sharedPaths().assetsDir);
-  const saved = await readFile(join(output, 'config.json'), 'utf8');
-  await assert.rejects(cli(process.execPath, [command, input, output]), /refusing to overwrite/);
-  assert.equal(await readFile(join(output, 'config.json'), 'utf8'), saved);
-  const drive = join(root, 'drive-data');
-  await cli(process.execPath, [command, input, drive, '--output', 'drive', '--status-base-topic', 'test/v2-edge']);
-  const driven = JSON.parse(await readFile(join(drive, 'config.json'), 'utf8'));
-  assert.equal(driven.devices[0].output, 'drive');
-  assert.equal(driven.mqtt.statusBaseTopic, 'test/v2-edge');
+  assert.equal(await readlink(join(output, "lib")), sharedPaths().libDir);
+  assert.equal(await readlink(join(output, "assets")), sharedPaths().assetsDir);
+  const saved = await readFile(join(output, "config.json"), "utf8");
+  await assert.rejects(
+    cli(process.execPath, [command, input, output]),
+    /refusing to overwrite/,
+  );
+  assert.equal(await readFile(join(output, "config.json"), "utf8"), saved);
+  const drive = join(root, "drive-data");
+  await cli(process.execPath, [
+    command,
+    input,
+    drive,
+    "--output",
+    "drive",
+    "--status-base-topic",
+    "test/v2-edge",
+  ]);
+  const driven = JSON.parse(await readFile(join(drive, "config.json"), "utf8"));
+  assert.equal(driven.devices[0].output, "drive");
+  assert.equal(driven.mqtt.statusBaseTopic, "test/v2-edge");
 });
 
 test("migration file contract: duplicates, malformed source, unknown CLI flags and an in-place write produce no replacement", async () => {
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
   const cli = promisify(execFile);
-  const { access } = await import('node:fs/promises');
+  const { access } = await import("node:fs/promises");
   await mkdir(OUT_DIR, { recursive: true });
-  const root = await mkdtemp(join(OUT_DIR, 'migration-reject-'));
-  const input = join(root, 'config.json'), output = join(root, 'target');
-  const command = new URL('../../src/config/migrate-v1.js', import.meta.url).pathname;
-  const entry = { name: 'duplicate', type: 'ulanzi', ip: '127.0.0.1' };
-  const source = JSON.stringify({ devices: [entry, { ...entry, name: ' duplicate ' }], scenes: {} });
+  const root = await mkdtemp(join(OUT_DIR, "migration-reject-"));
+  const input = join(root, "config.json"),
+    output = join(root, "target");
+  const command = new URL("../../src/config/migrate-v1.js", import.meta.url)
+    .pathname;
+  const entry = { name: "duplicate", type: "ulanzi", ip: "127.0.0.1" };
+  const source = JSON.stringify({
+    devices: [entry, { ...entry, name: " duplicate " }],
+    scenes: {},
+  });
   await writeFile(input, source);
-  await assert.rejects(cli(process.execPath, [command, input, output]), /duplicate device name/);
-  await assert.rejects(access(join(output, 'config.json')));
-  assert.equal(await readFile(input, 'utf8'), source);
-  await writeFile(input, '{broken');
-  await assert.rejects(cli(process.execPath, [command, input, output]), /Invalid config JSON/);
-  await assert.rejects(cli(process.execPath, [command, input, output, '--unknown', 'x']), /Usage:/);
+  await assert.rejects(
+    cli(process.execPath, [command, input, output]),
+    /duplicate device name/,
+  );
+  await assert.rejects(access(join(output, "config.json")));
+  assert.equal(await readFile(input, "utf8"), source);
+  await writeFile(input, "{broken");
+  await assert.rejects(
+    cli(process.execPath, [command, input, output]),
+    /Invalid config JSON/,
+  );
+  await assert.rejects(
+    cli(process.execPath, [command, input, output, "--unknown", "x"]),
+    /Usage:/,
+  );
   await writeFile(input, JSON.stringify({ devices: [entry], scenes: {} }));
-  const valid = await readFile(input, 'utf8');
-  await assert.rejects(cli(process.execPath, [command, input, root]), /different files/);
-  assert.equal(await readFile(input, 'utf8'), valid);
+  const valid = await readFile(input, "utf8");
+  await assert.rejects(
+    cli(process.execPath, [command, input, root]),
+    /different files/,
+  );
+  assert.equal(await readFile(input, "utf8"), valid);
+});
+
+test("resources: the adapter redirects declared state fields before init for aliases and copied keys; drive preserves its own history path", async () => {
+  await mkdir(OUT_DIR, { recursive: true });
+  const dataDir = await mkdtemp(join(OUT_DIR, "shadow-paths-"));
+  const original = join(dataDir, "original-history.json");
+  const contexts = sceneContexts();
+  for (const scene of ["home3", "alias", "home3-copy", "../escape"]) {
+    /** @type {string[]} */
+    const paths = [];
+    const instance = await createV1Instance(
+      {
+        ref: { scene, device: "shadow", token: scene },
+        moduleNamespace: {
+          default: {
+            _boilerStatePath: original,
+            async init() {
+              paths.push(this._boilerStatePath);
+              await writeFile(this._boilerStatePath, "fixture-history");
+            },
+            render() {},
+          },
+        },
+      },
+      {
+        ...contexts,
+        shadowStateDir: join(dataDir, "shadow"),
+        resources: { assetDirs: [], stateFields: ["_boilerStatePath"] },
+        settingsTopic: () => "settings",
+        logger: silentLogger,
+      },
+    );
+    assert.equal(
+      paths[0],
+      join(
+        dataDir,
+        "shadow",
+        `${encodeURIComponent(scene)}-_boilerStatePath.json`,
+      ),
+    );
+    assert.equal(await readFile(paths[0], "utf8"), "fixture-history");
+    await instance.release();
+  }
+  const { access } = await import("node:fs/promises");
+  await assert.rejects(
+    access(original),
+    "a shadow never wrote the original history",
+  );
+  const driven = await createV1Instance(
+    {
+      ref: { scene: "alias", device: "drive", token: "drive" },
+      moduleNamespace: {
+        default: {
+          _boilerStatePath: original,
+          async init() {
+            await writeFile(this._boilerStatePath, "drive-history");
+          },
+          render() {},
+        },
+      },
+    },
+    {
+      ...contexts,
+      shadowStateDir: null,
+      resources: { assetDirs: [], stateFields: ["_boilerStatePath"] },
+      settingsTopic: () => "settings",
+      logger: silentLogger,
+    },
+  );
+  await driven.release();
+  assert.equal(await readFile(original, "utf8"), "drive-history");
 });

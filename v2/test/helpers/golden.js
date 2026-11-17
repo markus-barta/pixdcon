@@ -189,66 +189,131 @@ export async function loadScenario(file) {
  * @param {{reference?: boolean, device?: string, priorDeviceFrames?: number}} [options]
  */
 export async function renderScenario(t, scenario, options = {}) {
-  const { EventEmitter } = await import('node:events');
-  const https = (await import('node:https')).default;
-  const { pathToFileURL } = await import('node:url');
-  const { mkdtemp } = await import('node:fs/promises');
-  const { SceneRuntime } = await import('../../src/scenes/scene-runtime.js');
-  const { createPixooSurface, createUlanziSurface } = await import('../../src/scenes/v1-device-facade.js');
-  const { loadV1Font, loadV1ReferenceDrivers, sharedPaths, installSharedResolution } = await import('../../src/scenes/v1-shared.js');
-  const { rasterizeAwtrixApp } = await import('../../src/drivers/awtrix-raster.js');
-  const { sceneContexts, silentLogger, sinkDriver } = await import('./scene-context.js');
+  const { EventEmitter } = await import("node:events");
+  const https = (await import("node:https")).default;
+  const { pathToFileURL } = await import("node:url");
+  const { mkdtemp } = await import("node:fs/promises");
+  const { SceneRuntime } = await import("../../src/scenes/scene-runtime.js");
+  const { createPixooSurface, createUlanziSurface } =
+    await import("../../src/scenes/v1-device-facade.js");
+  const {
+    loadV1Font,
+    loadV1ReferenceDrivers,
+    sharedPaths,
+    installSharedResolution,
+  } = await import("../../src/scenes/v1-shared.js");
+  const { rasterizeAwtrixApp } =
+    await import("../../src/drivers/awtrix-raster.js");
+  const { sceneContexts, silentLogger, sinkDriver } =
+    await import("./scene-context.js");
   installSharedResolution();
   const oldZone = process.env.TZ;
-  const envKeys = ['SONNEN_BATTERY_HOST', 'SONNEN_BATTERY_API_TOKEN', 'SYNCBOX_BEARER_TOKEN'];
-  const previousEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
-  process.env.SONNEN_BATTERY_HOST = '127.0.0.1';
-  process.env.SONNEN_BATTERY_API_TOKEN = 'fixture-only';
-  process.env.SYNCBOX_BEARER_TOKEN = 'fixture-only';
+  const envKeys = [
+    "SONNEN_BATTERY_HOST",
+    "SONNEN_BATTERY_API_TOKEN",
+    "SYNCBOX_BEARER_TOKEN",
+  ];
+  const previousEnv = Object.fromEntries(
+    envKeys.map((key) => [key, process.env[key]]),
+  );
+  process.env.SONNEN_BATTERY_HOST = "127.0.0.1";
+  process.env.SONNEN_BATTERY_API_TOKEN = "fixture-only";
+  process.env.SYNCBOX_BEARER_TOKEN = "fixture-only";
   process.env.TZ = scenario.timeZone;
-  t.mock.timers.enable({ apis: ['Date', 'setTimeout', 'setInterval'], now: Date.parse(scenario.now) });
+  t.mock.timers.enable({
+    apis: ["Date", "setTimeout", "setInterval"],
+    now: Date.parse(scenario.now),
+  });
   await mkdir(OUT_DIR, { recursive: true });
-  const dataDir = await mkdtemp(join(OUT_DIR, 'golden-'));
+  const dataDir = await mkdtemp(join(OUT_DIR, "golden-"));
   const { scenesDir } = sharedPaths();
-  const sceneFile = join(scenesDir, scenario.deviceType, `${scenario.scene}.js`);
-  const pingKey = Symbol.for('pixdcon2.golden.ping');
+  const sceneFile = join(
+    scenesDir,
+    scenario.deviceType,
+    `${scenario.scene}.js`,
+  );
+  const pingKey = Symbol.for("pixdcon2.golden.ping");
   const globals = /** @type {any} */ (globalThis);
-  globals[pingKey] = (/** @type {string} */ program, /** @type {string[]} */ args, /** @type {unknown} */ _options, /** @type {Function} */ callback) => {
-    const alive = program === 'ping' && scenario.ping?.[args.at(-1) ?? ''] === true;
-    queueMicrotask(() => callback(alive ? null : Object.assign(new Error('fixture: no ping answer'), { code: 'ENOENT' }), alive ? '64 bytes: time=1.0 ms' : ''));
+  globals[pingKey] = (
+    /** @type {string} */ program,
+    /** @type {string[]} */ args,
+    /** @type {unknown} */ _options,
+    /** @type {Function} */ callback,
+  ) => {
+    const alive =
+      program === "ping" && scenario.ping?.[args.at(-1) ?? ""] === true;
+    queueMicrotask(() =>
+      callback(
+        alive
+          ? null
+          : Object.assign(new Error("fixture: no ping answer"), {
+              code: "ENOENT",
+            }),
+        alive ? "64 bytes: time=1.0 ms" : "",
+      ),
+    );
     return { kill() {} };
   };
   // Scoped import peer, never a patch of net-guard or the process-wide spawn API.
   const hook = await installGoldenPingPeer();
   /** @param {string} url */
-  const answer = (url) => scenario.http?.find(row => row.url.endsWith('*') ? url.startsWith(row.url.slice(0, -1)) : row.url === url);
-  const fetchMock = t.mock.method(globalThis, 'fetch', async (/** @type {unknown} */ input) => {
-    const row = answer(String(input));
-    if (!row) throw new Error(`fixture: no HTTP answer for ${input}`);
-    return new Response(JSON.stringify(row.body ?? {}), { status: row.status ?? 200 });
-  });
-  const httpsMock = t.mock.method(https, 'request', (/** @type {any} */ input, /** @type {Function} */ callback) => {
-    const url = typeof input === 'string' || input instanceof URL ? String(input)
-      : `https://${input.hostname ?? input.host}${input.path ?? '/'}`;
-    const request = new EventEmitter();
-    let ended = false;
-    Object.assign(request, {
-      end() {
-        queueMicrotask(() => {
-          if (ended) return;
-          const row = answer(url);
-          if (!row) { request.emit('error', new Error(`fixture: no HTTP answer for ${url}`)); request.emit('close'); return; }
-          const response = Object.assign(new EventEmitter(), { statusCode: row.status ?? 200 });
-          callback(response);
-          response.emit('data', JSON.stringify(row.body ?? {}));
-          response.emit('end');
-          request.emit('close');
-        });
-      },
-      destroy() { ended = true; request.emit('close'); },
-    });
-    return /** @type {any} */ (request);
-  });
+  const answer = (url) =>
+    scenario.http?.find((row) =>
+      row.url.endsWith("*")
+        ? url.startsWith(row.url.slice(0, -1))
+        : row.url === url,
+    );
+  const fetchMock = t.mock.method(
+    globalThis,
+    "fetch",
+    async (/** @type {unknown} */ input) => {
+      const row = answer(String(input));
+      if (!row) throw new Error(`fixture: no HTTP answer for ${input}`);
+      return new Response(JSON.stringify(row.body ?? {}), {
+        status: row.status ?? 200,
+      });
+    },
+  );
+  const httpsMock = t.mock.method(
+    https,
+    "request",
+    (/** @type {any} */ input, /** @type {Function} */ callback) => {
+      const url =
+        typeof input === "string" || input instanceof URL
+          ? String(input)
+          : `https://${input.hostname ?? input.host}${input.path ?? "/"}`;
+      const request = new EventEmitter();
+      let ended = false;
+      Object.assign(request, {
+        end() {
+          queueMicrotask(() => {
+            if (ended) return;
+            const row = answer(url);
+            if (!row) {
+              request.emit(
+                "error",
+                new Error(`fixture: no HTTP answer for ${url}`),
+              );
+              request.emit("close");
+              return;
+            }
+            const response = Object.assign(new EventEmitter(), {
+              statusCode: row.status ?? 200,
+            });
+            callback(response);
+            response.emit("data", JSON.stringify(row.body ?? {}));
+            response.emit("end");
+            request.emit("close");
+          });
+        },
+        destroy() {
+          ended = true;
+          request.emit("close");
+        },
+      });
+      return /** @type {any} */ (request);
+    },
+  );
   /** @type {import('../../src/scenes/scene-runtime.js').SceneInstance|undefined} */
   let instance;
   /** @type {import('../../src/scenes/scene-runtime.js').SceneRuntime|undefined} */
@@ -259,18 +324,37 @@ export async function renderScenario(t, scenario, options = {}) {
   let referenceContext;
   try {
     const url = pathToFileURL(sceneFile);
-    url.searchParams.set('fixture', `${scenario.name}-${options.reference ? 'v1' : 'v2'}-${options.device ?? 'device'}-${dataDir}`);
+    url.searchParams.set(
+      "fixture",
+      `${scenario.name}-${options.reference ? "v1" : "v2"}-${options.device ?? "device"}-${dataDir}`,
+    );
     const namespace = await import(url.href);
     const exported = namespace.default ?? namespace;
-    const settings = Object.fromEntries(Object.entries(exported.settingsSchema ?? {}).map(([key, field]) => [key, /** @type {any} */ (field).default]));
+    const settings = Object.fromEntries(
+      Object.entries(exported.settingsSchema ?? {}).map(([key, field]) => [
+        key,
+        /** @type {any} */ (field).default,
+      ]),
+    );
     Object.assign(settings, scenario.settings);
     const contexts = sceneContexts(settings, exported.settingsSchema ?? {});
-    const ref = { scene: scenario.scene, device: options.device ?? 'golden', token: dataDir };
-    const stateFields = (await readFile(sceneFile, 'utf8')).includes('_boilerStatePath') ? ['_boilerStatePath'] : [];
-    const shadowStateDir = join(dataDir, 'state');
+    const ref = {
+      scene: scenario.scene,
+      device: options.device ?? "golden",
+      token: dataDir,
+    };
+    const stateFields = (await readFile(sceneFile, "utf8")).includes(
+      "_boilerStatePath",
+    )
+      ? ["_boilerStatePath"]
+      : [];
+    const shadowStateDir = join(dataDir, "state");
     if (scenario.boilerHistory) {
       await mkdir(shadowStateDir, { recursive: true });
-      await writeFile(join(shadowStateDir, `${scenario.scene}-_boilerStatePath.json`), JSON.stringify(scenario.boilerHistory));
+      await writeFile(
+        join(shadowStateDir, `${scenario.scene}-_boilerStatePath.json`),
+        JSON.stringify(scenario.boilerHistory),
+      );
     }
     /** @type {Frame|null} */
     let frame = null;
@@ -282,61 +366,129 @@ export async function renderScenario(t, scenario, options = {}) {
     let surface;
     if (options.reference) {
       const { PixooDriver, UlanziDriver } = await loadV1ReferenceDrivers();
-      const driver = scenario.deviceType === 'pixoo' ? new PixooDriver('127.0.0.1', { deviceName: ref.device, logger: silentLogger })
-        : new UlanziDriver('127.0.0.1', { logger: silentLogger });
+      const driver =
+        scenario.deviceType === "pixoo"
+          ? new PixooDriver("127.0.0.1", {
+              deviceName: ref.device,
+              logger: silentLogger,
+            })
+          : new UlanziDriver("127.0.0.1", { logger: silentLogger });
       driver.initialized = true;
-      driver.setBrightness = async (/** @type {number} */ value) => { brightness.push(value); return true; };
-      if (scenario.deviceType === 'pixoo') {
+      driver.setBrightness = async (/** @type {number} */ value) => {
+        brightness.push(value);
+        return true;
+      };
+      if (scenario.deviceType === "pixoo") {
         // Use the real v1 push path and decode its wire payload, with transport replaced.
         driver._httpPost = async (/** @type {any} */ body) => {
-          if (body.Command === 'Draw/SendHttpGif') frame = { width: 64, height: 64, rgb: new Uint8Array(Buffer.from(body.PicData, 'base64')) };
+          if (body.Command === "Draw/SendHttpGif")
+            frame = {
+              width: 64,
+              height: 64,
+              rgb: new Uint8Array(Buffer.from(body.PicData, "base64")),
+            };
           return { error_code: 0 };
         };
       } else {
-        driver.drawCustom = async (/** @type {Record<string, unknown>} */ app) => { payload = structuredClone(app); frame = rasterizeAwtrixApp(app).frame; return true; };
+        driver.drawCustom = async (
+          /** @type {Record<string, unknown>} */ app,
+        ) => {
+          payload = structuredClone(app);
+          frame = rasterizeAwtrixApp(app).frame;
+          return true;
+        };
       }
       surface = driver;
       referenceScene = Object.create(exported);
-      if (stateFields.length) referenceScene._boilerStatePath = join(shadowStateDir, `${scenario.scene}-_boilerStatePath.json`);
-      referenceContext = { logger: silentLogger, deviceName: ref.device, sceneName: ref.scene, settingsTopic: 'golden/settings', settings: contexts.settingsContext(ref), mqtt: contexts.mqttContext(ref) };
+      if (stateFields.length)
+        referenceScene._boilerStatePath = join(
+          shadowStateDir,
+          `${scenario.scene}-_boilerStatePath.json`,
+        );
+      referenceContext = {
+        logger: silentLogger,
+        deviceName: ref.device,
+        sceneName: ref.scene,
+        settingsTopic: "golden/settings",
+        settings: contexts.settingsContext(ref),
+        mqtt: contexts.mqttContext(ref),
+      };
       await referenceScene.init?.(referenceContext);
     } else {
-      const sink = { driver: sinkDriver(),
+      const sink = {
+        driver: sinkDriver(),
         /** @param {import('../../src/drivers/driver.js').DeviceOutput} output */
         async show(output) {
-          if (output.kind === 'frame') frame = { ...output.frame, rgb: output.frame.rgb.slice() };
-          else { payload = structuredClone(output.app); frame = rasterizeAwtrixApp(output.app).frame; }
+          if (output.kind === "frame")
+            frame = { ...output.frame, rgb: output.frame.rgb.slice() };
+          else {
+            payload = structuredClone(output.app);
+            frame = rasterizeAwtrixApp(output.app).frame;
+          }
         },
-        async requestBrightness(/** @type {number} */ value) { brightness.push(value); return true; },
+        async requestBrightness(/** @type {number} */ value) {
+          brightness.push(value);
+          return true;
+        },
       };
-      surface = scenario.deviceType === 'pixoo' ? createPixooSurface({ name: ref.device, address: '127.0.0.1' }, sink, await loadV1Font())
-        : createUlanziSurface({ name: ref.device, address: '127.0.0.1' }, sink);
+      surface =
+        scenario.deviceType === "pixoo"
+          ? createPixooSurface(
+              { name: ref.device, address: "127.0.0.1" },
+              sink,
+              await loadV1Font(),
+            )
+          : createUlanziSurface(
+              { name: ref.device, address: "127.0.0.1" },
+              sink,
+            );
       runtime = new SceneRuntime({
-        registry: /** @type {any} */ ({ fileOf: () => sceneFile, get: () => ({ resources: { assetDirs: [], stateFields } }) }),
-        settings: /** @type {any} */ ({ runtimeContext: contexts.settingsContext, releaseContext: contexts.releaseContext }),
-        mqttContext: contexts.mqttContext, settingsTopic: () => 'golden/settings', outputOf: () => 'shadow', dataDir, logger: silentLogger,
+        registry: /** @type {any} */ ({
+          fileOf: () => sceneFile,
+          get: () => ({ resources: { assetDirs: [], stateFields } }),
+        }),
+        settings: /** @type {any} */ ({
+          runtimeContext: contexts.settingsContext,
+          releaseContext: contexts.releaseContext,
+        }),
+        mqttContext: contexts.mqttContext,
+        settingsTopic: () => "golden/settings",
+        outputOf: () => "shadow",
+        dataDir,
+        logger: silentLogger,
       });
       if (scenario.boilerHistory) {
-        const stateDir = join(dataDir, '.pixdcon2/shadow-state', ref.device);
+        const stateDir = join(dataDir, ".pixdcon2/shadow-state", ref.device);
         await mkdir(stateDir, { recursive: true });
-        await writeFile(join(stateDir, `${scenario.scene}-_boilerStatePath.json`), JSON.stringify(scenario.boilerHistory));
+        await writeFile(
+          join(stateDir, `${scenario.scene}-_boilerStatePath.json`),
+          JSON.stringify(scenario.boilerHistory),
+        );
       }
       if (options.priorDeviceFrames) {
-        const prior = await runtime.acquire(scenario.scene, 'prior-device');
-        for (let i = 0; i < options.priorDeviceFrames; i++) await prior.renderFrame(surface);
+        const prior = await runtime.acquire(scenario.scene, "prior-device");
+        for (let i = 0; i < options.priorDeviceFrames; i++)
+          await prior.renderFrame(surface);
       }
       instance = await runtime.acquire(scenario.scene, ref.device);
     }
     /** Flush scene-owned asynchronous fixture polls without advancing the frame clock. */
-    const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
+    const flush = async () => {
+      for (let i = 0; i < 5; i++)
+        await new Promise((resolve) => setImmediate(resolve));
+    };
     await flush();
-    for (const message of scenario.mqtt ?? []) await contexts.deliver(message.topic, message.payload);
+    for (const message of scenario.mqtt ?? [])
+      await contexts.deliver(message.topic, message.payload);
     const render = async () => {
       if (options.reference) await referenceScene.render(surface);
       else await instance?.renderFrame(surface);
     };
     if (scenario.startFrameBeforeAdvance) await render();
-    if (scenario.elapsedMs) { t.mock.timers.tick(scenario.elapsedMs); await flush(); }
+    if (scenario.elapsedMs) {
+      t.mock.timers.tick(scenario.elapsedMs);
+      await flush();
+    }
     for (let i = 0; i < (scenario.frames ?? 1); i++) await render();
     assert.ok(frame, `${scenario.name}: scene pushed a frame`);
     return { frame: /** @type {Frame} */ (frame), payload, brightness };
@@ -348,8 +500,12 @@ export async function renderScenario(t, scenario, options = {}) {
     hook.deregister();
     delete globals[pingKey];
     t.mock.timers.reset();
-    for (const key of envKeys) { if (previousEnv[key] === undefined) delete process.env[key]; else process.env[key] = previousEnv[key]; }
-    if (oldZone === undefined) delete process.env.TZ; else process.env.TZ = oldZone;
+    for (const key of envKeys) {
+      if (previousEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = previousEnv[key];
+    }
+    if (oldZone === undefined) delete process.env.TZ;
+    else process.env.TZ = oldZone;
   }
 }
 
@@ -357,16 +513,24 @@ export async function renderScenario(t, scenario, options = {}) {
  * Loaded before the shared scene import smoke so its cached helpers see the peer.
  */
 export async function installGoldenPingPeer() {
-  const { registerHooks } = await import('node:module');
-  const { pathToFileURL } = await import('node:url');
-  const { sharedPaths } = await import('../../src/scenes/v1-shared.js');
+  const { registerHooks } = await import("node:module");
+  const { pathToFileURL } = await import("node:url");
+  const { sharedPaths } = await import("../../src/scenes/v1-shared.js");
   const { scenesDir, libDir } = sharedPaths();
-  const pingModule = 'data:text/javascript,' + encodeURIComponent(`export function execFile(...args) { return globalThis[Symbol.for('pixdcon2.golden.ping')](...args); }`);
+  const pingModule =
+    "data:text/javascript," +
+    encodeURIComponent(
+      `export function execFile(...args) { return globalThis[Symbol.for('pixdcon2.golden.ping')](...args); }`,
+    );
   return registerHooks({
     resolve(specifier, context, next) {
-      const parent = context.parentURL ?? '';
-      if ((specifier === 'child_process' || specifier === 'node:child_process') &&
-          [scenesDir, libDir].some(dir => parent.startsWith(pathToFileURL(`${dir}/`).href))) {
+      const parent = context.parentURL ?? "";
+      if (
+        (specifier === "child_process" || specifier === "node:child_process") &&
+        [scenesDir, libDir].some((dir) =>
+          parent.startsWith(pathToFileURL(`${dir}/`).href),
+        )
+      ) {
         return { url: pingModule, shortCircuit: true };
       }
       return next(specifier, context);

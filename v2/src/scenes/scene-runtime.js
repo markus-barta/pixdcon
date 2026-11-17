@@ -102,7 +102,12 @@ export class SceneRuntime {
    * @throws {import("../core/errors.js").SceneError} unknown scene, import failed, no render(), init failed
    */
   async acquire(scene, device) {
-    if (this.closed) throw new SceneError("Scene runtime is stopped", { scene, device, phase: "import" });
+    if (this.closed)
+      throw new SceneError("Scene runtime is stopped", {
+        scene,
+        device,
+        phase: "import",
+      });
     const key = JSON.stringify([scene, device]);
     let entry = this.entries.get(key);
     if (!entry) {
@@ -128,8 +133,9 @@ export class SceneRuntime {
       entry.current = null;
       this.entries.delete(key);
     }
-    try { await instance.release(); }
-    finally {
+    try {
+      await instance.release();
+    } finally {
       this.instances.delete(instance);
       this.deps.settings.releaseContext(instance.ref);
     }
@@ -142,7 +148,11 @@ export class SceneRuntime {
    * @returns {boolean}
    */
   isCurrent(instance) {
-    return !this.closed && this.entries.get(JSON.stringify([instance.scene, instance.device]))?.current === instance;
+    return (
+      !this.closed &&
+      this.entries.get(JSON.stringify([instance.scene, instance.device]))
+        ?.current === instance
+    );
   }
 
   /**
@@ -156,21 +166,25 @@ export class SceneRuntime {
   async invalidate(scenes) {
     if (this.closed) return { devices: [] };
     const changed = new Set(scenes);
-    for (const scene of changed) this.fileTokens.set(scene, (this.fileTokens.get(scene) ?? 0) + 1);
+    for (const scene of changed)
+      this.fileTokens.set(scene, (this.fileTokens.get(scene) ?? 0) + 1);
     const devices = new Set();
     const loads = [];
     for (const entry of this.entries.values()) {
       if (!changed.has(entry.scene)) continue;
       entry.generation++;
       devices.add(entry.device);
-      loads.push(this.load(entry).catch((error) => {
-        this.deps.logger.warn(`Scene ${entry.scene} reload failed: ${error instanceof Error ? error.message : String(error)}`);
-      }));
+      loads.push(
+        this.load(entry).catch((error) => {
+          this.deps.logger.warn(
+            `Scene ${entry.scene} reload failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }),
+      );
     }
     await Promise.all(loads);
     return { devices: [...devices] };
   }
-
 
   /** Prepare a replacement beside the running instance; only its generation may install it.
    * @param {{scene: string, device: string, generation: number, current: SceneInstance|null, pending: Promise<SceneInstance>|null}} entry
@@ -181,31 +195,55 @@ export class SceneRuntime {
     const key = JSON.stringify([scene, device]);
     const fileToken = `${this.identity}-${this.fileTokens.get(scene) ?? 0}`;
     const ref = { scene, device, token: `${fileToken}.${++this.counter}` };
-    const current = () => !this.closed && this.entries.get(key) === entry && entry.generation === generation;
+    const current = () =>
+      !this.closed &&
+      this.entries.get(key) === entry &&
+      entry.generation === generation;
     const promise = (async () => {
       /** @type {SceneInstance|null} */
       let instance = null;
       try {
         const file = this.deps.registry.fileOf(scene);
         const meta = this.deps.registry.get(scene);
-        if (!file || !meta) throw new SceneError(`Unknown scene ${scene}`, { ...ref, phase: "import" });
+        if (!file || !meta)
+          throw new SceneError(`Unknown scene ${scene}`, {
+            ...ref,
+            phase: "import",
+          });
         const url = pathToFileURL(file);
         url.searchParams.set("t", ref.token);
         url.searchParams.set("d", device);
         const moduleNamespace = await import(url.href);
-        if (!current()) throw new SceneError(`Scene ${scene} load was superseded`, { ...ref, phase: "import" });
-        instance = await createV1Instance({ ref, moduleNamespace }, {
-          settingsContext: (owner) => this.deps.settings.runtimeContext(owner),
-          mqttContext: this.deps.mqttContext,
-          settingsTopic: this.deps.settingsTopic,
-          resources: meta.resources,
-          shadowStateDir: this.deps.outputOf(device) === "shadow"
-            ? join(this.deps.dataDir, ".pixdcon2/shadow-state", encodeURIComponent(device)) : null,
-          logger: this.deps.logger,
-        });
+        if (!current())
+          throw new SceneError(`Scene ${scene} load was superseded`, {
+            ...ref,
+            phase: "import",
+          });
+        instance = await createV1Instance(
+          { ref, moduleNamespace },
+          {
+            settingsContext: (owner) =>
+              this.deps.settings.runtimeContext(owner),
+            mqttContext: this.deps.mqttContext,
+            settingsTopic: this.deps.settingsTopic,
+            resources: meta.resources,
+            shadowStateDir:
+              this.deps.outputOf(device) === "shadow"
+                ? join(
+                    this.deps.dataDir,
+                    ".pixdcon2/shadow-state",
+                    encodeURIComponent(device),
+                  )
+                : null,
+            logger: this.deps.logger,
+          },
+        );
         if (!current()) {
           await instance.release();
-          throw new SceneError(`Scene ${scene} load was superseded`, { ...ref, phase: "import" });
+          throw new SceneError(`Scene ${scene} load was superseded`, {
+            ...ref,
+            phase: "import",
+          });
         }
         entry.current = instance;
         this.instances.add(instance);
@@ -213,7 +251,10 @@ export class SceneRuntime {
       } catch (error) {
         this.deps.settings.releaseContext(ref);
         if (error instanceof SceneError) throw error;
-        throw new SceneError(`Scene ${scene} import: ${error instanceof Error ? error.message : String(error)}`, { ...ref, phase: "import", cause: error });
+        throw new SceneError(
+          `Scene ${scene} import: ${error instanceof Error ? error.message : String(error)}`,
+          { ...ref, phase: "import", cause: error },
+        );
       }
     })();
     entry.pending = promise;
@@ -233,6 +274,8 @@ export class SceneRuntime {
     for (const entry of this.entries.values()) entry.generation++;
     this.entries.clear();
     await Promise.allSettled([...this.pending]);
-    await Promise.all([...this.instances].map((instance) => this.release(instance)));
+    await Promise.all(
+      [...this.instances].map((instance) => this.release(instance)),
+    );
   }
 }
