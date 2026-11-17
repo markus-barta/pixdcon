@@ -898,6 +898,73 @@ test("slow later OFF publishes never restart the runtime or replenish its cycle 
   }
 });
 
+test("slow exhausted probes preserve the cycle budget for two hours without watchdog restarts", async (t) => {
+  const r = await rig(t, { start: false, render: async (/** @type {string} */ _, /** @type {string} */ name, /** @type {any} */ surface) => {
+    if (name === "p") throw new DeviceError("frame rejected");
+    await surface.paint(3); return 10800000;
+  } });
+  const maxCycles = 10;
+  r.devices[0].powerCyclePlugin = { topic: "plug" };
+  r.devices[0].maxPowerCycles = maxCycles;
+  const factory = r.factories.createDriver;
+  let reclaiming = 0;
+  let probes = 0;
+  r.factories.createDriver = (device, deps) => {
+    const driver = factory(device, deps);
+    if (device.name === "p") {
+      const reclaim = driver.reclaim;
+      driver.reclaim = async () => {
+        reclaiming++;
+        try { await reclaim(); } finally { reclaiming--; }
+      };
+      driver.probe = async () => {
+        probes++;
+        await r.clock.sleep(5000);
+        throw new DeviceError("probe timed out after 5000ms");
+      };
+    }
+    return driver;
+  };
+  await r.scheduler.start();
+  await until(() => r.scheduler.loop("p")?.deviceErrors === 1);
+  const loop = r.scheduler.loop("p"); assert.ok(loop);
+  for (let elapsed = 0; elapsed < 7200000; elapsed += 1000) {
+    await r.clock.advance(1000);
+    // Let real loopback reclaims settle without advancing their wall-clock HTTP pause.
+    if (reclaiming) { await until(() => reclaiming === 0); await flush(); }
+  }
+  const offCount = r.mqtt.messages.filter((m) => m.payload === '{"state":"OFF"}').length;
+  const restarts = r.scheduler.status().restarts;
+  const phase = r.scheduler.loop("p")?.status().phase;
+  t.diagnostic(`2 h simulated; 5 s probes=${probes}; restarts=${restarts}; OFF=${offCount}; maxPowerCycles=${maxCycles}; phase=${phase}`);
+  assert.equal(restarts, 0);
+  assert.equal(offCount, maxCycles);
+  assert.equal(phase, "exhausted");
+  assert.equal(r.scheduler.loop("p"), loop);
+  assert.equal(loop.status().powerCycleCount, maxCycles);
+});
+
+test("confirmed ON reports the end of the on-wait as nextRetryAt", async (t) => {
+  const r = await owedOnRig(t);
+  r.mqtt.outcomes = ["confirmed"];
+  await r.clock.advance(1000);
+  await until(() => !r.loop.plugOnOwed);
+  const end = new Date(r.clock.now() + 30000).toISOString();
+  const latest = () => r.reports.filter((entry) => entry.name === "p").at(-1)?.patch;
+  const renders = r.renderCalls.get("p");
+  assert.equal(latest()?.phase, "retrying");
+  assert.equal(latest()?.nextRetryAt, end);
+  assert.equal(r.loop.status().nextRetryAt, end);
+  assert.equal(r.loop.status().nextWakeAt, end);
+  await r.clock.advance(29999);
+  assert.equal(latest()?.nextRetryAt, end);
+  assert.equal(r.loop.status().nextRetryAt, end);
+  assert.equal(r.renderCalls.get("p"), renders);
+  await r.clock.advance(1);
+  await until(() => (r.renderCalls.get("p") ?? 0) > (renders ?? 0));
+  assert.notEqual(latest()?.nextRetryAt, end);
+});
+
 test("owed ON reports each publish deadline and connected or offline retry wait through the current runtime", async (t) => {
   const r = await owedOnRig(t, { slowOn: true });
   const latest = () => r.reports.filter((entry) => entry.name === "p").at(-1)?.patch;

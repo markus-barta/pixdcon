@@ -33,6 +33,7 @@
  *    a good probe resets errors and retries rendering without replenishing cycles;
  *    ordinary backoff probes only end the wait and preserve frame errors. Only an
  *    accepted frame or manual retry (retryNow/play while playing) starts the cycle budget over (B-035, S-8).
+ *    Every sleep wake refreshes the heartbeat before further work or probing.
  *  - An OFF result other than certain error owes ON until QoS-1 confirmation.
  *    The scheduler retains the original plug across runtime replacement and
  *    retirement. Reconnects wake ON retries only; offline retries wait 30 s.
@@ -287,7 +288,7 @@ export class RenderLoop {
     this.report({ appliedBrightness: this.percent(native) });
   }
 
-  /** @param {number} ms */
+  /** Refresh liveness on every wake, including an interrupted wait. @param {number} ms */
   async sleep(ms) {
     if (!this.running) return false;
     const controller = new AbortController();
@@ -296,6 +297,7 @@ export class RenderLoop {
     const elapsed = await this.deps.clock.sleep(ms, controller.signal);
     if (this.sleeper === controller) this.sleeper = null;
     this.nextWakeAt = null;
+    this.lastTickAt = this.iso();
     return elapsed;
   }
 
@@ -337,7 +339,12 @@ export class RenderLoop {
     health.powerCycles(device.name, { count: this.cycles, exhausted: false });
     // Once OFF may have been sent, ON is owed even if stop interrupts the wait.
     await this.sleep(plug.offWaitMs ?? LOOP_DEFAULTS.powerOffWaitMs);
-    if (await this.restorePlugOn() && this.running) await this.sleep(plug.onWaitMs ?? LOOP_DEFAULTS.powerOnWaitMs);
+    if (await this.restorePlugOn() && this.running) {
+      const wait = plug.onWaitMs ?? LOOP_DEFAULTS.powerOnWaitMs;
+      // Confirmed ON replaces its publish deadline with the remaining recovery wait.
+      this.report({ phase: "retrying", nextRetryAt: new Date(this.deps.clock.now() + wait).toISOString() });
+      await this.sleep(wait);
+    }
     this.reinit = true;
     this.appliedNative = null;
     this.errors = this.deviceErrors = 0;

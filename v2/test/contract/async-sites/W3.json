@@ -90,7 +90,7 @@
       "test": "test/smoke/drivers-render.test.js: previews in order:"
     },
     {
-      "site": "src/render/render-loop.js:171",
+      "site": "src/render/render-loop.js:172",
       "id": "timer:this.deps.clock.sleep#1",
       "input": "pacing, stop deadline or plug wait",
       "metadata": "runtime token and target version; scheduler-owned original plug debt shared across replacements",
@@ -98,15 +98,15 @@
       "test": "test/smoke/smoke.test.js: stop: the process ends"
     },
     {
-      "site": "src/render/render-loop.js:296",
+      "site": "src/render/render-loop.js:297",
       "id": "timer:this.deps.clock.sleep#2",
-      "input": "pacing, stop deadline or plug wait",
+      "input": "frame pacing, quiet/backoff/exhausted probe or plug OFF/ON wait wake",
       "metadata": "runtime token and target version; scheduler-owned original plug debt shared across replacements",
-      "fence": "running/version fence reports; accepted frames and manual retry reset cycle budget; ordinary good probes preserve frame errors; exhausted probe resets only errors; display work waits for confirmed owed ON",
-      "test": "test/smoke/drivers-render.test.js: backoff 1, 2, 4"
+      "fence": "running/version fence reports; accepted frames and manual retry reset cycle budget; ordinary good probes preserve frame errors; exhausted probe resets only errors; display work waits for confirmed owed ON; every sleep wake refreshes heartbeat before work/probing, preserving the exhausted cycle budget; confirmed ON reports the on-wait end",
+      "test": "test/smoke/drivers-render.test.js: slow exhausted probes preserve the cycle budget"
     },
     {
-      "site": "src/render/render-loop.js:408",
+      "site": "src/render/render-loop.js:415",
       "id": "work:this.deps.scenes.acquire#1",
       "input": "scene instance acquired asynchronously",
       "metadata": "runtime token and target version; scheduler-owned original plug debt shared across replacements",
