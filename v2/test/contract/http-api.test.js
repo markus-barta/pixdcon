@@ -1,15 +1,20 @@
 /**
  * Test kind 2 of 3 (API and MQTT contract): HTTP API and live channel.
  *
- * What exists now keeps the route table honest: every documented route is
- * declared once and says 501 until it is built, and the error envelope holds.
- * Phase 3 replaces the todo entries. Tests talk to pixdcon 2 from the outside
- * only. Owner: API + live channel worker.
+ * Routes, SSE, position headers and v1 wire shapes exercised over loopback.
+ * Recorded store views isolate W4's transport from W1/W3's unfinished stores.
+ * Remaining integration todos name their blockers. Owner: API + live channel worker.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import {
+  readFile,
+  readdir,
+  realpath,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
@@ -150,7 +155,10 @@ test("v1 routes: request and answer shapes of all 18 routes match the matrix (A-
       clock: { saved: { x: 2 }, overlay: {}, effective: { x: 2 } },
     },
   });
-  api.deps.settings.state = () => ({ values: { old: { saved: 1 } } });
+  api.deps.settings.state = () => ({
+    values: { old: { saved: 1 } },
+    schema: { x: {} },
+  });
   api.deps.settings.save = async (
     /** @type {any} */ _device,
     /** @type {any} */ _scene,
@@ -304,6 +312,11 @@ test("v1 routes: request and answer shapes of all 18 routes match the matrix (A-
     path: `./generated-scenes/${stack.dataDir.split("/").at(-1)}/copy.js`,
   });
   assert.equal(clone.status, 200);
+  assert.equal(
+    (await readdir(resolve(stack.dataDir, "generated-scenes/_backups"))).length,
+    1,
+    "v1 clones retain a source backup",
+  );
   assert.equal(
     V1_ROUTES.length,
     19,
@@ -467,6 +480,8 @@ test("live channel: snapshot first, events in seq order, replay with since, ping
       query: new URLSearchParams(),
     }),
   );
+  assert.equal(slow.destroyed, false, "one buffered write is allowed");
+  api.live.publish("ping", { at: "now" });
   assert.equal(slow.destroyed, true);
 });
 test("live channel: an event carries the device rev; an older answer never overwrites a newer state", async (t) => {
@@ -668,11 +683,39 @@ test("scene copy: the folders in the source's resources.assetDirs are linked bes
   const broken = resolve(stack.dataDir, "broken.js");
   await writeFile(broken, "export default {render(}");
   api.deps.scenes.fileOf = () => broken;
+  api.deps.scenes.get = (/** @type {string} */ key) =>
+    key === "home3"
+      ? {
+          name: "broken",
+          resources: { assetDirs: [], stateFields: [] },
+        }
+      : undefined;
   const bad = await api.api("/api/v2/scenes/home3/copy", "POST", {
     targetKey: "broken-copy",
   });
-  assert.equal(bad.status, 500);
+  assert.equal(bad.status, 400);
   assert.equal(raw.scenes["broken-copy"], undefined);
+  await writeFile(broken, 'export default {name:"fixed",render(){}};');
+  const fixed = await api.api("/api/v2/scenes/home3/copy", "POST", {
+    targetKey: "broken-copy",
+  });
+  assert.equal(
+    fixed.status,
+    201,
+    "a failed module cache entry does not poison a retry",
+  );
+  const sourceText = await readFile(broken, "utf8");
+  const replacement = await api.api("/api/v2/scenes/home3/copy", "POST", {
+    replace: true,
+  });
+  assert.equal(replacement.status, 201);
+  assert.equal(replacement.body.scene.key, "home3");
+  assert.equal(await readFile(replacement.body.backup, "utf8"), sourceText);
+  assert.equal(
+    await readFile(broken, "utf8"),
+    sourceText,
+    "replace repoints the key and keeps the original file",
+  );
 });
 // Blocker: W3 HealthModel.controller and Scheduler.status remain skeletons.
 test.todo(
@@ -787,6 +830,7 @@ async function recordedApi(t, options = {}) {
     rev: 7,
     origin: "config",
     type: "pixoo",
+    comment: "",
     desired: {
       scene: { scene: "funkeykid", source: "config" },
       mode: { value: "play" },
@@ -1075,4 +1119,204 @@ test("v2 routes: overlays preserve confirmed; raw config, settings and preview b
     ).status,
     304,
   );
+});
+
+test("HTTP boundaries: HEAD, static ETag, malformed paths, invalid JSON, oversized bodies and JSON errors", async (t) => {
+  const api = await recordedApi(t);
+  api.server.route("POST", "/api/_echo", async (ctx) => await ctx.body());
+  api.server.route("GET", "/api/_circular", () => {
+    const value = { self: /** @type {any} */ (null) };
+    value.self = value;
+    return value;
+  });
+  const head = await fetch(`${api.base}/api/v2/devices`, { method: "HEAD" });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+  assert.equal(head.headers.get("x-pixdcon-position"), "abcd1234-0");
+  const staticGet = await fetch(api.base + "/");
+  const etag = staticGet.headers.get("etag");
+  assert.ok(etag);
+  await staticGet.text();
+  const staticHead = await fetch(api.base + "/", { method: "HEAD" });
+  assert.equal(staticHead.status, 200);
+  assert.equal(staticHead.headers.get("etag"), etag);
+  assert.equal(await staticHead.text(), "");
+  assert.equal(
+    (await fetch(api.base + "/", { headers: { "If-None-Match": `W/${etag}` } }))
+      .status,
+    304,
+  );
+  assert.equal(
+    (await fetch(api.base + "/api/v2/events?session=head", { method: "HEAD" }))
+      .status,
+    200,
+  );
+  assert.deepEqual(api.live.status(), { clients: 0, sessions: [] });
+  assert.equal((await fetch(api.base + "/api/v2/devices/%ZZ")).status, 400);
+  for (const [body, expected] of [
+    ["{", 400],
+    ["[]", 400],
+    [`{"x":"${"a".repeat(1024 * 1024)}"}`, 413],
+  ]) {
+    const response = await fetch(api.base + "/api/_echo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: String(body),
+    });
+    assert.equal(response.status, expected);
+    assert.match(String(response.headers.get("x-request-id")), /^\d+$/);
+  }
+  const wrong = await fetch(api.base + "/api/v2/overlays/id", {
+    method: "DELETE",
+  });
+  assert.equal(wrong.status, 415);
+  const wrongType = await fetch(api.base + "/api/_echo", {
+    method: "POST",
+    headers: { "Content-Type": "application/json-patch" },
+    body: "{}",
+  });
+  assert.equal(wrongType.status, 415);
+  const circular = await api.api("/api/_circular");
+  assert.equal(circular.status, 500);
+  assert.equal(circular.body.code, "internal");
+});
+
+test("HTTP bind retry: port conflicts retry after 30 s; stop cancels the wait and removes its timer", async (t) => {
+  const clock = manualClock();
+  const logger = createLogger({ level: "error", sink: { out() {}, err() {} } });
+  const first = new HttpServer({
+    port: 0,
+    host: "127.0.0.1",
+    clock,
+    logger,
+    webRoot: resolve("web"),
+  });
+  const { port } = await first.start();
+  const retry = new HttpServer({
+    port,
+    host: "127.0.0.1",
+    clock,
+    logger,
+    webRoot: resolve("web"),
+  });
+  t.after(async () => {
+    await first.stop();
+    await retry.stop();
+  });
+  const starting = retry.start();
+  for (let i = 0; i < 50 && !clock.pending(); i++)
+    await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(clock.pending(), 1);
+  await first.stop();
+  await clock.advance(29999);
+  assert.equal(retry.server?.listening, false);
+  await clock.advance(1);
+  assert.equal((await starting).port, port);
+  const cancelled = new HttpServer({
+    port,
+    host: "127.0.0.1",
+    clock,
+    logger,
+    webRoot: resolve("web"),
+  });
+  const cancelledStart = assert.rejects(
+    cancelled.start(),
+    (error) => error instanceof HttpError && error.code === "shutting_down",
+  );
+  for (let i = 0; i < 50 && !clock.pending(); i++)
+    await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(clock.pending(), 1);
+  await cancelled.stop();
+  await cancelledStart;
+  assert.equal(clock.pending(), 0);
+});
+
+test("live channel: a large snapshot drains before the next event; previews throttle per device and logs are opt-in", async (t) => {
+  const api = await recordedApi(t);
+  api.device.comment = "x".repeat(128 * 1024);
+  const normal = await stream(t, `${api.base}/api/v2/events`);
+  assert.equal(
+    (await normal.next()).data.devices[0].comment.length,
+    128 * 1024,
+  );
+  const logs = await stream(t, `${api.base}/api/v2/events?log=1`);
+  await logs.next();
+  api.deps.logger.error("one log line");
+  assert.equal((await logs.next()).type, "log");
+  const frame = {
+    device: "pixoo-189",
+    width: 1,
+    height: 1,
+    rgb: Uint8Array.of(1, 2, 3),
+    seq: 1,
+    source: "runtime",
+    receivedAt: "first",
+  };
+  api.deps.previews.emit("frame", frame);
+  api.deps.previews.emit("frame", { ...frame, seq: 2 });
+  assert.equal((await normal.next()).data.frameSeq, 1);
+  assert.equal((await logs.next()).type, "preview");
+  assert.equal(
+    api.live.seq(),
+    2,
+    "one log and one frame; second frame was skipped",
+  );
+  await api.clock.advance(1000);
+  api.deps.previews.emit("frame", { ...frame, seq: 3, receivedAt: "later" });
+  assert.equal((await normal.next()).data.receivedAt, "later");
+});
+
+test("v1 compatibility edges: missing scene clears; settings replace valid schema keys; mode arrays are refused", async (t) => {
+  const api = await recordedApi(t);
+  /** @type {unknown[]} */ const scenes = [];
+  api.deps.state.chooseScene = async (
+    /** @type {string} */ _name,
+    /** @type {string|null} */ scene,
+  ) => {
+    scenes.push(scene);
+    return { view: api.device, persisted: true, notSavedReason: null };
+  };
+  assert.deepEqual(
+    (await api.api("/api/scene", "POST", { deviceName: "pixoo-189" })).body,
+    { ok: true },
+  );
+  assert.deepEqual(scenes, [null]);
+  api.deps.settings.state = () => ({
+    schema: { good: {}, bad: {}, old: {} },
+    values: { old: { saved: 1 }, bad: { saved: 7 } },
+  });
+  /** @type {any[]} */ const saves = [];
+  api.deps.settings.save = async (
+    /** @type {string} */ _device,
+    /** @type {string} */ _scene,
+    /** @type {any} */ change,
+  ) => {
+    saves.push(change);
+    return saves.length === 1
+      ? { state: { values: {} }, rejected: { bad: "invalid" } }
+      : { state: { values: { good: { saved: 3 } } }, rejected: {} };
+  };
+  const result = await api.api("/api/scene-settings/save", "POST", {
+    deviceName: "pixoo-189",
+    sceneName: "clock",
+    values: { good: 2, bad: "invalid", unknown: 9 },
+  });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { ok: true, saved: { good: 3 } });
+  assert.deepEqual(saves, [
+    { set: { good: 2, bad: "invalid" }, reset: ["old"] },
+    { set: { good: 2 }, reset: ["old", "bad"] },
+  ]);
+  for (const [path, body] of [
+    ["/api/mode", { deviceName: "pixoo-189", mode: ["play"] }],
+    ["/api/v2/devices/pixoo-189/mode", { mode: ["play"] }],
+  ]) {
+    const response = await api.api(
+      String(path),
+      path === "/api/mode" ? "POST" : "PUT",
+      body,
+    );
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, "invalid_mode");
+  }
 });

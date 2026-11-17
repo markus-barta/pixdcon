@@ -246,7 +246,7 @@ export class StatusPublisher {
     this.errorCount = 0;
     /** @type {{message: string, timestamp: string}|null} */
     this.lastError = null;
-    /** @type {Map<string, {at: string, count: number}>} */
+    /** @type {Map<string, {at: string, count: number, message: string}>} */
     this.errors = new Map();
     /** @type {Array<() => void>} */
     this.stops = [];
@@ -261,7 +261,10 @@ export class StatusPublisher {
     this.running = true;
     /** @param {import("node:events").EventEmitter} source @param {string} event */
     const follow = (source, event) => {
-      const changed = () => this.#request();
+      const changed = () => {
+        this.#observeErrors();
+        this.#request();
+      };
       source.on(event, changed);
       this.stops.push(() => source.off(event, changed));
     };
@@ -293,29 +296,7 @@ export class StatusPublisher {
       name: device.name,
       health: this.deps.state.get(device.name)?.health,
     }));
-    for (const { name, health } of states) {
-      const previous = this.errors.get(name);
-      if (
-        health?.lastError &&
-        (!previous ||
-          health.lastError.at !== previous.at ||
-          health.consecutiveErrors > previous.count)
-      ) {
-        this.errorCount += Math.max(
-          1,
-          health.consecutiveErrors - (previous?.count ?? 0),
-        );
-        this.lastError = {
-          message: health.lastError.message,
-          timestamp: health.lastError.at,
-        };
-      }
-      if (health)
-        this.errors.set(name, {
-          at: health.lastError?.at ?? "",
-          count: health.consecutiveErrors,
-        });
-    }
+    this.#observeErrors();
     return {
       status: this.running
         ? states.some(
@@ -378,14 +359,48 @@ export class StatusPublisher {
     );
   }
 
-  #devices() {
-    return this.deps.runtime
-      .get()
-      .devices.map((device) => ({
+  // Observe every state event, including while a previous MQTT batch waits
+  // for acknowledgements. Sampling only at publish time loses quick recovery.
+  #observeErrors() {
+    const states = this.#devices()
+      .filter((device) => device.driven)
+      .map((device) => ({
         name: device.name,
-        driven: device.enabled && device.output.mode === "drive",
-        health: this.deps.state.get(device.name)?.health.state ?? null,
+        health: this.deps.state.get(device.name)?.health,
       }));
+    for (const { name, health } of states) {
+      const previous = this.errors.get(name);
+      if (
+        health?.lastError &&
+        (!previous ||
+          health.lastError.at !== previous.at ||
+          health.lastError.message !== previous.message ||
+          health.consecutiveErrors > previous.count)
+      ) {
+        this.errorCount += Math.max(
+          1,
+          health.consecutiveErrors - (previous?.count ?? 0),
+        );
+        this.lastError = {
+          message: health.lastError.message,
+          timestamp: health.lastError.at,
+        };
+      }
+      if (health)
+        this.errors.set(name, {
+          at: health.lastError?.at ?? "",
+          count: health.consecutiveErrors,
+          message: health.lastError?.message ?? "",
+        });
+    }
+  }
+
+  #devices() {
+    return this.deps.runtime.get().devices.map((device) => ({
+      name: device.name,
+      driven: device.enabled && device.output.mode === "drive",
+      health: this.deps.state.get(device.name)?.health.state ?? null,
+    }));
   }
 
   #request() {

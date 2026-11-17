@@ -67,7 +67,7 @@ export class LiveChannel {
     this.position = 0;
     /** @type {Array<{seq: number, type: LiveEvent["type"], wire: string}>} */
     this.ring = [];
-    /** @type {Map<import("node:http").ServerResponse, {session: string, log: boolean}>} */
+    /** @type {Map<import("node:http").ServerResponse, {session: string, log: boolean, blocked: boolean}>} */
     this.clients = new Map();
     /** @type {Map<string, number>} */
     this.sessions = new Map();
@@ -83,6 +83,14 @@ export class LiveChannel {
    */
   handle(ctx) {
     const { res, req, query } = ctx;
+    if (req.method === "HEAD") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache",
+      });
+      res.end();
+      return HANDLED;
+    }
     const session = query.get("session") ?? "";
     const count = this.sessions.get(session) ?? 0;
     // Build before taking over the response: a failed snapshot is a JSON error.
@@ -115,7 +123,11 @@ export class LiveChannel {
         ];
     if (session && count === 0) this.deps.onSession(session, true);
     if (session) this.sessions.set(session, count + 1);
-    this.clients.set(res, { session, log: query.get("log") === "1" });
+    this.clients.set(res, {
+      session,
+      log: query.get("log") === "1",
+      blocked: false,
+    });
     res.on("close", () => this.#remove(res));
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
@@ -183,10 +195,19 @@ export class LiveChannel {
     const client = this.clients.get(res);
     if (!client) return false;
     if (event.type === "log" && !client.log) return true;
-    if (res.destroyed || !res.write(event.wire)) {
+    if (res.destroyed || client.blocked) {
       this.#remove(res);
       res.destroy();
       return false;
+    }
+    if (!res.write(event.wire)) {
+      // One bounded write may fill Node's buffer even for a fast reader
+      // (notably a large snapshot). A second event before drain cuts it off.
+      client.blocked = true;
+      res.once("drain", () => {
+        const current = this.clients.get(res);
+        if (current) current.blocked = false;
+      });
     }
     return true;
   }
@@ -273,7 +294,10 @@ export function wireLiveChannel(channel, deps) {
   follow(deps.scenes, "changed", () =>
     channel.publish("scenes", deps.scenes.list()),
   );
-  const config = () => channel.publish("config", deps.config.file());
+  // ConfigFileState carries no separate reload-attempt report. Keep the
+  // declared nullable field explicit; validity/error/loadedAt remain authoritative.
+  const config = () =>
+    channel.publish("config", { ...deps.config.file(), reload: null });
   follow(deps.config, "file", config);
   follow(deps.config, "changed", config);
   if (deps.mqtt)

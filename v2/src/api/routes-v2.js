@@ -368,7 +368,10 @@ export function registerV2Routes(server, deps) {
       deviceCommand(deps, ctx.params.name, async () => {
         const body = await ctx.body();
         keys(body, ["mode"]);
-        if (!["play", "pause", "stop"].includes(String(body.mode)))
+        if (
+          typeof body.mode !== "string" ||
+          !["play", "pause", "stop"].includes(body.mode)
+        )
           throw new HttpError(
             400,
             "invalid_mode",
@@ -434,33 +437,39 @@ export function registerV2Routes(server, deps) {
     },
     "GET /api/v2/devices/:name/settings/:scene": (ctx) =>
       deps.settings.state(ctx.params.name, ctx.params.scene),
-    "PUT /api/v2/devices/:name/settings/:scene": async (ctx) => {
-      const body = await ctx.body();
-      keys(body, ["set", "reset", "session", "draft"]);
-      const change = {};
-      if ("set" in body)
-        Object.assign(change, { set: object(body.set, "set") });
-      if ("reset" in body) {
-        if (
-          !Array.isArray(body.reset) ||
-          body.reset.some((key) => typeof key !== "string")
-        )
-          invalid("reset", "reset must be an array of keys");
-        Object.assign(change, { reset: body.reset });
-      }
-      if ("session" in body || "draft" in body)
-        Object.assign(change, draft(body));
-      const result = await deps.settings.save(
-        ctx.params.name,
-        ctx.params.scene,
-        change,
-      );
-      if (Object.keys(result.rejected).length)
-        throw new HttpError(400, "invalid_field", "Some settings are invalid", {
-          rejected: result.rejected,
-        });
-      return result;
-    },
+    "PUT /api/v2/devices/:name/settings/:scene": (ctx) =>
+      deviceCommand(deps, ctx.params.name, async () => {
+        const body = await ctx.body();
+        keys(body, ["set", "reset", "session", "draft"]);
+        const change = {};
+        if ("set" in body)
+          Object.assign(change, { set: object(body.set, "set") });
+        if ("reset" in body) {
+          if (
+            !Array.isArray(body.reset) ||
+            body.reset.some((key) => typeof key !== "string")
+          )
+            invalid("reset", "reset must be an array of keys");
+          Object.assign(change, { reset: body.reset });
+        }
+        if ("session" in body || "draft" in body)
+          Object.assign(change, draft(body));
+        const result = await deps.settings.save(
+          ctx.params.name,
+          ctx.params.scene,
+          change,
+        );
+        if (Object.keys(result.rejected).length)
+          throw new HttpError(
+            400,
+            "invalid_field",
+            "Some settings are invalid",
+            {
+              rejected: result.rejected,
+            },
+          );
+        return result;
+      }),
     "PUT /api/v2/devices/:name/settings/:scene/preview": async (ctx) => {
       const body = await ctx.body();
       keys(body, ["session", "draft", "values"]);

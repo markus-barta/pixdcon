@@ -1,11 +1,10 @@
 /**
  * Test kind 2 of 3 (API and MQTT contract): what pixdcon 2 publishes.
  *
- * Health, state, config, telemetry and Home Assistant discovery keep their v1
- * topics and fields (matrix C-022 to C-024, C-113 to C-138); the todo entries
- * name the cases. Read with a second client on the in-memory broker. The
- * two real tests pin the finished rules: when a per-device availability is
- * retired, and when an entity expires.
+ * Controller payloads and availability use a real loopback broker and a
+ * second MQTT client, with recorded store views and injected publish outcomes.
+ * Discovery identity is compared directly with the read-only v1 builders.
+ * Remaining telemetry/bootstrap integrations name their W1/W3 blockers.
  * Owner: API + live channel worker.
  */
 
@@ -473,7 +472,6 @@ test("config/effective: the running config in v1's shape includes a blob-only de
       type: "pixoo",
       ip: "127.0.0.1",
       scene: "radio",
-      origin: "blob",
     },
   ]);
   const summary = JSON.parse(f.broker.retained()[f.topics.config]);
@@ -492,10 +490,13 @@ test.todo(
 
 /** Real loopback MQTT transport; recorded W1/W3 views and injected publish outcomes.
  * @param {import("node:test").TestContext} t
+ * @param {{shadow?: boolean, statusBase?: string}} [options]
  */
-async function publications(t) {
+async function publications(t, options = {}) {
   const broker = await startMemoryBroker();
-  const topics = createTopics();
+  const topics = createTopics(
+    options.statusBase ? { statusBaseTopic: options.statusBase } : {},
+  );
   const clock = manualClock();
   const logger = createLogger({ level: "error", sink: { out() {}, err() {} } });
   const writer = await connectAsync(broker.url, {
@@ -511,6 +512,7 @@ async function publications(t) {
   const gateway = Object.assign(new EventEmitter(), {
     connected: true,
     outcome: "confirmed",
+    hold: /** @type {Promise<void>|null} */ (null),
     status: () => ({ state: "connected" }),
     async publish(
       /** @type {string} */ topic,
@@ -519,14 +521,16 @@ async function publications(t) {
     ) {
       if (!gateway.connected)
         return { ok: false, outcome: "offline", connection: 1, error: null };
+      const outcome = gateway.outcome;
       await writer.publishAsync(
         topic,
         typeof payload === "string" ? payload : JSON.stringify(payload),
         options,
       );
+      if (gateway.hold && topic.endsWith("/availability")) await gateway.hold;
       return {
-        ok: gateway.outcome === "confirmed",
-        outcome: gateway.outcome,
+        ok: outcome === "confirmed",
+        outcome,
         connection: 1,
         error: null,
       };
@@ -557,6 +561,8 @@ async function publications(t) {
       },
     ]),
   );
+  if (options.shadow)
+    for (const device of devices) device.output.mode = "shadow";
   const runtime = Object.assign(new EventEmitter(), {
     get: () => ({ devices }),
   });
@@ -576,7 +582,6 @@ async function publications(t) {
           type: "pixoo",
           ip: "127.0.0.1",
           scene: "radio",
-          origin: "blob",
         },
         { name: "S", type: "pixoo", ip: "127.0.0.1" },
         { name: "disabled", type: "pixoo", ip: "127.0.0.1" },
@@ -616,3 +621,80 @@ async function publications(t) {
     publisher,
   };
 }
+
+test("status publisher: an in-flight online is owed before its acknowledgement; queued changes use current output and count intervening errors", async (t) => {
+  const f = await publications(t);
+  /** @type {() => void} */ let release = () => {};
+  f.gateway.hold = new Promise((resolve) => {
+    release = () => resolve(undefined);
+  });
+  f.gateway.outcome = "offline";
+  const observed = new Promise((resolve) =>
+    f.reader.on("message", (topic, payload) => {
+      if (
+        topic === f.topics.availability("P") &&
+        payload.toString() === "online"
+      )
+        resolve(undefined);
+    }),
+  );
+  f.state.emit("device", f.states.get("P"));
+  await observed;
+  assert.equal(owesOffline(f.publisher.ledger, "P"), true);
+  const u = f.states.get("U");
+  for (let errors = 1; errors <= 3; errors++) {
+    u.health.consecutiveErrors = errors;
+    u.health.lastError = {
+      message: "failed",
+      at: new Date(f.clock.now()).toISOString(),
+    };
+    f.state.emit("device", u);
+  }
+  u.health.consecutiveErrors = 0;
+  f.state.emit("device", u);
+  const p = f.devices.find((d) => d.name === "P");
+  assert.ok(p);
+  p.output.mode = "shadow";
+  f.runtime.emit("changed", {});
+  f.gateway.hold = null;
+  release();
+  await f.publisher.pending;
+  assert.equal(f.broker.retained()[f.topics.availability("P")], "offline");
+  assert.equal(
+    owesOffline(f.publisher.ledger, "P"),
+    true,
+    "unconfirmed offline still owed",
+  );
+  assert.equal(JSON.parse(f.broker.retained()[f.topics.health]).errorCount, 3);
+  f.gateway.outcome = "confirmed";
+  f.gateway.emit("connect", { connection: 2 });
+  await f.publisher.pending;
+  assert.equal(owesOffline(f.publisher.ledger, "P"), false);
+});
+
+test("status publisher: shadow-only output never claims v1 controller topics; a separate status base remains observable", async (t) => {
+  const shadow = await publications(t, { shadow: true });
+  assert.deepEqual(shadow.broker.retained(), {});
+  shadow.gateway.emit("connect", { connection: 2 });
+  await shadow.publisher.pending;
+  await shadow.clock.advance(30000);
+  await shadow.publisher.pending;
+  await shadow.publisher.stop();
+  assert.deepEqual(shadow.broker.retained(), {});
+  const isolated = await publications(t, {
+    shadow: true,
+    statusBase: "home/hsb1/pixdcon2-edge",
+  });
+  assert.deepEqual(
+    JSON.parse(isolated.broker.retained()[isolated.topics.state]).devices,
+    [],
+  );
+  assert.equal(
+    isolated.broker.retained()["home/hsb1/pixdcon/health"],
+    undefined,
+  );
+  assert.equal(
+    isolated.broker.retained()[isolated.topics.availability("S")],
+    undefined,
+  );
+});

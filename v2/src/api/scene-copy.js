@@ -1,7 +1,7 @@
 /** Scene copies: preserve module imports and linked resources; import before registration. */
 import {
   copyFile,
-  lstat,
+  stat,
   mkdir,
   readFile,
   realpath,
@@ -29,8 +29,10 @@ function sceneKey(value) {
   return key;
 }
 
-/** @param {import("./routes-v1.js").ApiDeps} deps @param {string} key @param {Record<string, unknown>} body */
-export function copyScene(deps, key, body) {
+/** @param {import("./routes-v1.js").ApiDeps} deps @param {string} key @param {Record<string, unknown>} body
+ * @param {{backupSource?: boolean}} [options] v1 backs up ordinary clones too
+ */
+export function copyScene(deps, key, body, options = {}) {
   return deviceCommand(deps, "@scene-copy", async () => {
     keys(body, ["targetKey", "name", "replace"]);
     if ("replace" in body && typeof body.replace !== "boolean")
@@ -86,10 +88,7 @@ export function copyScene(deps, key, body) {
         invalid("resources", "Asset folders must be names beside the source");
       const original = join(dirname(file), resource);
       const link = join(generated, resource);
-      if (
-        !(await lstat(original)).isDirectory() &&
-        !(await lstat(original)).isSymbolicLink()
-      )
+      if (!(await stat(original)).isDirectory())
         invalid("resources", "Asset resource must be a directory");
       try {
         await symlink(original, link, "dir");
@@ -106,9 +105,10 @@ export function copyScene(deps, key, body) {
       }
       linkedAssetDirs.push(resource);
     }
-    const backup = body.replace
-      ? join(backups, `${key}-${stamp}-${basename(file)}`)
-      : null;
+    const backup =
+      body.replace || options.backupSource
+        ? join(backups, `${key}-${stamp}-${basename(file)}`)
+        : null;
     if (backup) await copyFile(file, backup);
     try {
       await writeFile(destination, content, { encoding: "utf8", flag: "wx" });
@@ -118,7 +118,19 @@ export function copyScene(deps, key, body) {
       throw error;
     }
     try {
-      const loaded = (await import(pathToFileURL(destination).href)).default;
+      let loaded;
+      try {
+        loaded = (
+          await import(`${pathToFileURL(destination).href}?copy=${stamp}`)
+        ).default;
+      } catch {
+        throw new HttpError(
+          400,
+          "invalid_field",
+          "The copied scene could not be loaded",
+          { field: "scene" },
+        );
+      }
       if (!loaded || typeof loaded.render !== "function")
         invalid("scene", "Copied scene needs render()");
       await deps.config.update((raw) => {

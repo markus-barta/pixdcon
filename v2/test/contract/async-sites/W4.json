@@ -2,7 +2,7 @@
   "owner": "W4",
   "rows": [
     {
-      "site": "src/api/http-server.js:147",
+      "site": "src/api/http-server.js:154",
       "id": "then:this.#handle().catch#1",
       "input": "a request handler that failed after its answer had started",
       "metadata": "none",
@@ -11,7 +11,7 @@
       "why": "the failure of the request that is being answered: it is logged and the half-sent response is closed; no state of pixdcon changes"
     },
     {
-      "site": "src/api/http-server.js:155",
+      "site": "src/api/http-server.js:162",
       "id": "listener:server.on(\"connection\")#1",
       "input": "a TCP connection opened",
       "metadata": "none",
@@ -20,7 +20,7 @@
       "why": "bookkeeping of open sockets, so that stop() can end them; no state of pixdcon changes"
     },
     {
-      "site": "src/api/http-server.js:157",
+      "site": "src/api/http-server.js:164",
       "id": "listener:socket.on(\"close\")#1",
       "input": "a TCP connection closed",
       "metadata": "none",
@@ -29,16 +29,39 @@
       "why": "bookkeeping of open sockets, so that stop() can end them; no state of pixdcon changes"
     },
     {
-      "site": "src/api/http-server.js:161",
+      "site": "src/api/http-server.js:189",
       "id": "listener:server.once(\"error\")#1",
-      "input": "the port cannot be bound",
-      "metadata": "none",
-      "fence": "none",
-      "test": "test/smoke/smoke.test.js: harness: a stack that fails on the way up stops what it had started",
-      "why": "start() rejects with the error; nothing is tried again by itself in the skeleton (the retry of A-117 is a phase-3 item and will be a timer site)"
+      "input": "a failed bind",
+      "metadata": "current start attempt",
+      "fence": "the attempt settles once; only address-in-use or permission errors retry; stop aborts its retry timer",
+      "test": "test/contract/http-api.test.js: HTTP bind retry:"
     },
     {
-      "site": "src/api/http-server.js:339",
+      "site": "src/api/http-server.js:190",
+      "id": "listener:server.once(\"listening\")#1",
+      "input": "bind completion, bind failure or cancellation",
+      "metadata": "the start attempt and its abort signal",
+      "fence": "the start attempt removes listeners when settled; stop aborts the attempt and the retry sleep; the timer only paces retry",
+      "test": "test/contract/http-api.test.js: HTTP bind retry:"
+    },
+    {
+      "site": "src/api/http-server.js:191",
+      "id": "listener:binding.signal.addEventListener(\"abort\")#1",
+      "input": "bind completion, bind failure or cancellation",
+      "metadata": "the start attempt and its abort signal",
+      "fence": "the start attempt removes listeners when settled; stop aborts the attempt and the retry sleep; the timer only paces retry",
+      "test": "test/contract/http-api.test.js: HTTP bind retry:"
+    },
+    {
+      "site": "src/api/http-server.js:201",
+      "id": "timer:clock.sleep#1",
+      "input": "bind completion, bind failure or cancellation",
+      "metadata": "the start attempt and its abort signal",
+      "fence": "the start attempt removes listeners when settled; stop aborts the attempt and the retry sleep; the timer only paces retry",
+      "test": "test/contract/http-api.test.js: HTTP bind retry:"
+    },
+    {
+      "site": "src/api/http-server.js:415",
       "id": "iterate:for await#1",
       "input": "the body of a write request, chunk by chunk",
       "metadata": "none of its own: the chunks belong to the request that is being read",
@@ -47,7 +70,7 @@
       "why": "read inside the request that asked for it, up to 1 MiB; the request as a whole is the input, and it is fenced where its route runs (the route rows of routes-v1.js and routes-v2.js)"
     },
     {
-      "site": "src/api/live-channel.js:119",
+      "site": "src/api/live-channel.js:131",
       "id": "listener:res.on(\"close\")#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -56,7 +79,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:131",
+      "site": "src/api/live-channel.js:143",
       "id": "timer:this.deps.clock.every#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -65,7 +88,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:132",
+      "site": "src/api/live-channel.js:144",
       "id": "work:this.publish#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -74,7 +97,16 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:243",
+      "site": "src/api/live-channel.js:207",
+      "id": "listener:res.once(\"drain\")#1",
+      "input": "the response buffer drained",
+      "metadata": "the response of this stream",
+      "fence": "only the still-current response may resume; a second event before drain closes it",
+      "test": "test/contract/http-api.test.js: live channel: a large snapshot",
+      "was": "LiveChannel.handle"
+    },
+    {
+      "site": "src/api/live-channel.js:264",
       "id": "listener:source.on#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -83,7 +115,7 @@
       "was": "wireLiveChannel"
     },
     {
-      "site": "src/api/live-channel.js:246",
+      "site": "src/api/live-channel.js:267",
       "id": "work:channel.publish#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -92,7 +124,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:247",
+      "site": "src/api/live-channel.js:268",
       "id": "work:channel.publish#2",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -101,7 +133,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:249",
+      "site": "src/api/live-channel.js:270",
       "id": "work:channel.publish#3",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -110,7 +142,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:257",
+      "site": "src/api/live-channel.js:278",
       "id": "work:channel.publish#4",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -119,7 +151,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:268",
+      "site": "src/api/live-channel.js:289",
       "id": "work:channel.publish#5",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -128,7 +160,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:271",
+      "site": "src/api/live-channel.js:292",
       "id": "work:channel.publish#6",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -137,7 +169,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:274",
+      "site": "src/api/live-channel.js:295",
       "id": "work:channel.publish#7",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -146,7 +178,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:276",
+      "site": "src/api/live-channel.js:300",
       "id": "work:channel.publish#8",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -155,7 +187,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:280",
+      "site": "src/api/live-channel.js:304",
       "id": "work:channel.publish#9",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -164,7 +196,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:281",
+      "site": "src/api/live-channel.js:305",
       "id": "work:channel.publish#10",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -173,7 +205,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/routes-v1.js:521",
+      "site": "src/api/routes-v1.js:548",
       "id": "route:server.route#1",
       "input": "HTTP requests: questions and commands of pages and of outside callers",
       "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
@@ -182,7 +214,7 @@
       "was": "${method} ${path}"
     },
     {
-      "site": "src/api/routes-v2.js:526",
+      "site": "src/api/routes-v2.js:535",
       "id": "work:deps.config.reload#1",
       "input": "HTTP request",
       "metadata": "device identity, session and draft; position header",
@@ -191,7 +223,7 @@
       "was": "${method} ${path}"
     },
     {
-      "site": "src/api/routes-v2.js:554",
+      "site": "src/api/routes-v2.js:563",
       "id": "route:server.route#1",
       "input": "HTTP requests: questions and commands of pages and of outside callers",
       "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
@@ -200,7 +232,7 @@
       "was": "${method} ${path}"
     },
     {
-      "site": "src/api/scene-copy.js:121",
+      "site": "src/api/scene-copy.js:124",
       "id": "import:import#1",
       "input": "import of the requested copied scene",
       "metadata": "request and per-device lane identity",
@@ -208,7 +240,7 @@
       "test": "test/contract/http-api.test.js: scene copy:"
     },
     {
-      "site": "src/mqtt/status-publisher.js:265",
+      "site": "src/mqtt/status-publisher.js:268",
       "id": "listener:source.on#1",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
@@ -217,7 +249,7 @@
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:272",
+      "site": "src/mqtt/status-publisher.js:275",
       "id": "timer:this.deps.clock.every#1",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
@@ -226,7 +258,7 @@
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:396",
+      "site": "src/mqtt/status-publisher.js:411",
       "id": "then:this.#flush().catch#1",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
@@ -235,7 +267,7 @@
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:399",
+      "site": "src/mqtt/status-publisher.js:414",
       "id": "then:this.#flush().catch().finally#1",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
@@ -244,7 +276,7 @@
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:436",
+      "site": "src/mqtt/status-publisher.js:451",
       "id": "work:mqtt.publish#1",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
@@ -253,7 +285,7 @@
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:443",
+      "site": "src/mqtt/status-publisher.js:458",
       "id": "work:mqtt.publish#2",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
@@ -262,7 +294,7 @@
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:450",
+      "site": "src/mqtt/status-publisher.js:465",
       "id": "work:mqtt.publish#3",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
@@ -271,7 +303,7 @@
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:462",
+      "site": "src/mqtt/status-publisher.js:477",
       "id": "work:mqtt.publish#4",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",
@@ -280,7 +312,7 @@
       "was": "StatusPublisher.start"
     },
     {
-      "site": "src/mqtt/status-publisher.js:475",
+      "site": "src/mqtt/status-publisher.js:490",
       "id": "work:mqtt.publish#5",
       "input": "current store state, gateway connect, or republish tick",
       "metadata": "current output and measured health; availability send number",

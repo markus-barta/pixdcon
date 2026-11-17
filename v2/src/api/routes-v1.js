@@ -120,7 +120,7 @@ export const V1_ROUTES = Object.freeze([
     ok: "{ok: true, device: saved device}",
     errors:
       "400 invalid_field, 404 unknown_device, 409 config_invalid or overlay_only_device",
-    rows: "A-138",
+    rows: "B-079, S-1",
   },
   {
     method: "POST",
@@ -348,7 +348,11 @@ export function registerV1Routes(server, deps) {
       try {
         const body = await ctx.body();
         const name = text(body.deviceName, "deviceName");
-        if (body.scene !== null && typeof body.scene !== "string")
+        if (
+          body.scene !== undefined &&
+          body.scene !== null &&
+          typeof body.scene !== "string"
+        )
           invalid("scene", "scene must be a string or null");
         return await deviceCommand(deps, name, async () => {
           const result = await deps.state.chooseScene(
@@ -376,13 +380,32 @@ export function registerV1Routes(server, deps) {
       const values = object(body.values, "values");
       return deviceCommand(deps, device, async () => {
         const before = deps.settings.state(device, scene);
-        const reset = Object.keys(before.values).filter(
-          (key) => "saved" in before.values[key] && !Object.hasOwn(values, key),
+        // v1 keeps schema keys whose values normalise and replaces the
+        // saved set. The v2 save validates all keys before applying anything.
+        let set = Object.fromEntries(
+          Object.entries(values).filter(([key]) =>
+            Object.hasOwn(before.schema, key),
+          ),
         );
-        const result = await deps.settings.save(device, scene, {
-          set: values,
-          reset,
+        const resets = () =>
+          Object.keys(before.values).filter(
+            (key) => "saved" in before.values[key] && !Object.hasOwn(set, key),
+          );
+        let result = await deps.settings.save(device, scene, {
+          set,
+          reset: resets(),
         });
+        if (Object.keys(result.rejected).length) {
+          set = Object.fromEntries(
+            Object.entries(set).filter(
+              ([key]) => !Object.hasOwn(result.rejected, key),
+            ),
+          );
+          result = await deps.settings.save(device, scene, {
+            set,
+            reset: resets(),
+          });
+        }
         if (Object.keys(result.rejected).length)
           throw new HttpError(
             400,
@@ -452,6 +475,7 @@ export function registerV1Routes(server, deps) {
         deps,
         text(body.sceneName, "sceneName"),
         options,
+        { backupSource: true },
       );
       return { ok: true, sceneKey: result.scene.key, path: result.path };
     },
@@ -481,7 +505,10 @@ export function registerV1Routes(server, deps) {
     "POST /api/mode": async (ctx) => {
       const body = await ctx.body();
       const name = text(body.deviceName, "deviceName");
-      if (!["play", "pause", "stop"].includes(String(body.mode)))
+      if (
+        typeof body.mode !== "string" ||
+        !["play", "pause", "stop"].includes(body.mode)
+      )
         throw new HttpError(400, "invalid_mode", "Choose play, pause or stop");
       await deviceCommand(deps, name, () =>
         deps.state.setMode(
