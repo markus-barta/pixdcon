@@ -34,6 +34,7 @@
  * @property {string} raw what is in the field
  * @property {unknown} [value] the parsed value, when it parses
  * @property {string} [error] why it does not parse, or why pixdcon rejected it; such an edit is never previewed or saved
+ * @property {boolean} [refused] the error is pixdcon's reason: the preview's answer refused the value (Tick Q2: "pixdcon refused this value: <reason>")
  * @property {number} draft the draft number of this edit: its identity
  */
 
@@ -128,7 +129,10 @@ export function createDraftBook() {
     rejected(sent, reasons) {
       for (const [key, reason] of Object.entries(reasons ?? {})) {
         const edit = edits.get(key);
-        if (edit && edit.draft === sent.get(key)) edit.error = String(reason);
+        if (edit && edit.draft === sent.get(key)) {
+          edit.error = typeof reason === "string" ? reason.trim() : "";
+          edit.refused = true;
+        }
       }
     },
     /**

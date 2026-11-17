@@ -1985,3 +1985,40 @@ test("r3 sweep (Health log): the log load of an opening that was left says nothi
     await drain(calls);
   }
 });
+
+test("r3 Tick (M1, Q1, Q2, default 7): overlay-only texts; 'not previewed · was N' after a failed preview; pixdcon's reason for a refused value; a time field takes HH:MM only and says so beside it", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e, origin: "blob" })]);
+  const timeSchema = { at: { type: "time", label: "At", group: "General", description: "", default: "07:30", placeholder: "" }, n: { type: "int", label: "N", group: "General", description: "", default: 1, placeholder: "" } };
+  const root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  try {
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch, schema: timeSchema }), `${epoch}-11`);
+    await settle();
+    assert.equal(root.querySelector(".scene-note").textContent, "Choosing a scene switches the display now; it is not saved until the device is added to config.json.");
+    assert.equal(root.querySelector(".set-desc").textContent, "Changes show on the display at once. Add the device to config.json to save them.");
+    // default 7: HH:MM as the hint; another form is refused beside the field
+    assert.match(root.querySelector('[data-row="at"] label').textContent, /HH:MM/);
+    typeInto(field(root, "at"), "7.30");
+    await settle();
+    assert.match(root.querySelector('[data-row="at"] .ctl').textContent, /Enter a time as HH:MM, 24-hour\./);
+    assert.equal(previewOf(calls).length, 0, "a time in another form is not previewed");
+    typeInto(field(root, "at"), "07:45");
+    await settle();
+    // Q1: a failed preview reads "not previewed · was …" on the row
+    pending(calls, "PUT", "/settings/clock/preview").answer(500, {});
+    await settle();
+    assert.match(root.querySelector('[data-row="at"] .mk').textContent, /^not previewed · was 07:30$/);
+    // Q2: a value pixdcon refuses, with its reason
+    typeInto(field(root, "n"), "99");
+    await settle();
+    const put = pending(calls, "PUT", "/settings/clock/preview");
+    put.answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 2, schema: timeSchema }), rejected: { n: "above the maximum of 50" }, applied: false }, `${epoch}-12`);
+    await settle();
+    assert.equal(statusText(root), "pixdcon refused this value: above the maximum of 50");
+    assert.match(root.querySelector('[data-row="n"] .ctl').textContent, /pixdcon refused this value: above the maximum of 50/);
+  } finally {
+    devicePage.unmount();
+    await drain(calls);
+  }
+});

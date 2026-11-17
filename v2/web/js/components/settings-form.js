@@ -565,10 +565,13 @@ export function createSettingsForm(host, options) {
   /** @param {string} key @param {any} field @returns {string} */
   function rowHtml(key, field) {
     const id = `sf-${++ids}`;
+    // The format of a time field is its hint (Tick, default 7).
     const range =
-      field.min !== undefined && field.max !== undefined
-        ? `<span class="rng">${esc(grouped(field.min))} – ${esc(grouped(field.max))}</span>`
-        : "";
+      field.type === "time"
+        ? `<span class="rng">HH:MM</span>`
+        : field.min !== undefined && field.max !== undefined
+          ? `<span class="rng">${esc(grouped(field.min))} – ${esc(grouped(field.max))}</span>`
+          : "";
     const hint = field.description ? `<span class="hint2">${esc(field.description)}</span>` : "";
     let control;
     const placeholder = field.placeholder || (field.type === "string" ? "not set" : "");
@@ -603,7 +606,10 @@ export function createSettingsForm(host, options) {
       default:
         control = `<input class="input mono" id="${id}" type="text" data-key="${esc(key)}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ""} aria-describedby="${id}-src">`;
     }
-    return `<div class="fr${field.type === "json" ? " tall" : ""}" data-row="${esc(key)}"><label for="${id}">${esc(field.label || key)}${range}${hint}</label><div class="ctl">${control}</div><div class="mk" id="${id}-src"></div></div>`;
+    // Why a value is not taken stands beside its field: the JSON box has its
+    // own line under the text; every other control has it beside.
+    const why = field.type === "json" ? "" : `<span class="ferr" id="${id}-err" role="alert"></span>`;
+    return `<div class="fr${field.type === "json" ? " tall" : ""}" data-row="${esc(key)}"><label for="${id}">${esc(field.label || key)}${range}${hint}</label><div class="ctl">${control}${why}</div><div class="mk" id="${id}-src"></div></div>`;
   }
 
   /** Build the rows when the schema changed; values are written by render(). */
@@ -630,7 +636,7 @@ export function createSettingsForm(host, options) {
         input,
         check: /** @type {HTMLElement} */ (row.querySelector(".check .t2") ?? undefined),
         hex: /** @type {HTMLInputElement} */ (row.querySelector("[data-hex]") ?? undefined),
-        error: /** @type {HTMLElement} */ (row.querySelector(".jerr") ?? undefined),
+        error: /** @type {HTMLElement} */ (row.querySelector(".jerr, .ferr") ?? undefined),
         marker: /** @type {HTMLElement} */ (row.querySelector(".mk")),
       });
     }
@@ -654,12 +660,14 @@ export function createSettingsForm(host, options) {
   }
 
   /**
-   * Why an edit is not taken, beside its field.
+   * Why an edit is not taken, beside its field: pixdcon's reason when it
+   * refused the value (Tick Q2), else what the form found.
    *
-   * @param {{error?: string}} edit
+   * @param {{error?: string, refused?: boolean}} edit
    * @returns {string}
    */
   function errorText(edit) {
+    if (edit.refused) return edit.error ? `pixdcon refused this value: ${edit.error}` : "pixdcon refused this value.";
     return edit.error ?? "";
   }
 
@@ -667,11 +675,16 @@ export function createSettingsForm(host, options) {
    * The status line for the first edit that is not taken.
    *
    * @param {string} key
-   * @param {{error?: string}} _edit
+   * @param {{error?: string, refused?: boolean}} edit
    * @returns {string}
    */
-  function errorLine(key, _edit) {
-    return `${current?.schema?.[key]?.label ?? key} is not valid JSON, so it is not previewed and nothing can be saved yet`;
+  function errorLine(key, edit) {
+    if (edit.refused && edit.error) return `pixdcon refused this value: ${edit.error}`;
+    const field = current?.schema?.[key];
+    const label = field?.label ?? key;
+    if (field?.type === "json" || edit.refused)
+      return `${label} is not valid JSON, so it is not previewed and nothing can be saved yet`;
+    return `${label} is not valid, so it is not previewed and nothing can be saved yet`;
   }
 
   function render() {
@@ -692,9 +705,13 @@ export function createSettingsForm(host, options) {
       desc.textContent =
         phase === "builtin"
           ? "Built-in modes are drawn by the display itself."
-          : context.shadow
-            ? "Changes show in the preview at once. Saving a setting writes config.json."
-            : "Changes show on the display at once. Saving a setting writes config.json and clears its MQTT overlay.";
+          : context.overlayOnly
+            ? context.shadow
+              ? "Changes show in the preview at once. Add the device to config.json to save them."
+              : "Changes show on the display at once. Add the device to config.json to save them."
+            : context.shadow
+              ? "Changes show in the preview at once. Saving a setting writes config.json."
+              : "Changes show on the display at once. Saving a setting writes config.json and clears its MQTT overlay.";
     }
     // Body
     if (phase === "none" || phase === "builtin") {
@@ -737,7 +754,11 @@ export function createSettingsForm(host, options) {
           let marker;
           let changed = false;
           if (bad) marker = `<span class="bad">not previewed, not saved</span>`;
-          else if (edit || "preview" in layer) {
+          else if (edit && scope.previewFailure) {
+            // The last preview failed: this edit is not on the display (Tick Q1).
+            changed = true;
+            marker = `<span class="warn">not previewed · was ${esc(markValue(field, "overlay" in layer ? layer.overlay : was))}</span>`;
+          } else if (edit || "preview" in layer) {
             changed = true;
             marker = `<span class="chg">previewing · was ${esc(markValue(field, "overlay" in layer ? layer.overlay : was))}</span>`;
           } else if ("overlay" in layer)

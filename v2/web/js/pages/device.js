@@ -294,9 +294,10 @@ function draw(state) {
   const stCls = status.kind === "shadow" ? "st shadow" : `st ${status.dot === "idle" ? "" : status.dot}`.trim();
   setHtml(q(".dev-head .st-slot"), `<span class="${stCls}">${dot(status.dot)}${esc(status.label)}</span>`);
 
-  // Title status line: an end of a settings preview that failed comes
-  // first, with Retry (the operation rule, 3 and 4); then the page
-  // conditions (Tick, item 8; section 13, item 11).
+  // Title status line, on its own line under the title row (Tick L1): an
+  // end of a settings preview that failed comes first, with Retry (the
+  // operation rule, 3 and 4); then the page conditions (Tick, item 8;
+  // section 13, item 11).
   const ended = failedEnds(view)[0];
   const sub = q(".dev-head .sub");
   if (ended) {
@@ -479,9 +480,14 @@ function draw(state) {
   const scene = view.desired?.scene ?? {};
   const choice = view.desired?.choice ?? {};
   const overlaid = scene.source === "overlay" || scene.source === "blob";
+  const overlayOnly = view.origin === "blob";
   setHtml(
     q(".scene-note"),
-    shadow
+    overlayOnly
+      ? shadow
+        ? "Choosing a scene changes the preview; it is not saved until the device is added to config.json."
+        : "Choosing a scene switches the display now; it is not saved until the device is added to config.json."
+      : shadow
       ? "Choosing a scene saves it as your choice; in shadow only the preview changes."
       : view.health?.state === "offline"
         ? "Choosing a scene saves it as your choice; the display shows it once it is back."
@@ -682,7 +688,7 @@ export const page = {
       <a class="crumb" href="#/devices">${icon("left")}Devices</a>
       <div class="missing" hidden></div>
       <div class="dev-head">
-        <div class="dh"><div class="dh-line"><h1 tabindex="-1"></h1><span class="sub" role="status"></span></div><div class="meta"></div></div>
+        <div class="dh"><div class="dh-line"><h1 tabindex="-1"></h1></div><div class="sub" role="status"></div><div class="meta"></div></div>
         <span class="st-slot"></span>
       </div>
       <dl class="facts"></dl>

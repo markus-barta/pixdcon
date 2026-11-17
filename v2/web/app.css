@@ -424,8 +424,11 @@ canvas.pv {
   gap: 6px;
   color: var(--ovr);
 }
-/* The device page's title status line: the slot next to the title that
-   page-level conditions use (Tick, item 8; section 13, item 11). */
+/* The device page's title status line, on its own line under the title
+   row (Tick L1, r3): left-aligned, the small type of the line under the
+   title, its button at the end. The title row keeps its height in every
+   state. Page-level conditions use it (Tick, item 8; section 13, item 11),
+   and so does an end of a settings preview that failed, with Retry. */
 .p-device .dh {
   min-width: 0;
   flex: 1;
@@ -439,34 +442,39 @@ canvas.pv {
 .p-device .dh-line h1 {
   flex: none;
 }
-.p-device .dh-line .sub {
+.p-device .dh .sub {
   color: var(--text-2);
+  font-size: 13px;
+  line-height: 20px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-top: 4px;
 }
-.p-device .dh-line .sub .sub-text {
+.p-device .dh .sub:empty {
+  display: none;
+}
+.p-device .dh .sub .sub-text {
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
-.p-device .dh-line .sub.ovr .i {
+.p-device .dh .sub.ovr .i {
   color: var(--ovr);
 }
-.p-device .dh-line .sub.warn {
+.p-device .dh .sub.warn {
   color: var(--warn);
 }
-.p-device .dh-line .sub.bad {
+.p-device .dh .sub.bad {
   color: var(--bad);
 }
-.p-device .dh-line .sub .btn {
+.p-device .dh .sub .btn {
   flex: none;
   margin-left: 6px;
 }
-.p-device .dh-line .sub .fail {
+.p-device .dh .sub .fail {
   flex: none;
   color: var(--bad);
 }
@@ -486,6 +494,24 @@ canvas.pv {
   align-items: center;
   gap: 6px;
   vertical-align: top;
+}
+/* Why a settings value is not taken, beside its field (Tick, default 7 and
+   Q2); and a row whose last preview failed (Tick Q1). */
+.ferr {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--bad);
+}
+.ferr:empty {
+  display: none;
+}
+.mk .warn {
+  color: var(--warn);
+  font-weight: 500;
 }
 .p-device .st-slot {
   margin-left: auto;
