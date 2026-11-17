@@ -336,23 +336,23 @@
       "test": "test/contract/client.test.js: r3 gate 2.2 (finding 6, failed cleanup):"
     },
     {
-      "site": "web/js/pages/devices.js:436",
+      "site": "web/js/pages/devices.js:463",
       "id": "listener:root.addEventListener(\"change\")#1",
       "input": "a scene chosen in a row's select",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position); the row shows \"Switching to …\" in its reserved line and a failure in its second line",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); slot scene:<device>@<epoch>/<incarnation>, shared with the Device page: a switch from either page owns the row's select, and its failure is said in the select's own line",
+      "test": "test/contract/client.test.js: r3 gate Q6 (one busy owner across pages):"
     },
     {
-      "site": "web/js/pages/devices.js:437",
+      "site": "web/js/pages/devices.js:464",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "Restore in a row",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "one Restore per row at a time (B-176): while it runs the button shows Restoring… in the width it reserves and takes no click, and a click that comes anyway sends nothing and says nothing; the answer goes through store.applyAnswer (decideView), and it clears what an earlier failure of the row said",
-      "test": "test/contract/client.test.js: r2 finding 8, B-176:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); slot restore:<device>@<epoch>/<incarnation>, shared with the Device page's Return to your choice; the busy label stands in the width the button reserves; a failure stands before the button, which stays",
+      "test": "test/contract/client.test.js: r3 gate 2.3 (finding 8, Restore across lives):"
     },
     {
-      "site": "web/js/pages/devices.js:438",
+      "site": "web/js/pages/devices.js:465",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "typing in the empty state's Add device form",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -361,15 +361,15 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/devices.js:439",
+      "site": "web/js/pages/devices.js:466",
       "id": "listener:root.addEventListener(\"submit\")#1",
       "input": "Add device in the empty state",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); slot add-device, shared with Config; the button and its line are drawn from the slot",
+      "test": "test/contract/client.test.js: r3 ops (the operation rule):"
     },
     {
-      "site": "web/js/pages/devices.js:440",
+      "site": "web/js/pages/devices.js:467",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Devices page",
       "metadata": "none: the store calls it after a change it applied",

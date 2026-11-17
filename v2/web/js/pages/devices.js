@@ -11,17 +11,24 @@
  * Table in config order: preview (click enlarges), device, scene select with its source lines, status, brightness, mode. 'Add device' in the title line and as the empty state.
  *
  * Every row keeps its height in every state; values are written into their
- * slots only when they changed. A scene change is one request per row at a
- * time (build rule 2); its answer goes through the store's fence (rule 3);
- * a failure is said in the row's reserved second line (rule 4).
+ * slots only when they changed. A scene change and a Restore are
+ * operations (ops.js) in the slot of the device's life,
+ * `scene:<device>@<epoch>/<incarnation>` and `restore:…`, the same slots
+ * the Device page uses: whichever page started one, both show it busy, a
+ * second start is ignored before anything is said (B-176), and its outcome
+ * is shown only while it is the slot's current one. Answers go through the
+ * store's fence. A failure stays beside its action, which stays (B-175):
+ * "Not switched: …" in the select's own line, "Not restored: …" before the
+ * Restore button.
  *
  * Owner: UI worker.
  */
 
-import { ApiError, isBusy, request } from "../api.js";
+import { request } from "../api.js";
 import { createPixelPreview } from "../components/pixel-preview.js";
 import { dot, icon, lineHtml, setAttr, setClass, setHtml, setStatusLine } from "../dom.js";
 import { esc } from "../format.js";
+import { deviceSlot, forgetIdle, op, start } from "../ops.js";
 import { applyAnswer, getState, subscribe } from "../store.js";
 import {
   brightnessCell,
@@ -61,12 +68,6 @@ let root = null;
 let unsubscribe = null;
 /** @type {Map<string, Row>} */
 let rows = new Map();
-/** Rows whose scene request runs: device → the scene asked for. @type {Map<string, string>} */
-const switching = new Map();
-/** The last failure of a row's scene control, said in its second line. @type {Map<string, string>} */
-const failures = new Map();
-/** Rows whose Restore runs (B-176: busy label, no second request). @type {Set<string>} */
-const restoring = new Set();
 
 const ADD_LINK = `<a class="btn" href="#/config/add">${icon("plus")}Add device</a>`;
 
@@ -166,30 +167,43 @@ function updateRow(row, view, state) {
       )
       .join("");
   }
-  const asked = switching.get(view.name);
-  const value = asked ?? choices.value;
+  // The scene select: the switch that runs (from this page or the Device
+  // page) shows what it asked for and takes no other choice meanwhile.
+  const switching = op(deviceSlot("scene", view));
+  const value = switching.busy ? String(switching.value ?? "") : choices.value;
   if (row.select.value !== value) row.select.value = value;
-  row.select.disabled = frozen;
+  row.select.disabled = frozen || switching.busy;
   setAttr(row.select, "aria-label", `Scene on ${title}`);
   const lines = sourceLines(state, view);
-  const first = asked !== undefined
-    ? { icon: "spinner", text: `Switching to ${sceneName(state, asked, view.type)}…` }
-    : lines.first;
-  setClass(row.first, `src${first.cls ? ` ${first.cls}` : ""}`);
-  setHtml(row.first, lineHtml(first));
-  const failure = failures.get(view.name);
+  setAttr(row.first, "title", null);
+  if (switching.busy) {
+    setClass(row.first, "src");
+    setHtml(row.first, lineHtml({ icon: "spinner", text: switching.label }));
+  } else if (switching.failure) {
+    const text = `Not switched: ${switching.failure}`;
+    setClass(row.first, "src bad");
+    setAttr(row.first, "title", text);
+    setHtml(row.first, `${icon("alert")}<span class="ell">${esc(text)}</span>`);
+  } else {
+    setClass(row.first, `src${lines.first.cls ? ` ${lines.first.cls}` : ""}`);
+    setHtml(row.first, lineHtml(lines.first));
+  }
   let second = "";
-  if (failure)
-    second = `<span style="color:var(--bad);display:inline-flex;align-items:center;gap:6px">${icon("alert")}${esc(failure)}</span>`;
-  else if (lines.second.restore !== undefined) {
+  if (lines.second.restore !== undefined) {
     const restore = lines.second.restore;
-    const busy = restoring.has(view.name);
+    const restoring = op(deviceSlot("restore", view));
+    const busy = restoring.busy;
     const disabled = restore.disabled || frozen || busy;
     // Both labels stand in the button, one of them unseen, so the button
     // keeps the width of the wider one and nothing beside it moves (B-176).
     const idle = `${icon("undo")}Restore`;
     const working = `${icon("spinner")}Restoring…`;
-    second = `${esc(lines.second.text)} <button class="link rw" type="button" data-act="restore"${disabled ? " disabled" : ""}${busy ? ' aria-busy="true"' : ""}${restore.title ? ` title="${esc(restore.title)}"` : ""}><span>${busy ? working : idle}</span><span aria-hidden="true">${busy ? idle : working}</span></button>`;
+    // A failed Restore keeps its button, to try again, with the error
+    // before it (B-175).
+    const lead = restoring.failure && !busy
+      ? `<span class="fail">${icon("alert")}${esc(`Not restored: ${restoring.failure}`)}</span>`
+      : esc(lines.second.text);
+    second = `${lead} <button class="link rw" type="button" data-act="restore"${disabled ? " disabled" : ""}${busy ? ' aria-busy="true"' : ""}${restore.title ? ` title="${esc(restore.title)}"` : ""}><span>${busy ? working : idle}</span><span aria-hidden="true">${busy ? idle : working}</span></button>`;
   } else if (lines.second.cls === "ovr")
     second = `<span style="color:var(--ovr);display:inline-flex;align-items:center;gap:6px">${lines.second.icon ? icon(lines.second.icon) : ""}${esc(lines.second.text)}</span>`;
   else second = esc(lines.second.text);
@@ -253,6 +267,7 @@ function render(state) {
       empty.hidden = false;
       setHtml(empty, EMPTY_HTML);
     }
+    addFormState(empty);
     rows = new Map();
     setHtml(body, "");
     return;
@@ -299,97 +314,108 @@ const EMPTY_HTML = `
   </section>`;
 
 /**
- * A scene was chosen in a row's select: one request per row at a time.
+ * A scene was chosen in a row's select: an operation in the slot of the
+ * device's life, shared with the Device page. While one runs, from either
+ * page, a choice sends nothing and says nothing; the select shows the
+ * switch that runs again.
  *
  * @param {string} name
  * @param {string} scene "" for none
  */
-async function chooseScene(name, scene) {
-  if (switching.has(name)) return;
-  switching.set(name, scene);
-  failures.delete(name);
-  render(getState());
-  try {
-    const answer = await request(
-      "PUT",
-      `/api/v2/devices/${encodeURIComponent(name)}/scene`,
-      {
-        resource: `device:${name}`,
-        key: `scene:${name}`,
-        body: { scene: scene === "" ? null : scene },
-      },
-    );
-    switching.delete(name);
-    applyAnswer(answer);
-  } catch (error) {
-    switching.delete(name);
-    failures.set(
-      name,
-      `Not switched: ${error instanceof ApiError ? error.message : "the request failed."}`,
-    );
-  }
+function chooseScene(name, scene) {
+  const state = getState();
+  const view = state.devices.get(name);
+  if (!view) return;
+  const key = deviceSlot("scene", view);
+  start(
+    key,
+    async () =>
+      applyAnswer(
+        await request("PUT", `/api/v2/devices/${encodeURIComponent(name)}/scene`, {
+          resource: `device:${name}`,
+          key,
+          body: { scene: scene === "" ? null : scene },
+        }),
+      ),
+    { label: `Switching to ${sceneName(state, scene, view.type)}…`, value: scene },
+  );
   render(getState());
 }
 
 /**
- * Restore: clear the scene overlay of a row's device. One request at a time
- * (B-176): while it runs the button shows "Restoring…" and takes no click,
- * and a click that comes anyway sends nothing and says nothing. Its
- * outcome is the row's: a failure is said in the row's second line, and
- * an answer clears what an earlier failure said.
+ * Restore: clear the scene overlay of a row's device, in the slot of the
+ * device's life, shared with the Device page's "Return to your choice".
+ * While it runs the button shows "Restoring…" and takes no click (B-176);
+ * a failure stands before the button, which stays to try again (B-175).
  *
  * @param {string} name
  */
-async function restore(name) {
-  if (restoring.has(name) || isBusy(`restore:${name}`)) return;
-  restoring.add(name);
-  failures.delete(name);
-  render(getState());
-  try {
-    const answer = await request(
-      "DELETE",
-      `/api/v2/devices/${encodeURIComponent(name)}/scene-overlay`,
-      { resource: `device:${name}`, key: `restore:${name}` },
-    );
-    applyAnswer(answer);
-    failures.delete(name);
-  } catch (error) {
-    failures.set(
-      name,
-      `Not restored: ${error instanceof ApiError ? error.message : "the request failed."}`,
-    );
-  }
-  restoring.delete(name);
+function restore(name) {
+  const view = getState().devices.get(name);
+  if (!view) return;
+  const key = deviceSlot("restore", view);
+  start(key, async () =>
+    applyAnswer(
+      await request("DELETE", `/api/v2/devices/${encodeURIComponent(name)}/scene-overlay`, {
+        resource: `device:${name}`,
+        key,
+      }),
+    ),
+  );
   render(getState());
 }
 
-/** @param {HTMLFormElement} form */
-async function addDevice(form) {
+/**
+ * Add device, in the slot `add-device` that the Config page shares.
+ *
+ * @param {HTMLFormElement} form
+ */
+function addDevice(form) {
   const data = new FormData(form);
-  const slot = /** @type {HTMLElement} */ (form.parentElement?.querySelector(".slot"));
+  start(
+    "add-device",
+    async () =>
+      applyAnswer(
+        await request("POST", "/api/v2/devices", {
+          resource: `device:${data.get("name")}`,
+          key: "add-device",
+          body: { name: data.get("name"), type: data.get("type"), ip: data.get("ip") },
+        }),
+      ),
+    { label: "Adding…", done: () => "Added. pixdcon starts it now." },
+  );
+  render(getState());
+}
+
+/**
+ * The empty state's Add device, from its slot: busy label, the failure
+ * beside the button, or what the last add said.
+ *
+ * @param {HTMLElement} empty
+ */
+function addFormState(empty) {
+  const form = /** @type {HTMLFormElement|null} */ (empty.querySelector("form.addf"));
+  const slot = /** @type {HTMLElement|null} */ (empty.querySelector(".slot"));
+  if (!form || !slot) return;
+  const adding = op("add-device");
   const button = /** @type {HTMLButtonElement} */ (form.querySelector("button"));
-  button.disabled = true;
-  button.innerHTML = `${icon("spinner")}Adding…`;
-  try {
-    const answer = await request("POST", "/api/v2/devices", {
-      resource: `device:${data.get("name")}`,
-      key: "add-device",
-      body: { name: data.get("name"), type: data.get("type"), ip: data.get("ip") },
-    });
-    applyAnswer(answer);
-    slot.textContent = "Added. pixdcon starts it now.";
-  } catch (error) {
-    slot.innerHTML = `<span style="color:var(--bad);display:inline-flex;align-items:center;gap:6px">${icon("alert")}${esc(error instanceof ApiError ? error.message : "The request failed.")}</span>`;
-  }
-  button.innerHTML = `${icon("plus")}Add device`;
-  button.disabled = false;
+  const filled = (/** @type {string} */ field) =>
+    String(/** @type {HTMLInputElement|null} */ (form.querySelector(`input[name="${field}"]`))?.value ?? "").trim() !== "";
+  button.disabled = adding.busy || !filled("name") || !filled("ip");
+  setHtml(button, adding.busy ? `${icon("spinner")}Adding…` : `${icon("plus")}Add device`);
+  setHtml(
+    slot,
+    adding.failure
+      ? `<span style="color:var(--bad);display:inline-flex;align-items:center;gap:6px">${icon("alert")}${esc(adding.failure)}</span>`
+      : esc(adding.note ?? "pixdcon saves the device to config.json and starts it right away."),
+  );
 }
 
 /** @param {Event} event */
 function onChange(event) {
   const target = /** @type {HTMLElement} */ (event.target);
   if (target instanceof HTMLSelectElement && target.dataset.device)
-    void chooseScene(target.dataset.device, target.value);
+    chooseScene(target.dataset.device, target.value);
 }
 
 /** @param {Event} event */
@@ -400,16 +426,14 @@ function onClick(event) {
   const name = row
     ? [...rows.entries()].find(([, value]) => value.el === row)?.[0]
     : undefined;
-  if (button.dataset.act === "restore" && name) void restore(name);
+  if (button.dataset.act === "restore" && name) restore(name);
 }
 
 /** @param {Event} event */
 function onInput(event) {
   const form = /** @type {HTMLElement} */ (event.target).closest?.("form.addf");
-  if (!(form instanceof HTMLFormElement)) return;
-  const data = new FormData(form);
-  const ready = String(data.get("name") ?? "").trim() !== "" && String(data.get("ip") ?? "").trim() !== "";
-  /** @type {HTMLButtonElement} */ (form.querySelector("button")).disabled = !ready;
+  const empty = /** @type {HTMLElement|null} */ (root?.querySelector(".empty-slot") ?? null);
+  if (form instanceof HTMLFormElement && empty) addFormState(empty);
 }
 
 /** @param {Event} event */
@@ -417,7 +441,7 @@ function onSubmit(event) {
   const form = event.target;
   if (!(form instanceof HTMLFormElement)) return;
   event.preventDefault();
-  void addDevice(form);
+  addDevice(form);
 }
 
 /** @type {import("../router.js").Page} */
@@ -433,6 +457,9 @@ export const page = {
       </div>
       <div class="empty-slot" hidden></div>`;
     rows = new Map();
+    // A fresh opening: what idle controls said before is gone; a control
+    // whose operation runs keeps it, and its outcome is said when it comes.
+    forgetIdle((key) => /^(scene|restore):/.test(key) || key === "add-device");
     root.addEventListener("change", onChange);
     root.addEventListener("click", onClick);
     root.addEventListener("input", onInput);

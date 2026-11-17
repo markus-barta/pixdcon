@@ -470,6 +470,23 @@ canvas.pv {
   flex: none;
   color: var(--bad);
 }
+/* A failure said beside its action, which stays (B-175, r3): the scene
+   select's own line, and the Restore button's line on the Devices page. */
+.src .ell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.src.bad {
+  overflow: hidden;
+}
+.src2 .fail {
+  color: var(--bad);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  vertical-align: top;
+}
 .p-device .st-slot {
   margin-left: auto;
   margin-top: 4px;

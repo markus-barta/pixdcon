@@ -1708,6 +1708,53 @@ test("r3 gate 2.2 (finding 6, failed cleanup): an end of a preview that fails is
   }
 });
 
+test("r3 gate 2.3 (finding 8, Restore across lives): a new incarnation of the same name starts idle, and the old request's failure changes nothing on it", async () => {
+  const calls = heldFetch();
+  const boot = bootPages((e) => [view("d1", { epoch: e, source: "overlay" })]);
+  const root = pageRoot();
+  devicesPage.mount(root, {});
+  try {
+    assert.equal(click(restoreIn(root)), true);
+    await settle();
+    const old = pending(calls, "DELETE", "/scene-overlay");
+    live(boot, "device-removed", 11, { name: "d1", incarnation: 1 });
+    live(boot, "device", 12, view("d1", { epoch: boot.epoch, incarnation: 2, source: "overlay" }));
+    await settle();
+    assert.ok(restoreIn(root), "the new life offers Restore");
+    assert.equal(restoreIn(root).disabled, false, "not busy: the running Restore was the old life's");
+    assert.equal(restoreIn(root).getAttribute("aria-busy"), null);
+    old.answer(500, {});
+    await settle();
+    assert.ok(restoreIn(root), "the old failure did not take the button");
+    assert.doesNotMatch(rowLine(root, ".src2"), /Not restored/);
+  } finally {
+    devicesPage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r3 gate Q3 (B-175): a failed Restore keeps its button, with the error beside it, and the button retries", async () => {
+  const calls = heldFetch();
+  bootPages((e) => [view("d1", { epoch: e, source: "overlay" })]);
+  const root = pageRoot();
+  devicesPage.mount(root, {});
+  try {
+    assert.equal(click(restoreIn(root)), true);
+    await settle();
+    pending(calls, "DELETE", "/scene-overlay").answer(500, {});
+    await settle();
+    assert.match(rowLine(root, ".src2"), /Not restored: pixdcon failed to answer \(500\)\./);
+    assert.ok(restoreIn(root), "the button stays");
+    assert.equal(restoreIn(root).disabled, false);
+    assert.equal(click(restoreIn(root)), true);
+    await settle();
+    assert.equal(calls.filter((c) => c.method === "DELETE" && c.url.endsWith("/scene-overlay")).length, 2, "and it tries again");
+  } finally {
+    devicesPage.unmount();
+    await drain(calls);
+  }
+});
+
 test("r3 gate Q4 (Revert): Revert ends the preview in the scene's lane; an edit typed meanwhile is previewed after the end, so the end cannot remove it", async () => {
   const calls = heldFetch();
   const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
@@ -1781,6 +1828,40 @@ test("r3 gate Q5 (time bound): an end that gets no answer fails after 15 s with 
   } finally {
     if (mounted) devicePage.unmount();
     t.mock.timers.tick(120_000);
+    await drain(calls);
+  }
+});
+
+test("r3 gate Q6 (one busy owner across pages): a switch started on the Device page owns the Devices row: a choice there sends nothing and says nothing, and the answer ends it", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  let root = pageRoot();
+  devicePage.mount(root, { name: "d1" });
+  let on = "device";
+  try {
+    pending(calls, "GET", "/settings/clock").answer(200, sceneSettings("d1", "clock", { epoch }), `${epoch}-11`);
+    await settle();
+    const options = [...root.querySelectorAll(".opt")].map((o) => o.getAttribute("data-scene"));
+    assert.ok(options.includes("weather"), "the Device page offers Weather");
+    assert.equal(click(root.querySelector('.opt[data-scene="weather"]')), true);
+    await settle();
+    const put = pending(calls, "PUT", "/devices/d1/scene");
+    devicePage.unmount();
+    root = pageRoot();
+    devicesPage.mount(root, {});
+    on = "devices";
+    typeInto(root.querySelector(".dt-row select"), "weather", "change");
+    await settle();
+    assert.equal(calls.filter((c) => c.method === "PUT" && c.url.endsWith("/devices/d1/scene")).length, 1, "only one switch leaves");
+    assert.doesNotMatch(root.querySelector(".dt-row .c-show").textContent, /Not switched/);
+    assert.match(rowLine(root, ".src"), /Switching to Weather…/, "the row shows the switch that runs");
+    put.answer(200, view("d1", { epoch, rev: 3, scene: "weather" }), `${epoch}-13`);
+    await settle();
+    assert.doesNotMatch(root.querySelector(".dt-row .c-show").textContent, /Not switched|Switching/);
+    assert.equal(root.querySelector(".dt-row select").value, "weather");
+  } finally {
+    if (on === "device") devicePage.unmount();
+    else devicesPage.unmount();
     await drain(calls);
   }
 });
