@@ -35,10 +35,10 @@ import { brightness, copyFrame, createTransport } from "./http-transport.js";
 export function createPixooDriver(options) {
   const transport = createTransport(options, "Pixoo");
   let picId = 0;
-  /** @param {Record<string, unknown>} body @returns {Promise<Record<string, unknown>>} */
-  async function post(body) {
+  /** @param {Record<string, unknown>} body @param {AbortSignal} [signal] @returns {Promise<Record<string, unknown>>} */
+  async function post(body, signal) {
     try {
-      const answer = await transport.request("/post", body);
+      const answer = await transport.request("/post", body, signal);
       const data = answer && typeof answer === "object" ? /** @type {Record<string, unknown>} */ (answer) : {};
       if (data.error_code !== undefined && data.error_code !== 0 && data.error_code !== "0")
         throw new DeviceError(`Pixoo error_code ${String(data.error_code)}`, { device: options.name, op: String(body.Command) });
@@ -47,7 +47,7 @@ export function createPixooDriver(options) {
   }
   async function initialize() {
     await post({ Command: "Draw/ResetHttpGifId" });
-    await options.clock.sleep(100);
+    await transport.pause(100);
     await post({ Command: "Channel/SetIndex", SelectIndex: 3 });
     transport.ready = true;
   }
@@ -80,8 +80,8 @@ export function createPixooDriver(options) {
       if (mode.channel !== undefined) await post({ Command: "Channel/SetIndex", SelectIndex: mode.channel });
     }),
     reclaim: () => transport.queue(async () => { await post({ Command: "Channel/OnOffScreen", OnOff: 1 }); await initialize(); }),
-    readTelemetry: () => transport.queue(async () => {
-      const data = await post({ Command: "Channel/GetAllConf" });
+    readTelemetry: (readOptions) => transport.queue(async () => {
+      const data = await post({ Command: "Channel/GetAllConf" }, readOptions?.signal);
       return { reachable: true, brightness: data.Brightness, cur_clock_id: data.CurClockId };
     }),
     readScreen: null, notify: null, switchApp: null,

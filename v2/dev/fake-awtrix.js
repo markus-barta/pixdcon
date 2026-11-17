@@ -34,7 +34,7 @@ const HEIGHT = 8;
  * @property {(raster: ((app: unknown) => Uint8Array)|null) => void} setRaster how /api/screen draws the current custom app
  * @property {(offline: boolean) => Promise<void>} setOffline
  * @property {(hang: boolean) => void} setHang
- * @property {(count: number) => void} failNext
+ * @property {(count: number, route?: string) => void} failNext optional "METHOD /path?query" or "METHOD /path" filter
  * @property {() => Promise<void>} stop
  */
 
@@ -63,6 +63,8 @@ export async function startFakeAwtrix(options = {}) {
   };
   let hang = false;
   let failures = 0;
+  /** @type {string|null} */
+  let failureRoute = null;
   /** @type {((app: unknown) => Uint8Array)|null} */
   let raster = null;
   /** @type {Array<(update: {name: string, app: unknown}) => void>} */
@@ -97,7 +99,7 @@ export async function startFakeAwtrix(options = {}) {
   function execute(method, url, text) {
     const route = `${method} ${url.pathname}`;
     state.requests.push(route);
-    if (failures > 0) {
+    if (failures > 0 && (!failureRoute || failureRoute === route || failureRoute === `${route}${url.search}`)) {
       failures -= 1;
       return { status: 500 };
     }
@@ -271,8 +273,9 @@ export async function startFakeAwtrix(options = {}) {
     setHang(value) {
       hang = value;
     },
-    failNext(count) {
+    failNext(count, route) {
       failures = count;
+      failureRoute = route ?? null;
     },
     stop: close,
   };

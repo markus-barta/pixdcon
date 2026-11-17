@@ -368,3 +368,94 @@ test("controller health follows watchdog, driven displays, config and broker mea
   assert.deepEqual(h.controller(inputs), { status: "degraded", reasons: ["display_stale:p"] });
   await clock.advance(2001); assert.equal(h.controller(inputs).status, "failed");
 });
+
+test("fake AWTRIX cleanup retries only failed entries, completes the sweep, and stays done across driver rebuilds", async (t) => {
+  const r = await rig(t, { start: false });
+  r.awtrix.seedApps({ old: {}, other: {}, pixdcon_u: {} });
+  r.awtrix.failNext(1, "POST /api/custom?name=old");
+  const options = { name: "u", address: r.awtrix.address, clock: systemClock(), logger, cleanupLegacyApps: true };
+  const driver = createAwtrixDriver(options); t.after(() => driver.close());
+  await driver.init();
+  assert.deepEqual(Object.keys(r.awtrix.state().apps).sort(), ["old", "pixdcon_u"]);
+  assert.equal(driver.ready, false, "an incomplete cleanup is retried by lazy init");
+  await driver.show({ kind: "app", app: { text: "new" } });
+  assert.equal(driver.ready, true); assert.deepEqual(Object.keys(r.awtrix.state().apps), ["pixdcon_u"]);
+  const count = r.awtrix.state().requests.length;
+  const replacement = createAwtrixDriver(options); t.after(() => replacement.close()); await replacement.init();
+  assert.deepEqual(r.awtrix.state().requests.slice(count), ["GET /api/stats"]);
+});
+
+test("fake drivers keep compound frame writes serialized, preserve reset and switch best effort behavior, and clear readiness on failures", async (t) => {
+  const r = await rig(t, { start: false });
+  const p = createPixooDriver({ name: "p", address: r.pixoo.address, clock: systemClock(), logger }); t.after(() => p.close()); await p.init();
+  const frame = { width: 64, height: 64, rgb: new Uint8Array(12288).fill(33) };
+  const before = r.pixoo.state().requests.length;
+  await Promise.all([p.show({ kind: "frame", frame }), p.selectChannel?.(6), p.setBrightness(0)]);
+  assert.deepEqual(r.pixoo.state().requests.slice(before), ["Draw/ResetHttpGifId", "Draw/SendHttpGif", "Channel/SetIndex", "Channel/SetBrightness"]);
+  assert.equal(r.pixoo.state().brightness, 1); assert.equal(p.ready, true);
+  r.pixoo.failNext(1, "Draw/ResetHttpGifId");
+  await p.show({ kind: "frame", frame }); assert.equal(r.pixoo.state().frames, 2); assert.equal(p.ready, false);
+  await p.show({ kind: "frame", frame }); assert.equal(p.ready, true); assert.equal(r.pixoo.state().lastPicId, 3);
+  const u = createAwtrixDriver({ name: "u", address: r.awtrix.address, clock: systemClock(), logger }); t.after(() => u.close()); await u.init();
+  r.awtrix.failNext(1, "POST /api/switch");
+  await u.show({ kind: "app", app: { text: "saved" } }); assert.equal(u.ready, false);
+  assert.deepEqual(r.awtrix.state().apps["pixdcon_u"], { text: "saved" });
+  await assert.rejects(u.activateBuiltin("builtin:unknown"), DeviceError);
+});
+
+test("fake drivers close queued work and cancel a hung telemetry read without waiting for its deadline", async (t) => {
+  const r = await rig(t, { start: false });
+  const driver = createAwtrixDriver({ name: "u", address: r.awtrix.address, clock: systemClock(), logger });
+  await driver.init(); r.awtrix.setHang(true);
+  const abort = new AbortController();
+  const read = driver.readTelemetry({ signal: abort.signal });
+  const cancelled = assert.rejects(read, /cancelled/);
+  await flush(); abort.abort(); await cancelled;
+  r.awtrix.setHang(false); await driver.setBrightness(22); assert.equal(r.awtrix.state().brightness, 22);
+  r.awtrix.setHang(true);
+  const hung = assert.rejects(driver.readTelemetry(), /cancelled/);
+  const queued = assert.rejects(driver.setPower(false), /closed/);
+  await flush(); await driver.close(); await hung; await queued;
+  assert.equal(driver.ready, false); assert.equal(r.awtrix.state().power, true);
+});
+
+test("telemetry on fake displays publishes native snapshots, repeats discovery on reconnect and follows interval changes", async (t) => {
+  const r = await rig(t, { start: false });
+  let intervalMs = 2000;
+  const topics = createTopics({ baseTopic: "test" });
+  const p = createPixooDriver({ name: "p", address: r.pixoo.address, clock: systemClock(), logger }); t.after(() => p.close());
+  const u = createAwtrixDriver({ name: "u", address: r.awtrix.address, clock: systemClock(), logger }); t.after(() => u.close());
+  r.health.register("p", { shadow: false, powerCycleMax: 0, plugTopic: null }); r.health.register("u", { shadow: false, powerCycleMax: 0, plugTopic: null });
+  const discovery = { pixoo: () => [{ topic: "discovery/p", payload: { id: "p" } }], ulanzi: () => [{ topic: "discovery/u", payload: { id: "u" } }] };
+  const collector = new TelemetryCollector(/** @type {any} */ ({ mqtt: r.mqtt, topics, health: r.health, intervalMs: () => intervalMs, haDiscovery: true, discovery, clock: r.clock, logger })); t.after(() => collector.stopAll());
+  collector.start({ name: "p", type: "pixoo", address: r.pixoo.address }, p); collector.start({ name: "u", type: "ulanzi", address: r.awtrix.address }, u);
+  await until(() => r.mqtt.messages.length === 4);
+  assert.equal(collector.latest("p")?.brightness, 50); assert.equal(collector.latest("p")?.reachable, true);
+  assert.equal(collector.latest("u")?.bat, 100); assert.equal(r.health.get("u")?.apSsid, "awtrix_fake01");
+  assert.ok(r.mqtt.messages.every((m) => m.options.retain));
+  r.mqtt.emit("connect", { connection: 2 }); await until(() => r.mqtt.messages.length === 8);
+  assert.equal(r.mqtt.messages.filter((m) => m.topic.startsWith("discovery/")).length, 4);
+  const before = r.mqtt.messages.length;
+  await r.clock.advance(1000); await flush(); assert.equal(r.mqtt.messages.length, before);
+  intervalMs = 1000; await r.clock.advance(1000); await until(() => r.mqtt.messages.length === before + 4);
+  await r.awtrix.setOffline(true); await r.pixoo.setOffline(true);
+  const goodU = collector.latest("u");
+  await r.clock.advance(1000); await until(() => collector.latest("p")?.reachable === false);
+  assert.deepEqual(collector.latest("u"), goodU);
+  assert.equal(collector.latest("p")?.brightness, null);
+});
+
+test("preview snapshots copy accepted pixels, keep unchanged-frame age and sequence, and preserve the v1 envelope", async () => {
+  const clock = manualClock(); const previews = new PreviewStore({ clock, logger });
+  const events = []; previews.on("frame", (frame) => events.push(frame));
+  const rgb = new Uint8Array(12288).fill(8); const frame = { width: 64, height: 64, rgb };
+  previews.put("p", frame, "runtime"); rgb[0] = 9;
+  assert.equal(previews.get("p")?.rgb[0], 8);
+  const exposed = previews.get("p"); if (exposed) exposed.rgb[0] = 1;
+  assert.equal(previews.get("p")?.rgb[0], 8);
+  rgb[0] = 8; await clock.advance(500); previews.put("p", frame, "runtime");
+  assert.equal(events.length, 1); assert.equal(previews.get("p")?.seq, 2);
+  await clock.advance(500); previews.put("p", frame, "runtime"); assert.equal(events.length, 2);
+  assert.deepEqual(previews.toV1().p, { width: 64, height: 64, data: Buffer.from(rgb).toString("base64"), source: "runtime", intervalMs: 0, updatedAt: new Date(clock.now()).toISOString() });
+  previews.put("p", { width: 64, height: 64, rgb: new Uint8Array(1) }, "runtime"); assert.equal(previews.get("p")?.seq, 3);
+});

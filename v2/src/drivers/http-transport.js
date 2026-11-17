@@ -29,9 +29,16 @@ export function createTransport(options, label) {
 
   /** @param {string} path @param {unknown} [body] @param {AbortSignal} [signal] @returns {Promise<unknown>} */
   async function request(path, body, signal) {
+    if (closed || signal?.aborted) throw new DeviceError(`${label} HTTP cancelled`, { device: options.name, op: path });
     const deadline = new AbortController();
     const abort = new AbortController();
     const combined = AbortSignal.any([lifetime.signal, abort.signal, ...(signal ? [signal] : [])]);
+    const cancellation = AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]);
+    let onAbort = () => {};
+    const interrupted = new Promise((_, reject) => {
+      onAbort = () => reject(new DeviceError(`${label} HTTP cancelled`, { device: options.name, op: path }));
+      cancellation.addEventListener("abort", onAbort, { once: true });
+    });
     const expired = options.clock.sleep(timeoutMs, deadline.signal).then((elapsed) => {
       if (!elapsed) return new Promise(() => {});
       abort.abort();
@@ -41,7 +48,7 @@ export function createTransport(options, label) {
     });
     try {
       // The race covers the body as well as the headers. A late answer has no side effects.
-      return await Promise.race([expired, (async () => {
+      return await Promise.race([expired, interrupted, (async () => {
         const response = await fetch(`http://${options.address}${path}`, {
           method: body === undefined ? "GET" : "POST",
           headers: { "Content-Type": "application/json" },
@@ -54,10 +61,14 @@ export function createTransport(options, label) {
       })()]);
     } finally {
       deadline.abort();
+      cancellation.removeEventListener("abort", onAbort);
     }
   }
   return {
     queue, request,
+    async pause(/** @type {number} */ ms) {
+      if (!await options.clock.sleep(ms, lifetime.signal)) throw new DeviceError(`${label} driver closed`);
+    },
     get ready() { return ready; },
     set ready(value) { ready = value && !closed; },
     async close() { closed = true; ready = false; lifetime.abort(); },

@@ -61,6 +61,7 @@ export class TelemetryCollector {
     this.stop(device.name);
     if (!driver.info.drives) return;
     if (!this.listening) { this.deps.mqtt.on("connect", this.onConnect); this.listening = true; }
+    const abort = new AbortController();
     const poller = { active: true, snapshot: /** @type {Record<string, unknown>|null} */ (null), cancel: () => {}, replay: async () => {} };
     const current = () => poller.active && this.pollers.get(device.name) === poller;
     let busy = false;
@@ -91,14 +92,14 @@ export class TelemetryCollector {
       try {
         let snapshot;
         try {
-          snapshot = await driver.readTelemetry();
+          snapshot = await driver.readTelemetry({ signal: abort.signal });
           if (!current()) return;
           health.contactOk(device.name, { apSsid: typeof snapshot.uid === "string" ? snapshot.uid : undefined });
         } catch (error) {
           if (!current()) return;
           this.deps.logger.debug(`[Telemetry] ${device.name}: ${String(error)}`);
           if (device.type !== "pixoo") return;
-          snapshot = { reachable: false };
+          snapshot = { reachable: false, brightness: null, cur_clock_id: null };
         }
         if (!current()) return;
         poller.snapshot = { ...snapshot, ...(device.type === "pixoo" ? { ip_address: device.address } : {}), ts: new Date(this.deps.clock.now()).toISOString() };
@@ -107,7 +108,7 @@ export class TelemetryCollector {
       finally { busy = false; }
     };
     const timer = this.deps.clock.every(() => { void tick(); }, Math.max(1, Math.min(1000, this.deps.intervalMs())));
-    poller.cancel = () => timer.cancel();
+    poller.cancel = () => { abort.abort(); timer.cancel(); };
     this.pollers.set(device.name, poller);
     void tick();
   }

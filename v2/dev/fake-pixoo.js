@@ -29,7 +29,7 @@ const HEIGHT = 64;
  * @property {(timeoutMs?: number) => Promise<Uint8Array>} nextFrame resolves with the next frame the display receives
  * @property {(offline: boolean) => Promise<void>} setOffline
  * @property {(hang: boolean) => void} setHang
- * @property {(count: number) => void} failNext
+ * @property {(count: number, command?: string) => void} failNext optional protocol command filter
  * @property {() => Promise<void>} stop
  */
 
@@ -55,6 +55,8 @@ export async function startFakePixoo(options = {}) {
   };
   let hang = false;
   let failures = 0;
+  /** @type {string|null} */
+  let failureCommand = null;
   /** @type {Array<(frame: Uint8Array) => void>} */
   let waiters = [];
   /** @type {Set<import("node:net").Socket>} */
@@ -67,7 +69,7 @@ export async function startFakePixoo(options = {}) {
   function execute(body) {
     const command = String(body.Command ?? "");
     state.requests.push(command);
-    if (failures > 0) {
+    if (failures > 0 && (!failureCommand || failureCommand === command)) {
       failures -= 1;
       return { error_code: 1 };
     }
@@ -182,8 +184,9 @@ export async function startFakePixoo(options = {}) {
     setHang(value) {
       hang = value;
     },
-    failNext(count) {
+    failNext(count, command) {
       failures = count;
+      failureCommand = command ?? null;
     },
     stop: close,
   };

@@ -112,7 +112,7 @@ export class PreviewStore extends EventEmitter {
     return Object.fromEntries(this.list().map((frame) => [frame.device, {
       width: frame.width, height: frame.height, data: Buffer.from(frame.rgb).toString("base64"),
       source: frame.source === "simulated" ? "runtime" : frame.source,
-      intervalMs: this.feeds.get(frame.device)?.pollMs ?? 500, updatedAt: frame.receivedAt,
+      intervalMs: this.feeds.get(frame.device)?.pollMs ?? 0, updatedAt: frame.receivedAt,
     }]));
   }
 

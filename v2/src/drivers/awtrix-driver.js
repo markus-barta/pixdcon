@@ -32,6 +32,9 @@ import { brightness, copyFrame, createTransport } from "./http-transport.js";
 
 /** @typedef {import("./driver.js").DeviceDriver} DeviceDriver */
 
+// A runtime rebuild must not repeat a completed flash cleanup on the same device.
+const cleanedDevices = new Set();
+
 /**
  * @param {import("./driver.js").DriverOptions} options
  * @returns {DeviceDriver}
@@ -40,10 +43,11 @@ export function createAwtrixDriver(options) {
   const transport = createTransport(options, "AWTRIX");
   const appName = `pixdcon_${options.name}`;
   const appPath = (/** @type {string} */ name) => `/api/custom?name=${encodeURIComponent(name)}`;
-  let cleanupDone = false;
-  /** @returns {Promise<Record<string, unknown>>} */
-  async function stats() {
-    const data = await transport.request("/api/stats");
+  const cleanupKey = `${options.name}@${options.address}`;
+  let cleanupDone = cleanedDevices.has(cleanupKey);
+  /** @param {AbortSignal} [signal] @returns {Promise<Record<string, unknown>>} */
+  async function stats(signal) {
+    const data = await transport.request("/api/stats", undefined, signal);
     if (!data || typeof data !== "object" || Array.isArray(data)) throw new DeviceError("AWTRIX invalid stats");
     return /** @type {Record<string, unknown>} */ (data);
   }
@@ -61,9 +65,11 @@ export function createAwtrixDriver(options) {
           catch (error) { complete = false; options.logger.warn(`[UlanziDriver] cleanup: ${String(error)}`); }
         }
         cleanupDone = complete;
+        if (complete) cleanedDevices.add(cleanupKey);
       } catch (error) { options.logger.warn(`[UlanziDriver] cleanup: ${String(error)}`); }
     }
-    transport.ready = true;
+    // An incomplete sweep is retried by the next lazy init; frames can still be sent.
+    transport.ready = !options.cleanupLegacyApps || cleanupDone;
   }
   /** @param {import('../types.js').Frame} frame */
   async function send(frame) {
@@ -98,7 +104,7 @@ export function createAwtrixDriver(options) {
       await initialize();
       await transport.request("/api/switch", { name: appName });
     }),
-    readTelemetry: () => transport.queue(stats),
+    readTelemetry: (readOptions) => transport.queue(() => stats(readOptions?.signal)),
     readScreen: (readOptions) => transport.queue(async () => screenToFrame(await transport.request("/api/screen", undefined, readOptions?.signal))),
     notify: (notification) => transport.queue(async () => { await transport.request("/api/notify", notification); }),
     switchApp: (name) => transport.queue(async () => { await transport.request("/api/switch", { name }); }),
@@ -119,14 +125,14 @@ export function screenToFrame(screen) {
   const flat = screen.flat(Infinity);
   const rgb = new Uint8Array(32 * 8 * 3);
   if (flat.length === rgb.length) {
-    if (!flat.every((v) => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 255)) return null;
-    rgb.set(flat);
+    if (!flat.every((v) => typeof v === "number")) return null;
+    rgb.set(flat.map((v) => Number.isFinite(v) ? Math.max(0, Math.min(255, Math.round(v))) : 0));
   } else if (flat.length === 256) {
     for (let i = 0; i < flat.length; i++) {
-      const color = flat[i];
+      const color = typeof flat[i] === "string" ? flat[i].trim() : flat[i];
       const value = typeof color === "string" && /^(?:#|0x)?[0-9a-f]{6}$/i.test(color)
         ? Number.parseInt(color.replace(/^(#|0x)/i, ""), 16) : color;
-      if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 0xffffff) return null;
+      if (typeof value !== "number" || !Number.isFinite(value)) return null;
       rgb[i * 3] = value >> 16;
       rgb[i * 3 + 1] = (value >> 8) & 255;
       rgb[i * 3 + 2] = value & 255;

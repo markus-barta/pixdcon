@@ -2,7 +2,15 @@
   "owner": "W3",
   "rows": [
     {
-      "site": "src/drivers/http-transport.js:35",
+      "site": "src/drivers/http-transport.js:40",
+      "id": "listener:cancellation.addEventListener(\"abort\")#1",
+      "input": "request lifetime or poll AbortSignal",
+      "metadata": "serialized HTTP operation, lifetime and per-poll cancellation signals",
+      "fence": "cancellation settles the request once and removes listeners; initialization pause cannot continue after driver.close",
+      "test": "test/smoke/drivers-render.test.js: fake drivers close queued work"
+    },
+    {
+      "site": "src/drivers/http-transport.js:42",
       "id": "timer:options.clock.sleep#1",
       "input": "per-request deadline",
       "metadata": "serialized operation and request identity; lifetime and deadline AbortSignals",
@@ -10,7 +18,7 @@
       "test": "test/smoke/drivers-render.test.js: drivers in order:"
     },
     {
-      "site": "src/drivers/http-transport.js:45",
+      "site": "src/drivers/http-transport.js:52",
       "id": "fetch:fetch#1",
       "input": "HTTP headers and body, including an answer after its deadline",
       "metadata": "serialized operation and request identity; lifetime and deadline AbortSignals",
@@ -18,12 +26,12 @@
       "test": "test/smoke/drivers-render.test.js: drivers in order:"
     },
     {
-      "site": "src/drivers/pixoo-driver.js:50",
-      "id": "timer:options.clock.sleep#1",
-      "input": "100 ms pause between reset and channel selection",
-      "metadata": "the serialized initialization operation",
-      "fence": "timer only paces a claim already authorized by the effective device; request queue rejects work after close",
-      "test": "test/smoke/drivers-render.test.js: both fakes receive frames"
+      "site": "src/drivers/http-transport.js:70",
+      "id": "timer:options.clock.sleep#2",
+      "input": "100 ms initialization pause",
+      "metadata": "serialized HTTP operation, lifetime and per-poll cancellation signals",
+      "fence": "cancellation settles the request once and removes listeners; initialization pause cannot continue after driver.close",
+      "test": "test/smoke/drivers-render.test.js: fake drivers close queued work"
     },
     {
       "site": "src/health/health-model.js:110",
@@ -42,7 +50,7 @@
       "test": "test/smoke/drivers-render.test.js: telemetry in order:"
     },
     {
-      "site": "src/health/telemetry.js:79",
+      "site": "src/health/telemetry.js:80",
       "id": "work:this.deps.mqtt.publish#1",
       "input": "publish acknowledgement",
       "metadata": "poller object identity, active flag and last measured snapshot",
@@ -50,7 +58,7 @@
       "test": "test/smoke/drivers-render.test.js: telemetry in order:"
     },
     {
-      "site": "src/health/telemetry.js:84",
+      "site": "src/health/telemetry.js:85",
       "id": "work:this.deps.mqtt.publish#2",
       "input": "publish acknowledgement",
       "metadata": "poller object identity, active flag and last measured snapshot",
@@ -58,7 +66,7 @@
       "test": "test/smoke/drivers-render.test.js: telemetry in order:"
     },
     {
-      "site": "src/health/telemetry.js:109",
+      "site": "src/health/telemetry.js:110",
       "id": "timer:this.deps.clock.every#1",
       "input": "poll interval tick",
       "metadata": "poller object identity, active flag and last measured snapshot",

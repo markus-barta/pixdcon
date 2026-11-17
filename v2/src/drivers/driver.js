@@ -59,7 +59,7 @@ import { createShadowDriver } from "./shadow-driver.js";
  * @property {(on: boolean) => Promise<void>} setPower Ulanzi power, Pixoo screen (B-038, B-039)
  * @property {(modeKey: string) => Promise<void>} activateBuiltin hand the display to its firmware, see builtin-modes.js; rejects for an unknown key
  * @property {() => Promise<void>} reclaim take the display back after a built-in mode (custom channel or app, screen on)
- * @property {() => Promise<Record<string, unknown>>} readTelemetry Ulanzi GET /api/stats; Pixoo Channel/GetAllConf mapped to {reachable, brightness, cur_clock_id}
+ * @property {(options?: {signal?: AbortSignal}) => Promise<Record<string, unknown>>} readTelemetry Ulanzi GET /api/stats; Pixoo Channel/GetAllConf mapped to {reachable, brightness, cur_clock_id}. Optional signal cancels a retired telemetry poll without closing the driver.
  * @property {((options?: {signal?: AbortSignal}) => Promise<Frame|null>)|null} readScreen Ulanzi GET /api/screen as a 32×8 frame; null for displays without read-back
  * @property {((notification: Record<string, unknown>) => Promise<void>)|null} notify AWTRIX POST /api/notify, payload unchanged (v1 scene surface only, D-071); null for Pixoo
  * @property {((appName: string) => Promise<void>)|null} switchApp AWTRIX POST /api/switch with any app name (v1 scene surface, D-070); null for Pixoo
