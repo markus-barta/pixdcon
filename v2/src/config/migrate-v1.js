@@ -13,6 +13,8 @@
  *  - adds `output` per device ("shadow" unless told otherwise) and the `mqtt` block
  *    with the v1 overlay/control/settings names; controller status defaults to
  *    home/hsb1/pixdcon2 for the documented transition beside v1
+ *  - refuses a shared controller status namespace in shadow unless explicitly
+ *    acknowledged with --status-base-topic
  *  - keeps unknown keys
  * What it never does: read or write the live v1 file in place, touch MQTT,
  * invent devices or scenes.
@@ -188,10 +190,16 @@ export function migrateV1Config(v1Text, options) {
     changes.push(`output.default: set to ${requested}`);
   }
   raw.output = output;
-  if (mqtt.statusBaseTopic === mqtt.baseTopic)
+  if (mqtt.statusBaseTopic === mqtt.baseTopic) {
+    if (requested === "shadow" && options?.statusBaseTopic === undefined)
+      invalid(
+        "mqtt.statusBaseTopic",
+        "shadow controller status shares v1's base topic; provide --status-base-topic explicitly",
+      );
     warnings.push(
       "Controller status shares v1's base topic; use a separate statusBaseTopic while v1 runs",
     );
+  }
   return { text: `${JSON.stringify(raw, null, 2)}\n`, changes, warnings };
 }
 

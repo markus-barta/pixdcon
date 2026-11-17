@@ -933,6 +933,68 @@ test("migration file contract: duplicates, malformed source, unknown CLI flags a
   assert.equal(await readFile(input, "utf8"), valid);
 });
 
+test("migration shadow status: a shared v1 controller namespace refuses output until status-base-topic is explicitly supplied", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { access } = await import("node:fs/promises");
+  const cli = promisify(execFile);
+  await mkdir(OUT_DIR, { recursive: true });
+  const root = await mkdtemp(join(OUT_DIR, "migration-status-"));
+  const input = join(root, "v1-copy.json");
+  const command = new URL("../../src/config/migrate-v1.js", import.meta.url)
+    .pathname;
+  for (const explicitBase of [false, true]) {
+    const mqtt = {
+      statusBaseTopic: "home/hsb1/pixdcon",
+      ...(explicitBase ? { baseTopic: "home/hsb1/pixdcon" } : {}),
+    };
+    const source = JSON.stringify({ devices: [], scenes: {}, mqtt });
+    await writeFile(input, source);
+    const output = join(root, `refused-${explicitBase}`);
+    await assert.rejects(
+      cli(process.execPath, [command, input, output]),
+      /shadow controller status shares v1's base topic; provide --status-base-topic explicitly/,
+    );
+    await assert.rejects(
+      access(output),
+      "refusal creates no output directory or links",
+    );
+    assert.equal(await readFile(input, "utf8"), source);
+  }
+  const isolated = join(root, "isolated");
+  await cli(process.execPath, [
+    command,
+    input,
+    isolated,
+    "--status-base-topic",
+    "test/v2-edge",
+  ]);
+  const config = JSON.parse(
+    await readFile(join(isolated, "config.json"), "utf8"),
+  );
+  assert.equal(config.output.default, "shadow");
+  assert.equal(config.mqtt.statusBaseTopic, "test/v2-edge");
+  const acknowledged = join(root, "acknowledged");
+  const result = await cli(process.execPath, [
+    command,
+    input,
+    acknowledged,
+    "--status-base-topic",
+    "home/hsb1/pixdcon",
+  ]);
+  assert.match(
+    JSON.parse(result.stdout).warnings[0],
+    /Controller status shares v1/,
+  );
+  const driven = join(root, "driven");
+  await cli(process.execPath, [command, input, driven, "--output", "drive"]);
+  assert.equal(
+    JSON.parse(await readFile(join(driven, "config.json"), "utf8")).output
+      .default,
+    "drive",
+  );
+});
+
 test("resources: the adapter redirects declared state fields before init for aliases and copied keys; drive preserves its own history path", async () => {
   await mkdir(OUT_DIR, { recursive: true });
   const dataDir = await mkdtemp(join(OUT_DIR, "shadow-paths-"));

@@ -141,7 +141,7 @@
       "test": "test/contract/scenes.test.js: scenes watcher order:"
     },
     {
-      "site": "src/config/migrate-v1.js:248",
+      "site": "src/config/migrate-v1.js:256",
       "id": "work:file.sync#1",
       "input": "completion of syncing the migration temporary file",
       "metadata": "exclusive temporary FileHandle; one CLI invocation",
