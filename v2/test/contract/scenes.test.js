@@ -11,9 +11,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdir, mkdtemp, writeFile, readFile, readlink } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, readFile, readlink, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { ScenesWatcher } from "../../src/scenes/scenes-watcher.js";
 import { SceneRuntime } from "../../src/scenes/scene-runtime.js";
 import { OUT_DIR } from "../helpers/golden.js";
 import { DeviceError, SceneError } from "../../src/core/errors.js";
@@ -224,9 +225,11 @@ test("instance tokens: a replacement instance and the instance it replaces have 
   assert.equal(await replacement.renderFrame({ deviceName: "device" }), 20);
   assert.deepEqual([...contexts.subscriptions.keys()], [replacement.ref.token]);
 });
+// Blocker: scene-registry.js reserved for architect round 4; request w5-to-w1-1.md.
 test.todo(
   "resources: home3 reports assetDirs [home3-assets] and stateFields [_boilerStatePath]; so do an alias key for the same file and a copy of it",
 );
+// Blocker: same reserved registry implementation (w5-to-w1-1.md).
 test.todo(
   "resources: home, funkeykid, health and the Ulanzi scenes report no asset folder and no state field",
 );
@@ -249,6 +252,7 @@ test("shared files: a scene on the data mount resolves ../../lib and ../../asset
 });
 
 // --- Ordering (knowledge entry, section 3.0) ---
+// Blocker: reserved registry and W1 registry-lane integration (w5-to-w1-1.md).
 test.todo(
   "registry order: load, refresh and sync are called from main.js's lane only, read the effective scene map when they run, and a failed import keeps the last good metadata",
 );
@@ -280,6 +284,76 @@ test("scene runtime order: one pending load per scene and device; an instance wh
   await contexts.deliver("input", "late");
   assert.equal(/** @type {any} */ (globalThis)[slot].called, undefined);
 });
-test.todo(
-  "scenes watcher order: a file event is a hint; the file is read after the debounce, and a change that arrives while a reload runs waits in the lane behind it",
-);
+test("scenes watcher order: a file event is a hint; the file is read after the debounce, and a change that arrives while a reload runs waits in the lane behind it", async (t) => {
+  await mkdir(OUT_DIR, { recursive: true });
+  const dir = await mkdtemp(join(OUT_DIR, "watch-contract-"));
+  const file = join(dir, "scene.js");
+  await writeFile(file, "// baseline");
+  /** @type {string[]} */
+  const seen = [];
+  let finishFirst = () => {};
+  const first = new Promise(resolve => { finishFirst = () => resolve(undefined); });
+  const watcher = new ScenesWatcher({ dirs: () => [dir], logger: silentLogger, debounceMs: 25, retryMs: 10,
+    async onChange(path) { seen.push((await readFile(path, "utf8")).replace(/^\/\/ /, "")); if (seen.length === 1) await first; },
+  });
+  t.after(() => { watcher.stop(); finishFirst(); });
+  watcher.start();
+  watcher.start();
+  await writeFile(file, "// first hint");
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(seen, [], "no read on the native hint");
+  await writeFile(file, "// last content before debounce");
+  await waitFor(() => seen.length === 1);
+  assert.deepEqual(seen, ["last content before debounce"]);
+  await writeFile(file, "// changed during the first reload");
+  await new Promise(resolve => setTimeout(resolve, 75));
+  assert.equal(seen.length, 1, "the pending reload waits");
+  finishFirst();
+  await waitFor(() => seen.length === 2);
+  assert.equal(seen[1], "changed during the first reload");
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(seen.length, 2, "poll and native watch do not report an edit twice");
+  await writeFile(file, "// cancelled on stop");
+  watcher.stop(); watcher.stop();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(seen.length, 2);
+});
+
+test("scenes watcher recovery: missing/replaced directories and resource pictures, without repeated reloads", async (t) => {
+  await mkdir(OUT_DIR, { recursive: true });
+  const parent = await mkdtemp(join(OUT_DIR, "watch-recovery-"));
+  const dir = join(parent, "mounted");
+  const assets = join(parent, "copy-assets");
+  /** @type {string[]} */
+  const seen = [];
+  let dirs = [dir];
+  const watcher = new ScenesWatcher({ dirs: () => dirs, logger: silentLogger, debounceMs: 10, retryMs: 15,
+    async onChange(path) { seen.push(path); },
+  });
+  t.after(() => watcher.stop());
+  watcher.start();
+  await mkdir(dir);
+  const file = join(dir, "later.js");
+  await writeFile(file, "// appeared after start");
+  await waitFor(() => seen.includes(file));
+  await rename(dir, join(parent, "old-directory"));
+  await mkdir(dir);
+  await writeFile(file, "// replacement directory");
+  await waitFor(() => seen.filter(path => path === file).length === 2);
+  await mkdir(assets);
+  dirs = [dir, assets];
+  const image = join(assets, "picture.png");
+  await writeFile(image, "fixture pixels");
+  await waitFor(() => seen.includes(image));
+  await new Promise(resolve => setTimeout(resolve, 70));
+  assert.equal(seen.length, 3);
+});
+
+/** @param {() => boolean} predicate */
+async function waitFor(predicate) {
+  const deadline = Date.now() + 1500;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, "scene contract peer did not observe the expected event");
+    await new Promise(resolve => setTimeout(resolve, 2));
+  }
+}

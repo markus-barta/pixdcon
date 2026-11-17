@@ -50,14 +50,6 @@
       "test": "test/contract/scenes.test.js: scene runtime order:"
     },
     {
-      "site": "src/scenes/scenes-watcher.js:41",
-      "id": "contract:ScenesWatcher.start",
-      "input": "file events of the scene directories and asset folders; the 500 ms debounce; the 1 s retry and poll timer",
-      "metadata": "the file path; a stamp per file",
-      "fence": "an event is a hint: after the debounce onChange(file) is called, and main.js queues it into the registry lane",
-      "test": "test/contract/scenes.test.js: scenes watcher order:"
-    },
-    {
       "site": "src/scenes/v1-scene-adapter.js:177",
       "id": "subscribe:settings.subscribe#1",
       "input": "scene settings or MQTT callback",
@@ -107,6 +99,38 @@
       "fence": "none",
       "why": "read-only drawing reference; no controller state changes",
       "test": "test/contract/scenes.test.js: v1 scene surface:"
+    },
+    {
+      "site": "src/scenes/scenes-watcher.js:57",
+      "id": "timer:setInterval#1",
+      "input": "native file hints, watcher errors, debounce and retry timers",
+      "metadata": "watch generation, current directory inode and per-file observed stamp",
+      "fence": "native events only schedule a debounced stamp read; onChange runs serially and checks the active generation; stop cancels queued callbacks",
+      "test": "test/contract/scenes.test.js: scenes watcher order:"
+    },
+    {
+      "site": "src/scenes/scenes-watcher.js:128",
+      "id": "watch:watch#1",
+      "input": "native file hints, watcher errors, debounce and retry timers",
+      "metadata": "watch generation, current directory inode and per-file observed stamp",
+      "fence": "native events only schedule a debounced stamp read; onChange runs serially and checks the active generation; stop cancels queued callbacks",
+      "test": "test/contract/scenes.test.js: scenes watcher order:"
+    },
+    {
+      "site": "src/scenes/scenes-watcher.js:136",
+      "id": "listener:watcher.on(\"error\")#1",
+      "input": "native file hints, watcher errors, debounce and retry timers",
+      "metadata": "watch generation, current directory inode and per-file observed stamp",
+      "fence": "native events only schedule a debounced stamp read; onChange runs serially and checks the active generation; stop cancels queued callbacks",
+      "test": "test/contract/scenes.test.js: scenes watcher order:"
+    },
+    {
+      "site": "src/scenes/scenes-watcher.js:155",
+      "id": "timer:setTimeout#1",
+      "input": "native file hints, watcher errors, debounce and retry timers",
+      "metadata": "watch generation, current directory inode and per-file observed stamp",
+      "fence": "native events only schedule a debounced stamp read; onChange runs serially and checks the active generation; stop cancels queued callbacks",
+      "test": "test/contract/scenes.test.js: scenes watcher order:"
     }
   ],
   "none": [
@@ -116,7 +140,6 @@
     "SceneRegistry.keysOfFile",
     "SceneRegistry.check",
     "normalizeSchema",
-    "ScenesWatcher.stop",
     "migrateV1Config"
   ]
 }
