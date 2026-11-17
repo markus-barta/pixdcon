@@ -11,7 +11,7 @@
  *  - channel: {Command:"Channel/SetIndex", SelectIndex:n}; built-in modes use the indexes of builtin-modes.js,
  *    selectChannel(index) forwards any index a scene asks for, unchanged (D-008)
  *  - telemetry: {Command:"Channel/GetAllConf"} → Brightness, CurClockId (D-183)
- *  - success: HTTP 2xx and error_code absent, 0 or "0"; an unparseable 2xx body counts as success (D-033, D-034)
+ *  - success: HTTP 2xx and error_code absent, null, 0 or "0"; an unparseable 2xx body counts as success (D-033, D-034)
  *  - 5 s deadline per request; timeout text "Pixoo HTTP timeout after 5000ms" (D-035)
  *
  * Fixed: a deadline that fires while the body is read is a failure, not a
@@ -40,7 +40,7 @@ export function createPixooDriver(options) {
     try {
       const answer = await transport.request("/post", body, signal);
       const data = answer && typeof answer === "object" ? /** @type {Record<string, unknown>} */ (answer) : {};
-      if (data.error_code !== undefined && data.error_code !== 0 && data.error_code !== "0")
+      if (data.error_code != null && data.error_code !== 0 && data.error_code !== "0")
         throw new DeviceError(`Pixoo error_code ${String(data.error_code)}`, { device: options.name, op: String(body.Command) });
       return data;
     } catch (error) { transport.ready = false; throw error; }

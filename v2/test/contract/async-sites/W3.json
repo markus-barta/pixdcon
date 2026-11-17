@@ -42,11 +42,11 @@
       "test": "test/smoke/drivers-render.test.js: fake drivers close queued work"
     },
     {
-      "site": "src/health/health-model.js:110",
+      "site": "src/health/health-model.js:113",
       "id": "timer:this.deps.clock.every#1",
       "input": "1 s health derivation tick",
       "metadata": "registered device facts measured by current runtime views",
-      "fence": "deriveHealth computes age; timer can only age measurements towards stale/offline; scheduler whileCurrent fences every runtime report",
+      "fence": "deriveHealth ages measured facts within the current play/contact window; quiet-to-play alone sets the window baseline once; repeated expect never refreshes it; scheduler whileCurrent fences runtime reports",
       "test": "test/smoke/drivers-render.test.js: health timers:"
     },
     {

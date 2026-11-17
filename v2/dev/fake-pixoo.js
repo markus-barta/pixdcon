@@ -34,7 +34,7 @@ const HEIGHT = 64;
  */
 
 /**
- * @param {{port?: number}} [options] port 0 (default) picks a free one
+ * @param {{port?: number, successCode?: 0|null}} [options] port 0 picks a free one; null exercises firmware's nullable success code
  * @returns {Promise<FakePixoo>}
  */
 export async function startFakePixoo(options = {}) {
@@ -126,6 +126,7 @@ export async function startFakePixoo(options = {}) {
       let answer;
       try {
         answer = execute(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        if (answer.error_code === 0 && options.successCode === null) answer.error_code = null;
       } catch {
         answer = { error_code: "Request data illegal json" };
       }

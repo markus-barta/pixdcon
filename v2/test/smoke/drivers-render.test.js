@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
+import { startFakePixoo } from "../../dev/fake-pixoo.js";
 import { DeviceError, SceneError } from "../../src/core/errors.js";
 import { createPixooDriver } from "../../src/drivers/pixoo-driver.js";
 import { AWTRIX_CLEANUP_RETRY_MS, createAwtrixDriver, screenToFrame } from "../../src/drivers/awtrix-driver.js";
@@ -79,6 +80,46 @@ test("a quiet display (paused, stopped, built-in mode, no scene) is judged by pr
     await r.clock.advance(1); assert.equal(r.health.get("p")?.state, "stale");
     await r.clock.advance(90000); assert.equal(r.health.get("p")?.state, "offline");
   }
+});
+
+test("quiet to play starts a fresh health window without rewriting the last accepted frame", async (t) => {
+  for (const hasFrame of [true, false]) {
+    const r = loopRig(t, { target: hasFrame ? { mode: "pause" } : { scene: null } });
+    await flush(); await r.clock.advance(180000);
+    const previous = r.health.get("p")?.lastFrameAt;
+    const held = deferred();
+    r.options.render = async (/** @type {any} */ sink) => {
+      await held.promise;
+      await sink.show({ kind: "frame", frame: { width: 64, height: 64, rgb: new Uint8Array(12288) } });
+      return 200000;
+    };
+    r.loop.apply({ scene: "red", mode: "play" }); await flush();
+    assert.equal(r.health.get("p")?.state, hasFrame ? "online" : "starting");
+    assert.equal(r.health.get("p")?.lastFrameAt, previous);
+    await r.clock.advance(29999); assert.equal(r.health.get("p")?.state, hasFrame ? "online" : "starting");
+    await r.clock.advance(1); assert.equal(r.health.get("p")?.state, "stale");
+    await r.clock.advance(89999); assert.equal(r.health.get("p")?.state, "stale");
+    await r.clock.advance(1); assert.equal(r.health.get("p")?.state, "offline");
+    held.resolve(null); await flush();
+    assert.equal(r.health.get("p")?.state, "online");
+    await r.clock.advance(29999); assert.equal(r.health.get("p")?.state, "online");
+    await r.clock.advance(1); assert.equal(r.health.get("p")?.state, "stale", "the later accepted frame starts the clock");
+  }
+});
+
+test("fake Pixoo null error_code is success for initialization, frames, probes and telemetry", async (t) => {
+  const pixoo = await startFakePixoo({ successCode: null }); t.after(() => pixoo.stop());
+  const clock = manualClock(); let pausing = false;
+  const driver = createPixooDriver({ name: "p", address: pixoo.address, clock: { ...clock, sleep(ms, signal) { if (ms === 100) pausing = true; return clock.sleep(ms, signal); } }, logger });
+  t.after(() => driver.close());
+  const init = driver.init(); await until(() => pausing); await clock.advance(100); await init;
+  assert.equal(driver.ready, true);
+  await driver.show({ kind: "frame", frame: { width: 64, height: 64, rgb: new Uint8Array(12288).fill(5) } });
+  await driver.probe(); const telemetry = await driver.readTelemetry();
+  assert.equal(pixoo.state().frames, 1); assert.equal(telemetry.reachable, true);
+  pixoo.failNext(1, "Channel/GetAllConf");
+  await assert.rejects(driver.probe(), /Pixoo error_code 1/);
+  assert.equal(driver.ready, false);
 });
 
 test("display hangs (accepts, never answers): the same timing, last error 'Pixoo HTTP timeout after 5000ms'", async (t) => {

@@ -18,8 +18,9 @@
  *   for, not the render time, not a backoff. The thresholds are inclusive at
  *   their lower end: 29 999 ms is online, 30 000 ms is stale, 119 999 ms is
  *   stale, 120 000 ms is offline. Before the first good frame the same
- *   thresholds count from the start of the runtime (starting, then stale,
- *   then offline).
+ *   thresholds count from entry into play (starting, then stale, then
+ *   offline). Returning from quiet starts a fresh frame window; an older
+ *   frame cannot make the display immediately offline before its next render.
  *
  *   Without an active scene there are no frames to count: pause, stop, a
  *   built-in mode, no scene chosen. There the render loop probes every
@@ -59,6 +60,7 @@ import { classifyError } from "../core/errors.js";
  *
  * @typedef {object} HealthFacts
  * @property {number} startedAt epoch ms when the runtime started
+ * @property {number} framesDueSince epoch ms when this frame window started
  * @property {number|null} lastFrameAt
  * @property {number|null} lastContactAt
  * @property {boolean} framesDue true with an active scene: mode play and a custom scene
@@ -82,7 +84,8 @@ import { classifyError } from "../core/errors.js";
 export function deriveHealth(facts, now, config) {
   if (facts.shadow) return { state: "shadow", reason: null };
   const last = facts.framesDue ? facts.lastFrameAt : facts.lastContactAt;
-  const age = Math.max(0, now - (last ?? facts.startedAt));
+  const baseline = facts.framesDue ? Math.max(last ?? facts.startedAt, facts.framesDueSince) : last ?? facts.startedAt;
+  const age = Math.max(0, now - baseline);
   const reason = facts.powerCycles.exhausted ? "power_cycles_exhausted"
     : facts.lastError?.kind === "scene" || facts.lastError?.kind === "internal" ? "scene_error"
     : facts.lastError?.kind === "device" ? "device_unreachable"
@@ -123,7 +126,7 @@ export class HealthModel extends EventEmitter {
    */
   register(device, options) {
     this.facts.set(device, {
-      startedAt: this.deps.clock.now(), lastFrameAt: null, lastContactAt: null,
+      startedAt: this.deps.clock.now(), framesDueSince: this.deps.clock.now(), lastFrameAt: null, lastContactAt: null,
       framesDue: false, hasScene: false, shadow: options.shadow, consecutiveErrors: 0, lastError: null,
       powerCycles: { count: 0, max: options.powerCycleMax, plugTopic: options.plugTopic, exhausted: false }, apSsid: null,
     });
@@ -186,6 +189,7 @@ export class HealthModel extends EventEmitter {
   expect(device, expectation) {
     const facts = this.facts.get(device);
     if (!facts) return;
+    if (expectation.framesDue && !facts.framesDue) facts.framesDueSince = this.deps.clock.now();
     Object.assign(facts, expectation);
     this.update(device);
   }
