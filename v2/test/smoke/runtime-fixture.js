@@ -33,11 +33,15 @@ export class StubMqtt extends EventEmitter {
   /** @type {Array<{topic: string, payload: any, options: any}>} */
   messages = [];
   connected = true;
+  connection = 1;
+  /** @type {import('../../src/mqtt/mqtt-gateway.js').PublishResult['outcome'][]} */
+  outcomes = [];
   status() { return { state: this.connected ? "connected" : "offline" }; }
   /** @param {string} topic @param {any} payload @param {any} options */
   async publish(topic, payload, options) {
     this.messages.push({ topic, payload: structuredClone(payload), options });
-    return { ok: this.connected, outcome: this.connected ? "confirmed" : "offline", connection: 1, error: null };
+    const outcome = this.outcomes.shift() ?? (this.connected ? "confirmed" : "offline");
+    return { ok: outcome === "confirmed" || outcome === "sent", outcome, connection: this.connection, error: null };
   }
 }
 

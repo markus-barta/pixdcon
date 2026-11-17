@@ -521,6 +521,128 @@ test("an interrupted power cycle still sends ON and a broker outage consumes no 
   assert.equal(offline.loop.status().powerCycleCount, 0); assert.equal(offline.mqtt.messages.length, 0);
 });
 
+test("uncertain OFF outcomes still owe ON, and reconnect retries ON until confirmed", async (t) => {
+  for (const outcome of /** @type {const} */ (["timeout", "offline", "sent"])) {
+    const error = new DeviceError("offline");
+    const r = loopRig(t, { deviceError: error, probeError: error, device: { maxPowerCycles: 1, powerCyclePlugin: { topic: "plug" } } });
+    r.mqtt.outcomes = [outcome, "timeout", "confirmed"];
+    await flush(); await r.clock.advance(151000);
+    assert.equal(r.loop.plugOnOwed, true); assert.equal(r.loop.status().powerCycleCount, 1);
+    await r.clock.advance(10000);
+    assert.deepEqual(r.mqtt.messages.map((m) => m.payload), ['{"state":"OFF"}', '{"state":"ON"}']);
+    assert.equal(r.loop.plugOnOwed, true, "a timeout of ON cannot forgive the debt");
+    await r.clock.advance(999); assert.equal(r.mqtt.messages.length, 2);
+    r.mqtt.emit("connect", { connection: ++r.mqtt.connection }); await flush();
+    assert.equal(r.mqtt.messages.length, 3); assert.equal(r.loop.plugOnOwed, false);
+    assert.equal(r.loop.status().powerCycleCount, 1);
+  }
+});
+
+test("only a certainly unsent OFF error owes no ON and consumes no power cycle", async (t) => {
+  const error = new DeviceError("offline");
+  const r = loopRig(t, { deviceError: error, probeError: error, device: { powerCyclePlugin: { topic: "plug" } } });
+  r.mqtt.outcomes = ["error"]; await flush(); await r.clock.advance(151000);
+  assert.equal(r.loop.plugOnOwed, false); assert.equal(r.loop.status().powerCycleCount, 0);
+  assert.deepEqual(r.mqtt.messages.map((m) => m.payload), ['{"state":"OFF"}']);
+});
+
+test("failed ON retries on the clock and cannot enter exhausted or send another OFF while owed", async (t) => {
+  const error = new DeviceError("offline");
+  const r = loopRig(t, { deviceError: error, probeError: error, device: { maxPowerCycles: 1, powerCyclePlugin: { topic: "plug" } } });
+  r.mqtt.outcomes = ["confirmed", ...Array(400).fill("error")];
+  await flush(); await r.clock.advance(151000 + 10000 + 300000);
+  assert.equal(r.loop.status().phase, "retrying"); assert.equal(r.loop.plugOnOwed, true);
+  assert.equal(r.health.facts.get("p")?.powerCycles.exhausted, false);
+  assert.equal(r.loop.status().powerCycleCount, 1);
+  assert.equal(r.mqtt.messages.filter((m) => m.payload === '{"state":"OFF"}').length, 1);
+  assert.ok(r.mqtt.messages.filter((m) => m.payload === '{"state":"ON"}').length > 100);
+  r.mqtt.outcomes = ["confirmed"];
+  r.mqtt.emit("connect", { connection: ++r.mqtt.connection }); await flush();
+  assert.equal(r.loop.plugOnOwed, false);
+});
+
+test("stop retries an owed ON within its deadline, including reconnect, and bounds an unconfirmed ON", async (t) => {
+  for (const confirms of [true, false]) {
+    const error = new DeviceError("offline");
+    const r = loopRig(t, { deviceError: error, probeError: error, device: { powerCyclePlugin: { topic: "plug" } } });
+    r.mqtt.outcomes = ["timeout", ...Array(20).fill("offline")];
+    await flush(); await r.clock.advance(151000);
+    const stopping = r.loop.stop({ deadlineMs: 3500 }); await flush();
+    assert.equal(r.mqtt.messages[1]?.payload, '{"state":"ON"}');
+    await r.clock.advance(1000); assert.equal(r.mqtt.messages.length, 3);
+    if (confirms) {
+      r.mqtt.outcomes = ["confirmed"];
+      r.mqtt.emit("connect", { connection: ++r.mqtt.connection }); await flush();
+      assert.deepEqual(await stopping, { clean: true }); assert.equal(r.loop.plugOnOwed, false);
+    } else {
+      await r.clock.advance(2500); assert.deepEqual(await stopping, { clean: false });
+      const count = r.mqtt.messages.length;
+      r.mqtt.emit("connect", { connection: ++r.mqtt.connection });
+      await r.clock.advance(10000); assert.equal(r.mqtt.messages.length, count);
+      assert.equal(r.loop.plugOnOwed, true);
+    }
+    assert.equal(r.mqtt.listenerCount("connect"), 0);
+  }
+});
+
+test("shutdown waits for an uncertain OFF in flight before restoring ON and bounds a hung ON", async (t) => {
+  const error = new DeviceError("offline");
+  const r = loopRig(t, { deviceError: error, probeError: error, device: { powerCyclePlugin: { topic: "plug" } } });
+  const off = deferred(); const publish = r.mqtt.publish.bind(r.mqtt);
+  r.mqtt.publish = async (topic, payload, options) => {
+    const result = await publish(topic, payload, options);
+    if (payload === '{"state":"OFF"}') await off.promise;
+    return result;
+  };
+  r.mqtt.outcomes = ["timeout", "confirmed"];
+  await flush(); await r.clock.advance(151000);
+  const stopping = r.loop.stop(); await flush();
+  assert.equal(r.mqtt.messages.length, 1, "ON must not overtake the outstanding OFF");
+  off.resolve(null); await flush(); assert.deepEqual(await stopping, { clean: true });
+  assert.equal(r.mqtt.messages[1]?.payload, '{"state":"ON"}');
+
+  const hung = loopRig(t, { deviceError: error, probeError: error, device: { powerCyclePlugin: { topic: "plug" } } });
+  const on = deferred(); const send = hung.mqtt.publish.bind(hung.mqtt);
+  hung.mqtt.publish = async (topic, payload, options) => {
+    const result = await send(topic, payload, options);
+    if (payload === '{"state":"ON"}') await on.promise;
+    return result;
+  };
+  hung.mqtt.outcomes = ["confirmed", "timeout"];
+  await flush(); await hung.clock.advance(161000);
+  const bounded = hung.loop.stop({ deadlineMs: 2500 });
+  await hung.clock.advance(2500); assert.deepEqual(await bounded, { clean: false });
+  on.resolve(null); await flush();
+  assert.equal(hung.mqtt.messages.length, 2); assert.equal(hung.mqtt.listenerCount("connect"), 0);
+});
+
+test("good probes retry rejected frames without replenishing the exhausted cycle budget", async (t) => {
+  const error = new DeviceError("offline");
+  const r = loopRig(t, { deviceError: error, probeError: error, device: { maxPowerCycles: 1, powerCyclePlugin: { topic: "plug" } } });
+  await flush(); await r.clock.advance(151000 + 40000 + 151000);
+  assert.equal(r.loop.status().phase, "exhausted"); assert.equal(r.loop.status().powerCycleCount, 1);
+  r.options.probeError = null;
+  const frames = r.renders(); await r.clock.advance(60000);
+  assert.ok(r.renders() > frames); assert.equal(r.loop.status().powerCycleCount, 1);
+  assert.equal(r.loop.deviceErrors, 1, "the good probe reset device errors before trying a frame");
+  await r.clock.advance(600000);
+  assert.equal(r.mqtt.messages.filter((m) => m.payload === '{"state":"OFF"}').length, 1);
+  assert.equal(r.loop.status().powerCycleCount, 1);
+  r.loop.apply({ mode: "play" }); await flush(); assert.equal(r.loop.status().powerCycleCount, 1);
+  r.loop.retryNow(); await flush();
+  assert.equal(r.loop.status().powerCycleCount, 0, "manual retry resets cycles even if the frame still fails");
+});
+
+test("an accepted frame replenishes a spent cycle budget without a manual retry", async (t) => {
+  const error = new DeviceError("offline");
+  const r = loopRig(t, { deviceError: error, probeError: error, device: { maxPowerCycles: 1, powerCyclePlugin: { topic: "plug" } } });
+  await flush(); await r.clock.advance(151000 + 40000 + 151000);
+  assert.equal(r.loop.status().powerCycleCount, 1);
+  r.options.probeError = null; r.options.deviceError = null;
+  await r.clock.advance(60000);
+  assert.equal(r.loop.status().powerCycleCount, 0); assert.equal(r.loop.status().phase, "running");
+});
+
 test("scheduler retires disabled devices, preserves previews, re-arms only the changed feed and uses the injected change classifier", async (t) => {
   const r = await rig(t); await until(() => r.previews.get("p") && r.health.get("u")?.state === "online");
   const p = r.scheduler.loop("p"); const u = r.scheduler.loop("u");

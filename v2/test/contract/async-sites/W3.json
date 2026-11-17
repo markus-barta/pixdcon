@@ -82,43 +82,59 @@
       "test": "test/smoke/drivers-render.test.js: previews in order:"
     },
     {
-      "site": "src/render/render-loop.js:155",
+      "site": "src/render/render-loop.js:151",
+      "id": "listener:this.deps.mqtt.on(\"connect\")#1",
+      "input": "gateway reconnect",
+      "metadata": "runtime-owned ON obligation; gateway connections only rise",
+      "fence": "wakes serialized retry only when ON is owed; confirmed ON clears debt; listener removed on bounded stop",
+      "test": "test/smoke/drivers-render.test.js: stop retries an owed ON within its deadline"
+    },
+    {
+      "site": "src/render/render-loop.js:173",
       "id": "timer:this.deps.clock.sleep#1",
       "input": "pacing, stop deadline or plug wait",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
-      "fence": "running and target version checked after awaits; whileCurrent gates health/phase/preview reports; timers only pace; accepted plug OFF obliges ON even during stop",
+      "fence": "running and target version fence reports; only accepted frames/manual retry reset cycle budget; uncertain OFF owes confirmed ON through reconnect and bounded stop",
       "test": "test/smoke/smoke.test.js: stop: the process ends"
     },
     {
-      "site": "src/render/render-loop.js:273",
+      "site": "src/render/render-loop.js:292",
       "id": "timer:this.deps.clock.sleep#2",
       "input": "pacing, stop deadline or plug wait",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
-      "fence": "running and target version checked after awaits; whileCurrent gates health/phase/preview reports; timers only pace; accepted plug OFF obliges ON even during stop",
+      "fence": "running and target version fence reports; only accepted frames/manual retry reset cycle budget; uncertain OFF owes confirmed ON through reconnect and bounded stop",
       "test": "test/smoke/drivers-render.test.js: backoff 1, 2, 4"
     },
     {
-      "site": "src/render/render-loop.js:306",
+      "site": "src/render/render-loop.js:330",
       "id": "work:mqtt.publish#1",
       "input": "plug publish outcome",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
-      "fence": "running and target version checked after awaits; whileCurrent gates health/phase/preview reports; timers only pace; accepted plug OFF obliges ON even during stop",
-      "test": "test/smoke/drivers-render.test.js: 10 failed renders with a plug configured:"
+      "fence": "running and target version fence reports; only accepted frames/manual retry reset cycle budget; uncertain OFF owes confirmed ON through reconnect and bounded stop",
+      "test": "test/smoke/drivers-render.test.js: uncertain OFF outcomes still owe ON"
     },
     {
-      "site": "src/render/render-loop.js:313",
+      "site": "src/render/render-loop.js:342",
+      "id": "timer:this.deps.clock.sleep#3",
+      "input": "owed ON retry interval",
+      "metadata": "ON obligation, running flag, stop deadline, abortable retry sleep",
+      "fence": "only confirmed publish clears owed ON; no exhausted while owed; reconnect/stop wake retry and deadline bounds it",
+      "test": "test/smoke/drivers-render.test.js: failed ON retries on the clock"
+    },
+    {
+      "site": "src/render/render-loop.js:356",
       "id": "work:mqtt.publish#2",
       "input": "plug publish outcome",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
-      "fence": "running and target version checked after awaits; whileCurrent gates health/phase/preview reports; timers only pace; accepted plug OFF obliges ON even during stop",
-      "test": "test/smoke/drivers-render.test.js: 10 failed renders with a plug configured:"
+      "fence": "running and target version fence reports; only accepted frames/manual retry reset cycle budget; uncertain OFF owes confirmed ON through reconnect and bounded stop",
+      "test": "test/smoke/drivers-render.test.js: only a certainly unsent OFF error"
     },
     {
-      "site": "src/render/render-loop.js:381",
+      "site": "src/render/render-loop.js:430",
       "id": "work:this.deps.scenes.acquire#1",
       "input": "scene instance acquired asynchronously",
       "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
-      "fence": "running and target version checked after awaits; whileCurrent gates health/phase/preview reports; timers only pace; accepted plug OFF obliges ON even during stop",
+      "fence": "running and target version fence reports; only accepted frames/manual retry reset cycle budget; uncertain OFF owes confirmed ON through reconnect and bounded stop",
       "test": "test/smoke/smoke.test.js: render reports in order:"
     },
     {

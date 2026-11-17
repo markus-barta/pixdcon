@@ -30,7 +30,10 @@
  *  - Built-in activation is checked; failures retry with their own counter
  *    that never triggers a power cycle (D-B04, D-B28). Stop works without a scene (S-34).
  *  - Power cycles used up: phase "exhausted", probing every 60 s, and
- *    retryNow() or a good probe starts over (v1: dead until restart, B-035, S-8).
+ *    a good probe retries rendering without replenishing cycles; only an
+ *    accepted frame or retryNow() starts the cycle budget over (B-035, S-8).
+ *  - An OFF result other than certain error owes ON until QoS-1 confirmation.
+ *    Reconnects wake retries; stop keeps trying within its deadline (D-124).
  *    The log says what was really sent (D-B16).
  *  - stop() has a deadline; a render that hangs cannot block the process (B-044, A-028).
  *  - Output "shadow": no MQTT publish, so no power cycle, ever. `device.output`
@@ -116,6 +119,16 @@ export class RenderLoop {
     this.deviceErrors = 0;
     this.errors = 0;
     this.cycles = 0;
+    this.plugOnOwed = false;
+    this.plugWake = false;
+    this.stopUntil = /** @type {number|null} */ (null);
+    this.plugSleeper = /** @type {AbortController|null} */ (null);
+    this.onConnect = () => {
+      if (!this.plugOnOwed) return;
+      this.plugWake = true;
+      this.plugSleeper?.abort();
+      this.sleeper?.abort();
+    };
     this.pausedFrame = false;
     this.lastSceneBrightness = /** @type {number|null} */ (null);
     this.appliedNative = /** @type {number|null} */ (null);
@@ -134,6 +147,8 @@ export class RenderLoop {
   start() {
     if (this.running) return;
     this.running = this.alive = true;
+    this.stopUntil = null;
+    this.deps.mqtt?.on("connect", this.onConnect);
     this.task = this.run().catch((error) => {
       this.deps.logger.error(`[RenderLoop] ${this.deps.device.name}: loop ended`, error);
     }).finally(() => { this.alive = false; });
@@ -146,15 +161,20 @@ export class RenderLoop {
    * @returns {Promise<{clean: boolean}>} clean false when the deadline cut a hanging render loose
    */
   async stop(options) {
+    const deadlineMs = options?.deadlineMs ?? LOOP_DEFAULTS.stopDeadlineMs;
+    this.stopUntil = this.deps.clock.now() + deadlineMs;
     this.running = false;
     this.sleeper?.abort();
+    this.plugSleeper?.abort();
     if (!this.task) return { clean: true };
     const deadline = new AbortController();
     const clean = await Promise.race([
       this.task.then(() => true),
-      this.deps.clock.sleep(options?.deadlineMs ?? LOOP_DEFAULTS.stopDeadlineMs, deadline.signal).then(() => false),
+      this.deps.clock.sleep(deadlineMs, deadline.signal).then(() => false),
     ]);
     deadline.abort();
+    this.deps.mqtt?.off("connect", this.onConnect);
+    if (this.plugOnOwed) this.deps.logger.warn(`[RenderLoop] ${this.deps.device.name}: stop deadline reached with plug ON unconfirmed`);
     if (!clean) {
       this.alive = false;
       void this.driver.close();
@@ -164,7 +184,7 @@ export class RenderLoop {
         void this.deps.scenes.release(instance).catch((error) => this.deps.logger.error("[RenderLoop] release", error));
       }
     }
-    return { clean };
+    return { clean: clean && !this.plugOnOwed };
   }
 
   /**
@@ -177,7 +197,6 @@ export class RenderLoop {
     const changed = Object.entries(patch).some(([key, value]) => this.target[/** @type {keyof LoopTarget} */ (key)] !== value);
     const playAgain = patch.mode === "play" && this.target.mode === "play";
     if (!changed && !playAgain) return;
-    if (playAgain) this.retry = true;
     const sceneChanged = patch.scene !== undefined && patch.scene !== this.target.scene;
     if (sceneChanged) this.effective.showingSince = null;
     if (patch.mode === "play" || sceneChanged) this.reinit = true;
@@ -281,6 +300,7 @@ export class RenderLoop {
       await this.driver.probe();
       if (!this.running) return false;
       this.deps.health.contactOk(this.deps.device.name);
+      this.errors = this.deviceErrors = 0;
       return true;
     } catch (error) {
       if (this.running) this.deps.health.renderFailed(this.deps.device.name, error);
@@ -299,23 +319,52 @@ export class RenderLoop {
     }
   }
 
+  /** Retry the owed ON serially; neither an uncertain answer nor retirement forgives it. */
+  async restorePlugOn() {
+    const { device, mqtt } = this.deps;
+    const plug = device.powerCyclePlugin;
+    if (!plug || !mqtt) return !this.plugOnOwed;
+    while (this.plugOnOwed && (this.running || this.deps.clock.now() < (this.stopUntil ?? 0))) {
+      this.plugWake = false;
+      try {
+        const on = await mqtt.publish(plug.topic, plug.onPayload ?? '{"state":"ON"}', { qos: 1, retain: false });
+        this.plugOnOwed = on.outcome !== "confirmed";
+        this.deps.logger[this.plugOnOwed ? "warn" : "info"](`[RenderLoop] ${device.name}: plug ON ${on.outcome}`);
+      } catch (error) { this.deps.logger.warn(`[RenderLoop] ${device.name}: plug ON failed: ${String(error)}`); }
+      if (!this.plugOnOwed) return true;
+      if (this.plugWake) continue; // a new connection arrived during the publish
+      const wait = Math.min(LOOP_DEFAULTS.initialBackoffMs, this.running ? Infinity : (this.stopUntil ?? 0) - this.deps.clock.now());
+      if (wait <= 0) break;
+      this.report({ phase: "retrying", nextRetryAt: new Date(this.deps.clock.now() + wait).toISOString() });
+      const sleeper = new AbortController();
+      this.plugSleeper = sleeper;
+      this.nextWakeAt = new Date(this.deps.clock.now() + wait).toISOString();
+      await this.deps.clock.sleep(wait, sleeper.signal);
+      if (this.plugSleeper === sleeper) this.plugSleeper = null;
+      this.nextWakeAt = null;
+    }
+    return !this.plugOnOwed;
+  }
+
   async powerCycle() {
     const { device, mqtt, health } = this.deps;
     const plug = device.powerCyclePlugin;
     if (device.output !== "drive" || !plug || mqtt?.status().state !== "connected") return false;
-    const off = await mqtt.publish(plug.topic, plug.offPayload ?? '{"state":"OFF"}', { qos: 1, retain: false });
-    if (!off.ok) return false;
+    // Set before sending: a thrown/timeout/offline answer cannot prove OFF was not sent.
+    this.plugOnOwed = true;
+    try {
+      const off = await mqtt.publish(plug.topic, plug.offPayload ?? '{"state":"OFF"}', { qos: 1, retain: false });
+      if (off.outcome === "error") { this.plugOnOwed = false; return false; }
+      this.deps.logger.info(`[RenderLoop] ${device.name}: plug OFF ${off.outcome}`);
+    } catch (error) { this.deps.logger.warn(`[RenderLoop] ${device.name}: plug OFF uncertain: ${String(error)}`); }
     this.cycles += 1;
     health.powerCycles(device.name, { count: this.cycles, exhausted: false });
-    this.deps.logger.info(`[RenderLoop] ${device.name}: plug OFF sent`);
-    // Once OFF was accepted, ON is owed even if stop interrupts the wait.
+    // Once OFF may have been sent, ON is owed even if stop interrupts the wait.
     await this.sleep(plug.offWaitMs ?? LOOP_DEFAULTS.powerOffWaitMs);
-    const on = await mqtt.publish(plug.topic, plug.onPayload ?? '{"state":"ON"}', { qos: 1, retain: false });
-    this.deps.logger[on.ok ? "info" : "warn"](`[RenderLoop] ${device.name}: plug ON ${on.ok ? "sent" : "failed"}`);
-    if (this.running) await this.sleep(plug.onWaitMs ?? LOOP_DEFAULTS.powerOnWaitMs);
+    if (await this.restorePlugOn() && this.running) await this.sleep(plug.onWaitMs ?? LOOP_DEFAULTS.powerOnWaitMs);
     this.reinit = true;
     this.appliedNative = null;
-    this.deviceErrors = 0;
+    this.errors = this.deviceErrors = 0;
     return true;
   }
 
@@ -406,11 +455,17 @@ export class RenderLoop {
           else this.deviceErrors = 0;
           if (this.deviceErrors >= LOOP_DEFAULTS.breakerErrors) {
             if (this.cycles >= this.deps.device.maxPowerCycles && this.deps.device.powerCyclePlugin && this.deps.device.output === "drive") {
+              if (this.plugOnOwed && !await this.restorePlugOn()) continue;
+              if (!this.running || version !== this.version) continue;
               this.deps.health.powerCycles(this.deps.device.name, { count: this.cycles, exhausted: true });
               this.report({ phase: "exhausted", nextRetryAt: new Date(this.deps.clock.now() + LOOP_DEFAULTS.exhaustedProbeMs).toISOString() });
               while (this.running && !this.retry && version === this.version) {
                 if (!await this.sleep(LOOP_DEFAULTS.exhaustedProbeMs)) break;
-                if (await this.probe()) { this.retry = true; break; }
+                if (await this.probe()) {
+                  this.reinit = true;
+                  this.deps.health.powerCycles(this.deps.device.name, { count: this.cycles, exhausted: false });
+                  break;
+                }
               }
               continue;
             }
@@ -423,6 +478,7 @@ export class RenderLoop {
         }
       }
     } finally {
+      if (this.plugOnOwed) await this.restorePlugOn();
       if (this.instance) { const instance = this.instance; this.instance = null; await this.deps.scenes.release(instance); }
     }
   }
