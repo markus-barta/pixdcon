@@ -38,7 +38,7 @@
       "why": "start() rejects with the error; nothing is tried again by itself in the skeleton (the retry of A-117 is a phase-3 item and will be a timer site)"
     },
     {
-      "site": "src/api/http-server.js:344",
+      "site": "src/api/http-server.js:339",
       "id": "iterate:for await#1",
       "input": "the body of a write request, chunk by chunk",
       "metadata": "none of its own: the chunks belong to the request that is being read",
@@ -47,7 +47,7 @@
       "why": "read inside the request that asked for it, up to 1 MiB; the request as a whole is the input, and it is fenced where its route runs (the route rows of routes-v1.js and routes-v2.js)"
     },
     {
-      "site": "src/api/live-channel.js:103",
+      "site": "src/api/live-channel.js:119",
       "id": "listener:res.on(\"close\")#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -56,7 +56,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:114",
+      "site": "src/api/live-channel.js:131",
       "id": "timer:this.deps.clock.every#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -65,7 +65,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:115",
+      "site": "src/api/live-channel.js:132",
       "id": "work:this.publish#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -74,7 +74,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:221",
+      "site": "src/api/live-channel.js:243",
       "id": "listener:source.on#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -83,7 +83,7 @@
       "was": "wireLiveChannel"
     },
     {
-      "site": "src/api/live-channel.js:224",
+      "site": "src/api/live-channel.js:246",
       "id": "work:channel.publish#1",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -92,7 +92,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:225",
+      "site": "src/api/live-channel.js:247",
       "id": "work:channel.publish#2",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -101,7 +101,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:226",
+      "site": "src/api/live-channel.js:249",
       "id": "work:channel.publish#3",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -110,7 +110,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:233",
+      "site": "src/api/live-channel.js:257",
       "id": "work:channel.publish#4",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -119,7 +119,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:239",
+      "site": "src/api/live-channel.js:268",
       "id": "work:channel.publish#5",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -128,7 +128,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:240",
+      "site": "src/api/live-channel.js:271",
       "id": "work:channel.publish#6",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -137,7 +137,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:241",
+      "site": "src/api/live-channel.js:274",
       "id": "work:channel.publish#7",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -146,7 +146,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:242",
+      "site": "src/api/live-channel.js:276",
       "id": "work:channel.publish#8",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -155,7 +155,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:245",
+      "site": "src/api/live-channel.js:280",
       "id": "work:channel.publish#9",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -164,7 +164,7 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/live-channel.js:246",
+      "site": "src/api/live-channel.js:281",
       "id": "work:channel.publish#10",
       "input": "stream lifecycle, ping, or store event",
       "metadata": "session identity; server epoch and monotonic seq",
@@ -173,52 +173,121 @@
       "was": "LiveChannel.handle"
     },
     {
-      "site": "src/api/routes-v1.js:223",
+      "site": "src/api/routes-v1.js:521",
       "id": "route:server.route#1",
       "input": "HTTP requests: questions and commands of pages and of outside callers",
       "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
       "fence": "a read changes nothing; a write runs in its device's command queue (StateStore) or in the config store's write lane, and answers with the applied state",
-      "test": "test/contract/http-api.test.js: requests in order:"
+      "test": "test/contract/http-api.test.js: requests in order:",
+      "was": "${method} ${path}"
     },
     {
-      "site": "src/api/routes-v1.js:226",
-      "id": "contract:${method} ${path}",
-      "input": "the request of one v1 route",
-      "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
-      "fence": "a read changes nothing; a write runs in its device's command queue (StateStore) or in the config store's write lane, and answers with the applied state",
-      "test": "test/contract/http-api.test.js: v1 routes: request and answer shapes of all 18 routes match the matrix"
+      "site": "src/api/routes-v2.js:526",
+      "id": "work:deps.config.reload#1",
+      "input": "HTTP request",
+      "metadata": "device identity, session and draft; position header",
+      "fence": "per-device command admission lane; stores own persistence and draft fences",
+      "test": "test/contract/http-api.test.js: requests in order:",
+      "was": "${method} ${path}"
     },
     {
-      "site": "src/api/routes-v2.js:303",
-      "id": "contract:${method} ${path}",
-      "input": "the request of one v2 route",
-      "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
-      "fence": "a read changes nothing; a write runs in its device's command queue (StateStore) or in the config store's write lane, and answers with the applied state",
-      "test": "test/contract/http-api.test.js: v2 writes answer with the applied DeviceView and a higher rev"
-    },
-    {
-      "site": "src/api/routes-v2.js:304",
+      "site": "src/api/routes-v2.js:554",
       "id": "route:server.route#1",
       "input": "HTTP requests: questions and commands of pages and of outside callers",
       "metadata": "a write names its device; a settings request carries session and draft; every JSON answer carries X-Pixdcon-Position",
       "fence": "a read changes nothing; a write runs in its device's command queue (StateStore) or in the config store's write lane, and answers with the applied state",
-      "test": "test/contract/http-api.test.js: requests in order:"
+      "test": "test/contract/http-api.test.js: requests in order:",
+      "was": "${method} ${path}"
     },
     {
-      "site": "src/mqtt/status-publisher.js:247",
-      "id": "contract:StatusPublisher.start",
-      "input": "state and health changes, runtime changes, the gateway's connect, the 30 s timer",
-      "metadata": "none of its own: every publish is built from the state of the moment it is sent",
-      "fence": "planAvailability (status-publisher.js) for the per-device topics; a timer and a connect only repeat what the state says",
-      "test": "test/contract/mqtt-publications.test.js: status publisher order:"
+      "site": "src/api/scene-copy.js:121",
+      "id": "import:import#1",
+      "input": "import of the requested copied scene",
+      "metadata": "request and per-device lane identity",
+      "fence": "the request lane owns its result; no later source is adopted",
+      "test": "test/contract/http-api.test.js: scene copy:"
+    },
+    {
+      "site": "src/mqtt/status-publisher.js:265",
+      "id": "listener:source.on#1",
+      "input": "current store state, gateway connect, or republish tick",
+      "metadata": "current output and measured health; availability send number",
+      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
+      "was": "StatusPublisher.start"
+    },
+    {
+      "site": "src/mqtt/status-publisher.js:272",
+      "id": "timer:this.deps.clock.every#1",
+      "input": "current store state, gateway connect, or republish tick",
+      "metadata": "current output and measured health; availability send number",
+      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
+      "was": "StatusPublisher.start"
+    },
+    {
+      "site": "src/mqtt/status-publisher.js:396",
+      "id": "then:this.#flush().catch#1",
+      "input": "current store state, gateway connect, or republish tick",
+      "metadata": "current output and measured health; availability send number",
+      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
+      "was": "StatusPublisher.start"
+    },
+    {
+      "site": "src/mqtt/status-publisher.js:399",
+      "id": "then:this.#flush().catch().finally#1",
+      "input": "current store state, gateway connect, or republish tick",
+      "metadata": "current output and measured health; availability send number",
+      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
+      "was": "StatusPublisher.start"
+    },
+    {
+      "site": "src/mqtt/status-publisher.js:436",
+      "id": "work:mqtt.publish#1",
+      "input": "current store state, gateway connect, or republish tick",
+      "metadata": "current output and measured health; availability send number",
+      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
+      "was": "StatusPublisher.start"
+    },
+    {
+      "site": "src/mqtt/status-publisher.js:443",
+      "id": "work:mqtt.publish#2",
+      "input": "current store state, gateway connect, or republish tick",
+      "metadata": "current output and measured health; availability send number",
+      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
+      "was": "StatusPublisher.start"
+    },
+    {
+      "site": "src/mqtt/status-publisher.js:450",
+      "id": "work:mqtt.publish#3",
+      "input": "current store state, gateway connect, or republish tick",
+      "metadata": "current output and measured health; availability send number",
+      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
+      "was": "StatusPublisher.start"
+    },
+    {
+      "site": "src/mqtt/status-publisher.js:462",
+      "id": "work:mqtt.publish#4",
+      "input": "current store state, gateway connect, or republish tick",
+      "metadata": "current output and measured health; availability send number",
+      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
+      "was": "StatusPublisher.start"
+    },
+    {
+      "site": "src/mqtt/status-publisher.js:475",
+      "id": "work:mqtt.publish#5",
+      "input": "current store state, gateway connect, or republish tick",
+      "metadata": "current output and measured health; availability send number",
+      "fence": "availability ledger recorded before publish; current state read when sent; stop waits for pending sends",
+      "test": "test/contract/mqtt-publications.test.js: status publisher order:",
+      "was": "StatusPublisher.start"
     }
   ],
-  "none": [
-    "StatusPublisher.stop",
-    "StatusPublisher.buildHealth",
-    "StatusPublisher.buildState",
-    "StatusPublisher.buildAvailability",
-    "ulanziDiscovery",
-    "pixooDiscovery"
-  ]
+  "none": []
 }

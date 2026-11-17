@@ -20,7 +20,19 @@
  * Owner: API + live channel worker.
  */
 
-import { todo } from "../core/todo.js";
+import { HttpError } from "../core/errors.js";
+import { HANDLED } from "./http-server.js";
+import {
+  deviceCommand,
+  devicePatch,
+  draft,
+  invalid,
+  keys,
+  newDevice,
+  object,
+  text,
+} from "./commands.js";
+import { copyScene } from "./scene-copy.js";
 
 /** @typedef {import("./http-server.js").RouteMeta} RouteMeta */
 
@@ -282,7 +294,7 @@ export const V2_ROUTES = Object.freeze([
 ]);
 
 /**
- * Register every v2 route. In the skeleton each one answers 501.
+ * Register every v2 route; command results come from the applied store view.
  *
  * @param {import("./http-server.js").HttpServer} server
  * @param {import("./routes-v1.js").ApiDeps} deps
@@ -291,16 +303,254 @@ export function registerV2Routes(server, deps) {
   /** @type {Record<string, import("./http-server.js").RouteHandler>} */
   const built = {
     "GET /api/v2/bootstrap": () => ({
-      ...deps.live.deps.snapshot(), epoch: deps.epoch, seq: deps.live.seq(),
+      ...deps.live.deps.snapshot(),
+      epoch: deps.epoch,
+      seq: deps.live.seq(),
     }),
     "GET /api/v2/devices": () => deps.state.views(),
     "GET /api/v2/devices/:name": (ctx) => deps.state.view(ctx.params.name),
     "GET /api/v2/events": (ctx) => deps.live.handle(ctx),
+    "POST /api/v2/devices": async (ctx) => {
+      const body = await ctx.body();
+      keys(body, ["name", "type", "ip"]);
+      const entry = newDevice(body);
+      await deps.config.addDevice(entry);
+      return { status: 201, body: deps.state.view(entry.name) };
+    },
+    "PATCH /api/v2/devices/:name": (ctx) =>
+      deviceCommand(deps, ctx.params.name, async () => {
+        const view = deps.state.view(ctx.params.name);
+        if (view.origin === "blob")
+          throw new HttpError(
+            409,
+            "overlay_only_device",
+            "Add this device to config.json first",
+          );
+        const patch = devicePatch(await ctx.body());
+        await deps.config.updateDevice(ctx.params.name, (device) => {
+          for (const [key, value] of Object.entries(patch))
+            device[key] =
+              key === "preview"
+                ? {
+                    ...object(device.preview ?? {}, "preview"),
+                    ...object(value, "preview"),
+                  }
+                : value;
+        });
+        return deps.state.view(ctx.params.name);
+      }),
+    "PUT /api/v2/devices/:name/scene": (ctx) =>
+      deviceCommand(deps, ctx.params.name, async () => {
+        const body = await ctx.body();
+        keys(body, ["scene"]);
+        if (body.scene !== null && typeof body.scene !== "string")
+          invalid("scene", "scene must be a string or null");
+        const result = await deps.state.chooseScene(
+          ctx.params.name,
+          /** @type {string|null} */ (body.scene),
+        );
+        return {
+          device: result.view,
+          persisted: result.persisted,
+          notSavedReason: result.notSavedReason,
+        };
+      }),
+    "POST /api/v2/devices/:name/adopt": (ctx) =>
+      deviceCommand(deps, ctx.params.name, async () => {
+        keys(await ctx.body(), []);
+        return deps.state.adoptDevice(ctx.params.name);
+      }),
+    "DELETE /api/v2/devices/:name/scene-overlay": (ctx) =>
+      deviceCommand(deps, ctx.params.name, () =>
+        deps.state.clearSceneOverlay(ctx.params.name),
+      ),
+    "PUT /api/v2/devices/:name/mode": (ctx) =>
+      deviceCommand(deps, ctx.params.name, async () => {
+        const body = await ctx.body();
+        keys(body, ["mode"]);
+        if (!["play", "pause", "stop"].includes(String(body.mode)))
+          throw new HttpError(
+            400,
+            "invalid_mode",
+            "Choose play, pause or stop",
+          );
+        return deps.state.setMode(
+          ctx.params.name,
+          /** @type {import("../types.js").PlaybackMode} */ (body.mode),
+        );
+      }),
+    "PUT /api/v2/devices/:name/brightness": (ctx) =>
+      deviceCommand(deps, ctx.params.name, async () => {
+        const body = await ctx.body();
+        keys(body, ["override"]);
+        if (
+          body.override !== null &&
+          (typeof body.override !== "number" ||
+            !Number.isFinite(body.override) ||
+            body.override < 1 ||
+            body.override > 100)
+        )
+          throw new HttpError(
+            400,
+            "invalid_brightness",
+            "Brightness must be from 1 to 100, or null",
+          );
+        return deps.state.setBrightness(
+          ctx.params.name,
+          /** @type {number|null} */ (body.override),
+        );
+      }),
+    "POST /api/v2/devices/:name/retry": (ctx) =>
+      deviceCommand(deps, ctx.params.name, async () => {
+        keys(await ctx.body(), []);
+        return deps.state.retry(ctx.params.name);
+      }),
+    "GET /api/v2/devices/:name/preview": (ctx) => {
+      deps.state.view(ctx.params.name);
+      const frame = deps.previews.get(ctx.params.name);
+      if (!frame) {
+        ctx.res.writeHead(204);
+        ctx.res.end();
+        return HANDLED;
+      }
+      const etag = `"${deps.epoch}-${frame.seq}"`;
+      if (ctx.req.headers["if-none-match"] === etag) {
+        ctx.res.writeHead(304, { ETag: etag });
+        ctx.res.end();
+        return HANDLED;
+      }
+      ctx.res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Cache-Control": "no-cache",
+        ETag: etag,
+        "X-Frame-Width": frame.width,
+        "X-Frame-Height": frame.height,
+        "X-Frame-Source": frame.source,
+        "X-Frame-Received-At": frame.receivedAt,
+        "X-Frame-Seq": frame.seq,
+      });
+      ctx.res.end(Buffer.from(frame.rgb));
+      return HANDLED;
+    },
+    "GET /api/v2/devices/:name/settings/:scene": (ctx) =>
+      deps.settings.state(ctx.params.name, ctx.params.scene),
+    "PUT /api/v2/devices/:name/settings/:scene": async (ctx) => {
+      const body = await ctx.body();
+      keys(body, ["set", "reset", "session", "draft"]);
+      const change = {};
+      if ("set" in body)
+        Object.assign(change, { set: object(body.set, "set") });
+      if ("reset" in body) {
+        if (
+          !Array.isArray(body.reset) ||
+          body.reset.some((key) => typeof key !== "string")
+        )
+          invalid("reset", "reset must be an array of keys");
+        Object.assign(change, { reset: body.reset });
+      }
+      if ("session" in body || "draft" in body)
+        Object.assign(change, draft(body));
+      const result = await deps.settings.save(
+        ctx.params.name,
+        ctx.params.scene,
+        change,
+      );
+      if (Object.keys(result.rejected).length)
+        throw new HttpError(400, "invalid_field", "Some settings are invalid", {
+          rejected: result.rejected,
+        });
+      return result;
+    },
+    "PUT /api/v2/devices/:name/settings/:scene/preview": async (ctx) => {
+      const body = await ctx.body();
+      keys(body, ["session", "draft", "values"]);
+      return deps.settings.preview(ctx.params.name, ctx.params.scene, {
+        ...draft(body),
+        values: object(body.values, "values"),
+      });
+    },
+    "DELETE /api/v2/devices/:name/settings/:scene/preview": (ctx) => {
+      const session = text(ctx.query.get("session"), "session");
+      deps.settings.state(ctx.params.name, ctx.params.scene);
+      deps.settings.endPreview(session, {
+        device: ctx.params.name,
+        scene: ctx.params.scene,
+      });
+      return deps.settings.state(ctx.params.name, ctx.params.scene);
+    },
+    "POST /api/v2/preview-sessions/:session/end": async (ctx) => {
+      keys(await ctx.body(), []);
+      return { ended: deps.settings.endPreview(ctx.params.session).length };
+    },
+    "DELETE /api/v2/devices/:name/settings/:scene/overlays": async (ctx) => {
+      deps.settings.state(ctx.params.name, ctx.params.scene);
+      const result = await deps.overlays.clearSettings(
+        ctx.params.name,
+        ctx.params.scene,
+      );
+      return {
+        state: deps.settings.state(ctx.params.name, ctx.params.scene),
+        ...result,
+      };
+    },
+    "GET /api/v2/overlays": () => deps.overlays.list(),
+    "DELETE /api/v2/overlays/:id": async (ctx) => {
+      const result = await deps.overlays.clear(ctx.params.id);
+      return {
+        confirmed: result.confirmed,
+        pending: result.pending,
+        overlays: deps.overlays.list(),
+      };
+    },
+    "GET /api/v2/scenes": () => ({
+      scenes: deps.scenes.list(),
+      builtins: deps.builtinModes,
+    }),
+    "POST /api/v2/scenes/:key/copy": async (ctx) => ({
+      status: 201,
+      body: await copyScene(deps, ctx.params.key, await ctx.body()),
+    }),
+    "GET /api/v2/config/raw": () => deps.config.readRaw(),
+    "PUT /api/v2/config/raw": async (ctx) => {
+      const body = await ctx.body();
+      keys(body, ["text"]);
+      if (typeof body.text !== "string")
+        invalid("text", "text must be a string");
+      const result = await deps.config.replaceRaw(
+        /** @type {string} */ (body.text),
+      );
+      return { state: deps.config.file(), diff: result.diff };
+    },
+    "POST /api/v2/config/reload": async (ctx) => {
+      keys(await ctx.body(), []);
+      return deps.config.reload();
+    },
+    "GET /api/v2/status": () => ({
+      controller: deps.controller(),
+      mqtt: deps.mqtt?.status() ?? {
+        state: "disabled",
+        url: null,
+        since: null,
+        connection: 0,
+        lastError: null,
+        settled: false,
+      },
+      config: deps.config.file(),
+      scheduler: deps.scheduler.status(),
+      v1: deps.ownership.status(),
+    }),
+    "GET /api/v2/log": (ctx) =>
+      deps.logger
+        .ring()
+        .filter(
+          (line) =>
+            ctx.query.get("level") !== "warn" ||
+            ["WARN", "ERROR"].includes(line.level),
+        )
+        .slice(-200),
   };
   for (const { method, path, ...meta } of V2_ROUTES) {
-    const handler =
-      built[`${method} ${path}`] ??
-      ((ctx) => todo(`${method} ${path}`, ctx, deps));
+    const handler = built[`${method} ${path}`];
     server.route(method, path, handler, meta);
   }
 }

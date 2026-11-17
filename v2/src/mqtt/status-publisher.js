@@ -71,8 +71,6 @@
  * the gateway (core/state worker) does not depend on this file being built.
  */
 
-import { todo } from "../core/todo.js";
-
 /**
  * @typedef {object} V1HealthPayload
  * @property {"ok"|"degraded"|"failed"|"offline"|"unknown"} status
@@ -240,26 +238,129 @@ export class StatusPublisher {
   /** @param {StatusPublisherDeps} deps */
   constructor(deps) {
     this.deps = deps;
+    this.ledger = createAvailabilityLedger();
+    this.startedAt = deps.clock.now();
+    this.running = false;
+    this.everDriven = false;
+    this.dirty = false;
+    this.errorCount = 0;
+    /** @type {{message: string, timestamp: string}|null} */
+    this.lastError = null;
+    /** @type {Map<string, {at: string, count: number}>} */
+    this.errors = new Map();
+    /** @type {Array<() => void>} */
+    this.stops = [];
+    /** @type {Promise<void>|null} */
+    this.pending = null;
   }
 
   /** Publish now, on every connect, on every relevant change and every `intervalMs`. */
   start() {
-    return todo("StatusPublisher.start");
+    if (this.running) return;
+    this.#devices(); // Fail synchronously while the runtime is still a skeleton.
+    this.running = true;
+    /** @param {import("node:events").EventEmitter} source @param {string} event */
+    const follow = (source, event) => {
+      const changed = () => this.#request();
+      source.on(event, changed);
+      this.stops.push(() => source.off(event, changed));
+    };
+    for (const event of ["device", "device-added", "device-removed"])
+      follow(this.deps.state, event);
+    follow(this.deps.runtime, "changed");
+    follow(this.deps.mqtt, "connect");
+    const timer = this.deps.clock.every(
+      () => this.#request(),
+      this.deps.intervalMs ?? 30000,
+    );
+    this.stops.push(() => timer.cancel());
+    this.#request();
   }
 
   /** Publish running false and health "offline", retire the availability of every display that may still be "online" on the broker (planAvailability with no device driven), then stop the timers. */
   async stop() {
-    return todo("StatusPublisher.stop");
+    const wasRunning = this.running;
+    this.running = false;
+    for (const stop of this.stops.splice(0)) stop();
+    await this.pending;
+    if (wasRunning) await this.#publish(false);
   }
 
   /** @returns {V1HealthPayload} */
   buildHealth() {
-    return todo("StatusPublisher.buildHealth");
+    const devices = this.#devices().filter((device) => device.driven);
+    const states = devices.map((device) => ({
+      name: device.name,
+      health: this.deps.state.get(device.name)?.health,
+    }));
+    for (const { name, health } of states) {
+      const previous = this.errors.get(name);
+      if (
+        health?.lastError &&
+        (!previous ||
+          health.lastError.at !== previous.at ||
+          health.consecutiveErrors > previous.count)
+      ) {
+        this.errorCount += Math.max(
+          1,
+          health.consecutiveErrors - (previous?.count ?? 0),
+        );
+        this.lastError = {
+          message: health.lastError.message,
+          timestamp: health.lastError.at,
+        };
+      }
+      if (health)
+        this.errors.set(name, {
+          at: health.lastError?.at ?? "",
+          count: health.consecutiveErrors,
+        });
+    }
+    return {
+      status: this.running
+        ? states.some(
+            ({ health }) =>
+              health?.state === "stale" || health?.state === "offline",
+          )
+          ? "degraded"
+          : "ok"
+        : "offline",
+      timestamp: new Date(this.deps.clock.now()).toISOString(),
+      devices: states.map(({ name, health }) => ({
+        name,
+        status: !this.running
+          ? "offline"
+          : health?.state === "offline"
+            ? "failed"
+            : health?.state === "stale"
+              ? "degraded"
+              : "ok",
+        lastSeen: health?.lastContactAt ?? null,
+      })),
+      errorCount: this.errorCount,
+      lastError: this.lastError,
+    };
   }
 
   /** @returns {V1StatePayload} */
   buildState() {
-    return todo("StatusPublisher.buildState");
+    return {
+      running: this.running,
+      currentScene: null,
+      uptime: Math.floor((this.deps.clock.now() - this.startedAt) / 1000),
+      devices: this.#devices()
+        .filter((device) => device.driven)
+        .map((device) => {
+          const state = this.deps.state.get(device.name);
+          return {
+            name: device.name,
+            scene: state?.effective.scene ?? null,
+            frameCount: state?.effective.frameCount ?? 0,
+            mode: state?.desired.mode.value ?? "play",
+            source: state?.desired.scene.source ?? "fallback",
+          };
+        }),
+    };
   }
 
   /**
@@ -270,6 +371,115 @@ export class StatusPublisher {
    * @returns {"online"|"offline"|null} null: nothing to publish. That is a device this instance does not drive and owes no "offline" for (owesOffline)
    */
   buildAvailability(device) {
-    return todo("StatusPublisher.buildAvailability", device);
+    return (
+      planAvailability(this.ledger, this.running ? this.#devices() : []).find(
+        (entry) => entry.device === device,
+      )?.payload ?? null
+    );
+  }
+
+  #devices() {
+    return this.deps.runtime
+      .get()
+      .devices.map((device) => ({
+        name: device.name,
+        driven: device.enabled && device.output.mode === "drive",
+        health: this.deps.state.get(device.name)?.health.state ?? null,
+      }));
+  }
+
+  #request() {
+    if (!this.running) return;
+    this.dirty = true;
+    if (this.pending) return;
+    this.pending = this.#flush()
+      .catch((error) => {
+        this.deps.logger.error("[Status] Publish failed", error);
+      })
+      .finally(() => {
+        this.pending = null;
+        if (this.running && this.dirty) this.#request();
+      });
+  }
+
+  async #flush() {
+    do {
+      this.dirty = false;
+      await this.#publish(true);
+    } while (this.running && this.dirty);
+  }
+
+  /** Every batch is built when it is sent, never from the event that woke it.
+   * @param {boolean} running
+   */
+  async #publish(running) {
+    const { mqtt, topics } = this.deps;
+    const devices = this.#devices();
+    this.everDriven ||= devices.some((device) => device.driven);
+    /** @type {Array<Promise<unknown>>} */
+    const writes = [];
+    // A shadow instance never claims v1's status namespace. After driving,
+    // it still removes the departed devices from its owned controller lists.
+    if (topics.statusBase !== topics.base || this.everDriven) {
+      const config = this.deps.state.runningConfigV1();
+      const driven = new Set(
+        devices.filter((device) => device.driven).map((device) => device.name),
+      );
+      const effective = {
+        ...config,
+        devices: /** @type {Array<{name: string}>} */ (
+          config.devices ?? []
+        ).filter((device) => driven.has(device.name)),
+      };
+      const options = { retain: true, qos: /** @type {const} */ (1) };
+      writes.push(
+        mqtt.publish(
+          topics.health,
+          /** @type {Record<string, unknown>} */ (this.buildHealth()),
+          options,
+        ),
+      );
+      writes.push(
+        mqtt.publish(
+          topics.state,
+          /** @type {Record<string, unknown>} */ (this.buildState()),
+          options,
+        ),
+      );
+      writes.push(
+        mqtt.publish(
+          topics.config,
+          {
+            configPath: this.deps.config.options.path,
+            deviceCount: effective.devices.length,
+            sceneCount: Object.keys(/** @type {object} */ (config.scenes ?? {}))
+              .length,
+            timestamp: new Date(this.deps.clock.now()).toISOString(),
+          },
+          options,
+        ),
+      );
+      writes.push(mqtt.publish(topics.configEffective, effective, options));
+    }
+    for (const item of planAvailability(this.ledger, running ? devices : [])) {
+      const sent = availabilitySent(this.ledger, item.device, item.payload);
+      writes.push(this.#availability(item.device, item.payload, sent));
+    }
+    await Promise.all(writes);
+  }
+
+  /** @param {string} device @param {"online"|"offline"} payload @param {number} sent */
+  async #availability(device, payload, sent) {
+    const { mqtt, topics } = this.deps;
+    try {
+      const result = await mqtt.publish(topics.availability(device), payload, {
+        retain: true,
+        qos: 1,
+      });
+      availabilityOutcome(this.ledger, device, payload, sent, result.outcome);
+    } catch (error) {
+      availabilityOutcome(this.ledger, device, payload, sent, "error");
+      throw error;
+    }
   }
 }

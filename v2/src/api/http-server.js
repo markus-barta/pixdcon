@@ -206,6 +206,8 @@ export class HttpServer {
         res.end("Not found");
         return;
       }
+      if (["POST", "PUT", "PATCH", "DELETE"].includes(method))
+        requireJsonType(req);
       const match = /** @type {RegExpExecArray} */ (route.regex.exec(path));
       /** @type {Record<string, string>} */
       const params = Object.create(null);
@@ -330,14 +332,7 @@ export function sendJson(res, status, body, position) {
  * @returns {Promise<Record<string, unknown>>}
  */
 export async function readJsonBody(req) {
-  const type = String(req.headers["content-type"] ?? "");
-  if (!/^application\/json\b/i.test(type)) {
-    throw new HttpError(
-      415,
-      "unsupported_media_type",
-      "Send the request with Content-Type: application/json",
-    );
-  }
+  requireJsonType(req);
   /** @type {Buffer[]} */
   const chunks = [];
   let size = 0;
@@ -362,4 +357,16 @@ export async function readJsonBody(req) {
     throw new HttpError(400, "json_object_required", "JSON object required");
   }
   return value;
+}
+
+/** @param {import("node:http").IncomingMessage} req */
+function requireJsonType(req) {
+  const type = String(req.headers["content-type"] ?? "");
+  if (!/^application\/json(?:\s*;|$)/i.test(type)) {
+    throw new HttpError(
+      415,
+      "unsupported_media_type",
+      "Send the request with Content-Type: application/json",
+    );
+  }
 }

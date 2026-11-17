@@ -50,7 +50,112 @@
  * Owner: API + live channel worker.
  */
 
-import { todo } from "../core/todo.js";
+const HEALTH_TEMPLATE =
+  "{{ 'online' if value_json.status in ['ok', 'degraded'] else 'offline' }}";
+/** v1's ordered sensor definitions; availability is added separately. */
+const ULANZI_SENSORS = [
+  [
+    "uptime",
+    "Uptime",
+    {
+      unit_of_measurement: "s",
+      device_class: "duration",
+      state_class: "total_increasing",
+      entity_category: "diagnostic",
+    },
+  ],
+  [
+    "bat",
+    "Battery",
+    {
+      unit_of_measurement: "%",
+      device_class: "battery",
+      state_class: "measurement",
+      entity_category: "diagnostic",
+    },
+  ],
+  [
+    "bat_raw",
+    "Rail ADC",
+    {
+      state_class: "measurement",
+      icon: "mdi:flash",
+      entity_category: "diagnostic",
+    },
+  ],
+  [
+    "wifi_signal",
+    "WiFi signal",
+    {
+      unit_of_measurement: "dBm",
+      device_class: "signal_strength",
+      state_class: "measurement",
+      entity_category: "diagnostic",
+    },
+  ],
+  [
+    "ram",
+    "Free heap",
+    {
+      unit_of_measurement: "B",
+      device_class: "data_size",
+      state_class: "measurement",
+      entity_category: "diagnostic",
+    },
+  ],
+  [
+    "temp",
+    "Temperature",
+    {
+      unit_of_measurement: "°C",
+      device_class: "temperature",
+      state_class: "measurement",
+    },
+  ],
+  [
+    "hum",
+    "Humidity",
+    {
+      unit_of_measurement: "%",
+      device_class: "humidity",
+      state_class: "measurement",
+    },
+  ],
+  [
+    "lux",
+    "Illuminance",
+    {
+      unit_of_measurement: "lx",
+      device_class: "illuminance",
+      state_class: "measurement",
+    },
+  ],
+  [
+    "messages",
+    "Message count",
+    {
+      state_class: "total_increasing",
+      icon: "mdi:message-text",
+      entity_category: "diagnostic",
+    },
+  ],
+  [
+    "app",
+    "Active app",
+    { icon: "mdi:application", entity_category: "diagnostic" },
+  ],
+];
+
+/** @param {string} name @param {import("./topics.js").Topics} topics @param {boolean} perDevice */
+function availability(name, topics, perDevice) {
+  return {
+    availability: [
+      { topic: topics.health, value_template: HEALTH_TEMPLATE },
+      ...(perDevice ? [{ topic: topics.availability(name) }] : []),
+    ],
+    availability_mode: "all",
+  };
+}
 
 /**
  * @typedef {object} DiscoveryMessage
@@ -66,7 +171,33 @@ import { todo } from "../core/todo.js";
  * @returns {DiscoveryMessage[]} ten messages, in the v1 order
  */
 export function ulanziDiscovery(device, stats, topics, options) {
-  return todo("ulanziDiscovery", device, stats, topics, options);
+  if (!stats.uid) return [];
+  const deviceInfo = {
+    identifiers: [`pixdcon_${stats.uid}`],
+    name: device.name,
+    model: `Ulanzi TC001 / AWTRIX ${stats.version || ""}`.trim(),
+    manufacturer: "Ulanzi",
+    ...(stats.version ? { sw_version: stats.version } : {}),
+    configuration_url: `http://${device.address}`,
+  };
+  return ULANZI_SENSORS.map(([field, name, properties]) => {
+    const key = String(field),
+      unique_id = `pixdcon_${device.name}_${key}`;
+    return {
+      topic: topics.discoverySensor(device.name, key),
+      payload: {
+        name,
+        unique_id,
+        object_id: unique_id,
+        state_topic: topics.telemetry(device.name),
+        value_template: `{{ value_json.${key} }}`,
+        device: deviceInfo,
+        .../** @type {Record<string, unknown>} */ (properties),
+        ...availability(device.name, topics, true),
+        expire_after: expireAfterSeconds(options.telemetryIntervalMs),
+      },
+    };
+  });
 }
 
 /**
@@ -87,5 +218,47 @@ export function expireAfterSeconds(telemetryIntervalMs) {
  * @returns {DiscoveryMessage[]} two messages: reachable, brightness
  */
 export function pixooDiscovery(device, topics, options) {
-  return todo("pixooDiscovery", device, topics, options);
+  const deviceInfo = {
+    identifiers: [`pixdcon_${device.name}`],
+    name: device.name,
+    model: "Divoom Pixoo64",
+    manufacturer: "Divoom",
+    configuration_url: `http://${device.address}`,
+  };
+  const common = {
+    state_topic: topics.telemetry(device.name),
+    device: deviceInfo,
+    entity_category: "diagnostic",
+    expire_after: expireAfterSeconds(options.telemetryIntervalMs),
+  };
+  return [
+    {
+      topic: topics.discoveryBinarySensor(device.name, "reachable"),
+      payload: {
+        ...common,
+        name: "Reachable",
+        unique_id: `pixdcon_${device.name}_reachable`,
+        object_id: `pixdcon_${device.name}_reachable`,
+        value_template: "{{ value_json.reachable }}",
+        payload_on: "True",
+        payload_off: "False",
+        device_class: "connectivity",
+        ...availability(device.name, topics, false),
+      },
+    },
+    {
+      topic: topics.discoverySensor(device.name, "brightness"),
+      payload: {
+        ...common,
+        name: "Brightness",
+        unique_id: `pixdcon_${device.name}_brightness`,
+        object_id: `pixdcon_${device.name}_brightness`,
+        value_template: "{{ value_json.brightness }}",
+        unit_of_measurement: "%",
+        state_class: "measurement",
+        icon: "mdi:brightness-percent",
+        ...availability(device.name, topics, true),
+      },
+    },
+  ];
 }

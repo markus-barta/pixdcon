@@ -11,13 +11,24 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { expireAfterSeconds } from "../../src/mqtt/ha-discovery.js";
+import { EventEmitter } from "node:events";
+import { connectAsync } from "mqtt";
+import { startMemoryBroker } from "../../dev/memory-broker.js";
+import { manualClock } from "../../src/core/clock.js";
+import { createLogger } from "../../src/core/logger.js";
+import { createTopics } from "../../src/mqtt/topics.js";
+import {
+  expireAfterSeconds,
+  ulanziDiscovery,
+  pixooDiscovery,
+} from "../../src/mqtt/ha-discovery.js";
 import {
   availabilityOutcome,
   availabilitySent,
   createAvailabilityLedger,
   owesOffline,
   planAvailability,
+  StatusPublisher,
 } from "../../src/mqtt/status-publisher.js";
 
 /**
@@ -155,34 +166,453 @@ test("discovery expiry: every entity loses its state three telemetry intervals a
   assert.equal(expireAfterSeconds(10001), 31);
 });
 
-test.todo(
-  "health and state payloads keep the v1 fields; the scene of a device is published when it changes",
-);
-test.todo("last will: the health topic says offline when the process dies");
-test.todo(
-  "Home Assistant discovery identity: topic, unique_id, object_id, state_topic, value_template and the device block equal v1 for Ulanzi (10) and Pixoo (2)",
-);
-test.todo(
-  "Home Assistant discovery availability: Ulanzi sensors and Pixoo brightness name the controller health and the device's availability topic, mode all; every entity, Ulanzi and Pixoo, carries expire_after of three telemetry intervals",
-);
-test.todo(
-  "per-device availability: an unplugged Ulanzi turns offline on its own availability topic after 2 min while the other display stays online; back online with the first good frame",
-);
-test.todo(
-  "per-device availability: nothing is published for a device in shadow or held back by the v1 interlock, except the one offline that retires a display this instance stopped driving",
-);
-test.todo(
-  "availability retirement on the wire: a device removed from config.json and a device changed from drive to shadow each get one retained offline while the controller health stays ok; an offline that could not be confirmed is sent again after the reconnect; an online whose acknowledgement was lost with the connection (the broker stored it) is still taken back when the display is no longer driven; a clean stop retires every driven display",
-);
-test.todo(
-  "status publisher order: the 30 s republish and the publish on connect are built from the state of that moment; a state event of a device that was removed publishes nothing but its retirement",
-);
-test.todo(
-  "config/effective: the running config in v1's shape includes a blob-only device and a blob-patched key, and lists only driven, enabled devices",
-);
+test("health and state payloads keep the v1 fields; the scene of a device is published when it changes", async (t) => {
+  const f = await publications(t);
+  const health = JSON.parse(f.broker.retained()[f.topics.health]);
+  assert.deepEqual(Object.keys(health), [
+    "status",
+    "timestamp",
+    "devices",
+    "errorCount",
+    "lastError",
+  ]);
+  assert.equal(health.status, "ok");
+  assert.equal(
+    health.devices[0].lastSeen,
+    f.states.get("U").health.lastContactAt,
+  );
+  const changed = f.states.get("P");
+  changed.effective.scene = "radio";
+  changed.effective.frameCount = 103;
+  f.state.emit("device", changed);
+  await f.publisher.pending;
+  const state = JSON.parse(f.broker.retained()[f.topics.state]);
+  assert.equal(state.currentScene, null);
+  assert.equal(state.running, true);
+  assert.equal(
+    state.devices.find((/** @type {any} */ d) => d.name === "P").scene,
+    "radio",
+    "scene toggle consumer sees the measured scene immediately",
+  );
+  assert.equal(
+    state.devices.find((/** @type {any} */ d) => d.name === "P").frameCount,
+    103,
+  );
+  changed.health.state = "offline";
+  changed.health.consecutiveErrors = 1;
+  changed.health.lastError = {
+    message: "unreachable",
+    at: new Date(f.clock.now()).toISOString(),
+  };
+  f.state.emit("device", changed);
+  await f.publisher.pending;
+  const failed = JSON.parse(f.broker.retained()[f.topics.health]);
+  assert.equal(failed.status, "degraded");
+  assert.equal(failed.errorCount, 1);
+  changed.health.state = "online";
+  changed.health.consecutiveErrors = 0;
+  f.state.emit("device", changed);
+  await f.publisher.pending;
+  assert.equal(JSON.parse(f.broker.retained()[f.topics.health]).status, "ok");
+  assert.equal(
+    JSON.parse(f.broker.retained()[f.topics.health]).errorCount,
+    1,
+    "lifetime count survives recovery",
+  );
+  assert.ok(
+    f.broker
+      .published()
+      .filter((m) => m.clientId === "status-writer")
+      .every((m) => m.retain && m.qos === 1),
+  );
+});
+test("last will: the health topic says offline when the process dies", async (t) => {
+  const f = await publications(t);
+  const will = StatusPublisher.lastWill(f.topics);
+  assert.equal(will.retain, true);
+  assert.equal(will.qos, 1);
+  assert.equal(JSON.parse(will.payload).status, "offline");
+  const received = new Promise((resolve) =>
+    f.reader.on("message", (topic, payload) => {
+      if (
+        topic === f.topics.health &&
+        JSON.parse(payload.toString()).status === "offline"
+      )
+        resolve(undefined);
+    }),
+  );
+  f.writer.stream.destroy();
+  await received;
+  assert.equal(
+    JSON.parse(f.broker.retained()[f.topics.health]).status,
+    "offline",
+  );
+  f.gateway.connected = false;
+});
+test("Home Assistant discovery identity: topic, unique_id, object_id, state_topic, value_template and the device block equal v1 for Ulanzi (10) and Pixoo (2)", async (_t) => {
+  const topics = createTopics();
+  const { TelemetryCollector } = await import(
+    new URL("../../../lib/telemetry-collector.js", import.meta.url).href
+  );
+  /** @type {Array<{topic:string, payload:any}>} */ const legacy = [];
+  const collector = new TelemetryCollector({
+    mqttService: {
+      baseTopic: topics.base,
+      publishRaw: (
+        /** @type {any} */ topic,
+        /** @type {any} */ payload,
+        /** @type {any} */ retain,
+      ) => {
+        assert.equal(retain, true);
+        legacy.push({ topic, payload: JSON.parse(JSON.stringify(payload)) });
+      },
+    },
+    logger: { info() {} },
+  });
+  const ulanzi = { name: "ulanzi-57", address: "127.0.0.1:8057" },
+    pixoo = { name: "pixoo-189", address: "127.0.0.1:8189" };
+  const stats = { uid: "awtrix_5807d0", version: "0.98" };
+  collector._publishHaDiscovery({ ...ulanzi, ip: ulanzi.address }, stats);
+  collector._publishPixooHaDiscovery({ ...pixoo, ip: pixoo.address });
+  const current = [
+    ...ulanziDiscovery(ulanzi, stats, topics, { telemetryIntervalMs: 60000 }),
+    ...pixooDiscovery(pixoo, topics, { telemetryIntervalMs: 60000 }),
+  ];
+  assert.equal(current.length, 12);
+  for (let i = 0; i < current.length; i++) {
+    const expected = { ...legacy[i].payload },
+      actual = { ...current[i].payload };
+    delete expected.availability_topic;
+    delete expected.availability_template;
+    delete actual.availability;
+    delete actual.availability_mode;
+    delete actual.expire_after;
+    assert.equal(current[i].topic, legacy[i].topic);
+    assert.deepEqual(actual, expected, current[i].topic);
+  }
+  assert.deepEqual(
+    ulanziDiscovery(ulanzi, {}, topics, { telemetryIntervalMs: 60000 }),
+    [],
+    "no identity without uid",
+  );
+});
+test("Home Assistant discovery availability: Ulanzi sensors and Pixoo brightness name the controller health and the device's availability topic, mode all; every entity, Ulanzi and Pixoo, carries expire_after of three telemetry intervals", async (_t) => {
+  const topics = createTopics({ statusBaseTopic: "home/hsb1/pixdcon2" });
+  for (const interval of [5000, 60000, 10001]) {
+    const ulanzi = ulanziDiscovery(
+      { name: "U", address: "127.0.0.1" },
+      { uid: "uid" },
+      topics,
+      { telemetryIntervalMs: interval },
+    );
+    const pixoo = pixooDiscovery({ name: "P", address: "127.0.0.1" }, topics, {
+      telemetryIntervalMs: interval,
+    });
+    for (const message of [...ulanzi, ...pixoo]) {
+      assert.equal(message.payload.expire_after, expireAfterSeconds(interval));
+      assert.equal(message.payload.availability_mode, "all");
+      assert.equal(Object.hasOwn(message.payload, "availability_topic"), false);
+      const entries = /** @type {Array<any>} */ (message.payload.availability);
+      assert.equal(entries[0].topic, topics.health);
+      assert.equal(
+        entries[0].value_template,
+        "{{ 'online' if value_json.status in ['ok', 'degraded'] else 'offline' }}",
+      );
+    }
+    assert.deepEqual(
+      /** @type {any[]} */ (ulanzi[0].payload.availability).map((v) => v.topic),
+      [topics.health, topics.availability("U")],
+    );
+    assert.equal(
+      /** @type {any[]} */ (pixoo[0].payload.availability).length,
+      1,
+    );
+    assert.deepEqual(
+      /** @type {any[]} */ (pixoo[1].payload.availability).map((v) => v.topic),
+      [topics.health, topics.availability("P")],
+    );
+  }
+});
+test("per-device availability: an unplugged Ulanzi turns offline on its own availability topic after 2 min while the other display stays online; back online with the first good frame", async (t) => {
+  const f = await publications(t);
+  // Recorded measurements from W3's clock-based model; W4 publishes them.
+  const u = f.states.get("U");
+  u.health.state = "stale";
+  f.state.emit("device", u);
+  await f.publisher.pending;
+  assert.equal(f.broker.retained()[f.topics.availability("U")], "online");
+  await f.clock.advance(120000);
+  u.health.state = "offline";
+  f.state.emit("device", u);
+  await f.publisher.pending;
+  assert.equal(f.broker.retained()[f.topics.availability("U")], "offline");
+  assert.equal(f.broker.retained()[f.topics.availability("P")], "online");
+  assert.equal(
+    JSON.parse(f.broker.retained()[f.topics.health]).status,
+    "degraded",
+  );
+  u.health.state = "online";
+  u.health.lastContactAt = new Date(f.clock.now()).toISOString();
+  f.state.emit("device", u);
+  await f.publisher.pending;
+  assert.equal(f.broker.retained()[f.topics.availability("U")], "online");
+});
+test("per-device availability: nothing is published for a device in shadow or held back by the v1 interlock, except the one offline that retires a display this instance stopped driving", async (t) => {
+  const f = await publications(t);
+  assert.equal(f.broker.retained()[f.topics.availability("S")], undefined);
+  assert.equal(f.publisher.buildAvailability("S"), null);
+  const u = f.devices.find((d) => d.name === "U");
+  assert.ok(u);
+  u.output.mode = "shadow";
+  f.runtime.emit("changed", {});
+  await f.publisher.pending;
+  assert.equal(f.broker.retained()[f.topics.availability("U")], "offline");
+  const before = f.broker
+    .published()
+    .filter((m) => m.topic === f.topics.availability("U")).length;
+  await f.clock.advance(30000);
+  await f.publisher.pending;
+  assert.equal(
+    f.broker.published().filter((m) => m.topic === f.topics.availability("U"))
+      .length,
+    before,
+  );
+  assert.equal(f.publisher.buildAvailability("U"), null);
+});
+test("availability retirement on the wire: a device removed from config.json and a device changed from drive to shadow each get one retained offline while the controller health stays ok; an offline that could not be confirmed is sent again after the reconnect; an online whose acknowledgement was lost with the connection (the broker stored it) is still taken back when the display is no longer driven; a clean stop retires every driven display", async (t) => {
+  const f = await publications(t);
+  f.gateway.outcome = "offline"; // the broker stores it, but the acknowledgement is lost
+  f.state.emit("device", f.states.get("P"));
+  await f.publisher.pending;
+  assert.equal(f.broker.retained()[f.topics.availability("P")], "online");
+  assert.equal(owesOffline(f.publisher.ledger, "P"), true);
+  f.devices.splice(
+    f.devices.findIndex((d) => d.name === "U"),
+    1,
+  );
+  const p = f.devices.find((d) => d.name === "P");
+  assert.ok(p);
+  p.output.mode = "shadow";
+  f.runtime.emit("changed", {});
+  await f.publisher.pending;
+  assert.equal(owesOffline(f.publisher.ledger, "U"), true);
+  assert.equal(owesOffline(f.publisher.ledger, "P"), true);
+  f.gateway.outcome = "confirmed";
+  f.gateway.emit("connect", { connection: 2 });
+  await f.publisher.pending;
+  for (const name of ["U", "P"]) {
+    assert.equal(f.broker.retained()[f.topics.availability(name)], "offline");
+    assert.equal(owesOffline(f.publisher.ledger, name), false);
+  }
+  assert.equal(JSON.parse(f.broker.retained()[f.topics.health]).status, "ok");
+  const before = f.broker
+    .published()
+    .filter((m) => m.topic.endsWith("/availability")).length;
+  f.gateway.emit("connect", { connection: 3 });
+  await f.publisher.pending;
+  assert.equal(
+    f.broker.published().filter((m) => m.topic.endsWith("/availability"))
+      .length,
+    before,
+  );
+  p.output.mode = "drive";
+  f.runtime.emit("changed", {});
+  await f.publisher.pending;
+  await f.publisher.stop();
+  assert.equal(f.broker.retained()[f.topics.availability("P")], "offline");
+  assert.equal(
+    JSON.parse(f.broker.retained()[f.topics.health]).status,
+    "offline",
+  );
+  assert.equal(JSON.parse(f.broker.retained()[f.topics.state]).running, false);
+});
+test("status publisher order: the 30 s republish and the publish on connect are built from the state of that moment; a state event of a device that was removed publishes nothing but its retirement", async (t) => {
+  const f = await publications(t);
+  f.devices.splice(
+    f.devices.findIndex((d) => d.name === "U"),
+    1,
+  );
+  f.states.get("P").effective.scene = "newest";
+  // A stale event contains the old device. Only the stores at send time count.
+  f.state.emit("device", f.states.get("U"));
+  await f.publisher.pending;
+  f.gateway.emit("connect", { connection: 2 });
+  await f.publisher.pending;
+  await f.clock.advance(30000);
+  await f.publisher.pending;
+  const state = JSON.parse(f.broker.retained()[f.topics.state]);
+  assert.deepEqual(
+    state.devices.map((/** @type {any} */ d) => d.name),
+    ["P"],
+  );
+  assert.equal(state.devices[0].scene, "newest");
+  assert.equal(f.broker.retained()[f.topics.availability("U")], "offline");
+  assert.equal(
+    f.broker
+      .published()
+      .filter(
+        (m) =>
+          m.topic === f.topics.availability("U") && m.payload === "offline",
+      ).length,
+    1,
+  );
+});
+test("config/effective: the running config in v1's shape includes a blob-only device and a blob-patched key, and lists only driven, enabled devices", async (t) => {
+  const f = await publications(t);
+  const config = JSON.parse(f.broker.retained()[f.topics.configEffective]);
+  assert.deepEqual(config.devices, [
+    {
+      name: "U",
+      type: "ulanzi",
+      ip: "127.0.0.1",
+      scene: "clock",
+      minFrameMs: 123,
+    },
+    {
+      name: "P",
+      type: "pixoo",
+      ip: "127.0.0.1",
+      scene: "radio",
+      origin: "blob",
+    },
+  ]);
+  const summary = JSON.parse(f.broker.retained()[f.topics.config]);
+  assert.equal(summary.deviceCount, 2);
+  assert.equal(summary.sceneCount, 2);
+  assert.equal(summary.configPath, "/recorded/config.json");
+});
+// Blocker: W3 TelemetryCollector.start is a skeleton.
 test.todo(
   "telemetry: Ulanzi publishes only good reads, Pixoo publishes reachable false; nothing for a shadow device",
 );
+// Blocker: W1 gateway/overlay/state and W3 scheduler/loops remain skeletons.
 test.todo(
   "retained bootstrap: devices start with mode and brightness already applied, without a fixed sleep",
 );
+
+/** Real loopback MQTT transport; recorded W1/W3 views and injected publish outcomes.
+ * @param {import("node:test").TestContext} t
+ */
+async function publications(t) {
+  const broker = await startMemoryBroker();
+  const topics = createTopics();
+  const clock = manualClock();
+  const logger = createLogger({ level: "error", sink: { out() {}, err() {} } });
+  const writer = await connectAsync(broker.url, {
+    clientId: "status-writer",
+    reconnectPeriod: 0,
+    will: StatusPublisher.lastWill(topics),
+  });
+  const reader = await connectAsync(broker.url, {
+    clientId: "status-reader",
+    reconnectPeriod: 0,
+  });
+  await reader.subscribeAsync("#");
+  const gateway = Object.assign(new EventEmitter(), {
+    connected: true,
+    outcome: "confirmed",
+    status: () => ({ state: "connected" }),
+    async publish(
+      /** @type {string} */ topic,
+      /** @type {any} */ payload,
+      /** @type {any} */ options,
+    ) {
+      if (!gateway.connected)
+        return { ok: false, outcome: "offline", connection: 1, error: null };
+      await writer.publishAsync(
+        topic,
+        typeof payload === "string" ? payload : JSON.stringify(payload),
+        options,
+      );
+      return {
+        ok: gateway.outcome === "confirmed",
+        outcome: gateway.outcome,
+        connection: 1,
+        error: null,
+      };
+    },
+  });
+  const devices = [
+    { name: "U", enabled: true, output: { mode: "drive" } },
+    { name: "P", enabled: true, output: { mode: "drive" } },
+    { name: "S", enabled: true, output: { mode: "shadow" } },
+    { name: "disabled", enabled: false, output: { mode: "drive" } },
+  ];
+  /** @type {Map<string, any>} */ const states = new Map(
+    devices.map((device) => [
+      device.name,
+      {
+        name: device.name,
+        effective: {
+          scene: device.name === "U" ? "clock" : "radio",
+          frameCount: 101,
+        },
+        desired: { mode: { value: "play" }, scene: { source: "config" } },
+        health: {
+          state: device.output.mode === "shadow" ? "shadow" : "online",
+          lastContactAt: new Date(clock.now() - 1000).toISOString(),
+          consecutiveErrors: 0,
+          lastError: null,
+        },
+      },
+    ]),
+  );
+  const runtime = Object.assign(new EventEmitter(), {
+    get: () => ({ devices }),
+  });
+  const state = Object.assign(new EventEmitter(), {
+    get: (/** @type {any} */ name) => states.get(name),
+    runningConfigV1: () => ({
+      devices: [
+        {
+          name: "U",
+          type: "ulanzi",
+          ip: "127.0.0.1",
+          scene: "clock",
+          minFrameMs: 123,
+        },
+        {
+          name: "P",
+          type: "pixoo",
+          ip: "127.0.0.1",
+          scene: "radio",
+          origin: "blob",
+        },
+        { name: "S", type: "pixoo", ip: "127.0.0.1" },
+        { name: "disabled", type: "pixoo", ip: "127.0.0.1" },
+      ],
+      scenes: { clock: { path: "clock.js" }, radio: { path: "radio.js" } },
+    }),
+  });
+  const publisher = new StatusPublisher(
+    /** @type {any} */ ({
+      mqtt: gateway,
+      topics,
+      state,
+      runtime,
+      config: { options: { path: "/recorded/config.json" } },
+      clock,
+      logger,
+    }),
+  );
+  t.after(async () => {
+    await publisher.stop();
+    await Promise.all([writer.endAsync(true), reader.endAsync(true)]);
+    await broker.stop();
+  });
+  publisher.start();
+  await publisher.pending;
+  return {
+    broker,
+    writer,
+    reader,
+    topics,
+    clock,
+    gateway,
+    state,
+    runtime,
+    devices,
+    states,
+    publisher,
+  };
+}

@@ -86,17 +86,33 @@ export class LiveChannel {
     const session = query.get("session") ?? "";
     const count = this.sessions.get(session) ?? 0;
     // Build before taking over the response: a failed snapshot is a JSON error.
-    const cursor = query.get("since") ?? String(req.headers["last-event-id"] ?? "");
+    const cursor =
+      query.get("since") ?? String(req.headers["last-event-id"] ?? "");
     const prefix = `${this.deps.epoch}-`;
     const number = cursor.startsWith(prefix) ? cursor.slice(prefix.length) : "";
     const since = /^\d+$/.test(number) ? Number(number) : -1;
-    const replay = Number.isSafeInteger(since) && since >= 0 && since <= this.position &&
+    const replay =
+      Number.isSafeInteger(since) &&
+      since >= 0 &&
+      since <= this.position &&
       since >= (this.ring[0]?.seq ?? this.position + 1) - 1;
     const initial = replay
       ? this.ring.filter((event) => event.seq > since)
-      : [{ seq: this.position, type: "snapshot", wire: this.#wire("snapshot", {
-          ...this.deps.snapshot(), epoch: this.deps.epoch, seq: this.position,
-        }, this.position) }];
+      : [
+          {
+            seq: this.position,
+            type: "snapshot",
+            wire: this.#wire(
+              "snapshot",
+              {
+                ...this.deps.snapshot(),
+                epoch: this.deps.epoch,
+                seq: this.position,
+              },
+              this.position,
+            ),
+          },
+        ];
     if (session && count === 0) this.deps.onSession(session, true);
     if (session) this.sessions.set(session, count + 1);
     this.clients.set(res, { session, log: query.get("log") === "1" });
@@ -104,16 +120,19 @@ export class LiveChannel {
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
-      "Connection": "keep-alive",
+      Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
     res.flushHeaders();
     for (const event of initial) {
       if (!this.#send(res, event)) break;
     }
-    if (!this.ping && this.clients.size) this.ping = this.deps.clock.every(() => {
-      this.publish("ping", { at: new Date(this.deps.clock.now()).toISOString() });
-    }, this.deps.pingMs ?? 15000);
+    if (!this.ping && this.clients.size)
+      this.ping = this.deps.clock.every(() => {
+        this.publish("ping", {
+          at: new Date(this.deps.clock.now()).toISOString(),
+        });
+      }, this.deps.pingMs ?? 15000);
     return HANDLED;
   }
 
@@ -182,8 +201,11 @@ export class LiveChannel {
       if (count) this.sessions.set(client.session, count);
       else {
         this.sessions.delete(client.session);
-        try { this.deps.onSession(client.session, false); }
-        catch (error) { this.deps.logger.error("[Live] Session close failed", error); }
+        try {
+          this.deps.onSession(client.session, false);
+        } catch (error) {
+          this.deps.logger.error("[Live] Session close failed", error);
+        }
       }
     }
     if (!this.clients.size) {
@@ -223,7 +245,9 @@ export function wireLiveChannel(channel, deps) {
   };
   follow(deps.state, "device", (view) => channel.publish("device", view));
   follow(deps.state, "device-added", (view) => channel.publish("device", view));
-  follow(deps.state, "device-removed", (value) => channel.publish("device-removed", value));
+  follow(deps.state, "device-removed", (value) =>
+    channel.publish("device-removed", value),
+  );
   /** @type {Map<string, number>} */
   const previews = new Map();
   follow(deps.previews, "frame", (frame) => {
@@ -231,18 +255,31 @@ export function wireLiveChannel(channel, deps) {
     if (now - (previews.get(frame.device) ?? -Infinity) < 1000) return;
     previews.set(frame.device, now);
     channel.publish("preview", {
-      device: frame.device, width: frame.width, height: frame.height,
-      source: frame.source, receivedAt: frame.receivedAt,
-      frameSeq: frame.seq, rgbBase64: Buffer.from(frame.rgb).toString("base64"),
+      device: frame.device,
+      width: frame.width,
+      height: frame.height,
+      source: frame.source,
+      receivedAt: frame.receivedAt,
+      frameSeq: frame.seq,
+      rgbBase64: Buffer.from(frame.rgb).toString("base64"),
     });
   });
-  follow(deps.overlays, "changed", () => channel.publish("overlays", deps.overlays.list()));
-  follow(deps.settings, "settings", (state) => channel.publish("settings", state));
-  follow(deps.scenes, "changed", () => channel.publish("scenes", deps.scenes.list()));
+  follow(deps.overlays, "changed", () =>
+    channel.publish("overlays", deps.overlays.list()),
+  );
+  follow(deps.settings, "settings", (state) =>
+    channel.publish("settings", state),
+  );
+  follow(deps.scenes, "changed", () =>
+    channel.publish("scenes", deps.scenes.list()),
+  );
   const config = () => channel.publish("config", deps.config.file());
   follow(deps.config, "file", config);
   follow(deps.config, "changed", config);
-  if (deps.mqtt) follow(deps.mqtt, "status", (status) => channel.publish("mqtt", status));
+  if (deps.mqtt)
+    follow(deps.mqtt, "status", (status) => channel.publish("mqtt", status));
   stops.push(deps.logger.onLine((line) => channel.publish("log", line)));
-  return () => { for (const stop of stops) stop(); };
+  return () => {
+    for (const stop of stops) stop();
+  };
 }
