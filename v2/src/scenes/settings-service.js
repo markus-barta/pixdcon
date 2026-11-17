@@ -104,6 +104,8 @@ export class SettingsService extends EventEmitter {
     this.drafts = new Map();
     /** @type {Map<string, number>} */
     this.committed = new Map();
+    /** @type {Map<string, ReturnType<typeof commandLane>>} */
+    this.saveLanes = new Map();
     /** @type {Map<string, {ref: import("../types.js").InstanceRef, incarnation: number, callbacks: Set<(values: Record<string, unknown>) => unknown>, lane: ReturnType<typeof commandLane>}>} */
     this.contexts = new Map();
     /** @type {Map<string, AbortController>} */
@@ -148,6 +150,7 @@ export class SettingsService extends EventEmitter {
     for (const off of this.unwire.splice(0)) off();
     for (const timer of this.grace.values()) timer.abort();
     for (const entry of this.contexts.values()) entry.lane.close();
+    for (const lane of this.saveLanes.values()) lane.close();
     this.grace.clear();
     this.previews.clear();
     this.contexts.clear();
@@ -285,6 +288,36 @@ export class SettingsService extends EventEmitter {
   async save(device, scene, change) {
     if (!this.active)
       throw new HttpError(503, "stopping", "Settings service is stopped");
+    const incarnation = this.deps.runtime.incarnationOf(device);
+    if (incarnation === undefined)
+      throw new HttpError(404, "unknown_device", `Unknown device: ${device}`);
+    if (change.session !== undefined || change.draft !== undefined) {
+      checkDraft(change.session, change.draft);
+      const key = JSON.stringify([change.session, device, scene, incarnation]);
+      this.drafts.set(
+        key,
+        Math.max(change.draft ?? 0, this.drafts.get(key) ?? -1),
+      );
+    }
+    const lane = this.saveLanes.get(device) ?? commandLane();
+    this.saveLanes.set(device, lane);
+    return lane.run(() => this.saveNow(device, scene, change, incarnation));
+  }
+
+  /** @param {string} device @param {string} scene @param {Parameters<SettingsService["save"]>[2]} change @param {number} incarnation @returns {ReturnType<SettingsService["save"]>} */
+  async saveNow(device, scene, change, incarnation) {
+    if (
+      !this.active ||
+      decideStamp(
+        { source: this.deps.runtime.incarnationOf(device) ?? null },
+        { source: incarnation },
+      ).action !== "apply"
+    )
+      throw new HttpError(
+        409,
+        "device_replaced",
+        "Device was replaced while saving",
+      );
     const before = this.state(device, scene);
     const runtime = this.deps.runtime.device(device);
     if (runtime?.origin === "blob")
@@ -313,7 +346,15 @@ export class SettingsService extends EventEmitter {
         scene,
         before.incarnation,
       ]);
-      if ((change.draft ?? 0) <= (this.committed.get(draftKey) ?? -1))
+      if (
+        decideStamp(
+          {
+            source: change.session ?? "",
+            position: this.committed.get(draftKey) ?? -1,
+          },
+          { source: change.session ?? "", position: change.draft ?? 0 },
+        ).action !== "apply"
+      )
         return { state: before, rejected: {}, overlaysNotCleared: [] };
       this.drafts.set(
         draftKey,

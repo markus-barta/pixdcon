@@ -4,104 +4,104 @@
     {
       "site": "src/config/config-store.js:293",
       "id": "timer:this.options.clock.sleep#1",
-      "input": "file event, timer, or admission of a config read/write",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
-      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "input": "500 ms file-event debounce expires or is cancelled",
+      "metadata": "watch lifecycle and exact debounce AbortController",
+      "fence": "decideStamp on watch lifecycle, then elapsed and not-aborted checks before reload; time requests a read and supplies no content",
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
       "site": "src/config/config-store.js:294",
       "id": "then:this.options.clock.sleep().then#1",
-      "input": "file event, timer, or admission of a config read/write",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
-      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "input": "500 ms file-event debounce expires or is cancelled",
+      "metadata": "watch lifecycle and exact debounce AbortController",
+      "fence": "decideStamp on watch lifecycle, then elapsed and not-aborted checks before reload; time requests a read and supplies no content",
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
       "site": "src/config/config-store.js:296",
       "id": "work:this.reload#1",
-      "input": "file event, timer, or admission of a config read/write",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
-      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "input": "file content returned by a debounce or polling reload",
+      "metadata": "FIFO position in commandLane; applied content hash; stopped flag",
+      "fence": "ConfigStore.enqueue uses createLane for both reads and writes; read checks stopped and appliedHash before accept",
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
       "site": "src/config/config-store.js:298",
       "id": "then:this.options.clock.sleep().then().catch#1",
-      "input": "completion of a file operation or failure of a queued read",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "input": "a reload rejects",
+      "metadata": "the read that failed",
       "fence": "none",
       "test": "test/contract/composition.test.js: config store order:",
-      "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
+      "why": "logs the failure only; no file content or controller state is applied"
     },
     {
       "site": "src/config/config-store.js:303",
       "id": "watch:watch#1",
-      "input": "file event, timer, or admission of a config read/write",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
-      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "input": "native directory event for config.json",
+      "metadata": "watch lifecycle and basename; event is a hint",
+      "fence": "decideStamp on lifecycle before scheduling debounce; the subsequent queued read decides the content",
       "test": "test/contract/composition.test.js: config store order:",
       "was": "ConfigStore.start"
     },
     {
       "site": "src/config/config-store.js:308",
       "id": "listener:this.watcher.on(\"error\")#1",
-      "input": "file event, timer, or admission of a config read/write",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
-      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "input": "native watcher fails",
+      "metadata": "watch lifecycle",
+      "fence": "decideStamp before closing the watcher; the already-running poll remains the read fallback",
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
       "site": "src/config/config-store.js:323",
       "id": "timer:this.options.clock.every#1",
-      "input": "file event, timer, or admission of a config read/write",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
-      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "input": "one-second polling tick",
+      "metadata": "watch lifecycle",
+      "fence": "decideStamp before queuing reload; the timer supplies no data",
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
       "site": "src/config/config-store.js:325",
       "id": "work:this.reload#2",
-      "input": "file event, timer, or admission of a config read/write",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
-      "fence": "ConfigStore.enqueue serializes reads and writes; watcher handlers first check decideStamp on lifecycle; read checks stopped and appliedHash before accept",
+      "input": "file content returned by a debounce or polling reload",
+      "metadata": "FIFO position in commandLane; applied content hash; stopped flag",
+      "fence": "ConfigStore.enqueue uses createLane for both reads and writes; read checks stopped and appliedHash before accept",
       "test": "test/contract/composition.test.js: config store order:"
     },
     {
       "site": "src/config/config-store.js:325",
       "id": "then:this.reload().catch#1",
-      "input": "completion of a file operation or failure of a queued read",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "input": "a reload rejects",
+      "metadata": "the read that failed",
       "fence": "none",
       "test": "test/contract/composition.test.js: config store order:",
-      "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
+      "why": "logs the failure only; no file content or controller state is applied"
     },
     {
       "site": "src/config/config-store.js:428",
       "id": "work:backup.sync#1",
-      "input": "completion of a file operation or failure of a queued read",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "input": "filesystem durability operation completes",
+      "metadata": "the admitted config write's backup handle",
       "fence": "none",
-      "test": "test/contract/composition.test.js: config store order:",
-      "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
+      "test": "test/contract/overlay-rules.test.js: save rule 4:",
+      "why": "fsync within the admitted write lane; no independently delivered state is applied"
     },
     {
       "site": "src/config/config-store.js:437",
       "id": "work:file.sync#1",
-      "input": "completion of a file operation or failure of a queued read",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "input": "filesystem durability operation completes",
+      "metadata": "the admitted config write's file handle",
       "fence": "none",
-      "test": "test/contract/composition.test.js: config store order:",
-      "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
+      "test": "test/contract/overlay-rules.test.js: save rule 4:",
+      "why": "fsync within the admitted write lane; no independently delivered state is applied"
     },
     {
       "site": "src/config/config-store.js:444",
       "id": "work:dir.sync#1",
-      "input": "completion of a file operation or failure of a queued read",
-      "metadata": "watch lifecycle generation; FIFO position in the store lane; applied content hash",
+      "input": "filesystem durability operation completes",
+      "metadata": "the admitted config write's dir handle",
       "fence": "none",
-      "test": "test/contract/composition.test.js: config store order:",
-      "why": "durability, promise settlement, or error logging inside the admitted lane; no independently delivered state is applied"
+      "test": "test/contract/overlay-rules.test.js: save rule 4:",
+      "why": "fsync within the admitted write lane; no independently delivered state is applied"
     },
     {
       "site": "src/core/clock.js:20",
@@ -226,9 +226,9 @@
     {
       "site": "src/main.js:759",
       "id": "listener:runtime.on(\"changed\")#1",
-      "input": "the runtime config's changed event, with its diff",
-      "metadata": "effective rev; only a diff that names scenes leads to work",
-      "fence": "queued into the registry lane, never run in place: createLane (core/ordering.js): one piece at a time, in the order it was asked for",
+      "input": "effective config change notice",
+      "metadata": "epoch and effective revision",
+      "fence": "decideStamp rejects non-newer effective.rev before output updates; scene imports then run in createLane with its abort signal",
       "test": "test/contract/ordering.test.js: F9: a slow import that was asked for first"
     },
     {
@@ -250,19 +250,19 @@
     {
       "site": "src/main.js:815",
       "id": "then:runStep().catch#1",
-      "input": "a shutdown step rejects, including after its wait budget expired",
-      "metadata": "the named shutdown step; application already stopping",
+      "input": "shutdown step rejects, possibly after its wait ended",
+      "metadata": "named shutdown step; application stopping",
       "fence": "none",
-      "why": "failure logging only; stopping and the closed registry lane fence all later work",
-      "test": "test/contract/composition.test.js: N7 shutdown:"
+      "why": "failure logging only; no callback result is applied",
+      "test": "test/contract/composition.test.js: shutdown deadline:"
     },
     {
       "site": "src/main.js:825",
       "id": "timer:clock.sleep#1",
-      "input": "the 2 s limit for scene work that still runs at shutdown",
-      "metadata": "none: a timer says when, never what (core/ordering.js EVIDENCE.timer)",
-      "fence": "conservative side: shutdown goes on. The wait is not the fence: the lane is closed before it, which aborts the signal of the piece that runs",
-      "test": "test/contract/composition.test.js: N7 shutdown: a scene import that is still running"
+      "input": "one shutdown phase exhausts its allocated wait budget",
+      "metadata": "absolute app deadline; phase budget capped by remaining time",
+      "fence": "wait only: registry lane already closed; scheduler and scene release fence their own work; exhausted waits continue cleanup within the same deadline",
+      "test": "test/contract/composition.test.js: shutdown deadline:"
     },
     {
       "site": "src/main.js:888",
@@ -307,330 +307,331 @@
     {
       "site": "src/mqtt/mqtt-gateway.js:216",
       "id": "listener:this.once(\"connect\")#1",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "input": "first connect notice while start is waiting",
+      "metadata": "gateway connection number, fenced by the transport handler",
+      "fence": "start wait sets its completion flag and aborts its deadline; it delivers no subscription data",
       "test": "test/contract/wire.test.js: gateway order:",
       "was": "MqttGateway.start"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:217",
       "id": "timer:this.options.clock.sleep#1",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway order:"
+      "input": "initial connect wait expires or is aborted",
+      "metadata": "the start invocation",
+      "fence": "wait only: reads the current connected state; client connection handlers retain authority",
+      "test": "test/contract/wire.test.js: gateway timers:"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:239",
       "id": "timer:this.options.clock.sleep#2",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway order:",
+      "input": "two-second graceful-close budget expires",
+      "metadata": "transport retired by stop before the wait",
+      "fence": "conservative close only: force-end this disposable transport; no later transport receives its outgoing store",
+      "test": "test/contract/wire.test.js: gateway publish:",
       "was": "MqttGateway.stop"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:353",
       "id": "timer:this.options.clock.sleep#3",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway order:"
+      "input": "publish acknowledgement deadline expires or is aborted",
+      "metadata": "captured attempt, connection, exact finish closure",
+      "fence": "finish once; current(attempt)/connection state decides timeout versus offline; never fabricates a confirmed outcome",
+      "test": "test/contract/wire.test.js: gateway publish outcome:"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:354",
       "id": "then:this.options.clock.sleep().then#1",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway order:"
+      "input": "publish acknowledgement deadline expires or is aborted",
+      "metadata": "captured attempt, connection, exact finish closure",
+      "fence": "finish once; current(attempt)/connection state decides timeout versus offline; never fabricates a confirmed outcome",
+      "test": "test/contract/wire.test.js: gateway publish outcome:"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:368",
       "id": "work:client.publish#1",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "input": "MQTT publish callback returns",
+      "metadata": "captured attempt and connection; exact finish closure",
+      "fence": "current(attempt) first; finish once; confirmed/sent only on a still-current transport, errors after transport entry stay uncertain",
       "test": "test/contract/wire.test.js: gateway publish outcome:",
       "was": "MqttGateway.publish"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:429",
       "id": "subscribe:this.subscribe#1",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway owners:",
+      "input": "settle marker echo",
+      "metadata": "nonce topic and connection of this settle invocation",
+      "fence": "decideStamp on connection; only resolves the pacing hint, never a stored-state decision",
+      "test": "test/contract/wire.test.js: gateway settle:",
       "was": "MqttGateway.settle"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:438",
       "id": "timer:this.options.clock.sleep#4",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway order:"
+      "input": "settle marker wait expires or is aborted",
+      "metadata": "settle invocation and its AbortController",
+      "fence": "hint only: unsubscribe marker and report complete false unless its current-connection echo was seen",
+      "test": "test/contract/wire.test.js: gateway timers:"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:450",
       "id": "work:this.publish#1",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway publish outcome:"
+      "input": "settle marker publish outcome",
+      "metadata": "attempt and connection captured before waiting for SUBACKs",
+      "fence": "current(attempt) and connected state before publishing; returned result contributes only to the hint",
+      "test": "test/contract/wire.test.js: gateway settle:"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:488",
       "id": "subscribe:this.subscribe#2",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway owners:",
+      "input": "message to a scene instance subscription",
+      "metadata": "InstanceRef owner and released flag; gateway transport identity",
+      "fence": "gateway message handler fences the attempt, subscription id must remain registered, scene wrapper checks released before invoking the callback",
+      "test": "test/contract/wire.test.js: gateway instance tokens:",
       "was": "MqttGateway.sceneContext"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:494",
       "id": "subscribe:this.subscribe#3",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway owners:"
+      "input": "message to a scene instance subscription",
+      "metadata": "InstanceRef owner and released flag; gateway transport identity",
+      "fence": "gateway message handler fences the attempt, subscription id must remain registered, scene wrapper checks released before invoking the callback",
+      "test": "test/contract/wire.test.js: gateway instance tokens:"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:546",
       "id": "listener:client.on(\"connect\")#1",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "input": "CONNACK on a disposable transport",
+      "metadata": "transport attempt",
+      "fence": "current(attempt) before incrementing connection; connect emitted before any subscription message delivery",
       "test": "test/contract/wire.test.js: gateway order:"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:556",
       "id": "listener:client.on(\"message\")#1",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway order:"
+      "input": "MQTT PUBLISH packet",
+      "metadata": "transport attempt, delivered retain flag, monotonically numbered connection",
+      "fence": "current(attempt) and connected state before synchronous, ordered fan-out; subscription ids checked again after peer callbacks",
+      "test": "test/contract/wire.test.js: gateway: every message"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:571",
       "id": "then:Promise.resolve().catch#1",
-      "input": "handler failure or SUBACK promise completion",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "input": "owner handler rejects",
+      "metadata": "the handler promise",
       "fence": "none",
-      "test": "test/contract/wire.test.js: gateway order:",
-      "why": "logging or removing a settled SUBACK promise only; no controller state or subscriber is changed"
+      "test": "test/contract/wire.test.js: gateway owners:",
+      "why": "logs rejection without applying state or blocking delivery to other owners"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:579",
       "id": "listener:client.on(\"error\")#1",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway order:"
+      "input": "transport error",
+      "metadata": "transport attempt",
+      "fence": "current(attempt) before recording a fixed credential-free status description; no subscriber is called",
+      "test": "test/contract/wire.test.js: gateway timers:"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:595",
       "id": "listener:client.on(\"close\")#1",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "input": "transport closes",
+      "metadata": "transport attempt and last connection",
+      "fence": "current(attempt); settle pending publications offline before disconnect, discard this client, then schedule a fresh attempt",
       "test": "test/contract/wire.test.js: gateway order:"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:600",
       "id": "timer:this.options.clock.sleep#5",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway order:"
+      "input": "five-second reconnect wait expires or is aborted",
+      "metadata": "closed transport attempt and reconnect AbortController",
+      "fence": "elapsed and current(attempt) before creating a fresh client; the old client never reconnects or replays its store",
+      "test": "test/contract/wire.test.js: gateway publish:"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:600",
       "id": "then:this.options.clock.sleep().then#2",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
-      "test": "test/contract/wire.test.js: gateway order:"
+      "input": "five-second reconnect wait expires or is aborted",
+      "metadata": "closed transport attempt and reconnect AbortController",
+      "fence": "elapsed and current(attempt) before creating a fresh client; the old client never reconnects or replays its store",
+      "test": "test/contract/wire.test.js: gateway publish:"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:635",
       "id": "subscribe:client.subscribe#1",
-      "input": "broker packet, connection event, subscription acknowledgement, publish outcome or deadline",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
-      "fence": "MqttGateway.current uses decideStamp on attempt before delivery; publish finishes once; each ended transport is discarded; timeouts change outcomes/status only; sceneContext checks released before callback",
+      "input": "SUBACK or subscription failure",
+      "metadata": "the subscription promise of this transport",
+      "fence": "none",
       "test": "test/contract/wire.test.js: gateway owners:",
-      "was": "MqttGateway.subscribe"
+      "was": "MqttGateway.subscribe",
+      "why": "settles a pacing barrier only; actual messages are fenced and delivered at client.on(message)"
     },
     {
       "site": "src/mqtt/mqtt-gateway.js:638",
       "id": "then:ack.then#1",
-      "input": "handler failure or SUBACK promise completion",
-      "metadata": "transport attempt identity; connection number; exact pending publish; scene owner InstanceRef token",
+      "input": "SUBACK barrier promise settles",
+      "metadata": "exact pending promise",
       "fence": "none",
-      "test": "test/contract/wire.test.js: gateway order:",
-      "why": "logging or removing a settled SUBACK promise only; no controller state or subscriber is changed"
+      "test": "test/contract/wire.test.js: gateway settle:",
+      "why": "removes only that promise from the SUBACK set; no overlay/device state changes"
     },
     {
       "site": "src/overlay/overlay-service.js:390",
       "id": "listener:mqtt.on(\"connect\")#1",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
-      "test": "test/contract/overlay-rules.test.js: overlay rule 26 ",
+      "input": "gateway connect notice",
+      "metadata": "gateway connection number",
+      "fence": "reduce and, for connection changes, reduceMirror decide first; settled is passed through only when current and changes no mirror state",
+      "test": "test/contract/overlay-rules.test.js: overlay service and scene layers:",
       "was": "OverlayService.start"
     },
     {
       "site": "src/overlay/overlay-service.js:391",
       "id": "listener:mqtt.on(\"disconnect\")#1",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
-      "test": "test/contract/overlay-rules.test.js: overlay rule 26 "
+      "input": "gateway disconnect notice",
+      "metadata": "gateway connection number",
+      "fence": "reduce and, for connection changes, reduceMirror decide first; settled is passed through only when current and changes no mirror state",
+      "test": "test/contract/overlay-rules.test.js: overlay service and scene layers:"
     },
     {
       "site": "src/overlay/overlay-service.js:392",
       "id": "listener:mqtt.on(\"settled\")#1",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
-      "test": "test/contract/overlay-rules.test.js: overlay rule 26 "
+      "input": "gateway settled notice",
+      "metadata": "gateway connection number",
+      "fence": "reduce and, for connection changes, reduceMirror decide first; settled is passed through only when current and changes no mirror state",
+      "test": "test/contract/overlay-rules.test.js: overlay service and scene layers:"
     },
     {
       "site": "src/overlay/overlay-service.js:407",
       "id": "subscribe:mqtt.subscribe#1",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
+      "input": "overlay, setting or retained-control message",
+      "metadata": "connection and delivered retain flag; parsed topic identity",
+      "fence": "reduce for scene/blob, reduceMirror for six other kinds; only their effects schedule work and changed notices",
       "test": "test/contract/overlay-rules.test.js: overlay rule 26 "
     },
     {
       "site": "src/overlay/overlay-service.js:410",
       "id": "timer:this.deps.clock.every#1",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
-      "test": "test/contract/overlay-rules.test.js: overlay rule 26 "
+      "input": "one-second repeat tick",
+      "metadata": "active service; owed-on connection and outstanding writes held by the scene reducer",
+      "fence": "reduce(tick) alone determines repeats of previously authorised writes; no output on silence or connect",
+      "test": "test/contract/overlay-rules.test.js: overlay rule 4:"
     },
     {
       "site": "src/overlay/overlay-service.js:414",
       "id": "work:mqtt.settle#1",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
-      "test": "test/contract/overlay-rules.test.js: overlay rule 26 "
+      "input": "initial settle hint resolves",
+      "metadata": "gateway connection and active service",
+      "fence": "hint only: initial notices flush current reducer state; no suppression or record ends because the hint passed",
+      "test": "test/contract/overlay-rules.test.js: overlay rule 10 "
     },
     {
       "site": "src/overlay/overlay-service.js:839",
       "id": "work:this.deps.mqtt.publish#1",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
-      "test": "test/contract/overlay-rules.test.js: overlay service and scene layers:",
+      "input": "explicit whole-blob or granular clear publish outcome",
+      "metadata": "API command; current output permission and gateway connection",
+      "fence": "requirePublish validates API admission; returned outcome answers the caller only. Explicit scene/blob own-write correlation has no frozen reducer input (reported blocker)",
+      "test": "test/contract/overlay-rules.test.js: explicit clears and the v1 overlay route:",
       "was": "OverlayService.clear"
     },
     {
       "site": "src/overlay/overlay-service.js:937",
       "id": "work:this.deps.mqtt.publish#2",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
-      "test": "test/contract/overlay-rules.test.js: overlay service and scene layers:",
+      "input": "explicit v1 scene overlay write publish outcome",
+      "metadata": "API command; current output permission and gateway connection",
+      "fence": "requirePublish validates API admission; returned outcome answers the caller only. Explicit scene/blob own-write correlation has no frozen reducer input (reported blocker)",
+      "test": "test/contract/overlay-rules.test.js: explicit clears and the v1 overlay route:",
       "was": "OverlayService.publishSceneOverlay"
     },
     {
       "site": "src/overlay/overlay-service.js:1085",
       "id": "work:this.deps.mqtt.publish#3",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
+      "input": "scene reducer clear/blob-rewrite publish result",
+      "metadata": "reducer write number, choice generations, captured connection",
+      "fence": "publish only for reducer effects with mayCause; outcome checks active and decideStamp(connection), then reduce(published) checks the exact write",
       "test": "test/contract/overlay-rules.test.js: overlay service and scene layers:"
     },
     {
       "site": "src/overlay/overlay-service.js:1086",
       "id": "then:this.deps.mqtt?.publish().then#1",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
+      "input": "scene reducer clear/blob-rewrite publish result",
+      "metadata": "reducer write number, choice generations, captured connection",
+      "fence": "publish only for reducer effects with mayCause; outcome checks active and decideStamp(connection), then reduce(published) checks the exact write",
       "test": "test/contract/overlay-rules.test.js: overlay service and scene layers:",
       "was": "OverlayService.applySupersede"
     },
     {
       "site": "src/overlay/overlay-service.js:1131",
       "id": "timer:this.deps.clock.sleep#1",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
+      "input": "300 ms change-notice debounce expires or is cancelled",
+      "metadata": "exact debounce AbortController and active service",
+      "fence": "elapsed, active and not-aborted before flushing the union of reducer changed effects; the timer invents no changed names",
       "test": "test/contract/overlay-rules.test.js: overlay rule 26 "
     },
     {
       "site": "src/overlay/overlay-service.js:1131",
       "id": "then:this.deps.clock.sleep().then#1",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
+      "input": "300 ms change-notice debounce expires or is cancelled",
+      "metadata": "exact debounce AbortController and active service",
+      "fence": "elapsed, active and not-aborted before flushing the union of reducer changed effects; the timer invents no changed names",
       "test": "test/contract/overlay-rules.test.js: overlay rule 26 "
     },
     {
       "site": "src/overlay/overlay-service.js:1185",
       "id": "work:this.deps.mqtt.publish#4",
-      "input": "gateway connection/message/hint, user command, retry/debounce, or publish result",
-      "metadata": "gateway connection; reducer own-write number and choice generation; abort identity of the debounce",
-      "fence": "reduce and reduceMirror decide before state/effects; changed notices accumulate only reducer effects; effects require mayCause; publish outcomes check active/current connection then the reducer write identity; direct API publications require requirePublish",
-      "test": "test/contract/overlay-rules.test.js: overlay service and scene layers:",
+      "input": "mirror own-write result",
+      "metadata": "unique mirror write number, key and captured connection",
+      "fence": "reduceMirror(own-write) before sending; outcome checks active/connection and feeds confirmed/failed by exact write identity; timeout awaits evidence",
+      "test": "test/contract/overlay-rules.test.js: own control writes:",
       "was": "OverlayService.publishSettings"
     },
     {
-      "site": "src/scenes/settings-service.js:136",
+      "site": "src/scenes/settings-service.js:138",
       "id": "listener:this.deps.runtime.on(\"changed\")#1",
-      "input": "runtime/overlay/registry change notice or page disconnect grace deadline",
-      "metadata": "effective revision; InstanceRef and device incarnation; page session and exact disconnect AbortController",
-      "fence": "runtime notice uses decideStamp on effective.rev; other notices recompute current sources only; grace requires active/current controller and not aborted; subscriber commandLane checks instance and incarnation before each callback",
-      "test": "test/contract/overlay-rules.test.js: preview rule 2:",
+      "input": "runtime change notice",
+      "metadata": "epoch and effective revision",
+      "fence": "decideStamp(effective.rev) before recomputing cached settings from current stores",
+      "test": "test/contract/overlay-rules.test.js: preview rule 4 ",
       "was": "SettingsService.start"
     },
     {
-      "site": "src/scenes/settings-service.js:137",
+      "site": "src/scenes/settings-service.js:139",
       "id": "listener:this.deps.overlays.on(\"changed\")#1",
-      "input": "runtime/overlay/registry change notice or page disconnect grace deadline",
-      "metadata": "effective revision; InstanceRef and device incarnation; page session and exact disconnect AbortController",
-      "fence": "runtime notice uses decideStamp on effective.rev; other notices recompute current sources only; grace requires active/current controller and not aborted; subscriber commandLane checks instance and incarnation before each callback",
-      "test": "test/contract/overlay-rules.test.js: preview rule 2:"
+      "input": "overlay change notice",
+      "metadata": "current overlays; settings cache keyed by device incarnation and scene",
+      "fence": "active before recomputing current sources; subscribers use InstanceRef/incarnation command lanes",
+      "test": "test/contract/overlay-rules.test.js: save rule 3:"
     },
     {
-      "site": "src/scenes/settings-service.js:138",
+      "site": "src/scenes/settings-service.js:140",
       "id": "listener:this.deps.registry.on(\"changed\")#1",
-      "input": "runtime/overlay/registry change notice or page disconnect grace deadline",
-      "metadata": "effective revision; InstanceRef and device incarnation; page session and exact disconnect AbortController",
-      "fence": "runtime notice uses decideStamp on effective.rev; other notices recompute current sources only; grace requires active/current controller and not aborted; subscriber commandLane checks instance and incarnation before each callback",
-      "test": "test/contract/overlay-rules.test.js: preview rule 2:"
+      "input": "registry metadata/schema change notice",
+      "metadata": "current registry and cached device incarnations",
+      "fence": "active before rejudging held setting values; released-instance callbacks are excluded",
+      "test": "test/contract/overlay-rules.test.js: held setting overlay:"
     },
     {
-      "site": "src/scenes/settings-service.js:472",
+      "site": "src/scenes/settings-service.js:513",
       "id": "timer:this.deps.clock.sleep#1",
-      "input": "runtime/overlay/registry change notice or page disconnect grace deadline",
-      "metadata": "effective revision; InstanceRef and device incarnation; page session and exact disconnect AbortController",
-      "fence": "runtime notice uses decideStamp on effective.rev; other notices recompute current sources only; grace requires active/current controller and not aborted; subscriber commandLane checks instance and incarnation before each callback",
+      "input": "five-second page-disconnect grace expires or is aborted",
+      "metadata": "page session and exact disconnect AbortController",
+      "fence": "active, elapsed, not-aborted and current controller before ending only that session preview",
       "test": "test/contract/overlay-rules.test.js: preview rule 2:",
       "was": "SettingsService.sessionConnection"
     },
     {
-      "site": "src/scenes/settings-service.js:473",
+      "site": "src/scenes/settings-service.js:514",
       "id": "then:this.deps.clock.sleep().then#1",
-      "input": "runtime/overlay/registry change notice or page disconnect grace deadline",
-      "metadata": "effective revision; InstanceRef and device incarnation; page session and exact disconnect AbortController",
-      "fence": "runtime notice uses decideStamp on effective.rev; other notices recompute current sources only; grace requires active/current controller and not aborted; subscriber commandLane checks instance and incarnation before each callback",
+      "input": "five-second page-disconnect grace expires or is aborted",
+      "metadata": "page session and exact disconnect AbortController",
+      "fence": "active, elapsed, not-aborted and current controller before ending only that session preview",
       "test": "test/contract/overlay-rules.test.js: preview rule 2:"
     },
     {
-      "site": "src/scenes/settings-service.js:623",
+      "site": "src/scenes/settings-service.js:664",
       "id": "then:entry.lane.run().catch#1",
-      "input": "failure of an instance subscriber",
-      "metadata": "effective revision; InstanceRef and device incarnation; page session and exact disconnect AbortController",
+      "input": "scene-instance subscriber fails or its lane was closed",
+      "metadata": "InstanceRef and subscriber lane",
       "fence": "none",
       "test": "test/contract/overlay-rules.test.js: settings instance tokens:",
-      "why": "failure logging only; no settings/controller state changes"
+      "why": "failure logging only; subscriber invocation was fenced by current context and incarnation in its command lane"
     },
     {
       "site": "src/state/runtime-config.js:417",
@@ -644,53 +645,53 @@
     {
       "site": "src/state/state-store.js:135",
       "id": "listener:this.deps.overlays.on(\"suppression\")#1",
-      "input": "runtime/overlay/registry/suppression event or per-device command admission",
-      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
-      "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
-      "test": "test/contract/composition.test.js: device lives and reports:"
+      "input": "authoritative reducer retirement, possibly before state.start",
+      "metadata": "device, layer, exact choice generation; ended lifecycle",
+      "fence": "ended events drop; pre-start facts buffer without effects; once ready the device command lane checks incarnation and the raw saved generation before deletion",
+      "test": "test/contract/overlay-rules.test.js: startup retirements:"
     },
     {
       "site": "src/state/state-store.js:159",
       "id": "work:this.sync#1",
-      "input": "synchronous reconciliation or completion of a command",
-      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
+      "input": "synchronous device reconciliation",
+      "metadata": "effective revision already accepted by runtimeChanged",
       "fence": "none",
       "test": "test/contract/composition.test.js: device lives and reports:",
-      "why": "synchronous work already admitted by the runtime handler, error logging, or queue barrier; no separate state input"
+      "why": "not an import: local sync runs synchronously inside the revision-fenced handler"
     },
     {
       "site": "src/state/state-store.js:170",
       "id": "listener:this.deps.runtime.on(\"changed\")#1",
-      "input": "runtime/overlay/registry/suppression event or per-device command admission",
-      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
-      "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
-      "test": "test/contract/composition.test.js: device lives and reports:",
+      "input": "runtime config change notice",
+      "metadata": "epoch and effective revision",
+      "fence": "decideStamp before accepting effective.rev; reconcile device incarnations and current source state",
+      "test": "test/contract/composition.test.js: saved choice from outside:",
       "was": "StateStore.start"
     },
     {
       "site": "src/state/state-store.js:171",
       "id": "listener:this.deps.overlays.on(\"changed\")#1",
-      "input": "runtime/overlay/registry/suppression event or per-device command admission",
-      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
-      "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
-      "test": "test/contract/composition.test.js: device lives and reports:"
+      "input": "reducer-derived changed device names",
+      "metadata": "device names from the notice; current incarnation and current stores",
+      "fence": "active before computing only named current devices; no old event value is applied",
+      "test": "test/contract/overlay-rules.test.js: overlay rule 26 "
     },
     {
       "site": "src/state/state-store.js:172",
       "id": "listener:this.deps.scenes.on(\"changed\")#1",
-      "input": "runtime/overlay/registry/suppression event or per-device command admission",
-      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
-      "fence": "StateStore.start decides effective.rev with decideStamp; other notices read current stores only; command checks incarnation and active; saved suppression retirement compares the exact generation",
-      "test": "test/contract/composition.test.js: device lives and reports:"
+      "input": "scene metadata/status change notice",
+      "metadata": "current registry and effective devices",
+      "fence": "active before recomputing current scene validity for current devices",
+      "test": "test/contract/overlay-rules.test.js: held setting overlay:"
     },
     {
       "site": "src/state/state-store.js:216",
       "id": "then:this.command().catch#1",
-      "input": "synchronous reconciliation or completion of a command",
-      "metadata": "effective revision, device incarnation, runtime token, and suppression generation",
+      "input": "saved-suppression retirement write fails",
+      "metadata": "device command and exact generation",
       "fence": "none",
-      "test": "test/contract/composition.test.js: device lives and reports:",
-      "why": "synchronous work already admitted by the runtime handler, error logging, or queue barrier; no separate state input"
+      "test": "test/contract/overlay-rules.test.js: startup retirements:",
+      "why": "logs failure only; the command lane and generation comparison fence the attempted write"
     },
     {
       "site": "src/state/v1-ownership.js:219",
@@ -720,7 +721,7 @@
     "OverlayService.clearSettings": "Synchronous command/reducer delegation: no independent callback registered here. applyOutputs/applySupersede feed the finished reducer; writes delegate to writeMirror whose publish/result sites are inventoried in this file.",
     "OverlayService.publishControl": "Synchronous command/reducer delegation: no independent callback registered here. applyOutputs/applySupersede feed the finished reducer; writes delegate to writeMirror whose publish/result sites are inventoried in this file.",
     "OverlayService.applyOutputs": "Synchronous command/reducer delegation: no independent callback registered here. applyOutputs/applySupersede feed the finished reducer; writes delegate to writeMirror whose publish/result sites are inventoried in this file.",
-    "SettingsService.save": "Synchronous request/context API with no independent input callback: drafts use decideStamp before mutation; Save delegates to the config commandLane and rechecks device incarnation; instance callbacks are delivered via commandLane from the inventoried source listeners, checking InstanceRef and incarnation.",
+    "SettingsService.save": "The API wrapper reserves the highest seen draft on admission, then delegates to a per-device commandLane. saveNow checks device incarnation and decideStamp on committed draft inside that lane before writing; previews remain independent. No additional callback is registered here.",
     "SettingsService.preview": "Synchronous request/context API with no independent input callback: drafts use decideStamp before mutation; Save delegates to the config commandLane and rechecks device incarnation; instance callbacks are delivered via commandLane from the inventoried source listeners, checking InstanceRef and incarnation.",
     "SettingsService.endPreview": "Synchronous request/context API with no independent input callback: drafts use decideStamp before mutation; Save delegates to the config commandLane and rechecks device incarnation; instance callbacks are delivered via commandLane from the inventoried source listeners, checking InstanceRef and incarnation.",
     "SettingsService.runtimeContext": "Synchronous request/context API with no independent input callback: drafts use decideStamp before mutation; Save delegates to the config commandLane and rechecks device incarnation; instance callbacks are delivered via commandLane from the inventoried source listeners, checking InstanceRef and incarnation.",

@@ -1295,3 +1295,38 @@ test("startup retirements: a saved shadow suppression dropped before state.start
   assert.equal(saved.devices[0].supersedes, undefined);
   assert.equal(world.overlays.suppressions(D).granular, null);
 });
+
+test("settings concurrent Saves: an older draft queued behind a newer Save cannot overwrite it, late previews of that draft drop immediately, and a later preview survives both answers", async (t) => {
+  const world = await serviceWorld(t);
+  const newer = world.settings.save(D, "A", {
+    set: { n: 8 },
+    session: "page",
+    draft: 2,
+  });
+  const older = world.settings.save(D, "A", {
+    set: { n: 3 },
+    session: "page",
+    draft: 1,
+  });
+  assert.equal(
+    world.settings.preview(D, "A", {
+      session: "page",
+      draft: 2,
+      values: { n: 10 },
+    }).applied,
+    false,
+  );
+  assert.equal(
+    world.settings.preview(D, "A", {
+      session: "page",
+      draft: 3,
+      values: { n: 9 },
+    }).applied,
+    true,
+  );
+  await Promise.all([newer, older]);
+  const raw = JSON.parse(await readFile(world.configPath, "utf8"));
+  assert.equal(raw.devices[0].sceneSettings.A.n, 8);
+  assert.equal(world.settings.state(D, "A").values.n.effective, 9);
+  assert.equal(world.settings.state(D, "A").preview?.draft, 3);
+});
