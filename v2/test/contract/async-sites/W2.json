@@ -72,7 +72,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/components/recovery-dialog.js:157",
+      "site": "web/js/components/recovery-dialog.js:158",
       "id": "listener:document.addEventListener(\"keydown\")#1",
       "input": "Esc and Tab while the recovery dialog is open",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -81,12 +81,12 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/components/recovery-dialog.js:158",
+      "site": "web/js/components/recovery-dialog.js:159",
       "id": "listener:scrim.addEventListener(\"click\")#1",
       "input": "Retry now, Close, Copy command, a click outside the dialog",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); slot retry:<device>@<epoch>/<incarnation>, shown by any dialog of that device life",
+      "test": "test/contract/client.test.js: r3 sweep (Overlays, rule 5):"
     },
     {
       "site": "web/js/components/settings-form.js:888",
@@ -254,15 +254,15 @@
       "test": "test/contract/client.test.js: r3 gate 4.1 (finding 1, raw retry):"
     },
     {
-      "site": "web/js/pages/config.js:321",
+      "site": "web/js/pages/config.js:343",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "Edit, Cancel, Save of a device row, Add to config.json, the theme of this browser",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position); the theme is stored in this browser only",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); slots patch:<device>@<epoch>/<incarnation> and adopt:<device>@<epoch>/<incarnation> (adopt shared with the Device page)",
+      "test": "test/contract/client.test.js: r3 sweep (Overlays, rule 5):"
     },
     {
-      "site": "web/js/pages/config.js:322",
+      "site": "web/js/pages/config.js:344",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "typing in the Add device form",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -271,15 +271,15 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/config.js:323",
+      "site": "web/js/pages/config.js:345",
       "id": "listener:root.addEventListener(\"submit\")#1",
       "input": "Add device",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per control key (a busy key sends nothing); the answer goes through store.applyAnswer: decideView for a DeviceView or SettingsState (incarnation, rev), decideAnswer for a whole resource (generation, position)",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); slot add-device, shared with the Devices page's empty state; the button and its line are drawn from the slot",
+      "test": "test/contract/client.test.js: r3 sweep (Overlays, rule 5):"
     },
     {
-      "site": "web/js/pages/config.js:324",
+      "site": "web/js/pages/config.js:346",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Config page",
       "metadata": "none: the store calls it after a change it applied",
@@ -377,7 +377,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/pages/health.js:218",
+      "site": "web/js/pages/health.js:226",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "the log filter, Copy, the version display",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -386,7 +386,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/health.js:219",
+      "site": "web/js/pages/health.js:227",
       "id": "listener:root.addEventListener(\"scroll\")#1",
       "input": "the log pane scrolled",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -395,23 +395,23 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/health.js:220",
+      "site": "web/js/pages/health.js:228",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Health page",
       "metadata": "none: the store calls it after a change it applied",
-      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
-      "test": "test/contract/client.test.js: client store:"
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply. The log load of an opening is the slot log (ops.js follow): the next opening's load makes it obsolete, and only the current load's failure is said, in the empty pane",
+      "test": "test/contract/client.test.js: r3 sweep (Health log):"
     },
     {
-      "site": "web/js/pages/overlays.js:182",
+      "site": "web/js/pages/overlays.js:189",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "Clear on an overlay row",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time per row (overlay:<id>); the answer's overlay list goes through store.applyAnswer (decideAnswer: generation, position)",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); slot overlay:<id>: one busy owner across openings of the page; the answer's overlay list goes through decideAnswer",
+      "test": "test/contract/client.test.js: r3 sweep (Overlays, rule 5):"
     },
     {
-      "site": "web/js/pages/overlays.js:183",
+      "site": "web/js/pages/overlays.js:190",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Overlays page",
       "metadata": "none: the store calls it after a change it applied",

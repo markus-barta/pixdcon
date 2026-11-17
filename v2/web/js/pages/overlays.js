@@ -19,7 +19,8 @@
  * Owner: UI worker.
  */
 
-import { ApiError, request } from "../api.js";
+import { request } from "../api.js";
+import { forgetIdle, op, start } from "../ops.js";
 import { icon, setHtml, setStatusLine } from "../dom.js";
 import { esc } from "../format.js";
 import { applyAnswer, getState, subscribe } from "../store.js";
@@ -32,10 +33,14 @@ let unsubscribe = null;
 /** Row ids the page has shown, in order: a row that leaves the list keeps its place. @type {string[]} */
 let shown = [];
 let since = 0;
-/** Rows whose Clear runs. @type {Set<string>} */
-const clearing = new Set();
-/** The last failure of a row's Clear, said beside it. @type {Map<string, string>} */
-const failures = new Map();
+/**
+ * A row's Clear is an operation in the slot `overlay:<id>` (ops.js): one
+ * busy owner across openings of the page, its failure or note kept in the
+ * slot and said beside the button, which stays.
+ *
+ * @param {string} id
+ */
+const slotOf = (id) => `overlay:${id}`;
 
 const SECTIONS = [
   { id: "device", title: "Device overlays", note: "Scene, IP address or enabled, per device" },
@@ -63,13 +68,14 @@ function rowHtml(state, row) {
   let action;
   if (row.cleared) action = `<span class="t3 num" style="font-size:12px">${esc(row.cleared)}</span>`;
   else if (row.clear) {
-    const busy = clearing.has(row.id);
+    const clearing = op(slotOf(row.id));
+    const busy = clearing.busy;
     const disabled = row.clear.disabled || busy || state.live.state === "lost";
     action = `<button class="btn" type="button" data-act="clear" data-id="${esc(row.id)}"${disabled ? " disabled" : ""}${row.clear.reason ? ` title="${esc(row.clear.reason)}"` : ""}>${busy ? `${icon("spinner")}Clearing…` : `${icon("x")}Clear`}</button>`;
     if (row.clear.disabled && row.clear.reason)
       action += `<div class="meta act-why">${esc(row.clear.reason)}</div>`;
-    const failure = failures.get(row.id);
-    if (failure) action += `<div class="meta act-why" style="color:var(--bad)">${esc(failure)}</div>`;
+    const said = busy ? null : clearing.failure ? `Not cleared: ${clearing.failure}` : clearing.note;
+    if (said) action += `<div class="meta act-why" style="color:var(--bad)">${esc(said)}</div>`;
   } else action = "";
   return `<div class="ot-row${row.cleared ? " cleared" : ""}" role="row">
         <div role="cell">${who}</div>
@@ -142,23 +148,23 @@ function render(state) {
 }
 
 /** @param {string} id */
-async function clear(id) {
-  if (clearing.has(id)) return;
-  clearing.add(id);
-  failures.delete(id);
-  render(getState());
-  try {
-    const answer = await request("DELETE", `/api/v2/overlays/${encodeURIComponent(id)}`, {
-      resource: "overlays",
-      key: `overlay:${id}`,
-    });
-    applyAnswer(answer);
-    if (answer.body?.pending && !answer.body?.confirmed)
-      failures.set(id, "Sent; waiting for the broker to confirm");
-  } catch (error) {
-    failures.set(id, `Not cleared: ${error instanceof ApiError ? error.message : "the request failed."}`);
-  }
-  clearing.delete(id);
+function clear(id) {
+  const key = slotOf(id);
+  start(
+    key,
+    async () => {
+      const answer = await request("DELETE", `/api/v2/overlays/${encodeURIComponent(id)}`, {
+        resource: "overlays",
+        key,
+      });
+      applyAnswer(answer);
+      return answer;
+    },
+    {
+      done: (answer) =>
+        answer.body?.pending && !answer.body?.confirmed ? "Sent; waiting for the broker to confirm" : null,
+    },
+  );
   render(getState());
 }
 
@@ -166,7 +172,7 @@ async function clear(id) {
 function onClick(event) {
   const button = /** @type {HTMLElement} */ (event.target).closest?.("[data-act]");
   if (!(button instanceof HTMLButtonElement) || button.disabled) return;
-  if (button.dataset.act === "clear" && button.dataset.id) void clear(button.dataset.id);
+  if (button.dataset.act === "clear" && button.dataset.id) clear(button.dataset.id);
 }
 
 /** @type {import("../router.js").Page} */
@@ -176,8 +182,9 @@ export const page = {
     root.className = "p-overlays";
     shown = [];
     since = Date.now();
-    clearing.clear();
-    failures.clear();
+    // A fresh opening: what idle rows said before is gone; a Clear that runs
+    // keeps its slot and says its outcome when it comes.
+    forgetIdle((key) => key.startsWith("overlay:"));
     root.innerHTML = `<div class="head"><h1 tabindex="-1">Overlays</h1><span class="sub" role="status"></span></div><div class="ov-body"></div>`;
     root.addEventListener("click", onClick);
     unsubscribe = subscribe((state) => state, render);

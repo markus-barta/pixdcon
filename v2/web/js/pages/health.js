@@ -18,7 +18,8 @@
  * Owner: UI worker.
  */
 
-import { ApiError, request } from "../api.js";
+import { request } from "../api.js";
+import { follow as followOp, op } from "../ops.js";
 import { dot, icon, setHtml, setStatusLine } from "../dom.js";
 import { clock, duration, esc, prettyVersion } from "../format.js";
 import { applyAnswer, getState, subscribe, tick } from "../store.js";
@@ -126,7 +127,12 @@ function render(state) {
   );
   const pane = q(".log");
   const wasAtBottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 4;
-  if (setHtml(pane, lines.map(logLine).join("\n")) && (follow || wasAtBottom))
+  // The load of this opening failed and no line is there yet: say so.
+  const failure = state.log.length === 0 ? op("log").failure : null;
+  const text = failure
+    ? esc(`The log could not be loaded: ${failure} New lines still arrive.`)
+    : lines.map(logLine).join("\n");
+  if (setHtml(pane, text) && (follow || wasAtBottom))
     pane.scrollTop = pane.scrollHeight;
   for (const button of /** @type {HTMLElement} */ (root).querySelectorAll('[data-act="filter"]'))
     button.setAttribute("aria-pressed", String(button.getAttribute("data-value") === filter));
@@ -171,14 +177,16 @@ function onScroll(event) {
   follow = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 4;
 }
 
-async function loadLog() {
-  try {
-    applyAnswer(await request("GET", "/api/v2/log", { resource: "log" }));
-  } catch (error) {
-    const pane = root?.querySelector(".log");
-    if (pane && !pane.textContent)
-      pane.textContent = `The log could not be loaded: ${error instanceof ApiError ? error.message : "the request failed."} New lines still arrive.`;
-  }
+/**
+ * The log of this opening, in the slot `log` (ops.js): the load of the
+ * next opening makes this one obsolete, so its late failure says nothing
+ * there. A failure of the current load is said in the pane while it is
+ * empty; the lines of the live channel still arrive.
+ */
+function loadLog() {
+  followOp("log", async () => applyAnswer(await request("GET", "/api/v2/log", { resource: "log" })), {
+    failed: () => render(getState()),
+  });
 }
 
 /** @type {import("../router.js").Page} */
@@ -218,7 +226,7 @@ export const page = {
     root.addEventListener("click", onClick);
     root.addEventListener("scroll", onScroll, true);
     unsubscribe = subscribe((state) => state, render);
-    void loadLog();
+    loadLog();
   },
   unmount() {
     unsubscribe?.();

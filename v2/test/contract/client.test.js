@@ -1938,3 +1938,50 @@ test("r3 sweep (device controls): a control's outcome belongs to its device; dev
   }
   void epoch;
 });
+
+test("r3 sweep (Overlays, rule 5): opened again while Clear runs, the row shows it busy; a click sends nothing and says nothing", async () => {
+  const calls = heldFetch();
+  bootPages((e) => [view("d1", { epoch: e, source: "overlay" })], { overlays: [record("o1", "scene", { device: "d1", value: "weather" })] });
+  let root = pageRoot();
+  overlaysPage.mount(root, {});
+  try {
+    const clear = () => root.querySelector('[data-act="clear"]');
+    assert.ok(clear(), "the row offers Clear");
+    assert.equal(click(clear()), true);
+    await settle();
+    overlaysPage.unmount();
+    root = pageRoot();
+    overlaysPage.mount(root, {});
+    click(clear());
+    await settle();
+    assert.equal(calls.filter((c) => c.method === "DELETE" && c.url.includes("/api/v2/overlays/")).length, 1);
+    assert.doesNotMatch(root.querySelector(".ov-body").textContent, /Not cleared/);
+    assert.match(clear().textContent, /Clearing…/);
+  } finally {
+    overlaysPage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r3 sweep (Health log): the log load of an opening that was left says nothing in the next opening", async () => {
+  const calls = heldFetch();
+  const { epoch } = bootPages((e) => [view("d1", { epoch: e })]);
+  let root = pageRoot();
+  healthPage.mount(root, {});
+  try {
+    const first = pending(calls, "GET", "/api/v2/log");
+    healthPage.unmount();
+    root = pageRoot();
+    healthPage.mount(root, {});
+    const second = calls.filter((c) => c.method === "GET" && c.url === "/api/v2/log")[1];
+    assert.ok(second && second !== first, "the second opening asked for the log");
+    second.answer(200, [], `${epoch}-11`);
+    await settle();
+    first.answer(500, {});
+    await settle();
+    assert.doesNotMatch(root.querySelector(".log").textContent, /could not be loaded/);
+  } finally {
+    healthPage.unmount();
+    await drain(calls);
+  }
+});

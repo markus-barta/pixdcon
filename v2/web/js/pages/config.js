@@ -17,7 +17,8 @@
  * Owner: UI worker.
  */
 
-import { ApiError, request } from "../api.js";
+import { request } from "../api.js";
+import { deviceSlot, forgetIdle, op, start } from "../ops.js";
 import { icon, setHtml, setStatusLine } from "../dom.js";
 import { clock, esc } from "../format.js";
 import { applyAnswer, getState, subscribe } from "../store.js";
@@ -30,10 +31,8 @@ let root = null;
 let unsubscribe = null;
 /** The device whose row is open for editing. @type {string|null} */
 let open = null;
-/** Requests that run, by control. @type {Set<string>} */
-const running = new Set();
-/** The last outcome per control, said beside it. @type {Map<string, {text: string, bad: boolean}>} */
-const outcomes = new Map();
+/** Counts the openings of the page: what an answer does to the page's own state (the open row, the form) belongs to the opening it was sent from. */
+let openings = 0;
 
 const typeName = (/** @type {string} */ type) =>
   type === "pixoo" ? "Pixoo64" : type === "ulanzi" ? "Ulanzi / AWTRIX" : type;
@@ -46,7 +45,7 @@ function title(state) {
   const config = state.config ?? {};
   const condition = pageCondition(state);
   if (condition && condition.cls === "bad") return condition;
-  if (running.has("raw-save")) return { text: "Saved · reloading…", icon: "spinner" };
+  if (op("raw-save").busy) return { text: "Saved · reloading…", icon: "spinner" };
   if (config.valid === false)
     return {
       text: `config.json on disk is invalid (since ${clock(config.invalidSince)}) · pixdcon runs the version loaded at ${clock(config.loadedAt)}`,
@@ -79,8 +78,11 @@ function rowHtml(state, view) {
   else if ((scene.source === "overlay" || scene.source === "blob") && scene.scene !== choice.scene)
     choiceCell += `<span class="ovm">showing ${esc(sceneName(state, scene.scene, view.type))} from an MQTT overlay</span>`;
   let action;
+  // Add to config.json and Save of a row are operations in the slots of
+  // the device's life (ops.js): adopt is the Device page's slot too.
+  const adopting = op(deviceSlot("adopt", view));
   if (view.origin === "blob") {
-    const busy = running.has(`adopt:${view.name}`);
+    const busy = adopting.busy;
     action = `<button class="link" type="button" data-act="adopt" data-device="${esc(view.name)}"${busy ? " disabled" : ""}>${busy ? `${icon("spinner")}Adding…` : "Add to config.json"}</button>`;
   } else
     action = `<button class="btn" type="button" data-act="edit" data-device="${esc(view.name)}" aria-expanded="${isOpen}">${icon("edit")}Edit</button>`;
@@ -92,9 +94,8 @@ function rowHtml(state, view) {
         <span role="cell">${choiceCell}</span>
         <span role="cell" class="act">${action}</span>
       </div>`;
-  const outcome = outcomes.get(`adopt:${view.name}`);
-  const adoptNote = outcome && view.origin === "blob"
-    ? `<div class="slot" style="${outcome.bad ? "color:var(--bad)" : ""}">${esc(outcome.text)}</div>`
+  const adoptNote = adopting.failure && view.origin === "blob"
+    ? `<div class="slot" style="color:var(--bad)">${esc(`Not added: ${adopting.failure}`)}</div>`
     : "";
   if (!isOpen) return row + adoptNote;
   return row + editHtml(view);
@@ -102,8 +103,9 @@ function rowHtml(state, view) {
 
 /** @param {any} view @returns {string} the open row: B-079's dialog as a row (pixd-config-edit) */
 function editHtml(view) {
-  const busy = running.has(`patch:${view.name}`);
-  const outcome = outcomes.get(`patch:${view.name}`);
+  const patching = op(deviceSlot("patch", view));
+  const busy = patching.busy;
+  const outcome = patching.failure ? { text: `Not saved: ${patching.failure}`, bad: true } : null;
   const poll =
     view.type === "ulanzi"
       ? `<label>Preview poll (ms)<input class="input mono num" style="width:128px" type="number" name="pollMs" min="1000" max="10000" step="500" value="${esc(view.preview?.pollMs ?? 2000)}"><span class="hint">1000 – 10 000. How often the preview reads this display’s screen.</span></label>`
@@ -143,98 +145,117 @@ function render(state) {
       )
       .join(""),
   );
+  addState();
   const theme = savedTheme();
   for (const button of root.querySelectorAll("#theme-seg button"))
     button.setAttribute("aria-pressed", String(button.getAttribute("value") === theme));
 }
 
 /** @param {string} name */
-async function patch(name) {
+function patch(name) {
   const form = /** @type {HTMLFormElement|null} */ (root?.querySelector(`.ct-edit form`) ?? null);
-  if (!form || running.has(`patch:${name}`)) return;
+  const view = getState().devices.get(name);
+  if (!form || !view) return;
   const data = new FormData(form);
   /** @type {Record<string, unknown>} */
   const preview = { showGrid: data.get("showGrid") === "on" };
   if (data.has("pollMs")) preview.pollMs = Number(data.get("pollMs"));
-  running.add(`patch:${name}`);
-  outcomes.delete(`patch:${name}`);
-  render(getState());
-  try {
-    applyAnswer(
-      await request("PATCH", `/api/v2/devices/${encodeURIComponent(name)}`, {
-        resource: `device:${name}`,
-        key: `patch:${name}`,
-        body: { displayName: String(data.get("displayName") ?? ""), comment: String(data.get("comment") ?? ""), preview },
-      }),
-    );
-    running.delete(`patch:${name}`);
-    open = null;
-  } catch (error) {
-    running.delete(`patch:${name}`);
-    outcomes.set(`patch:${name}`, {
-      text: `Not saved: ${error instanceof ApiError ? error.message : "the request failed."}`,
-      bad: true,
-    });
-  }
-  /** @type {HTMLElement|null} */ (document.activeElement)?.blur?.();
+  const key = deviceSlot("patch", view);
+  const mine = openings;
+  start(
+    key,
+    async () =>
+      applyAnswer(
+        await request("PATCH", `/api/v2/devices/${encodeURIComponent(name)}`, {
+          resource: `device:${name}`,
+          key,
+          body: { displayName: String(data.get("displayName") ?? ""), comment: String(data.get("comment") ?? ""), preview },
+        }),
+      ),
+    {
+      label: "Saving…",
+      done: () => {
+        // The row closes, in the opening that saved it.
+        if (mine === openings && open === name) open = null;
+        /** @type {HTMLElement|null} */ (document.activeElement)?.blur?.();
+      },
+    },
+  );
   render(getState());
 }
 
 /** @param {string} name */
-async function adopt(name) {
-  if (running.has(`adopt:${name}`)) return;
-  running.add(`adopt:${name}`);
-  outcomes.delete(`adopt:${name}`);
-  render(getState());
-  try {
+function adopt(name) {
+  const view = getState().devices.get(name);
+  if (!view) return;
+  const key = deviceSlot("adopt", view);
+  start(key, async () =>
     applyAnswer(
       await request("POST", `/api/v2/devices/${encodeURIComponent(name)}/adopt`, {
         resource: `device:${name}`,
-        key: `adopt:${name}`,
+        key,
         body: {},
       }),
-    );
-  } catch (error) {
-    outcomes.set(`adopt:${name}`, {
-      text: `Not added: ${error instanceof ApiError ? error.message : "the request failed."}`,
-      bad: true,
-    });
-  }
-  running.delete(`adopt:${name}`);
+    ),
+  { label: "Adding…" });
   render(getState());
 }
 
-/** @param {HTMLFormElement} form */
-async function addDevice(form) {
+/**
+ * Add device, in the slot `add-device` that the Devices page's empty state
+ * shares.
+ *
+ * @param {HTMLFormElement} form
+ */
+function addDevice(form) {
   const data = new FormData(form);
-  const slot = /** @type {HTMLElement} */ (root?.querySelector("#add .slot"));
+  const mine = openings;
+  start(
+    "add-device",
+    async () =>
+      applyAnswer(
+        await request("POST", "/api/v2/devices", {
+          resource: `device:${data.get("name")}`,
+          key: "add-device",
+          body: { name: data.get("name"), type: data.get("type"), ip: data.get("ip") },
+        }),
+      ),
+    {
+      label: "Adding…",
+      done: () => {
+        if (mine === openings) /** @type {HTMLFormElement|null} */ (root?.querySelector("form.addf"))?.reset();
+        return `Added ${data.get("name")}. pixdcon saved it to config.json and starts it now. Choose its scene on the device page.`;
+      },
+    },
+  );
+  render(getState());
+}
+
+/**
+ * Add device from its slot: busy label, the failure beside the button, or
+ * what the last add said.
+ */
+function addState() {
+  const form = /** @type {HTMLFormElement|null} */ (root?.querySelector("form.addf") ?? null);
+  const slot = /** @type {HTMLElement|null} */ (root?.querySelector("#add .slot") ?? null);
+  if (!form || !slot) return;
+  const adding = op("add-device");
   const button = /** @type {HTMLButtonElement} */ (form.querySelector("button"));
-  if (running.has("add")) return;
-  running.add("add");
-  button.disabled = true;
-  button.innerHTML = `${icon("spinner")}Adding…`;
-  try {
-    applyAnswer(
-      await request("POST", "/api/v2/devices", {
-        resource: `device:${data.get("name")}`,
-        key: "add-device",
-        body: { name: data.get("name"), type: data.get("type"), ip: data.get("ip") },
-      }),
-    );
-    slot.textContent = `Added ${data.get("name")}. pixdcon saved it to config.json and starts it now. Choose its scene on the device page.`;
-    form.reset();
-  } catch (error) {
-    slot.innerHTML = `<span style="color:var(--bad);display:inline-flex;align-items:center;gap:6px">${icon("alert")}${esc(error instanceof ApiError ? error.message : "The request failed.")}</span>`;
-  }
-  running.delete("add");
-  button.innerHTML = `${icon("plus")}Add device`;
-  button.disabled = !ready(form);
+  button.disabled = adding.busy || !ready(form);
+  setHtml(button, adding.busy ? `${icon("spinner")}Adding…` : `${icon("plus")}Add device`);
+  setHtml(
+    slot,
+    adding.failure
+      ? `<span style="color:var(--bad);display:inline-flex;align-items:center;gap:6px">${icon("alert")}${esc(adding.failure)}</span>`
+      : esc(adding.note ?? "pixdcon saves the device to config.json and starts it right away. Choose its scene on the device page."),
+  );
 }
 
 /** @param {HTMLFormElement} form @returns {boolean} */
 function ready(form) {
-  const data = new FormData(form);
-  return String(data.get("name") ?? "").trim() !== "" && String(data.get("ip") ?? "").trim() !== "";
+  const filled = (/** @type {string} */ field) =>
+    String(/** @type {HTMLInputElement|null} */ (form.querySelector(`input[name="${field}"]`))?.value ?? "").trim() !== "";
+  return filled("name") && filled("ip");
 }
 
 /** @param {Event} event */
@@ -249,7 +270,7 @@ function onClick(event) {
   switch (button.dataset.act) {
     case "edit":
       open = open === button.dataset.device ? null : String(button.dataset.device);
-      outcomes.clear();
+      forgetIdle((key) => key.startsWith("patch:"));
       render(getState());
       break;
     case "cancel":
@@ -257,10 +278,10 @@ function onClick(event) {
       render(getState());
       break;
     case "patch":
-      void patch(String(button.dataset.device));
+      patch(String(button.dataset.device));
       break;
     case "adopt":
-      void adopt(String(button.dataset.device));
+      adopt(String(button.dataset.device));
       break;
   }
 }
@@ -268,8 +289,7 @@ function onClick(event) {
 /** @param {Event} event */
 function onInput(event) {
   const form = /** @type {HTMLElement} */ (event.target).closest?.("form.addf");
-  if (form instanceof HTMLFormElement)
-    /** @type {HTMLButtonElement} */ (form.querySelector("button")).disabled = !ready(form);
+  if (form instanceof HTMLFormElement) addState();
 }
 
 /** @param {Event} event */
@@ -277,7 +297,7 @@ function onSubmit(event) {
   const form = event.target;
   if (!(form instanceof HTMLFormElement)) return;
   event.preventDefault();
-  if (form.classList.contains("addf") && ready(form)) void addDevice(form);
+  if (form.classList.contains("addf") && ready(form)) addDevice(form);
 }
 
 /** @type {import("../router.js").Page} */
@@ -286,8 +306,10 @@ export const page = {
     root = target;
     root.className = "p-config";
     open = params.open && params.open !== "add" ? params.open : null;
-    running.clear();
-    outcomes.clear();
+    openings += 1;
+    // A fresh opening: what idle rows said before is gone; an operation that
+    // runs keeps its slot and says its outcome when it comes.
+    forgetIdle((key) => /^(patch|adopt):/.test(key) || key === "add-device");
     root.innerHTML = `
   <div class="head"><h1 tabindex="-1">Config</h1><span class="sub" role="status"></span><div class="right"><a class="btn" href="#/config/raw">${icon("file")}Raw config.json</a></div></div>
   <section class="sec" aria-labelledby="h-cd" style="margin-top:12px">

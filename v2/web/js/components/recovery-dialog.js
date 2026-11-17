@@ -15,7 +15,8 @@
  * Owner: UI worker.
  */
 
-import { ApiError, request } from "../api.js";
+import { request } from "../api.js";
+import { deviceSlot, op, start } from "../ops.js";
 import { icon, setHtml } from "../dom.js";
 import { clock, esc } from "../format.js";
 import { applyAnswer, getState } from "../store.js";
@@ -50,8 +51,6 @@ function steps(view) {
  */
 export function openRecoveryDialog(device, opener) {
   let view = device;
-  let retrying = false;
-  let failure = "";
   const scrim = document.createElement("div");
   scrim.className = "scrim";
   scrim.innerHTML = `
@@ -79,36 +78,38 @@ export function openRecoveryDialog(device, opener) {
       <p style="margin:12px 0 0;font-size:13px;line-height:20px;color:var(--text-2)">${health.reason === "scene_error" ? "The display answers, but the scene fails to render." : "Every render attempt fails. pixdcon retries with a growing pause of up to 30 s and checks the display every 10 s, so it takes the display back within about 30 s of it answering again. Try these in order:"}</p>
       ${steps(view)}`,
     );
+    // Retry is an operation in the slot of the device's life (ops.js): a
+    // dialog opened again while it runs shows it busy, and its outcome is
+    // said in whichever dialog of that device is open.
+    const retrying = op(deviceSlot("retry", view));
     const retry = /** @type {HTMLButtonElement} */ (q('[data-act="retry"]'));
-    retry.disabled = retrying;
-    setHtml(retry, retrying ? `${icon("spinner")}Retrying…` : `${icon("reload")}Retry now`);
+    retry.disabled = retrying.busy;
+    setHtml(retry, retrying.busy ? `${icon("spinner")}Retrying…` : `${icon("reload")}Retry now`);
     const note = q(".retry-note");
-    if (failure) {
+    if (retrying.failure) {
       note.style.color = "var(--bad)";
-      note.textContent = `Not retried: ${failure}`;
+      note.textContent = `Not retried: ${retrying.failure}`;
     } else {
       note.style.color = "";
       note.textContent = "Retry wakes the render loop and re-initialises the display.";
     }
   }
 
-  async function retry() {
-    if (retrying) return;
-    retrying = true;
-    failure = "";
-    render();
-    try {
-      applyAnswer(
-        await request("POST", `/api/v2/devices/${encodeURIComponent(view.name)}/retry`, {
-          resource: `device:${view.name}`,
-          key: `retry:${view.name}`,
-          body: {},
-        }),
-      );
-    } catch (error) {
-      failure = error instanceof ApiError ? error.message : "The request failed.";
-    }
-    retrying = false;
+  function retry() {
+    const key = deviceSlot("retry", view);
+    const name = view.name;
+    start(
+      key,
+      async () =>
+        applyAnswer(
+          await request("POST", `/api/v2/devices/${encodeURIComponent(name)}/retry`, {
+            resource: `device:${name}`,
+            key,
+            body: {},
+          }),
+        ),
+      { done: () => (scrim.isConnected ? render() : undefined), failed: () => (scrim.isConnected ? render() : undefined) },
+    );
     render();
   }
 
@@ -150,7 +151,7 @@ export function openRecoveryDialog(device, opener) {
     const button = /** @type {HTMLElement} */ (event.target).closest?.("button");
     if (!(button instanceof HTMLButtonElement) || button.disabled) return;
     if (button.dataset.act === "close") api.close();
-    else if (button.dataset.act === "retry") void retry();
+    else if (button.dataset.act === "retry") retry();
     else if (button.dataset.copy) void navigator.clipboard?.writeText(button.dataset.copy.replaceAll("&amp;", "&"));
   }
 
