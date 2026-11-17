@@ -28,7 +28,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire, registerHooks } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { todo } from "../core/todo.js";
+import { lstat, mkdir, symlink } from "node:fs/promises";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +56,8 @@ export function sharedPaths() {
 }
 
 let hookInstalled = false;
+/** @type {Set<string>} */
+const sharedPrefixes = new Set();
 
 /**
  * Make the shared files use v2's packages.
@@ -78,20 +80,20 @@ let hookInstalled = false;
  * @param {{extraDirs?: string[]}} [options] more directories whose files are treated like shared files, e.g. the data directory
  */
 export function installSharedResolution(options = {}) {
-  if (hookInstalled) return;
-  hookInstalled = true;
   const paths = sharedPaths();
-  const prefixes = [
+  for (const dir of [
     paths.libDir,
     paths.scenesDir,
     ...(options.extraDirs ?? []),
-  ].map((dir) => pathToFileURL(`${resolve(dir)}/`).href);
+  ]) sharedPrefixes.add(pathToFileURL(`${resolve(dir)}/`).href);
+  if (hookInstalled) return;
+  hookInstalled = true;
   const anchor = pathToFileURL(resolve(V2_ROOT, "package.json")).href;
   registerHooks({
     resolve(specifier, context, nextResolve) {
       const bare = !/^(\.{0,2}\/|[a-z][a-z0-9+.-]*:)/i.test(specifier);
       const parent = context.parentURL ?? "";
-      if (!bare || !prefixes.some((prefix) => parent.startsWith(prefix))) {
+      if (!bare || ![...sharedPrefixes].some((prefix) => parent.startsWith(prefix))) {
         return nextResolve(specifier, context);
       }
       try {
@@ -172,5 +174,34 @@ export async function loadV1Font() {
  * @returns {Promise<{created: string[]}>}
  */
 export async function ensureDataLinks(dataDir, logger) {
-  return todo("ensureDataLinks", dataDir, logger);
+  await mkdir(dataDir, { recursive: true });
+  const paths = sharedPaths();
+  const created = [];
+  for (const [name, source] of [["lib", paths.libDir], ["assets", paths.assetsDir]]) {
+    const target = resolve(dataDir, name);
+    try { await lstat(target); continue; }
+    catch (error) {
+      if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ENOENT") throw error;
+    }
+    try {
+      await symlink(source, target, "dir");
+      created.push(target);
+      logger.info(`Shared scene link created: ${name}`);
+    } catch (error) {
+      // Another startup can create the link between lstat and symlink.
+      if (/** @type {NodeJS.ErrnoException} */ (error).code !== "EEXIST") throw error;
+    }
+  }
+  return { created };
+}
+
+/** Reference drawing engines, used only by the golden harness. Network methods are
+ * replaced by the harness before rendering. Keep all paths to v1 in this seam.
+ * @returns {Promise<{PixooDriver: any, UlanziDriver: any}>}
+ */
+export async function loadV1ReferenceDrivers() {
+  const { libDir } = sharedPaths();
+  const pixoo = await import(pathToFileURL(resolve(libDir, "pixoo-driver.js")).href);
+  const ulanzi = await import(pathToFileURL(resolve(libDir, "ulanzi-driver.js")).href);
+  return { PixooDriver: pixoo.PixooDriver, UlanziDriver: ulanzi.UlanziDriver };
 }

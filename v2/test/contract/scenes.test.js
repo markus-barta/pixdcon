@@ -11,7 +11,19 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdir, mkdtemp, writeFile, readFile, readlink } from "node:fs/promises";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { SceneRuntime } from "../../src/scenes/scene-runtime.js";
+import { OUT_DIR } from "../helpers/golden.js";
+import { DeviceError, SceneError } from "../../src/core/errors.js";
+import { createV1Instance, checkV1Module } from "../../src/scenes/v1-scene-adapter.js";
+import { createPixooSurface, createUlanziSurface } from "../../src/scenes/v1-device-facade.js";
+import { sceneContexts, silentLogger, sinkDriver } from "../helpers/scene-context.js";
 import {
+  ensureDataLinks,
+  sharedPaths,
+  installSharedResolution,
   readVersion,
   validateVersionRecord,
 } from "../../src/scenes/v1-shared.js";
@@ -75,32 +87,199 @@ test("version record: v1's grammar and calendar check, through the shared seam",
 });
 
 // --- Phase 3 ---------------------------------------------------------------------------------------
-test.todo(
-  "v1 scene contract: init gets a fresh ctx, render gets the device surface, destroy gets a fresh ctx; afterwards the instance's subscriptions are gone also when destroy threw",
-);
-test.todo(
-  "isolation per device: the scene file is evaluated once per device, so a module-level variable of one device's instance is not seen by another's",
-);
-test.todo(
-  "instance tokens: a replacement instance and the instance it replaces have different tokens, MQTT owners and settings subscribers",
-);
+test("v1 scene contract: init gets a fresh ctx, render gets the device surface, destroy gets a fresh ctx; afterwards the instance's subscriptions are gone also when destroy threw", async () => {
+  const contexts = sceneContexts({ value: { nested: 1 } });
+  /** @type {any[]} */
+  const calls = [];
+  let callbacks = 0;
+  const ref = { scene: "contract", device: "fake", token: "one" };
+  const instance = await createV1Instance({ ref, moduleNamespace: { default: {
+    /** @param {any} ctx */
+    async init(ctx) {
+      calls.push(ctx);
+      ctx.settings.subscribe(async (/** @type {any} */ values) => { values.value.nested = 999; callbacks++; });
+      ctx.mqtt.subscribe("input", () => { callbacks++; });
+    },
+    /** @param {any} surface */
+    async render(surface) { calls.push(surface); return 25; },
+    /** @param {any} ctx */
+    async destroy(ctx) { calls.push(ctx); throw new Error("destroy failed"); },
+  } } }, {
+    ...contexts, settingsTopic: (device, scene) => `settings/${device}/${scene}`,
+    shadowStateDir: null, resources: { assetDirs: [], stateFields: [] }, logger: silentLogger,
+  });
+  assert.equal(callbacks, 1, "subscriber called at once");
+  assert.deepEqual(calls[0].settings.values, { value: { nested: 1 } });
+  const surface = { deviceName: "fake" };
+  assert.equal(await instance.renderFrame(surface), 25);
+  assert.equal(calls[1], surface);
+  await instance.release();
+  await instance.release();
+  assert.notEqual(calls[0], calls[2]);
+  assert.equal(calls[2].settingsTopic, "settings/fake/contract");
+  const before = callbacks;
+  await contexts.deliver("input", "late");
+  await contexts.update({ value: 2 });
+  assert.equal(callbacks, before);
+  assert.equal(contexts.subscriptions.size, 0);
+  assert.equal(contexts.settings.get("one")?.size, 0);
+  await assert.rejects(instance.renderFrame(surface), SceneError);
+});
+
+test("v1 scene contract: failures classify render and init; failed init releases callbacks", async () => {
+  const contexts = sceneContexts();
+  const deps = { ...contexts, settingsTopic: () => "settings", shadowStateDir: null,
+    resources: { assetDirs: [], stateFields: [] }, logger: silentLogger };
+  const ref = { scene: "failure", device: "fake", token: "two" };
+  assert.equal(checkV1Module({ default: {} }).ok, false);
+  await assert.rejects(createV1Instance({ ref, moduleNamespace: { default: { render() {},
+    /** @param {any} ctx */
+    init(ctx) { ctx.mqtt.subscribe("input", () => {}); throw new Error("bad init"); },
+  } } }, deps), (error) => error instanceof SceneError && error.phase === "init");
+  assert.equal(contexts.subscriptions.size, 0);
+  const failure = new DeviceError("refused");
+  for (const error of [failure, new Error("scene bug")]) {
+    const instance = await createV1Instance({ ref, moduleNamespace: { render() { throw error; } } }, deps);
+    await assert.rejects(instance.renderFrame({ deviceName: "fake" }), (actual) =>
+      error === failure ? actual === error : actual instanceof SceneError && actual.phase === "render");
+    await instance.release();
+  }
+});
+
+test("v1 scene surface: Pixoo passthrough, AWTRIX payload, legacy screen shape, and refused frames", async () => {
+  const driver = sinkDriver();
+  /** @type {unknown[]} */
+  const calls = [];
+  driver.selectChannel = async (index) => { calls.push(index); };
+  driver.readScreen = async () => ({ width: 32, height: 8, rgb: new Uint8Array(768).fill(128) });
+  const sink = { driver, show: async (/** @type {unknown} */ output) => { calls.push(output); },
+    requestBrightness: async (/** @type {number} */ value) => { calls.push(value); return true; } };
+  const { loadV1Font } = await import("../../src/scenes/v1-shared.js");
+  const pixoo = /** @type {any} */ (createPixooSurface({ name: "fake", address: "127.0.0.1" }, sink, await loadV1Font()));
+  await pixoo.setChannel(7);
+  await pixoo.setBrightness(0);
+  assert.deepEqual(calls, [7, 1]);
+  await pixoo.drawLineRgba([-1e12, 32], [1e12, 32], [255, 0, 0]);
+  assert.equal(pixoo.buf[(32 * 64 + 63) * 3], 255);
+  await pixoo.drawRectangleRgba([0, 0], [Infinity, 1], [0, 255, 0]);
+  await pixoo.drawRectangleRgba([-1e12, -1e12], [2e12, 2e12], [0, 255, 0]);
+  assert.equal(pixoo.buf[1], 255);
+  await pixoo.push();
+  const ulanzi = /** @type {any} */ (createUlanziSurface({ name: "fake", address: "127.0.0.1" }, sink));
+  const app = { text: "hello", custom: { untouched: true } };
+  assert.equal(await ulanzi.drawCustom(app), true);
+  assert.equal(/** @type {any} */ (calls.at(-1)).app, app);
+  assert.deepEqual((await ulanzi.getScreen()).slice(0, 2), [0x808080, 0x808080]);
+  sink.show = async () => { throw new DeviceError("refused"); };
+  await assert.rejects(ulanzi.drawCustom(app), DeviceError);
+  await assert.rejects(pixoo.push(), DeviceError);
+});
+/** @param {string} source */
+async function runtimePeer(source) {
+  await mkdir(OUT_DIR, { recursive: true });
+  const dataDir = await mkdtemp(join(OUT_DIR, "scene-contract-"));
+  const file = join(dataDir, "scene.mjs");
+  await writeFile(file, source);
+  const contexts = sceneContexts({ value: "initial" });
+  const runtime = new SceneRuntime({
+    registry: /** @type {any} */ ({ fileOf: () => file, get: () => ({ resources: { assetDirs: [], stateFields: [] } }) }),
+    settings: /** @type {any} */ ({ runtimeContext: contexts.settingsContext, releaseContext: contexts.releaseContext }),
+    mqttContext: contexts.mqttContext, settingsTopic: () => "settings", outputOf: () => "shadow", dataDir, logger: silentLogger,
+  });
+  return { runtime, contexts, file, dataDir };
+}
+
+test("isolation per device: the scene file is evaluated once per device, so a module-level variable of one device's instance is not seen by another's", async (t) => {
+  const { runtime } = await runtimePeer(`let count = 0; export default { render() { return ++count; } };`);
+  t.after(() => runtime.releaseAll());
+  const first = await runtime.acquire("scene", "first");
+  const second = await runtime.acquire("scene", "second");
+  assert.equal(await first.renderFrame({ deviceName: "first" }), 1);
+  assert.equal(await first.renderFrame({ deviceName: "first" }), 2);
+  assert.equal(await second.renderFrame({ deviceName: "second" }), 1);
+  assert.equal(await runtime.acquire("scene", "first"), first);
+});
+
+test("instance tokens: a replacement instance and the instance it replaces have different tokens, MQTT owners and settings subscribers", async (t) => {
+  const source = `export default {
+    init(ctx) { this.values = ctx.settings.all(); ctx.settings.subscribe(v => { this.values = v; }); ctx.mqtt.subscribe('input', () => {}); },
+    render() { return 10; }
+  };`;
+  const { runtime, contexts, file } = await runtimePeer(source);
+  t.after(() => runtime.releaseAll());
+  const old = await runtime.acquire("scene", "device");
+  await writeFile(file, source.replace("return 10", "return 20"));
+  assert.deepEqual(await runtime.invalidate(["scene"]), { devices: ["device"] });
+  const replacement = await runtime.acquire("scene", "device");
+  assert.notEqual(old.ref.token, replacement.ref.token);
+  assert.equal(runtime.isCurrent(old), false);
+  assert.equal(runtime.isCurrent(replacement), true);
+  assert.equal(contexts.subscriptions.size, 2, "old subscriptions survive until its frame boundary");
+  await runtime.release(old);
+  assert.deepEqual([...contexts.subscriptions.keys()], [replacement.ref.token]);
+  assert.deepEqual([...contexts.settings.keys()], [replacement.ref.token]);
+  await writeFile(file, `export default { init() { throw Error('bad replacement'); }, render() {} };`);
+  await runtime.invalidate(["scene"]);
+  assert.equal(await runtime.acquire("scene", "device"), replacement);
+  assert.equal(await replacement.renderFrame({ deviceName: "device" }), 20);
+  assert.deepEqual([...contexts.subscriptions.keys()], [replacement.ref.token]);
+});
 test.todo(
   "resources: home3 reports assetDirs [home3-assets] and stateFields [_boilerStatePath]; so do an alias key for the same file and a copy of it",
 );
 test.todo(
   "resources: home, funkeykid, health and the Ulanzi scenes report no asset folder and no state field",
 );
-test.todo(
-  "shared files: a scene on the data mount resolves ../../lib and ../../assets through the links pixdcon 2 creates, and `sharp` comes from v2's own packages",
-);
+test("shared files: a scene on the data mount resolves ../../lib and ../../assets through the links pixdcon 2 creates, and `sharp` comes from v2's own packages", async () => {
+  await mkdir(OUT_DIR, { recursive: true });
+  const dataDir = await mkdtemp(join(OUT_DIR, "scene-links-"));
+  assert.equal((await ensureDataLinks(dataDir, silentLogger)).created.length, 2);
+  assert.deepEqual((await ensureDataLinks(dataDir, silentLogger)).created, []);
+  assert.equal(await readlink(join(dataDir, "lib")), sharedPaths().libDir);
+  assert.equal(await readlink(join(dataDir, "assets")), sharedPaths().assetsDir);
+  await mkdir(join(dataDir, "scenes/mounted"), { recursive: true });
+  const file = join(dataDir, "scenes/mounted/check.mjs");
+  await writeFile(file, `import sharp from 'sharp'; import { measureText } from '../../lib/pixoo-font.js'; export { sharp, measureText };`);
+  installSharedResolution({ extraDirs: [dataDir] });
+  const loaded = await import(pathToFileURL(file).href);
+  const sharp = (await import("sharp")).default;
+  assert.equal(loaded.sharp, sharp);
+  assert.equal(loaded.measureText("A").height, 5);
+  assert.ok((await readFile(join(dataDir, "lib/pixoo-image.js"), "utf8")).includes("sharp"));
+});
 
 // --- Ordering (knowledge entry, section 3.0) ---
 test.todo(
   "registry order: load, refresh and sync are called from main.js's lane only, read the effective scene map when they run, and a failed import keeps the last good metadata",
 );
-test.todo(
-  "scene runtime order: one pending load per scene and device; an instance whose load finishes after it was released or replaced is destroyed and not handed out; MQTT and settings callbacks of a released instance are not called",
-);
+test("scene runtime order: one pending load per scene and device; an instance whose load finishes after it was released or replaced is destroyed and not handed out; MQTT and settings callbacks of a released instance are not called", async (t) => {
+  // The deferred init belongs to the imported scene. Resolving it after stop
+  // proves that its subscriptions cannot escape the runtime's generation fence.
+  const slot = `__scene_test_${Date.now()}`;
+  /** @type {any} */ (globalThis)[slot] = {};
+  t.after(() => { delete /** @type {any} */ (globalThis)[slot]; });
+  const { runtime, contexts } = await runtimePeer(`export default {
+    async init(ctx) {
+      ctx.mqtt.subscribe('input', () => { globalThis['${slot}'].called = true; });
+      ctx.settings.subscribe(() => {});
+      await new Promise(resolve => { globalThis['${slot}'].ready = resolve; });
+    }, render() { return 10; }, destroy() { globalThis['${slot}'].destroyed = true; }
+  };`);
+  const first = runtime.acquire("scene", "device");
+  const second = runtime.acquire("scene", "device");
+  const rejected = Promise.all([assert.rejects(first, /superseded/), assert.rejects(second, /superseded/)]);
+  while (!/** @type {any} */ (globalThis)[slot].ready) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(contexts.subscriptions.size, 1);
+  const stopping = runtime.releaseAll();
+  /** @type {any} */ (globalThis)[slot].ready();
+  await rejected;
+  await stopping;
+  assert.equal(/** @type {any} */ (globalThis)[slot].destroyed, true);
+  assert.equal(contexts.subscriptions.size, 0);
+  assert.equal(contexts.settings.size, 0);
+  await contexts.deliver("input", "late");
+  assert.equal(/** @type {any} */ (globalThis)[slot].called, undefined);
+});
 test.todo(
   "scenes watcher order: a file event is a hint; the file is read after the debounce, and a change that arrives while a reload runs waits in the lane behind it",
 );

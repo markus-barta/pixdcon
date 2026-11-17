@@ -39,7 +39,12 @@
  * Owner: fixtures + edge lane worker.
  */
 
-import { todo } from "../core/todo.js";
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { SceneError } from "../core/errors.js";
+import { createV1Instance } from "./v1-scene-adapter.js";
+import { installSharedResolution } from "./v1-shared.js";
 
 /**
  * What the render loop drives. One instance per (scene, device).
@@ -71,6 +76,18 @@ export class SceneRuntime {
   /** @param {SceneRuntimeDeps} deps */
   constructor(deps) {
     this.deps = deps;
+    /** @type {Map<string, {scene: string, device: string, generation: number, current: SceneInstance|null, pending: Promise<SceneInstance>|null}>} */
+    this.entries = new Map();
+    /** @type {Set<SceneInstance>} */
+    this.instances = new Set();
+    /** @type {Set<Promise<SceneInstance>>} */
+    this.pending = new Set();
+    this.closed = false;
+    this.counter = 0;
+    this.identity = randomUUID();
+    /** @type {Map<string, number>} */
+    this.fileTokens = new Map();
+    installSharedResolution({ extraDirs: [deps.dataDir] });
   }
 
   /**
@@ -85,7 +102,15 @@ export class SceneRuntime {
    * @throws {import("../core/errors.js").SceneError} unknown scene, import failed, no render(), init failed
    */
   async acquire(scene, device) {
-    return todo("SceneRuntime.acquire", scene, device);
+    if (this.closed) throw new SceneError("Scene runtime is stopped", { scene, device, phase: "import" });
+    const key = JSON.stringify([scene, device]);
+    let entry = this.entries.get(key);
+    if (!entry) {
+      entry = { scene, device, generation: 0, current: null, pending: null };
+      this.entries.set(key, entry);
+    }
+    if (entry.current) return entry.current;
+    return entry.pending ?? this.load(entry);
   }
 
   /**
@@ -96,7 +121,18 @@ export class SceneRuntime {
    * @param {SceneInstance} instance
    */
   async release(instance) {
-    return todo("SceneRuntime.release", instance);
+    const key = JSON.stringify([instance.scene, instance.device]);
+    const entry = this.entries.get(key);
+    if (entry?.current === instance) {
+      entry.generation++;
+      entry.current = null;
+      this.entries.delete(key);
+    }
+    try { await instance.release(); }
+    finally {
+      this.instances.delete(instance);
+      this.deps.settings.releaseContext(instance.ref);
+    }
   }
 
   /**
@@ -106,7 +142,7 @@ export class SceneRuntime {
    * @returns {boolean}
    */
   isCurrent(instance) {
-    return todo("SceneRuntime.isCurrent", instance);
+    return !this.closed && this.entries.get(JSON.stringify([instance.scene, instance.device]))?.current === instance;
   }
 
   /**
@@ -118,11 +154,85 @@ export class SceneRuntime {
    * @returns {Promise<{devices: string[]}>} devices that run one of them
    */
   async invalidate(scenes) {
-    return todo("SceneRuntime.invalidate", scenes);
+    if (this.closed) return { devices: [] };
+    const changed = new Set(scenes);
+    for (const scene of changed) this.fileTokens.set(scene, (this.fileTokens.get(scene) ?? 0) + 1);
+    const devices = new Set();
+    const loads = [];
+    for (const entry of this.entries.values()) {
+      if (!changed.has(entry.scene)) continue;
+      entry.generation++;
+      devices.add(entry.device);
+      loads.push(this.load(entry).catch((error) => {
+        this.deps.logger.warn(`Scene ${entry.scene} reload failed: ${error instanceof Error ? error.message : String(error)}`);
+      }));
+    }
+    await Promise.all(loads);
+    return { devices: [...devices] };
+  }
+
+
+  /** Prepare a replacement beside the running instance; only its generation may install it.
+   * @param {{scene: string, device: string, generation: number, current: SceneInstance|null, pending: Promise<SceneInstance>|null}} entry
+   * @returns {Promise<SceneInstance>}
+   */
+  load(entry) {
+    const { scene, device, generation } = entry;
+    const key = JSON.stringify([scene, device]);
+    const fileToken = `${this.identity}-${this.fileTokens.get(scene) ?? 0}`;
+    const ref = { scene, device, token: `${fileToken}.${++this.counter}` };
+    const current = () => !this.closed && this.entries.get(key) === entry && entry.generation === generation;
+    const promise = (async () => {
+      /** @type {SceneInstance|null} */
+      let instance = null;
+      try {
+        const file = this.deps.registry.fileOf(scene);
+        const meta = this.deps.registry.get(scene);
+        if (!file || !meta) throw new SceneError(`Unknown scene ${scene}`, { ...ref, phase: "import" });
+        const url = pathToFileURL(file);
+        url.searchParams.set("t", ref.token);
+        url.searchParams.set("d", device);
+        const moduleNamespace = await import(url.href);
+        if (!current()) throw new SceneError(`Scene ${scene} load was superseded`, { ...ref, phase: "import" });
+        instance = await createV1Instance({ ref, moduleNamespace }, {
+          settingsContext: (owner) => this.deps.settings.runtimeContext(owner),
+          mqttContext: this.deps.mqttContext,
+          settingsTopic: this.deps.settingsTopic,
+          resources: meta.resources,
+          shadowStateDir: this.deps.outputOf(device) === "shadow"
+            ? join(this.deps.dataDir, ".pixdcon2/shadow-state", encodeURIComponent(device)) : null,
+          logger: this.deps.logger,
+        });
+        if (!current()) {
+          await instance.release();
+          throw new SceneError(`Scene ${scene} load was superseded`, { ...ref, phase: "import" });
+        }
+        entry.current = instance;
+        this.instances.add(instance);
+        return instance;
+      } catch (error) {
+        this.deps.settings.releaseContext(ref);
+        if (error instanceof SceneError) throw error;
+        throw new SceneError(`Scene ${scene} import: ${error instanceof Error ? error.message : String(error)}`, { ...ref, phase: "import", cause: error });
+      }
+    })();
+    entry.pending = promise;
+    this.pending.add(promise);
+    // Register cleanup without creating an unhandled rejected finally() promise.
+    const settled = () => {
+      this.pending.delete(promise);
+      if (entry.pending === promise) entry.pending = null;
+    };
+    void promise.then(settled, settled);
+    return promise;
   }
 
   /** Release every instance (shutdown). */
   async releaseAll() {
-    return todo("SceneRuntime.releaseAll");
+    this.closed = true;
+    for (const entry of this.entries.values()) entry.generation++;
+    this.entries.clear();
+    await Promise.allSettled([...this.pending]);
+    await Promise.all([...this.instances].map((instance) => this.release(instance)));
   }
 }
