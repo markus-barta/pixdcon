@@ -75,7 +75,17 @@ export class ScenesWatcher {
    * @param {boolean} baseline */
   poll(baseline) {
     if (!this.running) return;
-    const dirs = new Set(this.deps.dirs().map((dir) => resolve(dir)));
+    let dirs;
+    try {
+      dirs = new Set(this.deps.dirs().map((dir) => resolve(dir)));
+    } catch (error) {
+      // Keep the last known watches and stamps; the next retry reads the
+      // registry again. A transient directory supplier failure is only a hint.
+      this.deps.logger.warn(
+        `Scene watch directories: ${error instanceof Error ? error.message : String(error)}; retrying`,
+      );
+      return;
+    }
     for (const [dir, entry] of this.watchers) {
       if (dirs.has(dir)) continue;
       entry.watcher?.close();

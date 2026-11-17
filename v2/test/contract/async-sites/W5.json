@@ -113,11 +113,11 @@
       "id": "timer:setInterval#1",
       "input": "native file hints, watcher errors, debounce and retry timers",
       "metadata": "watch generation, current directory inode and per-file observed stamp",
-      "fence": "native events only schedule a debounced stamp read; onChange runs serially and checks the active generation; stop cancels queued callbacks",
-      "test": "test/contract/scenes.test.js: scenes watcher order:"
+      "fence": "native events only schedule a debounced stamp read; onChange runs serially and checks the active generation; stop cancels queued callbacks; a directory supplier failure retains the previous watches and is logged for retry",
+      "test": "test/contract/scenes.test.js: scenes watcher poll failure:"
     },
     {
-      "site": "src/scenes/scenes-watcher.js:146",
+      "site": "src/scenes/scenes-watcher.js:156",
       "id": "watch:watch#1",
       "input": "native file hints, watcher errors, debounce and retry timers",
       "metadata": "watch generation, current directory inode and per-file observed stamp",
@@ -125,7 +125,7 @@
       "test": "test/contract/scenes.test.js: scenes watcher order:"
     },
     {
-      "site": "src/scenes/scenes-watcher.js:160",
+      "site": "src/scenes/scenes-watcher.js:170",
       "id": "listener:watcher.on(\"error\")#1",
       "input": "native file hints, watcher errors, debounce and retry timers",
       "metadata": "watch generation, current directory inode and per-file observed stamp",
@@ -133,7 +133,7 @@
       "test": "test/contract/scenes.test.js: scenes watcher order:"
     },
     {
-      "site": "src/scenes/scenes-watcher.js:186",
+      "site": "src/scenes/scenes-watcher.js:196",
       "id": "timer:setTimeout#1",
       "input": "native file hints, watcher errors, debounce and retry timers",
       "metadata": "watch generation, current directory inode and per-file observed stamp",

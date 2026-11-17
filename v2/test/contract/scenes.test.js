@@ -11,13 +11,13 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { renameSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
   writeFile,
   readFile,
   readlink,
-  rename,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -757,9 +757,13 @@ test("scenes watcher recovery: missing/replaced directories and resource picture
   const file = join(dir, "later.js");
   await writeFile(file, "// appeared after start");
   await waitFor(() => seen.includes(file));
-  await rename(dir, join(parent, "old-directory"));
-  await mkdir(dir);
-  await writeFile(file, "// replacement directory");
+  // Populate off-mount first, then swap without yielding to a poll/debounce
+  // while the mount path is absent or its replacement is still empty.
+  const replacement = join(parent, "replacement-ready");
+  await mkdir(replacement);
+  await writeFile(join(replacement, "later.js"), "// replacement directory");
+  renameSync(dir, join(parent, "old-directory"));
+  renameSync(replacement, dir);
   await waitFor(() => seen.filter((path) => path === file).length === 2);
   await mkdir(assets);
   dirs = [dir, assets];
@@ -768,6 +772,43 @@ test("scenes watcher recovery: missing/replaced directories and resource picture
   await waitFor(() => seen.includes(image));
   await new Promise((resolve) => setTimeout(resolve, 70));
   assert.equal(seen.length, 3);
+});
+
+test("scenes watcher poll failure: a throwing directory supplier is logged on the retry timer and polling recovers", async (t) => {
+  await mkdir(OUT_DIR, { recursive: true });
+  const dir = await mkdtemp(join(OUT_DIR, "watch-poll-failure-"));
+  const file = join(dir, "scene.js");
+  await writeFile(file, "// baseline");
+  /** @type {string[]} */
+  const warnings = [];
+  /** @type {string[]} */
+  const seen = [];
+  let fail = false;
+  const watcher = new ScenesWatcher({
+    dirs() {
+      if (fail) throw new Error("fixture dirs unavailable");
+      return [dir];
+    },
+    logger: {
+      ...silentLogger,
+      warn: (message) => warnings.push(String(message)),
+    },
+    debounceMs: 5,
+    retryMs: 5,
+    async onChange(path) {
+      seen.push(await readFile(path, "utf8"));
+    },
+  });
+  t.after(() => watcher.stop());
+  watcher.start();
+  fail = true;
+  // Wait for the actual interval callback; an uncaught exception fails this file.
+  await waitFor(() => warnings.length > 0);
+  assert.match(warnings[0], /fixture dirs unavailable; retrying/);
+  assert.equal(watcher.watchers.size, 1, "the last known watch survives");
+  fail = false;
+  await writeFile(file, "// after recovery");
+  await waitFor(() => seen.includes("// after recovery"));
 });
 
 /** @param {() => boolean} predicate */
