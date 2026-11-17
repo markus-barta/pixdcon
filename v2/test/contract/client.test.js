@@ -966,6 +966,27 @@ function matchesCompound(element, part) {
   return true;
 }
 
+/** Compile once per query instead of reparsing the selector for every node.
+ * Matching still reads each node's current attributes and ancestors.
+ * @param {string} selector @returns {(element: FakeElement) => boolean} */
+function r7SelectorTest(selector) {
+  const sequences = parseSelector(selector);
+  const match = selector.includes(":not(")
+    ? (/** @type {FakeElement} */ element) => element.matches(selector)
+    : (/** @type {FakeElement} */ element) => sequences.some((sequence) => matchesSequence(element, sequence, sequence.length - 1));
+  if (process.env.R7_MATCH_COMPARE !== "1") return match;
+  return (element) => {
+    const found = match(element);
+    assert.equal(found, element.matches(selector), `compiled selector preserves ${selector}`);
+    r7MatchesCompared += 1;
+    return found;
+  };
+}
+let r7MatchesCompared = 0;
+process.once("exit", () => {
+  if (process.env.R7_MATCH_COMPARE === "1") process.stdout.write(`# r7 selector comparisons: ${r7MatchesCompared}\n`);
+});
+
 /** @param {FakeElement} element @param {any[]} sequence @param {number} i @returns {boolean} */
 function matchesSequence(element, sequence, i) {
   if (!matchesCompound(element, sequence[i])) return false;
@@ -1144,10 +1165,11 @@ class FakeElement extends FakeNode {
     if (previous) return previous.slice();
     /** @type {FakeElement[]} */
     const found = [];
+    const match = r7SelectorTest(selector);
     const walk = (/** @type {FakeElement} */ element) => {
       for (const child of element.childNodes) {
         if (!(child instanceof FakeElement)) continue;
-        if (child.matches(selector)) found.push(child);
+        if (match(child)) found.push(child);
         walk(child);
       }
     };
@@ -1160,11 +1182,12 @@ class FakeElement extends FakeNode {
   querySelector(selector) {
     const cache = fakeQueryCache(this);
     if (cache.one.has(selector)) return cache.one.get(selector) ?? null;
+    const match = r7SelectorTest(selector);
     /** Native querySelector stops at the first tree-order match. @param {FakeElement} element @returns {FakeElement|null} */
     const first = (element) => {
       for (const child of element.childNodes) {
         if (!(child instanceof FakeElement)) continue;
-        if (child.matches(selector)) return child;
+        if (match(child)) return child;
         const found = first(child);
         if (found) return found;
       }
@@ -2208,6 +2231,13 @@ test("r3 Tick (M1, Q1, Q2, default 7): overlay-only texts; 'not previewed · was
 //    the sweep reruns them, never counting a source-anchor failure as a kill.
 // ---------------------------------------------------------------------------
 
+/** Instrumented requests retain their exact source function for the r7 inventory join. @type {any} */
+let r7RequestSource = null;
+
+/** @type {any} active only during the generated audit histories */
+let r7Coverage = null;
+
+
 const configPage = await loadPage("config");
 const { getState: r4State, setOp: r4SetOp } = await import(new URL("../../web/js/store.js", import.meta.url).href);
 
@@ -2306,6 +2336,7 @@ const R4_STEPS = {
   "another field reset": ["draft"],
   "newer config in the same epoch": ["resource"],
   "replacement overlay id": ["overlay"],
+  "superseded by Reload": ["token"],
 };
 const R4_ENDS = /** @type {const} */ (["success", "500", "timeout"]);
 /** @typedef {(typeof R4_ENDS)[number] | "refused"} R4End */
@@ -2666,6 +2697,7 @@ function r4Server(world) {
         }
         /** @type {any} */
         const call = {
+          origin: r7RequestSource,
           method,
           url: String(url),
           path,
@@ -2817,11 +2849,13 @@ function r4Type(el, value) {
   if (!el) throw new R4Unreachable("nothing to type into");
   if (el.disabled) throw new R4Unreachable("the field is disabled");
   el.focus();
+  if (r7Coverage?.ctx?.root?.contains(el)) r7Coverage.ctx.revision = (r7Coverage.ctx.revision ?? 0) + 1;
   typeInto(el, value);
 }
 /** @param {any} el */
 function r4Click(el) {
   if (!el) throw new Error("nothing to click");
+  if (r7Coverage?.ctx?.root?.contains(el) && el.getAttribute("data-act") === "edit") r7Coverage.ctx.visit = (r7Coverage.ctx.visit ?? 0) + 1;
   if (!click(el)) throw new Error(`${r4Text(el)} is disabled`);
 }
 /** The scope the settings form of the story shows, as the story counts it: the scene in one run and life, and which showing of it (a scene left and shown again is a new scope of the form). @param {any} ctx */
@@ -2875,12 +2909,12 @@ const R4_PAGES = {
       ["editor text", ["opening", "revision", "epoch"], r4Value(root.querySelector("textarea"))],
       // While it says a load is out, the line is the load's (its opening, its run); once it says how the text reads, it is
       // the text's too (the editor's revision): a load that ends after a person typed ends "Loading", and no more (r4).
-      ["load and validity state", (said) => (/^Loading config\.json/.test(said) ? ["opening", "epoch"] : ["opening", "revision", "epoch"]), r4Text(root.querySelector(".edbar .state"))],
+      ["load and validity state", (said) => (/^Loading config\.json/.test(said) ? ["opening", "epoch"] : ["opening", "revision", "epoch", "token"]), r4Text(root.querySelector(".edbar .state"))],
       ["gutter marks", ["opening", "revision", "epoch"], root.querySelectorAll(".gut b.err").map(r4Text).join(" ") || "none"],
       ["focus", ["opening", "revision"], r4Focus(root)],
       ["Save", ["epoch"], r4Button(root.querySelector('[data-act="save"]'))],
       ["Reload", ["epoch"], r4Button(root.querySelector('[data-act="reload"]'))],
-      ["outcome line", ["epoch"], r4Text(root.querySelector(".errline"))],
+      ["outcome line", ["epoch", "token"], r4Text(root.querySelector(".errline"))],
     ],
     type: (ctx) => r4Type(ctx.root.querySelector("textarea"), '{"devices": [],\n "typed": 2}'),
   },
@@ -2889,12 +2923,13 @@ const R4_PAGES = {
     pieces: (root) => {
       const row = root.querySelector(".ct-edit");
       return [
-        ["edit row", ["opening", "visit", "life", "revision", "membership"], row ? `open for ${row.querySelector("form")?.getAttribute("data-device")}` : "closed"],
+        ["config load and pending", ["epoch"], r4Text(root.querySelector(".head .sub"))],
+        ["edit row", ["opening", "visit", "life", "revision", "membership"], `${row ? `open for ${row.querySelector("form")?.getAttribute("data-device")}` : "closed"}${root.querySelector(".ct-row.open") ? " · row marked open" : ""}`],
         ["edit row fields", ["opening", "visit", "life", "revision", "membership"], row ? `${r4Value(row.querySelector('[name="displayName"]'))} | ${r4Value(row.querySelector('[name="comment"]'))}` : "∅"],
-        ["Add device fields", ["opening", "revision"], `${r4Value(root.querySelector('form.addf [name="name"]'))} | ${r4Value(root.querySelector('form.addf [name="ip"]'))}`],
+        ["Add device fields", ["opening", "revision"], `${r4Value(root.querySelector('form.addf [name="name"]'))} | ${r4Value(root.querySelector('form.addf [name="ip"]'))} | ${r4Value(root.querySelector('form.addf [name="type"]'))}`],
         ["focus", ["opening", "visit", "revision"], r4Focus(root)],
         // A slot (busy label, outcome) outlives the visit and the opening (rule 5): it depends on the slot identities only.
-        ["edit row Save and outcome", ["epoch", "life"], row ? `${r4Button(row.querySelector('[data-act="patch"]'))} | ${r4Text(row.querySelector(".ef-f .slot"))}` : "∅"],
+        ["edit row Save and outcome", ["epoch", "life", "membership"], row ? `${r4Button(row.querySelector('[data-act="patch"]'))} | ${r4Text(row.querySelector(".ef-f .slot"))}` : "∅"],
         ["Add to config.json", ["epoch", "life", "membership"], `${r4Button(root.querySelector('[data-act="adopt"]'))} | ${root.querySelectorAll(".ct-body .slot").filter((/** @type {any} */ el) => !el.closest(".ct-edit")).map(r4Text).join(" ") || "∅"}`],
         ["Add device button and outcome", ["epoch"], `${r4Button(root.querySelector("form.addf button"))} | ${r4Text(root.querySelector("#add .slot"))}`],
       ];
@@ -2913,8 +2948,8 @@ const R4_PAGES = {
       const slot = root.querySelector(".empty-slot");
       const empty = slot && !slot.hidden ? slot : null;
       return [
-        ["row d1", ["epoch", "life"], row ? `${r4Value(row.querySelector("select"))} | ${r4Text(row.querySelector(".c-show"))} | ${r4Button(row.querySelector('[data-act="restore"]'))}` : "∅"],
-        ["Add device fields", ["opening", "revision"], `${r4Value(empty?.querySelector('form.addf [name="name"]'))} | ${r4Value(empty?.querySelector('form.addf [name="ip"]'))}`],
+        ["row d1", ["epoch", "life"], row ? `${r4Value(row.querySelector("select"))}${row.querySelector("select")?.disabled ? " [disabled]" : ""} | ${r4Text(row.querySelector(".c-show"))} | ${r4Text(row.querySelector(".src2"))} | ${r4Button(row.querySelector('[data-act="restore"]'))}` : "∅"],
+        ["Add device fields", ["opening", "revision"], `${r4Value(empty?.querySelector('form.addf [name="name"]'))} | ${r4Value(empty?.querySelector('form.addf [name="ip"]'))} | ${r4Value(empty?.querySelector('form.addf [name="type"]'))}`],
         ["focus", ["opening", "revision"], r4Focus(root)],
         ["Add device button and outcome", ["epoch"], `${r4Button(empty?.querySelector("form.addf button"))} | ${r4Text(empty?.querySelector(".slot"))}`],
       ];
@@ -2929,6 +2964,8 @@ const R4_PAGES = {
         ["preview feedback", R4_FEEDBACK, r4PreviewFeedback(root)],
         // The scene the form shows and the definition of it: what belongs to another scene, run, life or definition shows here.
         ["scene definition shown", ["epoch", "life", "scene", "schema"], r4Definition(root)],
+        ["settings context", ["epoch", "life", "scene", "membership"], r4Text(root.querySelector(".set-desc"))],
+        ["settings load outcome", (said) => said === "∅ | ∅" ? ["epoch", "life", "scene"] : ["opening", "epoch", "life", "scene"], `${r4Text(root.querySelector(".set-body .below"))} | ${r4Button(root.querySelector('.set-body [data-act="retry"]'))}`],
         // What a field shows is an edit (its draft) or the store's value (data): compared when the draft, the membership,
         // the scene or the scene definition changed.
         ["field n", R4_BOOKKEEPING, r4Value(field(root, "n"))],
@@ -2944,15 +2981,15 @@ const R4_PAGES = {
         ["recovery dialog", ["opening", "epoch", "life"], r4Dialog()],
         ["recovery Retry and outcome", ["epoch", "life"], r4DialogRetry()],
         // Slot labels and outcomes (busy, failure, note) depend on the slot identities; preview feedback is the piece above.
-        ["title status line", ["epoch", "life"], r4Text(root.querySelector(".dev-head .sub"))],
+        ["title status line", ["epoch", "life"], `${r4Text(root.querySelector(".dev-head .sub"))} | ${r4Button(root.querySelector('.dev-head [data-act="end-retry"]'))}`],
         ["settings status line", r4StatusDeps, r4Text(root.querySelector(".set-status"))],
         ["settings Save and Revert", ["epoch", "life", "scene"], `${r4Button(root.querySelector('.set-h [data-act="save"]'))} | ${r4Button(root.querySelector('.set-h [data-act="revert"]'))} | ${r4Button(root.querySelector('.set-h [data-act="clear"]'))}`],
         ["mode", ["epoch", "life"], `${r4Text(root.querySelector(".mode-hint"))} | ${root.querySelectorAll('[data-act="mode"]').map((/** @type {any} */ b) => (b.disabled ? "x" : "o")).join("")}`],
         // The slider shows the level of its owner: the brightness slot of the device's life whose own request typed it (gate r5a E).
-        ["brightness", ["epoch", "life", "owner"], `${r4Value(range)}${range?.disabled ? " [disabled]" : ""} | ${root.querySelectorAll('[data-act="bri-mode"]').map((/** @type {any} */ b) => (b.disabled ? "x" : "o")).join("")}`],
+        ["brightness", ["epoch", "life", "owner"], `${r4Value(range)}${range?.disabled ? " [disabled]" : ""} | ${r4Text(root.querySelector(".range .val"))} | ${root.querySelectorAll('[data-act="bri-mode"]').map((/** @type {any} */ b) => (b.disabled ? "x" : "o")).join("")}`],
         ["brightness feedback", ["epoch", "life", "owner"], r4Text(root.querySelector(".bri-hint"))],
-        ["scene", ["epoch", "life"], `${r4Text(root.querySelector(".scene-below"))} | ${r4Text(root.querySelector(".v-src"))}`],
-        ["action and adopt", ["epoch", "life"], `${r4Button(root.querySelector('.acts [data-act]'))} | ${r4Button(root.querySelector('.dev-head [data-act="adopt"]'))}`],
+        ["scene", ["epoch", "life"], `${r4Text(root.querySelector(".scene-below"))} | ${r4Text(root.querySelector(".v-src"))} | ${root.querySelectorAll(".opt").map(r4Button).join(" | ")}`],
+        ["action and adopt", ["epoch", "life"], `${r4Text(root.querySelector(".why .acts"))} | ${r4Button(root.querySelector('.why .acts [data-act]'))} | ${r4Button(root.querySelector('.dev-head [data-act="adopt"]'))}`],
         // Create copy is an operation in the slot of the scene (`copy:<scene>`): its outcome is the scene's.
         ["Create copy outcome", ["epoch", "scene"], `${r4Button(root.querySelector(".adv [data-act='copy']"))} | ${r4Text(root.querySelector(".adv .slot"))}`],
       ];
@@ -3217,12 +3254,12 @@ async function r6ResetPreviewed(ctx) {
 }
 R4_KINDS.push(
   {
-    name: "settings reset preview", site: "web/js/components/settings-form.js:892", page: "device", world: r4d1({ scene: "weather" }), request: ["PUT", "/settings/weather/preview"],
+    name: "settings reset preview", site: "web/js/components/settings-form.js:443", page: "device", world: r4d1({ scene: "weather" }), request: ["PUT", "/settings/weather/preview"],
     early: true, begin: (ctx) => r6Reset(ctx, "m"), commutes: ["membership"],
     sent: (op) => assert.deepEqual(op.body.values, { m: 6 }, "Reset previews the default, not the saved value"),
   },
   {
-    name: "settings reset save", site: "web/js/view/drafts.js:168", page: "device", world: r4d1({ scene: "weather" }), request: ["PUT", "/settings/weather"],
+    name: "settings reset save", site: "web/js/components/settings-form.js:474", page: "device", world: r4d1({ scene: "weather" }), request: ["PUT", "/settings/weather"],
     setup: r6ResetPreviewed, again: async (ctx) => {
       // The first Reset was already processed: the new opening may have
       // no saved layer left to reset. Carry on with a fresh edit instead.
@@ -3294,6 +3331,7 @@ function r4Open(ctx, page) {
   ctx.page = page;
   ctx.opening = (ctx.opening ?? 0) + 1;
   ctx.root = pageRoot();
+  if (r7Coverage) r7Coverage.ctx = ctx;
   (ctx.modules?.[page] ?? R4_PAGES[page].module()).mount(ctx.root, R4_PAGES[page].params ?? {});
 }
 /** @param {any} ctx */
@@ -3466,6 +3504,13 @@ const R4_CHANGE = {
 
 /** The single changes of R4_STEPS. @type {Record<string, (ctx: any) => Promise<void>|void>} */
 const R4_STEP = {
+  async "superseded by Reload"(ctx) {
+    r4Click(ctx.root.querySelector('[data-act="reload"]'));
+    await settle();
+    r4Pending(ctx, "POST", "/config/reload").ok();
+    await settle();
+    assert.ok(ctx.calls.some((/** @type {any} */ call) => call !== ctx.op && !call.answered && call.method === "GET" && call.path.endsWith("/config/raw")), "Reload's replacement GET is out while the retired GET fails");
+  },
   async "a newer draft pixdcon takes"(ctx) {
     await r4FormReady(ctx);
     r4Edit(ctx, "n", "0");
@@ -3674,10 +3719,10 @@ const r4Request = (call) =>
  * @param {R4Kind} kind
  * @param {string|null} change an R4Change, or a story of two (R4_COMPOSITES); null: no change (the reference of a reconnect)
  * @param {R4End} end
- * @param {"case"|"without"|"early"|"after"|"probe"} mode after: the change comes after the end (the commuted story); probe: only whether the change can be made
+ * @param {"case"|"without"|"early"|"after"|"probe"|"source"} mode after: the change comes after the end (the commuted story); probe: only whether the change can be made
  * @param {Record<string, any>} [modules] pages to mount instead of the real ones (the self-tests' mutants)
  * @param {boolean} [last] the old operation ends last (r4): before it ends, pixdcon answers everything the change started, and the person carries on (`again`)
- * @returns {Promise<{points: Array<Map<string, {deps: R4Deps, value: string}>>, changed: Set<string>, absolute: string[], definition: string[], unreachable?: string, nextSave?: string|null, replacing?: string|null, calls?: any[], sent?: string[], op?: string|null}>} definition: what the revalidation found (part of `absolute`); nextSave: what the next Save sent; replacing: the replacement load that was still out when the old operation ended; calls: the requests of the story; sent: the same, each as r4Request reads it; op: the operation's own request
+ * @returns {Promise<{points: Array<Map<string, {deps: R4Deps, value: string}>>, changed: Set<string>, absolute: string[], definition: string[], unreachable?: string, nextSave?: string|null, replacing?: string|null, calls?: any[], sent?: string[], op?: string|null, origin?: any}>} definition: what the revalidation found (part of `absolute`); nextSave: what the next Save sent; replacing: the replacement load that was still out when the old operation ended; calls: the requests of the story; sent: the same, each as r4Request reads it; op: the operation's own request
  */
 async function r4Run(t, kind, change, end, mode, modules, last = false) {
   for (const key of [...r4State().ops.keys()]) r4SetOp(key, null);
@@ -3736,6 +3781,9 @@ async function r4Run(t, kind, change, end, mode, modules, last = false) {
       // The story is the one the kind names: pixdcon did with the request what the kind says (a rejection is there).
       kind.sent?.(ctx.op);
     }
+    // The inventory prepass needs the request's actual source, not another
+    // complete acceptance history. Cleanup still answers and retires its work.
+    if (mode === "source") return { points, changed: ctx.changed, absolute, definition, origin: ctx.op?.origin };
     if (mode === "early") {
       ctx.op.ok();
       ctx.op = null;
@@ -3766,6 +3814,7 @@ async function r4Run(t, kind, change, end, mode, modules, last = false) {
       await settle();
     }
     if (!ctx.changed.has("epoch") && !ctx.changed.has("life")) held();
+    if (r7Coverage) await r7ProbeOutcomes(ctx);
     points.push(observe());
     ctx.endAt = ctx.calls.length;
     if (end === "timeout") {
@@ -3786,6 +3835,7 @@ async function r4Run(t, kind, change, end, mode, modules, last = false) {
     const reload = kind.page === "raw" ? "/api/v2/config/raw" : kind.page === "health" ? "/api/v2/log" : null;
     const replacing = reload && ctx.calls.slice(ctx.changeAt).some((/** @type {any} */ c) => !c.answered && c !== ctx.op && c.method === "GET" && c.path === reload) ? `GET ${reload}` : null;
     await settle();
+    if (r7Coverage) await r7ProbeOutcomes(ctx);
     points.push(observe());
     // What the old operation's answer left beside a field belongs to the definition pixdcon holds now (gate note2 M2).
     if (mode !== "after") revalidate(1);
@@ -3799,6 +3849,7 @@ async function r4Run(t, kind, change, end, mode, modules, last = false) {
     };
     again();
     await settle();
+    if (r7Coverage) await r7ProbeOutcomes(ctx);
     points.push(observe());
     if (mode === "after") {
       ctx.changeAt = ctx.calls.length;
@@ -3815,6 +3866,7 @@ async function r4Run(t, kind, change, end, mode, modules, last = false) {
     // continuation left for "the next render" shows in both runs (the gutter, gate r4 §4).
     again();
     await r4AnswerAll(ctx);
+    if (r7Coverage) await r7ProbeOutcomes(ctx);
     points.push(observe());
     // Captured identities are inherited: no request of an earlier run or life starts after it ended (gate r4 §2, §3).
     for (const call of ctx.calls.slice(ctx.changeAt)) if (call.stray) absolute.push(`a request for a scope pixdcon no longer holds was started after the change: ${call.stray}`);
@@ -3834,7 +3886,7 @@ async function r4Run(t, kind, change, end, mode, modules, last = false) {
     absolute.push(...survival.found.map((found) => `${R4_POINTS[R4_LAST]}: ${found}`));
     const next = await r4NextSave(ctx, survival.pending, survival.resets);
     absolute.push(...next.found, ...r6SaveBodies(ctx));
-    return { points, changed: ctx.changed, absolute, definition, nextSave: next.sends, replacing, calls: ctx.calls, sent: ctx.calls.map(r4Request), op: mode === "case" && ctx.op ? r4Request(ctx.op) : null };
+    return { points, changed: ctx.changed, absolute, definition, nextSave: next.sends, replacing, origin: ctx.op?.origin, calls: ctx.calls, sent: ctx.calls.map(r4Request), op: mode === "case" && ctx.op ? r4Request(ctx.op) : null };
   } finally {
     r4Close(ctx);
     await r4AnswerAll(ctx);
@@ -5783,8 +5835,8 @@ async function r6RawVersion(module) {
 }
 
 /** @param {any} module @param {boolean} overlap @param {R4End} end @param {any} [t] */
-async function r6Overlays(module, overlap, end, t = /** @type {any} */ (null)) {
-  const records = [record("o1", "scene", { device: "d1", value: "clock" }), record("o2", "mode", { device: "d1", value: "pause" }), record("o3", "brightness", { device: "d1", value: 44 })];
+async function r6Overlays(module, overlap, end, t = /** @type {any} */ (null), isolated = false) {
+  const records = isolated ? ["o1", "o2", "o3"].map((id) => ({ ...record("same-topic", "setting", { device: "d1", scene: "clock", key: "n", value: 8 }), id })) : [record("o1", "scene", { device: "d1", value: "clock" }), record("o2", "mode", { device: "d1", value: "pause" }), record("o3", "brightness", { device: "d1", value: 44 })];
   const world = r4World({ ...r4d1(), overlays: () => overlap ? records : records.slice(0, 1) });
   const calls = r4Server(world);
   r4NewEpoch(world);
@@ -5803,6 +5855,7 @@ async function r6Overlays(module, overlap, end, t = /** @type {any} */ (null)) {
       assert.equal(calls.filter((/** @type {any} */ c) => c.method === "DELETE").length, 2, "different overlay ids admit independent Clears");
     } else r4Live(world, "overlays", records.slice(1));
     await settle();
+    if (isolated && !overlap) assert.doesNotMatch(r4Text(row("o2")), /Not cleared|Clearing/, "o2 owns neither o1's pending state nor its failure before the old end");
     const third = r4Text(row("o3"));
     if (end === "success") old.ok();
     else if (end === "500") old.answer(500, {});
@@ -5834,7 +5887,9 @@ const R4_KNOWN = new Set([
   "config patch × epoch × success",
   "config patch × epoch × success, last",
   "config patch × leave × success",
+  "config patch × membership × 500",
   "config patch × membership × success",
+  "config patch × membership × timeout",
   "config patch × reincarnate × success",
   "config patch × reincarnate × success, last",
   "config patch × reopen × 500, last",
@@ -6008,6 +6063,22 @@ const R4_KNOWN = new Set([
 ]);
 
 const R4_STRICT = process.env.R4_HARNESS_STRICT === "1";
+/** Known cases that executed and passed: a todo must never hide a repaired product. @type {Set<string>} */
+const r7UnexpectedPasses = new Set();
+/** Every named todo is checked against its actual execution, including an
+ * accidental early return: passing a known case makes the ordinary gate fail.
+ * @param {string} name @param {string} label @param {(t: any) => Promise<void>} run */
+function r7CaseTest(name, label, run) {
+  const known = !R4_STRICT && R4_KNOWN.has(name);
+  test(label, { todo: known ? `fails at fbf3f61: ${name}` : undefined }, async (t) => {
+    await run(t);
+    if (known) r7UnexpectedPasses.add(name);
+  });
+}
+/** @param {Set<string>} passes */
+function r7RequireKnownLiveness(passes) {
+  assert.deepEqual([...passes], [], "remove it from R4_KNOWN: a listed product failure now passes");
+}
 const { appendFileSync: r4Append } = await import("node:fs");
 /** With R4_HARNESS_REPORT=<file>: what each case found, one JSON line per case that found something (the harness log is written from it). @param {string} name @param {string[]} differences */
 function r4Report(name, differences) {
@@ -6028,6 +6099,7 @@ function r6CaseKind(name, change) {
 for (const end of R4_ENDS) R6_CASES.push({ name: `settings save × another field reset × ${end} (gate r5b G)`, kind: "settings save", change: "another field reset", end });
 
 const R6_ID_STORIES = {
+  "superseded loads in the matrix (r7)": ["token"],
   "same-value replacement cases (gate F)": ["draft"],
   "Reset preview and Save cases (gate G)": ["draft"],
   "Raw newer config within one epoch (gate H)": ["resource"],
@@ -6038,15 +6110,23 @@ const R6_FOCUSED = [
   { name: "Raw Reload × newer config in the same epoch × success (gate r5b H)", run: async () => r6RawVersion(await r5Module("pages/config-raw.js")) },
   ...[false, true].flatMap((overlap) => ["success", "500", "timeout"].map((end) => ({ name: `overlays clear × ${overlap ? "overlapping distinct ids" : "replacement overlay id"} × ${end} (gate r5b J)`, run: async (/** @type {any} */ t) => r6Overlays(await r5Module("pages/overlays.js"), overlap, /** @type {R4End} */ (end), t) }))),
 ];
+// r7: K1 varies only the retained record id, including all three ends.
+const R7_OVERLAY_CASES = [false, true].flatMap((overlap) => R4_ENDS.map((end) => ({
+  name: `overlays clear × ${overlap ? "overlapping equal-kind ids" : "replacement equal-kind id"} × ${end} (gate r5d K1)`,
+  run: async (/** @type {any} */ t) => r6Overlays(await r5Module("pages/overlays.js"), overlap, end, t, true),
+})));
+R6_FOCUSED.push(...R7_OVERLAY_CASES);
+
+R6_CASES.push({ name: "raw load × superseded by Reload × 500 (gate r5d ops)", kind: "raw load", change: "superseded by Reload", end: "500" });
 for (const story of R6_CASES)
-  test(`r4 harness: r6: ${story.name}`, { todo: !R4_STRICT && R4_KNOWN.has(story.name) ? `fails at fbf3f61: ${story.name}` : undefined }, async (t) => {
+  r7CaseTest(story.name, `r4 harness: r6: ${story.name}`, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const differences = await r4Case(t, r6CaseKind(story.kind, story.change), story.change, story.end);
     r4Report(story.name, differences);
     assert.deepEqual(differences, []);
   });
 for (const story of R6_FOCUSED)
-  test(`r4 harness: r6: ${story.name}`, { todo: !R4_STRICT && R4_KNOWN.has(story.name) ? `fails at fbf3f61: ${story.name}` : undefined }, async (t) => {
+  r7CaseTest(story.name, `r4 harness: r6: ${story.name}`, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     await story.run(t);
   });
@@ -6069,8 +6149,7 @@ for (const kind of R4_KINDS)
       r4Count += 1;
       const gate = /** @type {Record<string, string>} */ (R4_GATE)[name];
       const label = `r4 harness: ${name}${gate ? ` (${gate})` : ""}`;
-      const todo = !R4_STRICT && R4_KNOWN.has(name) ? `fails at fbf3f61: ${name}` : undefined;
-      test(label, { todo }, async (t) => {
+      r7CaseTest(name, label, async (t) => {
         t.mock.timers.enable({ apis: ["setTimeout"] });
         const differences = await r4Case(t, kind, change, end, { references: r4References });
         r4Report(name, differences);
@@ -6084,8 +6163,7 @@ for (const kind of R4_KINDS)
         const name = `${kind.name} × ${change} × ${end}, last`;
         r4Last.push(name);
         const gate = /** @type {Record<string, string>} */ (R4_GATE)[name];
-        const todo = !R4_STRICT && R4_KNOWN.has(name) ? `fails at fbf3f61: ${name}` : undefined;
-        test(`r4 harness: ${name}${gate ? ` (${gate})` : ""}`, { todo }, async (t) => {
+        r7CaseTest(name, `r4 harness: ${name}${gate ? ` (${gate})` : ""}`, async (t) => {
           t.mock.timers.enable({ apis: ["setTimeout"] });
           const differences = await r4Case(t, kind, change, end, { references: r4References, last: true });
           r4Report(name, differences);
@@ -6104,8 +6182,7 @@ for (const [change, { kind: kindName, steps, alone, gate }] of Object.entries(R4
     r4Composites += 1;
     const name = `${kind.name} × ${change} × ${end}`;
     r4CompositeNames.push(name);
-    const todo = !R4_STRICT && R4_KNOWN.has(name) ? `fails at fbf3f61: ${name}` : undefined;
-    test(`r4 harness: two changes: ${name} (${gate}: ${kind.name} × ${steps[steps.length - 1]} is unreachable as one change only)`, { todo }, async (t) => {
+    r7CaseTest(name, `r4 harness: two changes: ${name} (${gate}: ${kind.name} × ${steps[steps.length - 1]} is unreachable as one change only)`, async (t) => {
       t.mock.timers.enable({ apis: ["setTimeout"] });
       // The last change alone is unreachable, for the stated reason (its probe runs here); after the first it can be made.
       assert.equal((await r4Run(t, kind, steps[steps.length - 1], end, "probe")).unreachable, alone, `${kind.name} × ${steps[steps.length - 1]} alone`);
@@ -6144,6 +6221,19 @@ test("r4 harness: the matrix covers every operation kind, change and end; every 
  * @type {Record<string, {model: string, data: (t: any) => Promise<Array<[string, unknown, unknown]>>|Array<[string, unknown, unknown]>}>}
  */
 const R4_IDENTITIES = {
+  token: {
+    model: "operation token (one owner within a slot)",
+    data: async () => {
+      const ops = await import("../../web/js/ops.js");
+      const first = ops.follow("r7-token-data", async () => null);
+      const a = r4State().ops.get("r7-token-data").token;
+      await first;
+      const second = ops.follow("r7-token-data", async () => null);
+      const b = r4State().ops.get("r7-token-data").token;
+      await second; ops.drop("r7-token-data");
+      return [["two equal-valued operations in the same slot", a, b]];
+    },
+  },
   resource: {
     model: "same-epoch config resource version",
     data: async () => {
@@ -6155,7 +6245,7 @@ const R4_IDENTITIES = {
     model: "overlay id (independent row and operation slot)",
     data: async () => {
       for (const overlap of [false, true]) await r6Overlays(await r5Module("pages/overlays.js"), overlap, "500");
-      return [["overlay id and value", record("o1", "scene", { value: "clock" }), record("o2", "mode", { value: "pause" })]];
+      return [["overlay id alone", record("o1", "setting", { device: "d1", key: "n", value: 8 }), record("o2", "setting", { device: "d1", key: "n", value: 8 })]];
     },
   },
   epoch: {
@@ -6327,9 +6417,9 @@ for (const probe of R5_PROBES)
 // guard removal beside the passing control. Main is loaded by its story.
 for (const story of R5_STORIES) {
   const name = `guard story: ${story.name}`;
-  test(
+  r7CaseTest(
+    name,
     `r4 harness: ${name}`,
-    { todo: !R4_STRICT && R4_KNOWN.has(name) ? `fails at fbf3f61: ${name}` : undefined },
     async (t) => {
       t.mock.timers.enable({ apis: ["setTimeout"] });
       const module = story.file === "main.js" ? {} : await r5Module(story.file);
@@ -6698,7 +6788,7 @@ test("r4 harness self-test: an old answer that fills Raw's editor for a moment w
   const differences = await r4Case(t, kind, "epoch", "success", { modules: { raw: mutant } });
   for (const piece of [
     /after the end, raw: editor text \[opening, revision, epoch\]: "\{"devices": \[\], "run": "run 1"\}" — it read "" before the old operation ended, and what replaced it \(GET \/api\/v2\/config\/raw\) was still out: the old operation's end changed it/,
-    /after the end, raw: load and validity state \[opening, revision, epoch\]: "Valid · .*" — it read "Loading config\.json…" before the old operation ended, and what replaced it/,
+    /after the end, raw: load and validity state \[opening, revision, epoch, token\]: "Valid · .*" — it read "Loading config\.json…" before the old operation ended, and what replaced it/,
   ])
     assert.ok(differences.some((d) => piece.test(d)), `the harness reports ${piece}:\n${differences.join("\n")}`);
   // Nothing else reports it: where everything was answered the editor holds the new run's text (r3 passed this mutant).
@@ -6747,8 +6837,8 @@ test("r4 harness self-test: a slider cleanup that runs without its condition is 
       const differences = await r4Case(t, kind, story, end, { modules: { device } });
       // A request that ends well runs its cleanup before the slot is written, so the level shows at once; one that fails
       // or runs out of time runs it after, so it shows at the next render.
-      const piece = new RegExp(`after the end${end === "success" ? "" : ", at the next render"}, device: brightness \\[epoch, life, owner\\]: "${own} \\[disabled\\] \\| xx" — the story without the old operation reads "60 \\[disabled\\] \\| xx"`);
-      assert.ok(differences.some((d) => piece.test(d)), `${story} × ${end}: the harness reports the new owner's slider put back to the stored ${own} % while its own request runs:\n${differences.join("\n")}`);
+      const piece = `after the end${end === "success" ? "" : ", at the next render"}, device: brightness [epoch, life, owner]: "${own} [disabled] | ${own} % | xx" — the story without the old operation reads "60 [disabled] | 60 % | xx"`;
+      assert.ok(differences.some((d) => d.includes(piece)), `${story} × ${end}: the harness reports the new owner's slider put back to the stored ${own} % while its own request runs:\n${differences.join("\n")}`);
       // The real page passes: the cleanup asks whether the slider is still the ended request's.
       assert.deepEqual(await r4Case(t, kind, story, end), [], `${story} × ${end} with the real page`);
     }
@@ -7385,8 +7475,8 @@ test("r4 harness: guard probe r6: render fallbacks and authority boundaries have
       }
       if (page === "overlays") {
         r4Live(world, "mqtt", { state: "connected" }); click(root.querySelector('[data-act="clear"]')); await settle();
-        pending(calls, "DELETE", "/overlays/o1").answer(200, { pending: true, confirmed: false, overlays: [] }); await settle();
-        assert.ok(r4State().ops.get("overlay:o1").note.includes("waiting for the broker"));
+        pending(calls, "DELETE", "/overlays/o1").answer(200, { pending: true, confirmed: false, overlays: world.spec.overlays(world.epoch) }); await settle();
+        assert.match(r4Text(root.querySelector('[data-id="o1"]')?.closest(".ot-row")), /waiting for the broker/, "the row says the current Clear outcome with any correctly owned slot key");
       }
     } finally { module.unmount(); root.remove(); await r4AnswerAll({ calls }); }
   }
@@ -7884,7 +7974,7 @@ test("r4 harness self-test: brightness feedback cached by old work is observed i
 test("r4 harness self-test: distinct overlay ids cannot share one Clear slot (gate r5b J)", async () => {
   for (const overlap of [false, true]) {
     await r6Overlays(await r5Module("pages/overlays.js"), overlap, "500");
-    const mutant = await r5Module("pages/overlays.js", [['`overlay:${id}`', '`overlay:shared`']]);
+    const mutant = await r7OverlaySlotMutant('return "overlay:shared";');
     await assert.rejects(r6Overlays(mutant, overlap, "500"), (/** @type {any} */ error) => error.name === "AssertionError");
   }
 });
@@ -8322,7 +8412,7 @@ function r4xProjection(file, effect, fn = "") {
   if (/live\.js/.test(file) && effect !== "store") return "stream generation (it owns connection feedback and event admission)";
   const device = /device\.js|devices\.js|config\.js|recovery-dialog|settings-form/.test(file) && !/addDevice|copyScene/.test(fn);
   const member = (settings && fn === "save") || (config && /patch|adopt/.test(fn));
-  const slot = `slot token · epoch${device ? " · life" : ""}${settings ? " · scene" : ""}`;
+  const slot = `slot token · epoch${device ? " · life" : ""}${settings || fn === "copyScene" ? " · scene" : ""}${file.endsWith("/overlays.js") ? " · overlay id" : ""}`;
   switch (effect) {
     case "slot note":
     case "slot failure text":
@@ -8339,8 +8429,10 @@ function r4xProjection(file, effect, fn = "") {
     case "field rejection":
       // Not Save's acknowledgement: no config membership (a blob-only device previews too), and the scene definition is part of it.
       return "scene-definition generation (the definition pixdcon judged the value by is the one the form shows) · the submitted edit's own draft (the edit of that key is still the one that was sent) · scope (scene, epoch, life)";
-    case "request start":
-      return `the identities captured when the operation began, inherited and never re-read (scope: ${settings ? "scene, epoch, life" : raw ? "opening, epoch" : "epoch, life"}), checked before the request starts`;
+    case "request start": {
+      const scope = settings ? "opening, scene, epoch, life" : raw || file.endsWith("/health.js") ? "opening, epoch" : fn === "copyScene" ? "scene, epoch" : fn === "addDevice" || file.endsWith("/overlays.js") ? "epoch" : "epoch, life";
+      return `the identities captured when the operation began, inherited and never re-read (scope: ${scope}), checked before the request starts`;
+    }
     case "page state":
     case "preview feedback":
     case "page callback":
@@ -8349,7 +8441,7 @@ function r4xProjection(file, effect, fn = "") {
       if (/pages\/device\.js/.test(file) && fn === "act") return "the slider's current owner: the brightness slot of the device's life (epoch · life) that the level was typed for · that slot's own operation (slot token) · opening";
       return settings ? "opening · scope (scene, epoch, life) · scene-definition generation · newest draft and > committed" : raw ? "opening · load token · editor revision · epoch" : config ? "opening · edit-row visit" : "opening · slot token";
     case "DOM write":
-      return raw ? "opening · editor revision · epoch (a replacement load writes the new run's text)" : "none beyond render's reading of the current state";
+      return raw ? "opening · editor revision · epoch · config resource (a replacement load writes the new run's text)" : "none beyond render's reading of the current state";
     case "enable/disable":
       return slot;
     case "connection feedback":
@@ -8564,3 +8656,2077 @@ export async function acknowledge(sent) { await request("PUT", "/f"); book.saved
   const without = r4xExtract(r4WebFiles().filter((f) => f.file !== "web/js/pages/overlays.js"));
   assert.ok(r4InventoryDiff(without.rows).vanished.some((v) => v.startsWith("web/js/pages/overlays.js")), "the rows of a removed file are reported as vanished");
 });
+
+// The passing case stays a named todo for this run; this ordinary test makes
+// the gate red until its now-obsolete R4_KNOWN entry is removed.
+test("r4 harness: R4_KNOWN liveness: every executed listed case still fails", () => {
+  r7RequireKnownLiveness(r7UnexpectedPasses);
+});
+
+// r7: permanent runtime certificates for all 27 reviewed sweep entries.
+test("r4 harness: guard probe r6 sweep: form lifetime and legacy input boundaries", async (t) => {
+  const module = await r5Module("components/settings-form.js");
+  await r5Form(
+    t,
+    module,
+    async ({ world, calls, root, form, values, edit }) => {
+      await edit("2");
+      r5Previews(calls).at(-1).ok();
+      await settle();
+      world.lives.set("d1", 2);
+      world.rev++;
+      r4Live(world, "device", r4View(world, "d1", world.epoch, 2, world.rev));
+      const own = values("clock");
+      form.setScene("clock", "Clock", { epoch: world.epoch, incarnation: 2 });
+      form.update(own);
+      assert.equal(
+        r4Value(field(root, "n")),
+        String(own.values.n.effective),
+        "new life cannot retain the preceding life's edit",
+      );
+      for (const incarnation of [0, undefined]) {
+        const state = values("clock", { effective: { n: 43 } });
+        state.incarnation = incarnation;
+        form.update(state);
+        assert.equal(
+          r4Value(field(root, "n")),
+          "43",
+          "legacy life metadata still admits the current caller-fenced settings",
+        );
+      }
+      form.setScene("builtin:own", "Own mode", {
+        epoch: world.epoch,
+        incarnation: 2,
+      });
+      form.update({ ...values("clock"), scene: "builtin:own" });
+      assert.equal(
+        field(root, "n"),
+        null,
+        "a builtin cannot admit settings fields even if a payload names it",
+      );
+    },
+  );
+});
+
+test("r4 harness: guard probe r6 sweep: first loss before any event records its own time", async (t) => {
+  await r5Live(t, await r5Module("live.js"), ({ sources, live }) => {
+    const before = Date.now();
+    sources[0].onerror();
+    const loss = live.state().lostSince;
+    assert.equal(typeof loss, "number");
+    assert.ok(loss >= before && loss <= Date.now());
+    sources[0].onerror();
+    assert.equal(live.state().lostSince, loss);
+  });
+});
+
+test("r4 harness: guard probe r6 sweep: dropped Reload releases the superseded opening load state", async () => {
+  await r5Raw(
+    await r5Module("pages/config-raw.js"),
+    async ({ world, calls, root }) => {
+      const typed = '{"devices":[],"keep":"typed while opening loads"}';
+      r4Type(root.querySelector("textarea"), typed);
+      world.configVersion = 2;
+      world.rev++;
+      r4Click(root.querySelector('[data-act="reload"]'));
+      await settle();
+      pending(calls, "POST", "/config/reload").ok();
+      await settle();
+      const old = calls.findLast(
+        (/** @type {any} */ c) =>
+          !c.answered && c.method === "GET" && c.path.endsWith("/config/raw"),
+      );
+      assert.equal(old.configVersion, 2);
+      world.configVersion = 3;
+      world.rev++;
+      r4Live(world, "config", { ...CONFIG_STATE, rev: world.rev });
+      old.ok();
+      await settle();
+      assert.equal(r4Value(root.querySelector("textarea")), typed);
+      assert.doesNotMatch(
+        r4Text(root.querySelector(".edbar .state")),
+        /Loading config/,
+      );
+      assert.match(
+        r4Text(root.querySelector(".edbar .state")),
+        /unsaved changes/,
+      );
+    },
+  );
+});
+
+test("r4 harness: guard probe r6 sweep: Config route parameters preserve the reserved Add destination", async () => {
+  const saved = Object.getOwnPropertyDescriptor(
+    FakeElement.prototype,
+    "scrollIntoView",
+  );
+  Object.defineProperty(FakeElement.prototype, "scrollIntoView", {
+    value() {},
+    configurable: true,
+  });
+  try {
+    for (const params of [{}, { open: "" }, { open: "add" }, { open: "d1" }]) {
+      const world = r4World({ devices: [{ name: "d1" }, { name: "add" }] });
+      const calls = r4Server(world);
+      r4NewEpoch(world);
+      const module = (await r5Module("pages/config.js")).page;
+      const root = pageRoot();
+      try {
+        module.mount(root, params);
+        await r4AnswerAll({ calls });
+        assert.equal(
+          root.querySelectorAll(".ct-edit").length,
+          params.open === "d1" ? 1 : 0,
+          "only a device route opens an edit row; Add remains reserved even with a device named add",
+        );
+      } finally {
+        module.unmount();
+        root.remove();
+        await r4AnswerAll({ calls });
+      }
+    }
+  } finally {
+    if (saved)
+      Object.defineProperty(FakeElement.prototype, "scrollIntoView", saved);
+    else Reflect.deleteProperty(FakeElement.prototype, "scrollIntoView");
+  }
+});
+
+test("r4 harness: guard probe r6 sweep: rejected settings advance position without freshness and malformed views remain classified", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(at("18:42:00")) });
+  const m = await r5Module("store.js");
+  const store = m.createStore();
+  const stream = openSource(store.fence(), "stream");
+  store.applyEvent({
+    type: "snapshot",
+    epoch: A,
+    seq: 10,
+    stream,
+    data: snapshot(A, 10, [view("d1", { incarnation: 1 })]),
+  });
+  const current = sceneSettings("d1", "clock", {
+    epoch: A,
+    incarnation: 1,
+    rev: 2,
+  });
+  store.applyEvent({
+    type: "settings",
+    epoch: A,
+    seq: 11,
+    stream,
+    data: current,
+  });
+  const dataAt = store.getState().dataAt;
+  t.mock.timers.tick(1000);
+  const dropped = store.applyEvent({
+    type: "settings",
+    epoch: A,
+    seq: 12,
+    stream,
+    data: { ...current, rev: 1 },
+  });
+  assert.equal(dropped.action, "drop");
+  assert.equal(store.getState().seq, 12);
+  assert.equal(store.getState().settings.get("d1/clock"), current);
+  assert.equal(
+    store.getState().dataAt,
+    dataAt,
+    "a rejected settings carrier cannot publish fresh data time",
+  );
+  assert.equal(
+    store.applyEvent({ type: "device", epoch: A, seq: 13, stream, data: 7 })
+      .reason,
+    "no_view",
+    "shape rejection precedes per-view fence admission",
+  );
+});
+
+test("r4 harness: guard probe r6 sweep: Raw opening owns its root writers", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(
+    new URL("../../web/js/pages/config-raw.js", import.meta.url),
+    "utf8",
+  );
+  assert.deepEqual(
+    [...source.matchAll(/\broot\s*=(?!=)\s*([^;]+);/g)].map((m) => m[1].trim()),
+    ["null", "target", "null"],
+  );
+  assert.match(
+    source,
+    /mount\(target,[\s\S]*?opened \+= 1;[\s\S]*?root = target;/,
+  );
+  assert.match(source, /unmount\(\) \{\s*opened \+= 1;[\s\S]*?root = null;/);
+});
+
+// r7 K1/K2: mutants run through the same public stories as their controls.
+const R7_OVERLAY_MUTANTS = [
+  {
+    name: "X1",
+    body: "const row = getState().overlays.find((row) => row.id === id); return `overlay:${row?.device}/${row?.kind}`;",
+  },
+  {
+    name: "X1c",
+    body: 'const row = getState().overlays.find((row) => row.id === id); return row?.kind === "setting" ? `overlay:${row.device}/${row.kind}` : `overlay:${id}`;',
+  },
+];
+for (const { name, body } of R7_OVERLAY_MUTANTS)
+  test(`r4 harness self-test: r7 K1 ${name}: device and kind cannot stand in for overlay id`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const mutant = await r7OverlaySlotMutant(body);
+    for (const overlap of [false, true])
+      for (const end of R4_ENDS) {
+        await r6Overlays(
+          await r5Module("pages/overlays.js"),
+          overlap,
+          end,
+          t,
+          true,
+        );
+        await assert.rejects(
+          r6Overlays(mutant, overlap, end, t, true),
+          (/** @type {any} */ error) => {
+            assert.equal(error.name, "AssertionError");
+            assert.match(error.message, /o1 cannot disable o2|o2 owns neither/);
+            t_log(
+              `${name} ${overlap ? "overlap" : "replacement"}/${end}: ${error.message.split("\n")[0]}`,
+            );
+            return true;
+          },
+        );
+      }
+  });
+
+const R7_RETURN_MUTANTS = [
+  {
+    name: "X10",
+    edits: [
+      [
+        "let previewFailure = null;",
+        "let previewFailure = null; let r7ReturnFailure = null;",
+      ],
+      [
+        "start(key, async () => applyAnswer(await send(key)), {",
+        `start(key, async () => { try { return applyAnswer(await send(key)); } catch (error) { if (control === "return") { r7ReturnFailure = String(error); render(getState()); } throw error; } }, {`,
+      ],
+      [
+        'const returning = opOf("return", view);',
+        'const returning = { ...opOf("return", view), ...(r7ReturnFailure ? { failure: r7ReturnFailure } : {}) };',
+      ],
+    ],
+  },
+  {
+    name: "X10b",
+    edits: [
+      [
+        'const returning = opOf("return", view);',
+        'const returning = { ...opOf("return", view), failure: [...state.ops].find(([key, slot]) => key.includes("restore") && key.split(/[:/@]/).includes(name) && slot.failure)?.[1].failure ?? null };',
+      ],
+    ],
+  },
+];
+for (const { name, edits } of R7_RETURN_MUTANTS)
+  test(`r4 harness self-test: r7 K2 ${name}: Return failure is observed across runs and lives`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    for (const change of ["epoch", "reincarnate"])
+      for (const end of /** @type {R4End[]} */ (["500", "timeout"])) {
+        const kind = r4KindOf("device return");
+        assert.deepEqual(await r4Case(t, kind, change, end), []);
+        const fresh = edits.map(
+          ([from, to]) =>
+            /** @type {[string, string]} */ ([
+              from,
+              `${to}\n// ${change}/${end}\n`,
+            ]),
+        );
+        const device = (await r5Module("pages/device.js", fresh)).page;
+        const differences = await r4Case(t, kind, change, end, {
+          modules: { device },
+        });
+        const failure = differences.find((d) =>
+          /action and adopt \[epoch, life\].*failed to answer|action and adopt \[epoch, life\].*15 s/.test(
+            d,
+          ),
+        );
+        assert.ok(failure, differences.join("\n"));
+        t_log(`${name} ${change}/${end}: ${failure}`);
+      }
+  });
+
+// ---------------------------------------------------------------------------
+// r7: extract rendered operation readers and persistent async outcome reads.
+// No list of controls or DOM selectors: sources come from the effect inventory,
+// ops imports, render call graph, and persistent bindings read by that graph.
+// ---------------------------------------------------------------------------
+
+// r7 identity vocabulary: design-note §1 plus the resource identity added in
+// r6. These are axes/interpretations, never an identity × kind coverage list.
+const R7_IDENTITY_WORDS = {
+  epoch: /\bepoch\b/,
+  life: /\blife\b/,
+  scene: /\bscene\b(?!-definition)/,
+  schema: /scene-definition|\bdefinition\b/,
+  draft: /\bdraft\b/,
+  membership: /\bmembership\b/,
+  opening: /\bopening\b/,
+  visit: /edit-row visit/,
+  revision: /editor revision/,
+  overlay: /overlay id/,
+  owner: /slider's current owner/,
+  token: /slot token|load token|\(its token\)/,
+  stream: /stream generation/,
+  resource: /config resource/,
+};
+
+/** @param {Array<{file: string, src: string}>} files */
+function r7OutcomeSites(files) {
+  const inventory = r4xExtract(files).rows;
+  const modules = files.map(({ file, src }) => {
+    const code = r4xCodeOnly(src);
+    return {
+      file,
+      src,
+      code,
+      fns: r4xFunctions(code),
+      rows: inventory.filter((row) => row.file === file),
+    };
+  });
+  const graphs = new Map(
+    modules.map((m) => [m.file, new Set(["render", "redraw", "draw"])]),
+  );
+  // A page may move a pure outcome projection into a module with no async
+  // rows of its own. Follow those readers transitively too; the async effect
+  // still belongs to the caller's inventory.
+  const pureReaders = new Set();
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const m of modules)
+      for (const fn of m.fns) {
+        const body = m.code.slice(fn.start, fn.end + 1);
+        if (
+          pureReaders.has(fn.name) ||
+          /\b(?:await|start|follow|request)\b\s*\(?/.test(body) ||
+          /\.(?:textContent|innerHTML|value|disabled)\s*=(?!=)/.test(body)
+        )
+          continue;
+        if (
+          /\.ops\b|\b(?:op|slotBusy)\s*\(/.test(body) ||
+          [...body.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g)].some(
+            (call) => pureReaders.has(call[1]),
+          )
+        ) {
+          pureReaders.add(fn.name);
+          changed = true;
+        }
+      }
+  }
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const m of modules) {
+      const reached = /** @type {Set<string>} */ (graphs.get(m.file));
+      for (const fn of m.fns)
+        if (reached.has(fn.name))
+          for (const call of m.code
+            .slice(fn.start, fn.end + 1)
+            .matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\(/g)) {
+            if (
+              m.fns.some(
+                (f) =>
+                  f.name === call[1] &&
+                  !/\b(?:await|start|follow|request)\s*\(?/.test(
+                    m.code.slice(f.start, f.end + 1),
+                  ),
+              ) &&
+              !reached.has(call[1])
+            ) {
+              reached.add(call[1]);
+              changed = true;
+            }
+            // Imported read helpers, unlike API/store writers, can project an
+            // operation registry into this renderer (failedEnds today).
+            for (const other of modules)
+              if (other !== m)
+                for (const exported of other.fns.filter(
+                  (f) =>
+                    f.name === call[1] &&
+                    (pureReaders.has(f.name) ||
+                      /\.ops\b/.test(other.code.slice(f.start, f.end + 1))),
+                ))
+                  if (!graphs.get(other.file)?.has(exported.name)) {
+                    graphs.get(other.file)?.add(exported.name);
+                    changed = true;
+                  }
+          }
+    }
+  }
+  /** @type {any[]} */
+  const sites = [];
+  for (const m of modules) {
+    if (m.file.endsWith("/ops.js") || m.file.endsWith("/store.js"))
+      continue;
+    const reachable = /** @type {Set<string>} */ (graphs.get(m.file));
+    const holder = (/** @type {number} */ at) =>
+      m.fns
+        .filter((f) => f.start <= at && at <= f.end)
+        .sort((a, b) => a.end - a.start - (b.end - b.start))[0];
+    // A wrapper returning an operation (opOf) is instrumented at its callers,
+    // so Return and Brightness never collapse into one generic helper site.
+    const wrappers = m.fns
+      .filter(
+        (f) =>
+          /^\s*op\(/.test(m.code.slice(f.start, f.end + 1)) &&
+          [...m.code.matchAll(new RegExp(`\\b${f.name}\\s*\\(`, "g"))].some(
+            (call) => call.index < f.at || call.index > f.end,
+          ),
+      )
+      .map((f) => f.name);
+    const readers = new Set(["op", "slotBusy", ...wrappers]);
+    const add = (
+      /** @type {number} */ at,
+      /** @type {number} */ end,
+      /** @type {string} */ type,
+      /** @type {string[]} */ variants,
+    ) => {
+      const text = m.src.slice(at, end);
+      const fn = holder(at);
+      const anchor = `${m.file} · ${type} · ${text.replace(/\s+/g, " ")}`;
+      const ordinal = sites.filter((s) => s.anchor === anchor).length;
+      sites.push({
+        id: `${anchor} · ${ordinal}`,
+        anchor,
+        file: m.file,
+        at,
+        end,
+        text,
+        type,
+        variants,
+        fn: fn?.name,
+        line: r4xLineOf(m.code, at),
+      });
+    };
+    for (const call of m.code.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
+      const fn = holder(call.index);
+      if (
+        !fn ||
+        !reachable.has(fn.name) ||
+        wrappers.includes(fn.name) ||
+        !readers.has(call[1])
+      )
+        continue;
+      const end = r4xMatch(m.code, call.index + call[0].length - 1) + 1;
+      const before = m.code.slice(
+        Math.max(fn.start, call.index - 100),
+        call.index,
+      );
+      const alias = /\b(?:const|let)\s+(\w+)\s*=\s*$/.exec(before)?.[1];
+      const direct = /^\s*\??\.(busy|failure|note|label|value)\b/.exec(
+        m.code.slice(end),
+      );
+      const props = new Set(
+        direct
+          ? [direct[1]]
+          : alias
+            ? [
+                ...m.code
+                  .slice(fn.start, fn.end + 1)
+                  .matchAll(
+                    new RegExp(
+                      `\\b${alias}\\??\\.(busy|failure|note|label|value)\\b`,
+                      "g",
+                    ),
+                  ),
+              ].map((hit) => hit[1])
+            : ["failure", "note"],
+      );
+      const variants = [
+        ...new Set([...props].map((p) => (p === "label" ? "busy" : p))),
+      ];
+      if (call[1] === "slotBusy") variants.splice(0, variants.length, "busy");
+      if (variants.length)
+        add(
+          call.index,
+          end,
+          call[1] === "slotBusy" ? "boolean" : "slot",
+          variants,
+        );
+    }
+    // Registry iteration is a rendered outcome reader too (failedEnds).
+    for (const hit of m.code.matchAll(/\b(?:getState\(\)|state)\.ops\b/g)) {
+      const fn = holder(hit.index);
+      if (fn && reachable.has(fn.name)) {
+        add(hit.index, hit.index + hit[0].length, "registry", [
+          "failure",
+          "busy",
+        ]);
+        sites.at(-1).busyValue = /\.value\s*===\s*["']([^"']+)["']/.exec(
+          m.src.slice(fn.start, fn.end + 1),
+        )?.[1];
+      }
+    }
+    // Direct async DOM results (Raw's takeText today) bypass render-state
+    // readers. Inventory spans discover and instrument their actual writers.
+    for (const hit of m.code.matchAll(
+      /\b([A-Za-z_$][\w$.]*)\.(value|textContent|innerHTML|disabled)\s*=(?!=)/g,
+    )) {
+      const carried = m.rows.some(
+        (row) =>
+          row.effects.includes("DOM write") &&
+          [row.range, ...row.spans].some(
+            ([from, to]) => hit.index >= from && hit.index <= to,
+          ),
+      );
+      if (!carried) continue;
+      const from = hit.index + hit[0].length;
+      const [, last] = r4xExpression(m.code, from);
+      add(hit.index, last + 1, "writer", ["foreign"]);
+      Object.assign(sites.at(-1), {
+        writer: { node: hit[1], property: hit[2], from, to: last + 1 },
+      });
+    }
+    for (const hit of m.code.matchAll(/(?:\?\.|\.)reset\(\)/g)) {
+      const carried = m.rows.some(
+        (row) =>
+          row.effects.includes("reset") &&
+          [row.range, ...row.spans].some(
+            ([from, to]) => hit.index >= from && hit.index <= to,
+          ),
+      );
+      if (!carried) continue;
+      let at = hit.index;
+      while (/\s/.test(m.code[at - 1] ?? "")) at -= 1;
+      if (m.code[at - 1] === ")") {
+        let depth = 1;
+        at -= 1;
+        while (at > 0 && depth) {
+          at -= 1;
+          if (m.code[at] === ")") depth += 1;
+          else if (m.code[at] === "(") depth -= 1;
+        }
+      } else while (at > 0 && /[\w$.]/.test(m.code[at - 1])) at -= 1;
+      add(at, hit.index + hit[0].length, "reset", ["foreign"]);
+      sites.at(-1).reset = m.src.slice(at, hit.index).trim();
+    }
+    const persistent = r6xPersistentWrites([{ file: m.file, src: m.src }]);
+    const names = new Set(
+      m.rows
+        .flatMap((row) => row.writes.map((/** @type {any} */ w) => w.name))
+        .filter((name) => persistent.some((w) => w.name === name)),
+    );
+    const bindings = [
+      ...m.code.matchAll(/\b(?:let|const|var)\s+([A-Za-z_$][\w$]*)/g),
+    ].map((match) => ({
+      name: match[1],
+      at: match.index,
+      fn: holder(match.index),
+    }));
+    const collectionRoots = new Set(
+      persistent
+        .filter(
+          (write) =>
+            (write.name.includes("[") || write.kind.startsWith(".")) &&
+            m.rows.some((row) =>
+              [row.range, ...row.spans].some(
+                ([from, to]) =>
+                  write.line >= r4xLineOf(m.code, from) &&
+                  write.line <= r4xLineOf(m.code, to),
+              ),
+            ),
+        )
+        .map((write) => write.name.split(/[.[]/, 1)[0]),
+    );
+    for (const name of collectionRoots) {
+      for (const hit of m.code.matchAll(
+        new RegExp(`\\b${name}\\s*(\\[|\\.get\\s*\\()`, "g"),
+      )) {
+        const fn = holder(hit.index);
+        if (!fn || !reachable.has(fn.name)) continue;
+        const binding = bindings
+          .filter(
+            (b) =>
+              b.name === name &&
+              b.at < hit.index &&
+              (!b.fn || (b.fn.start <= hit.index && hit.index <= b.fn.end)),
+          )
+          .at(-1);
+        if (!binding || binding.fn === fn) continue;
+        const end = r4xMatch(m.code, hit.index + hit[0].length - 1) + 1;
+        if (/^\s*=(?!=)/.test(m.code.slice(end))) continue;
+        if (
+          sites.some(
+            (site) =>
+              site.file === m.file &&
+              (site.reads ?? [{ at: site.at, end: site.end }]).some(
+                (/** @type {any} */ read) =>
+                  read.at === hit.index && read.end === end,
+              ),
+          )
+        )
+          continue;
+        add(hit.index, end, "state", ["foreign"]);
+        sites.at(-1).binding = name;
+      }
+    }
+    // Ignore local aliases, object-builder members and retry scheduling that
+    // never reaches a DOM sink. Their persistent inventory remains mandatory.
+    for (const name of names) {
+      const property = name.includes(".") ? name.split(".").at(-1) : null;
+      const aliases = new Set([name.split(".")[0]]);
+      if (property)
+        for (let changed = true; changed; ) {
+          changed = false;
+          const link = (/** @type {string} */ a, /** @type {string} */ b) => {
+            if (aliases.has(a) && !aliases.has(b)) {
+              aliases.add(b);
+              changed = true;
+            }
+            if (aliases.has(b) && !aliases.has(a)) {
+              aliases.add(a);
+              changed = true;
+            }
+          };
+          for (const alias of m.code.matchAll(
+            /\b(?:const|let)\s+(\w+)\s*=\s*(\w+)\s*[;,]/g,
+          ))
+            link(alias[1], alias[2]);
+          for (const fn of m.fns)
+            for (const call of m.code.matchAll(
+              new RegExp(`(?<![\\w$.])${fn.name}\\s*\\(`, "g"),
+            )) {
+              if (call.index >= fn.at && call.index < fn.start) continue;
+              r4xArguments(m.code, call.index + call[0].length - 1).forEach(
+                ([from, to], i) => {
+                  const arg = m.code.slice(from, to + 1).trim();
+                  if (fn.params[i] && /^\w+$/.test(arg))
+                    link(fn.params[i], arg);
+                },
+              );
+            }
+        }
+      const pattern = property
+        ? new RegExp(`\\b[A-Za-z_$][\\w$]*\\.${property}\\b`, "g")
+        : new RegExp(`\\b${name}\\b`, "g");
+      /** @type {Array<{at: number, end: number}>} */ const reads = [];
+      for (const hit of m.code.matchAll(pattern)) {
+        const fn = holder(hit.index);
+        if (!fn || !reachable.has(fn.name)) continue;
+        if (!property && /[\w$.]/.test(m.code[hit.index - 1] ?? "")) continue;
+        if (property && !aliases.has(hit[0].split(".")[0])) continue;
+        const schedulingBranch = [
+          ...m.code.slice(fn.start, fn.end + 1).matchAll(/\bif\s*\(/g),
+        ].some((condition) => {
+          const open = fn.start + condition.index + condition[0].length - 1;
+          const close = r4xMatch(m.code, open);
+          const block =
+            close +
+            1 +
+            (m.code.slice(close + 1).match(/^\s*/)?.[0].length ?? 0);
+          if (m.code[block] !== "{") return false;
+          const end = r4xMatch(m.code, block);
+          return (
+            hit.index > open &&
+            hit.index < end &&
+            !/\b(?:setHtml|setStatusLine|return)\b|\.(?:textContent|value|disabled)\s*=/.test(
+              m.code.slice(block, end + 1),
+            )
+          );
+        });
+        if (schedulingBranch) continue;
+        if (
+          /^\s*(?:=(?!=)|\+\+|--|[+|&?]=)/.test(
+            m.code.slice(hit.index + hit[0].length),
+          )
+        )
+          continue;
+        const binding = bindings
+          .filter(
+            (b) =>
+              b.name === name &&
+              b.at < hit.index &&
+              (!b.fn || (b.fn.start <= hit.index && hit.index <= b.fn.end)),
+          )
+          .at(-1);
+        if (!property && (!binding || binding.fn === fn)) continue;
+        // Only scalar/object state feeding render output, not a request gate.
+        const body = m.code.slice(fn.start, fn.end + 1);
+        const tail = body.slice(hit.index - fn.start);
+        if (/^\s*[:(]/.test(tail.slice(hit[0].length))) continue;
+        reads.push({ at: hit.index, end: hit.index + hit[0].length });
+      }
+      if (!reads.length) continue;
+      const first = reads[0];
+      // All references to one persistent outcome share a site, so conditions
+      // and the text they guard see the same planted value.
+      const constants = [
+        ...m.src.matchAll(
+          new RegExp(`\\b${property ?? name}\\s*=\\s*["']([^"']+)["']`, "g"),
+        ),
+      ].map((hit) => hit[1]);
+      const variants = constants.length ? [...new Set(constants)] : ["foreign"];
+      add(first.at, first.end, "state", variants);
+      sites.at(-1).reads = reads;
+      sites.at(-1).binding = property ?? name;
+      const declaration = bindings.find((b) => b.name === name);
+      sites.at(-1).numeric =
+        declaration &&
+        /@type\s*\{number\|null\}/.test(
+          m.src.slice(Math.max(0, declaration.at - 160), declaration.at),
+        );
+    }
+  }
+  return sites;
+}
+
+/** @param {string} site @param {any} value */
+function r7ReadOutcome(site, value) {
+  if (!r7Coverage) return value;
+  r7Coverage.reads.set(site, value);
+  if (!r7Coverage.instances.has(site))
+    r7Coverage.instances.set(site, new Set());
+  r7Coverage.instances.get(site).add(value);
+  if (r7Coverage.pair && r7Coverage.pairSite === site) {
+    if (r7Coverage.target === site) r7Coverage.pair.executions += 1;
+    else r7Coverage.pair.references += 1;
+  }
+  if (r7Coverage.target !== site) return value;
+  const alien = r4State().ops.get(r7Coverage.foreignKey);
+  assert.ok(
+    alien,
+    "the planted outcome is read from another owner's actual registry slot",
+  );
+  if (r7Coverage.pair)
+    r7ValidateForeign(r7Coverage.pair, alien, r7Coverage.foreignKey);
+  const variant = r7Coverage.variant;
+  if (
+    r7Coverage.pair &&
+    value &&
+    typeof value === "object" &&
+    "token" in value &&
+    value.token !== r7Coverage.pair.ownToken
+  )
+    return value;
+  if (value instanceof Map) {
+    const map = new Map(value);
+    for (const [key, slot] of map)
+      if (
+        key !== r7Coverage.foreignKey &&
+        (!r7Coverage.pair || key === r7Coverage.pair.ownKey)
+      )
+        map.set(key, { ...slot, ...alien });
+    return map;
+  }
+  if (value && typeof value === "object" && "token" in value)
+    return { ...value, ...alien };
+  if (typeof value === "boolean") return !value;
+  if (typeof value === "number") return value === 2 ? 1 : 2;
+  if (r7Coverage.sites.find((/** @type {any} */ s) => s.id === site)?.numeric)
+    return 1;
+  if (variant !== "foreign") return variant;
+  if (value && typeof value === "object" && "level" in value) {
+    if (r7Coverage.pair?.identity === "owner")
+      return { ...value, key: r7Coverage.pair.b.identities.owner };
+    if (r7Coverage.pair) return null; // Foreign cleanup; the typed level stays equal in both actor inputs.
+    return { ...value, level: 77 };
+  }
+  if (value && typeof value === "object") return value;
+  return alien.failure;
+}
+
+/** Leaf-level DOM deltas: a button observing busy cannot stand in for a
+ * sibling failure span. Every changed text/value/disabled leaf needs a sensor.
+ * @param {any} root */
+function r7Leaves(root) {
+  /** @type {Map<string, {node: any, property: string, value: any, text?: string, contextText?: string}>} */ const out =
+    new Map();
+  const walk = (/** @type {any} */ node, /** @type {string} */ path) => {
+    if (node.hidden) return;
+    if (node instanceof FakeText) {
+      if (node.textContent.trim())
+        out.set(`${path}:text`, {
+          node,
+          property: "textContent",
+          value: node.textContent,
+        });
+      return;
+    }
+    if (node instanceof FakeElement)
+      out.set(`${path}:class`, {
+        node,
+        property: "className",
+        value: node.className,
+        text: node.textContent,
+        contextText: node.parentNode?.textContent,
+      });
+    if (/^(input|select|textarea)$/.test(node.localName ?? ""))
+      out.set(`${path}:value`, { node, property: "value", value: node.value });
+    if (/^(input|select|textarea|button)$/.test(node.localName ?? ""))
+      out.set(`${path}:disabled`, {
+        node,
+        property: "disabled",
+        value: node.disabled,
+      });
+    node.childNodes.forEach(
+      (/** @type {any} */ child, /** @type {number} */ i) =>
+        walk(child, `${path}/${child.localName ?? "text"}[${i}]`),
+    );
+  };
+  walk(root, "page");
+  for (const [i, dialog] of fakeDocument.body
+    .querySelectorAll(".scrim")
+    .entries())
+    if (!root.contains(dialog)) walk(dialog, `dialog${i}`);
+  return out;
+}
+/** @param {any} ctx */
+const r7Pieces = (ctx) =>
+  new Map(
+    R4_PAGES[ctx.page].pieces(ctx.root).map(([name, , value]) => [name, value]),
+  );
+/** @param {Map<string, string>} before @param {Map<string, string>} after */
+const r7PieceChanges = (before, after) =>
+  [...after]
+    .filter(([name, value]) => before.get(name) !== value)
+    .map(([name]) => name);
+
+/** @param {any} ctx */
+async function r7ProbeOutcomes(ctx) {
+  if (
+    !r7Coverage ||
+    r7Coverage.probing ||
+    !r7NeedsAudit(ctx.page, ctx.kind.name)
+  )
+    return;
+  const coverage = r7Coverage;
+  coverage.probing = true;
+  const render = async () => {
+    for (const entry of ctx.world.spec.devices)
+      r4Live(
+        ctx.world,
+        "device",
+        r4View(
+          ctx.world,
+          entry.name,
+          ctx.world.epoch,
+          ctx.world.lives.get(entry.name),
+          ++ctx.world.rev,
+        ),
+      );
+    // An empty Devices page renders on a config event as well.
+    if (!ctx.world.spec.devices.length)
+      r4Live(ctx.world, "config", { ...CONFIG_STATE, rev: ++ctx.world.rev });
+    await settle();
+  };
+  try {
+    coverage.reads.clear();
+    coverage.instances.clear();
+    if (ctx.op)
+      for (const requirement of coverage.requirements.filter(
+        (/** @type {any} */ requirement) =>
+          requirement.kind === ctx.kind.name &&
+          !coverage.pairs.has(requirement.key) &&
+          requirement.origins.some(
+            (/** @type {any} */ origin) => origin.effect === "request start",
+          ),
+      )) {
+        const pair = r7IsolationPair(ctx, requirement, {
+          value: ctx.op.body ?? null,
+        });
+        const sent = r4Request(ctx.op);
+        const differences = r4Started(
+          ctx.kind,
+          { changed: new Set([requirement.identity]), sent: [sent], op: null },
+          { sent: [] },
+          "without",
+        );
+        assert.ok(
+          differences.length,
+          `${requirement.key}: a request from the foreign captured identity needs a request observer`,
+        );
+        coverage.pairs.set(requirement.key, {
+          ...pair,
+          references: 1,
+          executions: 1,
+          source: `${ctx.op.origin.file} · ${ctx.op.origin.fn} · captured request`,
+          pieces: ["started request ledger"],
+          request: sent,
+        });
+      }
+    await render();
+    const seen = [...coverage.reads.keys()];
+    for (const id of seen) {
+      const site = coverage.sites.find((/** @type {any} */ s) => s.id === id);
+      if (!site) continue;
+      for (const variant of site.variants) {
+        const key = `${id} × ${variant}`;
+        const needed = (coverage.byKind.get(ctx.kind.name) ?? []).filter(
+          (/** @type {any} */ requirement) => {
+            if (
+              requirement.kind !== ctx.kind.name ||
+              coverage.pairs.has(requirement.key) ||
+              site.file !== requirement.file
+            )
+              return false;
+            if (site.type === "state")
+              return requirement.bindings.includes(site.binding);
+            if (site.type === "registry")
+              return (
+                requirement.slots &&
+                coverage.reads.get(id)?.has(ctx.op?.origin?.slotKey)
+              );
+            return (
+              requirement.slots &&
+              ctx.op?.origin?.slotToken &&
+              [...(coverage.instances.get(id) ?? [])].some(
+                (value) => value?.token === ctx.op.origin.slotToken,
+              )
+            );
+          },
+        );
+        if (coverage.observed.has(key) && !needed.length) continue;
+        for (const requirement of needed.length ? needed : [null]) {
+          coverage.target = null;
+          const original = coverage.reads.get(id);
+          const pair = requirement
+            ? r7IsolationPair(ctx, requirement, original)
+            : null;
+          if (pair) {
+            pair.ownToken = ctx.op?.origin?.slotToken;
+            pair.ownKey = ctx.op?.origin?.slotKey;
+          }
+          coverage.pair = pair;
+          coverage.pairSite = id;
+          await render();
+          const before = r7Leaves(ctx.root);
+          const beforePieces = r7Pieces(ctx);
+          const value = pair
+            ? pair.a.values.value
+            : (site.busyValue ??
+              (variant === "value"
+                ? original?.value === "weather"
+                  ? "clock"
+                  : original?.value === "save"
+                    ? "revert"
+                    : "weather"
+                : (original?.value ?? "save")));
+          // A physical foreign owner slot, never a product-private key. All
+          // trials have equal values/timing and differ in one owner identity.
+          r4State().ops.delete(coverage.foreignKey);
+          coverage.foreignKey = pair
+            ? `r7-foreign:${JSON.stringify(pair.b.identities)}`
+            : "r7-foreign:unrelated-owner";
+          r4State().ops.set(coverage.foreignKey, {
+            token: pair ? pair.b.identities.token : Number.MAX_SAFE_INTEGER,
+            busy: variant === "busy" || variant === "value",
+            label: "r7 alien pending",
+            value,
+            failure:
+              variant === "failure" || site.type === "state"
+                ? "r7 alien failure"
+                : null,
+            note: variant === "note" ? "r7 alien result" : null,
+          });
+          coverage.target = id;
+          coverage.variant = variant;
+          await render();
+          const after = r7Leaves(ctx.root);
+          const changed = [...after].filter(([path, leaf]) => {
+            const was = before.get(path);
+            if (
+              leaf.property === "className" &&
+              (!was ||
+                was.node.localName !== leaf.node.localName ||
+                was.text !== leaf.text ||
+                was.contextText !== leaf.contextText)
+            )
+              return false;
+            if (
+              leaf.property === "disabled" &&
+              (!was ||
+                ["data-act", "data-key", "name"].some(
+                  (attribute) =>
+                    was.node.getAttribute?.(attribute) !==
+                    leaf.node.getAttribute?.(attribute),
+                ))
+            )
+              return false;
+            return was?.value !== leaf.value;
+          });
+          const structural =
+            before.size > after.size
+              ? r7PieceChanges(beforePieces, r7Pieces(ctx))
+              : [];
+          if (!changed.length && !structural.length) continue; // Try the next reachable UI state.
+          const sensors = new Set(structural);
+          for (const [path, leaf] of changed) {
+            const baseline = r7Pieces(ctx);
+            const saved = leaf.node[leaf.property];
+            leaf.node[leaf.property] =
+              leaf.property === "className"
+                ? before.get(path)?.value
+                : leaf.property === "disabled"
+                  ? !saved
+                  : leaf.node instanceof FakeSelect && leaf.property === "value"
+                    ? leaf.node.options
+                        .map(
+                          (/** @type {any} */ option) =>
+                            option.getAttribute("value") ?? option.textContent,
+                        )
+                        .find((/** @type {string} */ value) => value !== saved)
+                    : `${saved} r7 leaf witness`;
+            const names = r7PieceChanges(baseline, r7Pieces(ctx));
+            leaf.node[leaf.property] = saved;
+            if (!names.length)
+              coverage.gaps.set(
+                `${id} × ${variant} · ${path}`,
+                `unobserved outcome site: ${id} × ${variant}; ${path} = ${JSON.stringify(leaf.value)}; add a harness piece`,
+              );
+            for (const name of names) sensors.add(name);
+          }
+          coverage.observed.set(key, {
+            kind: ctx.kind.name,
+            leaves: changed.length,
+            structure: structural.length,
+            pieces: [...sensors],
+          });
+          if (pair && pair.executions && pair.references && sensors.size)
+            coverage.pairs.set(requirement.key, {
+              ...pair,
+              source: id,
+              pieces: [...sensors],
+            });
+        }
+      }
+    }
+  } finally {
+    coverage.target = null;
+    coverage.pair = null;
+    r4State().ops.delete(coverage.foreignKey);
+    await render();
+    coverage.probing = false;
+  }
+}
+
+/** @param {any[]} sites */
+async function r7ObservedModules(sites) {
+  const urls = new Map();
+  for (const file of [...new Set(sites.map((s) => s.file))]) {
+    const original = r4ReadFile(
+      new URL(`../../${file}`, import.meta.url),
+      "utf8",
+    );
+    let src = original;
+    const edits = sites
+      .filter((s) => s.file === file)
+      .flatMap((s) =>
+        (s.reads ?? [{ at: s.at, end: s.end }]).map((/** @type {any} */ r) => ({
+          ...r,
+          id: s.id,
+          writer: s.writer,
+          reset: s.reset,
+        })),
+      );
+    const code = r4xCodeOnly(original);
+    const fns = r4xFunctions(code);
+    for (const call of code.matchAll(/(?<![\w$.])request\s*\(/g)) {
+      const fn = fns
+        .filter((f) => f.start <= call.index && call.index <= f.end)
+        .sort((a, b) => a.end - a.start - (b.end - b.start))[0];
+      if (fn)
+        edits.push({
+          at: call.index,
+          end: call.index + call[0].length,
+          request: {
+            file,
+            fn: fn.name,
+            anchor: original.slice(fn.start, fn.end + 1).replace(/\s+/g, " "),
+          },
+        });
+    }
+    const rewrite = (
+      /** @type {number} */ from,
+      /** @type {number} */ to,
+      /** @type {any[]} */ nested,
+    ) => {
+      let out = "";
+      let at = from;
+      const pending = [...nested].sort((a, b) => a.at - b.at || b.end - a.end);
+      while (pending.length) {
+        const edit = pending.shift();
+        const children = pending.filter(
+          (child) => child.at >= edit.at && child.end <= edit.end,
+        );
+        for (const child of children) pending.splice(pending.indexOf(child), 1);
+        assert.ok(edit.at >= at, `overlapping outcome source: ${edit.id}`);
+        out +=
+          original.slice(at, edit.at) +
+          (edit.request
+            ? `globalThis.__r7Request(${JSON.stringify(edit.request)}, request, `
+            : edit.reset
+              ? `globalThis.__r7ResetOutcome(${JSON.stringify(edit.id)}, ${edit.reset})`
+              : edit.writer
+                ? `globalThis.__r7WriteOutcome(${JSON.stringify(edit.id)}, ${edit.writer.node}, (${rewrite(edit.writer.from, edit.writer.to, children)}), (node, value) => node.${edit.writer.property} = value)`
+                : `globalThis.__r7ReadOutcome(${JSON.stringify(edit.id)}, (${rewrite(edit.at, edit.end, children)}))`);
+        at = edit.end;
+      }
+      return out + original.slice(at, to);
+    };
+    src = rewrite(0, original.length, edits);
+    if (process.env.R7_OBSERVATION_DEBUG)
+      r4Append(
+        `${process.env.R7_OBSERVATION_DEBUG}/${file.replaceAll("/", "-")}-${Date.now()}`,
+        src,
+      );
+    urls.set(file, { original, src });
+  }
+  // Components first, then their importing pages. Imports retain the real
+  // registry/API/store; only rendered owner reads are fault-injected.
+  /** @type {Record<string, string>} */ const replacements = {};
+  for (const [file, source] of [...urls].sort(
+    ([a], [b]) => Number(a.includes("pages/")) - Number(b.includes("pages/")),
+  )) {
+    const url = await r4Mutant(
+      file.replace("web/js/", ""),
+      [[source.original, source.src]],
+      replacements,
+    );
+    urls.set(file, url);
+    replacements[`../${file.replace("web/js/", "")}`] = url;
+  }
+  /** @type {Record<string, any>} */ const modules = {};
+  for (const [page, definition] of Object.entries(R4_PAGES)) {
+    const file = page === "raw" ? "config-raw" : page;
+    const url = urls.get(`web/js/pages/${file}.js`);
+    modules[page] = url ? (await import(url)).page : definition.module();
+  }
+  return modules;
+}
+
+/** @param {any[]} sites @param {Map<string, any>} observed */
+function r7RequireObservation(sites, observed) {
+  const gaps = sites.flatMap((site) =>
+    site.variants
+      .filter((/** @type {string} */ variant) => {
+        const receipt = observed.get(`${site.id} × ${variant}`);
+        return (
+          !receipt?.pieces?.length ||
+          !(receipt.leaves > 0 || receipt.structure > 0)
+        );
+      })
+      .map((/** @type {string} */ variant) => `${site.id} × ${variant}`),
+  );
+  assert.deepEqual(
+    gaps,
+    [],
+    "unobserved outcome site: every extracted rendered owner read needs an observing harness piece",
+  );
+}
+
+/** Reused receipts are immutable evidence; all fault-injected modules and
+ * physical foreign slots are retired before another test starts. @type {any} */
+let r7AuditEvidence = null;
+/** @param {any} t */
+async function r7RunAudits(t) {
+  if (r7AuditEvidence) return r7AuditEvidence;
+  const files = r4WebFiles();
+  const sites = r7OutcomeSites(files);
+  assert.ok(
+    sites.length > 20,
+    "slot readers, registry iteration and persistent outcomes were extracted",
+  );
+  const global = /** @type {any} */ (globalThis);
+  const saved = global.__r7ReadOutcome;
+  const savedRequest = global.__r7Request;
+  const savedWriter = global.__r7WriteOutcome;
+  const savedReset = global.__r7ResetOutcome;
+  global.__r7ReadOutcome = r7ReadOutcome;
+  global.__r7WriteOutcome = r7WriteOutcome;
+  global.__r7ResetOutcome = r7ResetOutcome;
+  global.__r7Request = (
+    /** @type {any} */ origin,
+    /** @type {any} */ send,
+    /** @type {any[]} */ ...args
+  ) => {
+    const before = r7RequestSource;
+    const key = args[2]?.key;
+    const current =
+      key && r4State().ops.has(key)
+        ? [key, r4State().ops.get(key)]
+        : [...r4State().ops]
+            .filter(([, slot]) => slot.busy)
+            .sort((a, b) => b[1].token - a[1].token)[0];
+    r7RequestSource = {
+      ...origin,
+      slotKey: current?.[0],
+      slotToken: current?.[1]?.token,
+      slotValue: current?.[1]?.value,
+    };
+    try {
+      return send(...args);
+    } finally {
+      r7RequestSource = before;
+    }
+  };
+  /** @type {any} */ const coverage = {
+    sites,
+    requirements: [],
+    pairs: new Map(),
+    pair: null,
+    pairSite: null,
+    instances: new Map(),
+    reads: new Map(),
+    observed: new Map(),
+    gaps: new Map(),
+    target: null,
+    variant: null,
+    foreignKey: "r7-foreign-owner@other-epoch/99",
+    probing: false,
+  };
+  try {
+    const modules = await r7ObservedModules(sites);
+    coverage.pageSources = r7PageSources(files, sites);
+    const origins = new Map();
+    for (const kind of R4_KINDS) {
+      const receipt = await r4Run(
+        t,
+        kind,
+        null,
+        r4Ends(kind)[0],
+        "source",
+        modules,
+      );
+      assert.ok(
+        receipt.origin,
+        `${kind.name}: its actual request must carry an extracted source receipt`,
+      );
+      origins.set(kind.name, receipt.origin);
+    }
+    const requirements = r7IsolationRequirements(files, origins, sites);
+    coverage.requirements = requirements;
+    coverage.byKind = new Map(
+      [...new Set(requirements.map((requirement) => requirement.kind))].map(
+        (kind) => [
+          kind,
+          requirements.filter((requirement) => requirement.kind === kind),
+        ],
+      ),
+    );
+    r7Coverage = coverage;
+    for (const kind of R4_KINDS) {
+      const owner = requirements.some(
+        (r) => r.kind === kind.name && r.identity === "owner",
+      );
+      const isolatedKind = owner
+        ? {
+            ...kind,
+            world: {
+              ...kind.world,
+              devices: kind.world.devices.map((/** @type {any} */ d) => ({
+                ...d,
+                o: { ...d.o, override: 30 },
+              })),
+            },
+            setup: async (/** @type {any} */ ctx) => {
+              await kind.setup?.(ctx);
+              const range = ctx.root.querySelector('input[type="range"]');
+              if (range && !range.disabled) typeInto(range, "40", "input");
+            },
+          }
+        : kind;
+      await r4Run(t, isolatedKind, null, r4Ends(kind)[0], "case", modules);
+    }
+    // Idle editors, a failed load, and an invalid Save expose branches that
+    // an in-flight/success story cannot display at the same instant.
+    for (const kind of R4_KINDS.filter((kind) => !kind.atOpen))
+      if (r7NeedsAudit(kind.page, kind.name))
+        await r4Run(t, kind, null, r4Ends(kind)[0], "without", modules);
+    if (r7NeedsAudit("device", "settings load"))
+      await r4Run(t, r4KindOf("settings load"), null, "500", "case", modules);
+    if (r7NeedsAudit("raw", "raw save"))
+      await r4Run(t, r4KindOf("raw save"), null, "refused", "case", modules);
+    r7Coverage = null;
+    for (const requirement of requirements.filter((r) =>
+      r.kind.startsWith("web/js/live.js"),
+    )) {
+      await r5Live(
+        t,
+        await r5Module("live.js"),
+        ({ sources, timers, events }) => {
+          const payload = view("d1");
+          sources[0].onopen();
+          sources[0].emit("device", `${A}-10`, payload);
+          assert.deepEqual(events.at(-1).data, payload);
+          sources[0].onerror();
+          timers
+            .findLast((/** @type {any} */ timer) => timer.ms === 5000)
+            .callback();
+          sources[1].onopen();
+          const before = events.length;
+          sources[0].emit("device", `${A}-10`, payload);
+          assert.equal(
+            events.length,
+            before,
+            "the replaced generation cannot deliver the equal-valued event",
+          );
+          sources[1].emit("device", `${A}-10`, payload);
+          assert.equal(events.length, before + 1);
+          assert.deepEqual(events.at(-1).data, payload);
+          const common = {
+            device: "d1",
+            kind: requirement.kind,
+            values: payload,
+            timing: { queued: 0, delivered: 5000 },
+          };
+          coverage.pairs.set(requirement.key, {
+            requirement: requirement.key,
+            identity: requirement.identity,
+            a: { ...structuredClone(common), identities: { stream: 1 } },
+            b: { ...structuredClone(common), identities: { stream: 2 } },
+            references: 1,
+            executions: 1,
+            source: "actual EventSource instances",
+            pieces: ["event admission"],
+          });
+        },
+      );
+    }
+    assert.deepEqual(
+      [...coverage.gaps.values()],
+      [],
+      "unobserved outcome sites: each changed DOM leaf must have a piece of its own",
+    );
+    r7RequireObservation(sites, coverage.observed);
+    r7RequireIsolation(requirements, [...coverage.pairs.values()]);
+    r7AuditEvidence = coverage;
+    t_log(
+      `r7 observation: ${sites.length} sources; ${coverage.observed.size} outcome variants; ${JSON.stringify([...coverage.observed])}`,
+    );
+    t_log(
+      `r7 isolation: ${requirements.length} extracted identity × kind combinations; ${coverage.pairs.size} executed equal-input pairs; ${JSON.stringify([...coverage.pairs.values()].map((pair) => ({ requirement: pair.requirement, source: pair.source, pieces: pair.pieces })))}`,
+    );
+    return coverage;
+  } finally {
+    r7Coverage = null;
+    global.__r7ReadOutcome = saved;
+    global.__r7Request = savedRequest;
+    global.__r7WriteOutcome = savedWriter;
+    global.__r7ResetOutcome = savedReset;
+  }
+}
+
+test("r4 harness: r7 observation coverage: every extracted rendered outcome has a leaf-level observing piece", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await r7RunAudits(t);
+});
+test("r4 audit: r7 identity isolation: every extracted identity × operation kind has an executed equal-input pair", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await r7RunAudits(t);
+});
+
+test("r4 harness self-test: r7 observation audit rejects a newly extracted unobserved outcome writer", () => {
+  const files = r4WebFiles();
+  const changed = files.map((file) =>
+    file.file.endsWith("/pages/device.js")
+      ? {
+          ...file,
+          src: file.src.replace(
+            "start(key, async () => applyAnswer(await send(key)), {",
+            `start(key, async () => { const answer = await send(key); const r7UnseenNode = root?.querySelector(".r7-unseen"); if (r7UnseenNode) r7UnseenNode.textContent = "unobserved result"; return applyAnswer(answer); }, {`,
+          ),
+        }
+      : file,
+  );
+  const site = r7OutcomeSites(changed).find(
+    (site) =>
+      site.type === "writer" && site.text.includes("r7UnseenNode.textContent"),
+  );
+  assert.ok(
+    site,
+    "an arbitrary new outcome writer is extracted, without a site whitelist",
+  );
+  const root = pageRoot();
+  root.innerHTML = '<span class="r7-unseen">ready</span>';
+  const before = r7Coverage;
+  const coverage = {
+    ctx: { page: "device", root, kind: { name: "unobserved-site self-test" } },
+    sites: [site],
+    requirements: [],
+    pairs: new Map(),
+    observed: new Map(),
+    gaps: new Map(),
+  };
+  try {
+    r7Coverage = coverage;
+    r7WriteOutcome(
+      site.id,
+      root.querySelector(".r7-unseen"),
+      "unobserved result",
+      (node, value) => (node.textContent = value),
+    );
+    assert.ok(
+      coverage.gaps.size,
+      "the real piece readers do not observe the planted text",
+    );
+    assert.throws(
+      () => r7RequireObservation([site], coverage.observed),
+      /unobserved outcome site/,
+    );
+  } finally {
+    r7Coverage = before;
+    root.remove();
+  }
+});
+
+/** Requirements are a join, not a handwritten coverage table: the kind's
+ * inventoried source function → extracted continuations/called effects →
+ * effect projections → identity vocabulary. Slot creation itself also writes
+ * pending/failure/result state, even when the caller supplies no callbacks.
+ * @param {Array<{file: string, src: string}>} files @param {Map<string, any>} origins @param {any[]} sites */
+function r7IsolationRequirements(files, origins, sites) {
+  const rows = r4xExtract(files).rows;
+  /** @type {any[]} */ const requirements = [];
+  for (const kind of R4_KINDS) {
+    const origin = origins.get(kind.name);
+    assert.ok(
+      origin,
+      `${kind.name}: an executed request supplies its source anchor`,
+    );
+    const file = origin.file;
+    const source = files.find((f) => f.file === file);
+    assert.ok(source, `${kind.name}: inventoried source exists`);
+    const code = r4xCodeOnly(source.src);
+    const fns = r4xFunctions(code);
+    const fn = fns.find(
+      (f) =>
+        source.src.slice(f.start, f.end + 1).replace(/\s+/g, " ") ===
+        origin.anchor,
+    );
+    assert.ok(
+      fn,
+      `${kind.name}: executed source anchor must resolve without line numbers`,
+    );
+    const via = new Set();
+    /** @type {Array<[number, number]>} */
+    const spans = [];
+    const effects = r4xFollow(
+      code,
+      fns,
+      [fn.start, fn.end],
+      new Map(),
+      new Set(),
+      via,
+      spans,
+    );
+    /** @type {any[]} */ const projections = [...effects]
+      .filter((effect) => effect === "request start")
+      .map((effect) => ({
+        effect,
+        source: `${file} · ${fn.name} · ${effect}`,
+        projection: r4xProjection(file, effect, fn.name),
+        writes: [],
+      }));
+    const ranges = [[fn.start, fn.end], ...spans];
+    const actualBindings = new Set(
+      sites
+        .filter((site) => site.file === file && site.type === "state")
+        .map((site) => site.binding),
+    );
+    const selectedRows = rows.filter(
+      (row) =>
+        row.file === file &&
+        ranges.some(([from, to]) => row.range[0] >= from && row.range[1] <= to),
+    );
+    const allBindings = [
+      ...new Set(
+        selectedRows
+          .flatMap((row) =>
+            row.writes.map((/** @type {any} */ write) =>
+              write.name.split(".").at(-1),
+            ),
+          )
+          .filter((name) => actualBindings.has(name)),
+      ),
+    ];
+    for (const row of selectedRows)
+      for (const effect of row.effects) {
+        const writes = row.writes
+          .map((/** @type {any} */ write) => write.name.split(".").at(-1))
+          .filter((/** @type {string} */ name) => actualBindings.has(name));
+        // The conservative inventory retains local builder assignments for
+        // review. They are not persistent render outcomes and add no identity.
+        if (effect === "page state" && !writes.length) continue;
+        projections.push({
+          effect,
+          source: r4xKey(row),
+          projection: r4xProjection(file, effect, row.fn),
+          writes,
+        });
+      }
+    const slotFunctions = [
+      "start",
+      "follow",
+      ...[...source.src.matchAll(/\b(?:start|follow)\s+as\s+(\w+)/g)].map(
+        (match) => match[1],
+      ),
+    ];
+    const hasSlot = ranges.some(([from, to]) =>
+      slotFunctions.some((name) =>
+        new RegExp(`\\b${name}\\s*\\(`).test(code.slice(from, to + 1)),
+      ),
+    );
+    if (hasSlot)
+      projections.push({
+        effect: "slot outcome",
+        source: `${file} · ${fn.name} · extracted slot creation`,
+        projection: r4xProjection(file, "slot outcome", fn.name),
+        writes: [],
+      });
+    assert.ok(
+      projections.length,
+      `${kind.name}: no effect inventory row; review its source anchor`,
+    );
+    for (const [identity, words] of Object.entries(R7_IDENTITY_WORDS)) {
+      const origins = projections.filter((p) => words.test(p.projection));
+      if (origins.length)
+        requirements.push({
+          key: `${kind.name} × ${identity}`,
+          kind: kind.name,
+          identity,
+          origins,
+          file,
+          slots: origins.some((p) => /slot|enable\/disable/.test(p.effect)),
+          bindings: [
+            ...new Set([...origins.flatMap((p) => p.writes), ...allBindings]),
+          ],
+          ranges,
+        });
+    }
+  }
+  // Event/timer continuations are kinds too: generation owns their feedback
+  // and admission, even though they are not HTTP operations in R4_KINDS.
+  for (const row of rows.filter((row) => row.file.endsWith("/live.js"))) {
+    const origins = row.effects.map((/** @type {string} */ effect) => ({
+      source: r4xKey(row),
+      projection: r4xProjection(row.file, effect, row.fn),
+    }));
+    for (const [identity, words] of Object.entries(R7_IDENTITY_WORDS))
+      if (origins.some((/** @type {any} */ p) => words.test(p.projection))) {
+        const kind = `${row.file} · ${row.fn} · ${row.kind}`;
+        requirements.push({
+          key: `${kind} × ${identity}`,
+          kind,
+          identity,
+          origins,
+        });
+      }
+  }
+  for (const source of files.filter((file) =>
+    /web\/js\/(?:pages\/|components\/(?:settings-form|recovery-dialog)\.js)/.test(
+      file.file,
+    ),
+  )) {
+    const code = r4xCodeOnly(source.src);
+    const fns = r4xFunctions(code);
+    for (const call of code.matchAll(/(?<![\w$.])request\s*\(/g)) {
+      const fn = fns
+        .filter((f) => f.start <= call.index && call.index <= f.end)
+        .sort((a, b) => a.end - a.start - (b.end - b.start))[0];
+      assert.ok(fn, `${source.file}: request source needs a function owner`);
+      const anchor = source.src
+        .slice(fn.start, fn.end + 1)
+        .replace(/\s+/g, " ");
+      assert.ok(
+        [...origins.values()].some(
+          (origin) => origin.file === source.file && origin.anchor === anchor,
+        ),
+        `uncovered operation source: ${source.file} · ${fn.name}; add a generated operation kind before accepting this effect`,
+      );
+    }
+  }
+  for (const identity of Object.keys(R4_IDENTITIES))
+    assert.ok(
+      identity in R7_IDENTITY_WORDS,
+      `new model identity ${identity}: add its extraction vocabulary and isolation generator`,
+    );
+  for (const identity of Object.keys(R7_IDENTITY_WORDS))
+    assert.ok(
+      requirements.some((r) => r.identity === identity),
+      `model identity ${identity} has no extracted operation/effect requirement`,
+    );
+  assert.equal(
+    new Set(requirements.map((r) => r.key)).size,
+    requirements.length,
+    "each inventory combination is unique",
+  );
+  return requirements;
+}
+
+/** A pair of operation-owner contexts consumed by the fault-injected real
+ * renderer. Payload, control kind, device and exact schedule remain equal;
+ * the foreign registry slot differs in exactly one identity. Each receipt
+ * names the actual rendered source and piece that detected the foreign read.
+ * @param {any} ctx @param {any} requirement @param {any} value */
+function r7IsolationPair(ctx, requirement, value) {
+  const entry = ctx.world.spec.devices[0];
+  const scene = r4Showing(ctx.world);
+  /** @type {Record<string, any>} */ const owners = {
+    epoch: ctx.world.epoch,
+    life: ctx.world.lives.get(entry?.name) ?? 1,
+    scene,
+    schema: JSON.stringify(ctx.world.schemas.get(scene)),
+    draft:
+      ctx.op?.body?.draft ??
+      Math.max(
+        0,
+        ...[...ctx.edits.values()].map((/** @type {any} */ edit) => edit.at),
+      ),
+    membership: entry?.o?.origin ?? "config",
+    opening: ctx.opening,
+    visit: ctx.visit ?? 1,
+    revision: ctx.revision ?? 0,
+    overlay: ctx.world.spec.overlays?.(ctx.world.epoch)?.[0]?.id ?? "none",
+    owner: value?.key ?? ctx.op?.origin?.slotKey ?? "unkeyed control owner",
+    token: ctx.op?.origin?.slotToken ?? value?.token ?? 0,
+    stream: ctx.world.stream,
+    resource: ctx.world.configVersion,
+  };
+  const common = {
+    device: entry?.name ?? "d9",
+    kind: ctx.kind.name,
+    values: structuredClone({
+      request: ctx.kind.request,
+      body: ctx.op?.body ?? null,
+      value:
+        ctx.op?.origin?.slotKey !== undefined
+          ? ctx.op.origin.slotValue
+          : value?.value,
+      level: value?.level,
+    }),
+    timing: { sent: 0, changed: 10_000, answered: ctx.auditTime ?? 10_000 },
+  };
+  const a = { ...structuredClone(common), identities: { ...owners } };
+  const b = {
+    ...structuredClone(common),
+    identities: /** @type {Record<string, any>} */ ({
+      ...owners,
+      [requirement.identity]:
+        typeof owners[requirement.identity] === "number"
+          ? owners[requirement.identity] + 1
+          : `${owners[requirement.identity]} (replacement)`,
+    }),
+  };
+  return {
+    requirement: requirement.key,
+    identity: requirement.identity,
+    a,
+    b,
+    executions: 0,
+    references: 0,
+    ownToken: null,
+    ownKey: null,
+  };
+}
+
+/** @param {any[]} requirements @param {any[]} pairs */
+function r7RequireIsolation(requirements, pairs) {
+  /** @type {string[]} */ const gaps = [];
+  for (const requirement of requirements) {
+    const witnesses = pairs.filter(
+      (pair) =>
+        pair.requirement === requirement.key &&
+        pair.executions > 0 &&
+        pair.references > 0,
+    );
+    const isolated = witnesses.filter((pair) => {
+      const { identities: first, ...a } = pair.a;
+      const { identities: second, ...b } = pair.b;
+      if (JSON.stringify(a) !== JSON.stringify(b)) return false;
+      const changed = Object.keys(first).filter(
+        (axis) => JSON.stringify(first[axis]) !== JSON.stringify(second[axis]),
+      );
+      return (
+        changed.length === 1 &&
+        changed[0] === requirement.identity &&
+        Object.keys(second).length === Object.keys(first).length
+      );
+    });
+    if (!isolated.length) gaps.push(requirement.key);
+  }
+  assert.deepEqual(
+    gaps,
+    [],
+    "identity isolation gap: every extracted identity × operation kind needs an executed pair differing ONLY in that identity (same device, kind, values and timing)",
+  );
+}
+
+test("r4 harness self-test: r7 isolation audit rejects a removed pair and every confounded pair", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { requirements, pairs } = await r7RunAudits(t);
+  const all = [...pairs.values()];
+  const removed = all.find(
+    (pair) => pair.requirement === "overlays clear × overlay",
+  );
+  assert.ok(removed, "K1 has an executed identity-only pair");
+  const remaining = all.filter((pair) => pair !== removed);
+  assert.throws(
+    () => r7RequireIsolation(requirements, remaining),
+    /identity isolation gap/,
+  );
+  const physicalKey = `r7-foreign:${JSON.stringify(removed.b.identities)}`;
+  const physical = {
+    token: removed.b.identities.token,
+    value: removed.a.values.value,
+  };
+  r7ValidateForeign(removed, physical, physicalKey);
+  assert.throws(
+    () =>
+      r7ValidateForeign(
+        removed,
+        { ...physical, token: physical.token + 100 },
+        physicalKey,
+      ),
+    /physical token must match/,
+  );
+  assert.throws(
+    () =>
+      r7ValidateForeign(
+        removed,
+        { ...physical, value: { confounded: true } },
+        physicalKey,
+      ),
+    /preserve the operation's values/,
+  );
+  for (const field of ["device", "kind", "values", "timing"]) {
+    const confounded = structuredClone(removed);
+    confounded.b[field] = { confounded: true };
+    assert.throws(
+      () => r7RequireIsolation(requirements, [...remaining, confounded]),
+      /identity isolation gap/,
+    );
+  }
+});
+
+test("r4 harness self-test: r7 matrix superseded failure catches ops #1306 and X9", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const kind = r4KindOf("raw load");
+  assert.deepEqual(await r4Case(t, kind, "superseded by Reload", "500"), []);
+  for (const [
+    name,
+    edits,
+  ] of /** @type {Array<[string, Array<[string, string]>]>} */ ([
+    [
+      "#1306",
+      [
+        [
+          "(error) => {\n      if (!current()) return;",
+          "(error) => {\n      if (false) return;",
+        ],
+      ],
+    ],
+    [
+      "X9",
+      [
+        [
+          "if (getState().ops.has(key)) setOp(key, null);",
+          "if (getState().ops.has(key) && !busy(key)) setOp(key, null);",
+        ],
+      ],
+    ],
+  ])) {
+    const ops = await r4Mutant("ops.js", edits);
+    const raw = (
+      await r5Module("pages/config-raw.js", [], { "../ops.js": ops })
+    ).page;
+    const differences = await r4Case(t, kind, "superseded by Reload", "500", {
+      modules: { raw },
+    });
+    assert.ok(
+      differences.some((d) => /outcome line|load and validity/.test(d)),
+      `${name}: ${differences.join("\n")}`,
+    );
+    t_log(`${name}: ${differences[0]}`);
+  }
+});
+
+/** @param {string} id @param {any} node @param {any} value @param {(node: any, value: any) => any} write */
+function r7WriteOutcome(id, node, value, write) {
+  const result = write(node, value);
+  const coverage = r7Coverage;
+  if (
+    !coverage?.ctx ||
+    !node?.isConnected ||
+    coverage.observed.has(`${id} × foreign`)
+  )
+    return result;
+  const key = "r7-direct-result@foreign-epoch/99";
+  r4State().ops.set(key, {
+    token: -1,
+    busy: false,
+    label: "",
+    value,
+    failure: "r7 alien result",
+    note: null,
+  });
+  try {
+    const before = r7Pieces(coverage.ctx);
+    const alien = r4State().ops.get(key);
+    write(
+      node,
+      typeof value === "boolean" ? !value : `${value} ${alien.failure}`,
+    );
+    const pieces = r7PieceChanges(before, r7Pieces(coverage.ctx));
+    if (!pieces.length)
+      coverage.gaps.set(
+        id,
+        `unobserved outcome site: ${id}; direct asynchronous DOM result has no harness piece`,
+      );
+    coverage.observed.set(`${id} × foreign`, {
+      kind: coverage.ctx.kind.name,
+      leaves: 1,
+      pieces,
+    });
+    const site = coverage.sites.find(
+      (/** @type {any} */ site) => site.id === id,
+    );
+    for (const requirement of coverage.requirements.filter(
+      (/** @type {any} */ requirement) =>
+        requirement.kind === coverage.ctx.kind.name &&
+        !coverage.pairs.has(requirement.key) &&
+        requirement.file === site?.file &&
+        requirement.ranges.some(
+          (/** @type {number[]} */ span) =>
+            site.at >= span[0] && site.end <= span[1],
+        ),
+    )) {
+      const pair = r7IsolationPair(coverage.ctx, requirement, { value });
+      const pairKey = `r7-foreign:${JSON.stringify(pair.b.identities)}`;
+      r4State().ops.set(pairKey, {
+        token: pair.b.identities.token,
+        busy: false,
+        label: "",
+        value: pair.a.values.value,
+        failure: "r7 alien result",
+        note: null,
+      });
+      try {
+        const planted = r4State().ops.get(pairKey);
+        r7ValidateForeign(pair, planted, pairKey);
+        write(node, value);
+        const reference = r7Pieces(coverage.ctx);
+        write(
+          node,
+          typeof value === "boolean" ? !value : `${value} ${planted.failure}`,
+        );
+        const detectors = r7PieceChanges(reference, r7Pieces(coverage.ctx));
+        assert.ok(
+          detectors.length,
+          `${requirement.key}: the isolated direct result needs an observer`,
+        );
+        coverage.pairs.set(requirement.key, {
+          ...pair,
+          references: 1,
+          executions: 1,
+          source: id,
+          pieces: detectors,
+        });
+      } finally {
+        write(node, value);
+        r4State().ops.delete(pairKey);
+      }
+    }
+  } finally {
+    write(node, value);
+    r4State().ops.delete(key);
+  }
+  return result;
+}
+
+/** @param {string} id @param {any} form */
+function r7ResetOutcome(id, form) {
+  if (!form) return;
+  form.reset();
+  const coverage = r7Coverage;
+  if (!coverage?.ctx || coverage.observed.has(`${id} × foreign`)) return;
+  for (const input of r4Fields(form)) {
+    coverage.observed.delete(`${id} × foreign`);
+    const value = input.value;
+    if (input instanceof FakeSelect) {
+      const next = input.options
+        .map(
+          (/** @type {any} */ option) =>
+            option.getAttribute("value") ?? option.textContent,
+        )
+        .find((/** @type {string} */ candidate) => candidate !== value);
+      if (next !== undefined)
+        r7WriteOutcome(
+          id,
+          input,
+          value,
+          (node, candidate) =>
+            (node.value = candidate === value ? value : next),
+        );
+    } else
+      r7WriteOutcome(id, input, value, (node, value) => (node.value = value));
+  }
+}
+
+test("r4 inventory self-test: r7 arbitrary named, computed and Map outcome caches become observation obligations", () => {
+  for (const [declaration, write, read] of [
+    [
+      "let unexpectedState = { answer: null };",
+      'unexpectedState.answer = "old outcome";',
+      "unexpectedState.answer",
+    ],
+    [
+      "let computedState = {};",
+      'computedState["answer"] = "old outcome";',
+      'computedState["answer"]',
+    ],
+    [
+      "const mappedState = new Map();",
+      'mappedState.set("answer", "old outcome");',
+      'mappedState.get("answer")',
+    ],
+  ]) {
+    const files = r4WebFiles().map((file) =>
+      file.file.endsWith("/pages/device.js")
+        ? {
+            ...file,
+            src:
+              file.src
+                .replace(
+                  "let previewFailure = null;",
+                  `let previewFailure = null; ${declaration}`,
+                )
+                .replace(
+                  "const frozen = state.live.state",
+                  `setHtml(root.querySelector(".unobserved-cache"), ${read} ?? ""); const frozen = state.live.state`,
+                ) +
+              `\nasync function cacheAnOutcome() { await Promise.resolve(); ${write} render(getState()); }\n`,
+          }
+        : file,
+    );
+    assert.ok(
+      r7OutcomeSites(files).some(
+        (site) => site.type === "state" && site.text === read,
+      ),
+      `${read}: a new persistent render outcome requires an observing piece`,
+    );
+  }
+  const helper = "web/js/view/r7-pure-outcome.js";
+  const files = r4WebFiles().map((file) =>
+    file.file.endsWith("/pages/device.js")
+      ? {
+          ...file,
+          src:
+            'import { phaseBFailure } from "../view/r7-pure-outcome.js";\n' +
+            file.src.replace(
+              "const frozen = state.live.state",
+              'setHtml(root.querySelector(".new-result"), phaseBFailure(state)); const frozen = state.live.state',
+            ),
+        }
+      : file,
+  );
+  files.push({
+    file: helper,
+    src: 'import { op } from "../ops.js"; export const phaseBFailure = (view) => op("arbitrary", view)?.failure;',
+  });
+  assert.ok(
+    r7OutcomeSites(files).some(
+      (site) => site.file === helper && site.type === "slot",
+    ),
+    "an imported pure outcome reader needs coverage even without its own async row",
+  );
+});
+
+test("r4 harness self-test: r7 a repaired case cannot remain hidden as a known todo", () => {
+  assert.throws(
+    () => r7RequireKnownLiveness(new Set(["a repaired product case"])),
+    /remove it from R4_KNOWN/,
+  );
+});
+
+/** Replace the slot function body, so epoch-prefixed correct keys remain
+ * compatible with the same identity-confounding mutants. @param {string} body */
+async function r7OverlaySlotMutant(body) {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(
+    new URL("../../web/js/pages/overlays.js", import.meta.url),
+    "utf8",
+  );
+  const fn = r4xFunctions(r4xCodeOnly(source)).find(
+    (fn) => fn.name === "slotOf",
+  );
+  assert.ok(fn, "the overlay slot source has an inventoried function anchor");
+  return r5Module("pages/overlays.js", [
+    [source.slice(fn.at, fn.end + 1), `const slotOf = (id) => { ${body} }`],
+  ]);
+}
+
+/** Resolve source dependencies, so completed page/operation obligations can
+ * skip repeated probes without omitting any extracted source or requirement.
+ * @param {Array<{file: string, src: string}>} files @param {any[]} sites */
+function r7PageSources(files, sites) {
+  const byFile = new Map(files.map((file) => [file.file, file.src]));
+  /** @param {string} file @param {Set<string>} seen */
+  const dependencies = (file, seen) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    for (const match of (byFile.get(file) ?? "").matchAll(
+      /from\s+["'](\.{1,2}\/[^"']+)["']/g,
+    )) {
+      const parts = file.split("/");
+      parts.pop();
+      for (const part of match[1].split("/")) {
+        if (part === "..") parts.pop();
+        else if (part !== ".") parts.push(part);
+      }
+      const target = parts.join("/");
+      if (byFile.has(target)) dependencies(target, seen);
+    }
+  };
+  return new Map(
+    Object.keys(R4_PAGES).map((page) => {
+      const seen = new Set();
+      dependencies(
+        `web/js/pages/${page === "raw" ? "config-raw" : page}.js`,
+        seen,
+      );
+      return [page, sites.filter((site) => seen.has(site.file))];
+    }),
+  );
+}
+/** @param {string} page @param {string} kind */
+function r7NeedsAudit(page, kind) {
+  const coverage = r7Coverage;
+  if (!coverage) return false;
+  return (
+    (coverage.byKind.get(kind) ?? []).some(
+      (/** @type {any} */ requirement) => !coverage.pairs.has(requirement.key),
+    ) ||
+    (coverage.pageSources.get(page) ?? []).some((/** @type {any} */ site) =>
+      site.variants.some(
+        (/** @type {string} */ variant) =>
+          !coverage.observed.has(`${site.id} × ${variant}`),
+      ),
+    )
+  );
+}
+
+/** The physical foreign slot must agree with the audited owner frame. This
+ * also prevents sorting sentinels or changed control values from confounding
+ * an identity-isolation witness. @param {any} pair @param {any} slot @param {string} key */
+function r7ValidateForeign(pair, slot, key) {
+  assert.deepEqual(
+    JSON.parse(key.slice("r7-foreign:".length)),
+    pair.b.identities,
+    "identity isolation: the physical slot has exactly the declared owner frame",
+  );
+  assert.equal(
+    slot.token,
+    pair.b.identities.token,
+    "identity isolation: the physical token must match the frame",
+  );
+  assert.deepEqual(
+    slot.value,
+    pair.a.values.value,
+    "identity isolation: preserve the operation's values in the physical slot",
+  );
+}
