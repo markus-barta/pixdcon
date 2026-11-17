@@ -38,6 +38,10 @@
  *
  * Shutdown: stop loops (bounded), then telemetry and previews. The whole
  * process keeps v1's 8 s limit (A-035).
+ * An owed plug ON belongs to the scheduler's device, not its runtime. Its
+ * original topic/payload survives address/plug/output changes, disable and
+ * removal. Only that restorative ON may publish for a retired/shadow device;
+ * replacement runtimes wait for confirmation before doing display work.
  *
  * Order (core/ordering.js).
  *  - runtime "changed" is applied only when `effective.rev` is higher than
@@ -65,6 +69,7 @@ import { createLane, decideStamp, whileCurrent } from "../core/ordering.js";
 import { NotImplementedError } from "../core/todo.js";
 import { DeviceError } from "../core/errors.js";
 import { RenderLoop } from "./render-loop.js";
+import { PlugRecovery } from "./plug-recovery.js";
 
 /**
  * @typedef {object} SchedulerDeps
@@ -87,6 +92,9 @@ export class Scheduler {
     this.active = false;
     this.rev = -1;
     this.restarts = 0;
+    this.stopUntil = 0;
+    /** @type {Map<string, PlugRecovery>} */
+    this.plugRecoveries = new Map();
     this.lastWatchdogAt = /** @type {string|null} */ (null);
     this.watchdogIntervalMs = 1000;
     /** @type {Map<string, ReturnType<typeof createLane>>} */
@@ -172,6 +180,8 @@ export class Scheduler {
    * @returns {Promise<void>}
    */
   async stop(options) {
+    const deadlineMs = options?.deadlineMs ?? 6000;
+    this.stopUntil = this.deps.clock.now() + deadlineMs;
     this.active = false;
     this.expected.clear();
     this.timer?.cancel(); this.timer = null;
@@ -183,14 +193,31 @@ export class Scheduler {
     // Invalidate all report views before waiting for any old render.
     const records = [...this.runtimes.values()];
     this.runtimes.clear();
+    const recoveryStop = this.stopPlugRecoveries(deadlineMs);
     await Promise.all(records.map(async (record) => {
       record.stopFeed();
       await record.loop.stop(options);
       this.deps.telemetry?.stop(record.device.name);
       await record.driver.close();
     }));
+    await recoveryStop;
     await Promise.all([...this.queues.values()].map((lane) => lane.drain()));
     this.queues.clear();
+  }
+
+  /** Bound orphaned debts as well as current runtimes at process shutdown. @param {number} deadlineMs */
+  async stopPlugRecoveries(deadlineMs) {
+    const deadline = new AbortController();
+    for (const recovery of this.plugRecoveries.values()) recovery.wake();
+    await Promise.race([
+      Promise.all([...this.plugRecoveries.values()].map((recovery) => recovery.restore())),
+      this.deps.clock.sleep(deadlineMs, deadline.signal),
+    ]);
+    deadline.abort();
+    for (const [name, recovery] of this.plugRecoveries) {
+      recovery.close();
+      if (recovery.owed) this.deps.logger.warn(`[Scheduler] ${name}: shutdown deadline reached with plug ON unconfirmed`);
+    }
   }
 
   /**
@@ -270,7 +297,12 @@ export class Scheduler {
     const report = whileCurrent(current, { report: (/** @type {Partial<import('../types.js').EffectiveState>} */ patch) => { this.deps.state.reportEffective(name, patch, token); } }, ["report"]).report;
     const desired = this.deps.state.get(name)?.desired;
     const target = desired ? this.targetOf(desired, device.type) : { scene: device.savedScene, mode: /** @type {const} */ ("play"), brightnessOverride: null };
-    const loop = new RenderLoop({ device: { ...device, output: device.output.mode }, driver: driverView, createSurface: this.deps.factories.createSurface, scenes: this.deps.scenes, health, previews, report, mqtt: this.deps.mqtt, clock: this.deps.clock, logger: this.deps.logger, probeIntervalMs: () => this.deps.runtime.get().health.probeIntervalMs }, target);
+    let plugRecovery = this.plugRecoveries.get(name);
+    if (!plugRecovery) {
+      plugRecovery = new PlugRecovery({ name, mqtt: this.deps.mqtt, clock: this.deps.clock, logger: this.deps.logger, until: () => this.active ? Infinity : this.stopUntil });
+      this.plugRecoveries.set(name, plugRecovery);
+    }
+    const loop = new RenderLoop({ device: { ...device, output: device.output.mode }, driver: driverView, createSurface: this.deps.factories.createSurface, scenes: this.deps.scenes, health, previews, report, mqtt: this.deps.mqtt, clock: this.deps.clock, logger: this.deps.logger, probeIntervalMs: () => this.deps.runtime.get().health.probeIntervalMs, plugRecovery }, target);
     const record = { device, token, driver, loop, stopFeed: () => {} };
     this.runtimes.set(name, record);
     this.retryAfter.delete(name);
@@ -291,6 +323,7 @@ export class Scheduler {
     record.stopFeed();
     this.deps.telemetry?.stop(name);
     const stopping = record.loop.stop();
+    if (record.loop.plugOnOwed) void record.loop.restorePlugOn();
     // Retirement revokes queued transport work immediately, including a drive → shadow change.
     await record.driver.close();
     await stopping;
@@ -311,6 +344,7 @@ export class Scheduler {
         this.enqueue(name, async () => {
           record.stopFeed(); this.deps.telemetry?.stop(name);
           const stopping = record.loop.stop(); await record.driver.close(); await stopping;
+          if (record.loop.plugOnOwed) void record.loop.restorePlugOn();
           await this.rebuild(name);
         });
       }

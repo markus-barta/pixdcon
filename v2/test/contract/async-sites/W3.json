@@ -90,63 +90,31 @@
       "test": "test/smoke/drivers-render.test.js: previews in order:"
     },
     {
-      "site": "src/render/render-loop.js:151",
-      "id": "listener:this.deps.mqtt.on(\"connect\")#1",
-      "input": "gateway reconnect",
-      "metadata": "runtime-owned ON obligation; gateway connections only rise",
-      "fence": "wakes serialized retry only when ON is owed; confirmed ON clears debt; listener removed on bounded stop",
-      "test": "test/smoke/drivers-render.test.js: stop retries an owed ON within its deadline"
-    },
-    {
-      "site": "src/render/render-loop.js:173",
+      "site": "src/render/render-loop.js:170",
       "id": "timer:this.deps.clock.sleep#1",
       "input": "pacing, stop deadline or plug wait",
-      "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
-      "fence": "running and target version fence reports; only accepted frames/manual retry reset cycle budget; uncertain OFF owes confirmed ON through reconnect and bounded stop",
+      "metadata": "runtime token and target version; scheduler-owned original plug debt shared across replacements",
+      "fence": "running/version fence reports; accepted frames and manual retry reset cycle budget; ordinary good probes preserve frame errors; exhausted probe resets only errors; display work waits for confirmed owed ON",
       "test": "test/smoke/smoke.test.js: stop: the process ends"
     },
     {
       "site": "src/render/render-loop.js:294",
       "id": "timer:this.deps.clock.sleep#2",
       "input": "pacing, stop deadline or plug wait",
-      "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
-      "fence": "running and target version fence reports; only accepted frames/manual retry reset cycle budget; uncertain OFF owes confirmed ON through reconnect and bounded stop",
+      "metadata": "runtime token and target version; scheduler-owned original plug debt shared across replacements",
+      "fence": "running/version fence reports; accepted frames and manual retry reset cycle budget; ordinary good probes preserve frame errors; exhausted probe resets only errors; display work waits for confirmed owed ON",
       "test": "test/smoke/drivers-render.test.js: backoff 1, 2, 4"
     },
     {
-      "site": "src/render/render-loop.js:331",
-      "id": "work:mqtt.publish#1",
-      "input": "plug publish outcome",
-      "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
-      "fence": "running and target version fence reports; only accepted frames/manual retry reset cycle budget; uncertain OFF owes confirmed ON through reconnect and bounded stop",
-      "test": "test/smoke/drivers-render.test.js: uncertain OFF outcomes still owe ON"
-    },
-    {
-      "site": "src/render/render-loop.js:344",
-      "id": "timer:this.deps.clock.sleep#3",
-      "input": "owed ON retry interval",
-      "metadata": "ON obligation, running flag, stop deadline, abortable retry sleep",
-      "fence": "only confirmed publish clears owed ON; no exhausted while owed; reconnect/stop wake retry and deadline bounds it",
-      "test": "test/smoke/drivers-render.test.js: failed ON retries on the clock"
-    },
-    {
-      "site": "src/render/render-loop.js:358",
-      "id": "work:mqtt.publish#2",
-      "input": "plug publish outcome",
-      "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
-      "fence": "running and target version fence reports; only accepted frames/manual retry reset cycle budget; uncertain OFF owes confirmed ON through reconnect and bounded stop",
-      "test": "test/smoke/drivers-render.test.js: only a certainly unsent OFF error"
-    },
-    {
-      "site": "src/render/render-loop.js:432",
+      "site": "src/render/render-loop.js:406",
       "id": "work:this.deps.scenes.acquire#1",
       "input": "scene instance acquired asynchronously",
-      "metadata": "runtime token via scheduler views; target version and running flag; serialized frame boundary",
-      "fence": "running and target version fence reports; only accepted frames/manual retry reset cycle budget; uncertain OFF owes confirmed ON through reconnect and bounded stop",
+      "metadata": "runtime token and target version; scheduler-owned original plug debt shared across replacements",
+      "fence": "running/version fence reports; accepted frames and manual retry reset cycle budget; ordinary good probes preserve frame errors; exhausted probe resets only errors; display work waits for confirmed owed ON",
       "test": "test/smoke/smoke.test.js: render reports in order:"
     },
     {
-      "site": "src/render/scheduler.js:161",
+      "site": "src/render/scheduler.js:169",
       "id": "listener:this.deps.runtime.on(\"changed\")#1",
       "input": "effective config change",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -154,7 +122,7 @@
       "test": "test/smoke/drivers-render.test.js: queued drive then shadow changes and additions"
     },
     {
-      "site": "src/render/scheduler.js:162",
+      "site": "src/render/scheduler.js:170",
       "id": "listener:this.deps.state.on(\"desired\")#1",
       "input": "desired device command",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -162,7 +130,7 @@
       "test": "test/smoke/drivers-render.test.js: scheduler in order:"
     },
     {
-      "site": "src/render/scheduler.js:163",
+      "site": "src/render/scheduler.js:171",
       "id": "listener:this.deps.state.on(\"retry\")#1",
       "input": "explicit retry command",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -170,7 +138,7 @@
       "test": "test/smoke/drivers-render.test.js: scheduler in order:"
     },
     {
-      "site": "src/render/scheduler.js:164",
+      "site": "src/render/scheduler.js:172",
       "id": "listener:this.deps.health.on(\"health\")#1",
       "input": "derived health measurement",
       "metadata": "effective revision, per-device lane position and runtime token",
@@ -178,12 +146,52 @@
       "test": "test/smoke/smoke.test.js: render reports in order:"
     },
     {
-      "site": "src/render/scheduler.js:167",
+      "site": "src/render/scheduler.js:175",
       "id": "timer:this.deps.clock.every#1",
       "input": "watchdog tick",
       "metadata": "effective revision, per-device lane position and runtime token",
       "fence": "decideStamp on revision; device lane reads expected again after retirement; build checks current object; reports use whileCurrent; synchronous previewFrame returns null when retired",
       "test": "test/smoke/drivers-render.test.js: watchdog replaces an overdue render"
+    },
+    {
+      "site": "src/render/plug-recovery.js:40",
+      "id": "listener:this.deps.mqtt.on(\"connect\")#1",
+      "input": "gateway reconnect while original ON is owed",
+      "metadata": "scheduler-owned per-device debt; captured original plug; one shared restore task; owner shutdown deadline",
+      "fence": "Original OFF settles before ON; certain OFF error or confirmed ON alone clears scheduler-owned debt; retired/replacement runtimes share one publisher; reconnect wakes only ON retry; offline wait 30 s, connected wait 1 s; publish deadline and fresh heartbeat fence watchdog; shutdown deadline bounds new attempts",
+      "test": "test/smoke/drivers-render.test.js: reconnect during plug OFF preserves the full ten-second off wait"
+    },
+    {
+      "site": "src/render/plug-recovery.js:50",
+      "id": "work:mqtt.publish#1",
+      "input": "original plug publish result",
+      "metadata": "scheduler-owned per-device debt; captured original plug; one shared restore task; owner shutdown deadline",
+      "fence": "Original OFF settles before ON; certain OFF error or confirmed ON alone clears scheduler-owned debt; retired/replacement runtimes share one publisher; reconnect wakes only ON retry; offline wait 30 s, connected wait 1 s; publish deadline and fresh heartbeat fence watchdog; shutdown deadline bounds new attempts",
+      "test": "test/smoke/drivers-render.test.js: retirement never sends ON ahead of an unresolved OFF"
+    },
+    {
+      "site": "src/render/plug-recovery.js:76",
+      "id": "work:mqtt.publish#2",
+      "input": "original plug publish result",
+      "metadata": "scheduler-owned per-device debt; captured original plug; one shared restore task; owner shutdown deadline",
+      "fence": "Original OFF settles before ON; certain OFF error or confirmed ON alone clears scheduler-owned debt; retired/replacement runtimes share one publisher; reconnect wakes only ON retry; offline wait 30 s, connected wait 1 s; publish deadline and fresh heartbeat fence watchdog; shutdown deadline bounds new attempts",
+      "test": "test/smoke/drivers-render.test.js: five-second unacknowledged ON publishes refresh watchdog liveness"
+    },
+    {
+      "site": "src/render/plug-recovery.js:89",
+      "id": "timer:clock.sleep#1",
+      "input": "owed ON retry or shutdown deadline",
+      "metadata": "scheduler-owned per-device debt; captured original plug; one shared restore task; owner shutdown deadline",
+      "fence": "Original OFF settles before ON; certain OFF error or confirmed ON alone clears scheduler-owned debt; retired/replacement runtimes share one publisher; reconnect wakes only ON retry; offline wait 30 s, connected wait 1 s; publish deadline and fresh heartbeat fence watchdog; shutdown deadline bounds new attempts",
+      "test": "test/smoke/drivers-render.test.js: offline owed ON retries wait thirty seconds, commands wait, and reconnect wakes immediately"
+    },
+    {
+      "site": "src/render/scheduler.js:214",
+      "id": "timer:this.deps.clock.sleep#1",
+      "input": "owed ON retry or shutdown deadline",
+      "metadata": "scheduler-owned per-device debt; captured original plug; one shared restore task; owner shutdown deadline",
+      "fence": "OFF settles before ON; certain OFF error or confirmed ON alone clears debt; replacement/retired runtimes share one publisher; reconnect aborts only ON retry; deadlines fence attempts and bound shutdown; publish deadline/heartbeat prevents false watchdog restarts",
+      "test": "test/smoke/drivers-render.test.js: a dead runtime rebuilt by watchdog keeps its pending ON"
     }
   ],
   "none": []

@@ -11,7 +11,7 @@ import { HealthModel } from "../../src/health/health-model.js";
 import { TelemetryCollector } from "../../src/health/telemetry.js";
 import { PreviewStore } from "../../src/render/preview-store.js";
 import { createTopics } from "../../src/mqtt/topics.js";
-import { deferred, flush, healthConfig, logger, loopRig, rig, StubMqtt, until } from "./runtime-fixture.js";
+import { deferred, flush, healthConfig, logger, loopRig, owedOnRig, rig, StubMqtt, until } from "./runtime-fixture.js";
 
 test("both fakes receive frames of their scenes within 2 s of the start", async (t) => {
   const r = await rig(t);
@@ -799,6 +799,106 @@ test("scheduler retires disabled devices, preserves previews, re-arms only the c
   r.change(r.devices.map((/** @type {any} */ d) => d.name === "p" ? { ...d, enabled: false } : d), { devicesChanged: { p: ["enabled"] } });
   await until(() => !r.scheduler.loop("p"));
   assert.ok(r.previews.get("p")); assert.equal(r.health.get("p"), undefined); assert.equal(r.scheduler.status().devices, 1);
+});
+
+test("five-second unacknowledged ON publishes refresh watchdog liveness without rebuilding either device", async (t) => {
+  const r = await owedOnRig(t, { slowOn: true });
+  const other = r.scheduler.loop("u");
+  await r.clock.advance(180000);
+  const status = r.loop.status();
+  assert.equal(r.scheduler.loop("p"), r.loop);
+  assert.equal(r.scheduler.loop("u"), other);
+  assert.equal(r.scheduler.status().restarts, 0);
+  assert.equal(r.loop.plugOnOwed, true);
+  assert.ok(Date.parse(status.lastTickAt ?? "") >= r.clock.now() - 6000);
+  assert.ok(Date.parse(status.nextWakeAt ?? "") > r.clock.now());
+  assert.equal(r.maxInFlight(), 1);
+});
+
+test("owed original ON survives shadow, address/plug changes, disable and removal past the retirement deadline", async (t) => {
+  for (const change of ["shadow", "address", "plug", "disable", "remove"]) {
+    const r = await owedOnRig(t);
+    const alternate = change === "address" ? await startFakePixoo() : null;
+    if (alternate) t.after(() => alternate.stop());
+    const original = r.loop.plugRecovery;
+    const renders = r.renderCalls.get("p");
+    r.mqtt.connected = false; r.mqtt.outcomes = [];
+    const devices = r.devices.flatMap((/** @type {any} */ d) => {
+      if (d.name !== "p") return [d];
+      if (change === "remove") return [];
+      const patch = change === "shadow" ? { output: { mode: "shadow", requested: "shadow", reason: "config" } }
+        : change === "address" ? { address: alternate?.address }
+        : change === "plug" ? { powerCyclePlugin: { topic: "replacement-plug", onPayload: "ON-NEW" } }
+        : { enabled: false };
+      return [{ ...d, ...patch }];
+    });
+    const key = change === "shadow" ? "output" : change === "plug" ? "powerCyclePlugin" : change === "disable" ? "enabled" : "address";
+    r.change(devices, change === "remove" ? { devicesRemoved: ["p"] } : { devicesChanged: { p: [key] } });
+    await flush(); await r.clock.advance(6001);
+    const removed = change === "disable" || change === "remove";
+    await until(() => removed ? !r.scheduler.loop("p") : r.tokens.get("p") === 2);
+    await r.clock.advance(90000);
+    assert.equal(original.owed, true, change);
+    assert.equal(r.scheduler.plugRecoveries.get("p"), original);
+    assert.equal(r.renderCalls.get("p"), renders, "replacement waits for original ON");
+    assert.ok(r.mqtt.messages.filter((m) => m.payload === "ON-OLD").length >= 4, change);
+    assert.ok(r.mqtt.messages.every((m) => m.topic === "original-plug"));
+    if (!removed) assert.equal(r.scheduler.loop("p")?.plugRecovery, original);
+    r.mqtt.connected = true; r.mqtt.outcomes = ["confirmed"];
+    r.mqtt.emit("connect", { connection: ++r.mqtt.connection });
+    await until(() => !original.owed);
+    assert.equal(r.mqtt.messages.at(-1)?.payload, "ON-OLD");
+    assert.equal(r.maxInFlight(), 1, "old and replacement runtimes share one publisher");
+    if (!removed) await until(() => (r.renderCalls.get("p") ?? 0) > (renders ?? 0), `${change}: replacement resumes after ON`);
+    else { assert.equal(r.scheduler.loop("p"), undefined); assert.equal(r.health.get("p"), undefined); }
+  }
+});
+
+test("a dead runtime rebuilt by watchdog keeps its pending ON and shutdown bounds the orphan retry", async (t) => {
+  const r = await owedOnRig(t);
+  const recovery = r.loop.plugRecovery;
+  r.loop.alive = false;
+  await r.clock.advance(7001);
+  await until(() => r.tokens.get("p") === 2);
+  assert.equal(r.scheduler.loop("p")?.plugRecovery, recovery);
+  assert.equal(recovery.owed, true); assert.equal(r.maxInFlight(), 1);
+  r.change(r.devices.filter((/** @type {any} */ d) => d.name !== "p"), { devicesRemoved: ["p"] });
+  await flush(); await r.clock.advance(6001);
+  let stopped = false;
+  const stopping = r.scheduler.stop({ deadlineMs: 2500 }).then(() => { stopped = true; });
+  await r.clock.advance(2499); assert.equal(stopped, false);
+  await r.clock.advance(1); await stopping;
+  assert.equal(recovery.owed, true); assert.equal(r.mqtt.listenerCount("connect"), 0);
+  const count = r.mqtt.messages.length;
+  r.mqtt.emit("connect", { connection: ++r.mqtt.connection });
+  await r.clock.advance(60000); assert.equal(r.mqtt.messages.length, count);
+});
+
+test("retirement never sends ON ahead of an unresolved OFF and restores its original payload after a plug change", async (t) => {
+  const error = new DeviceError("frame rejected");
+  const r = await rig(t, { start: false, render: async () => { throw error; } });
+  r.devices[0].powerCyclePlugin = { topic: "old-plug", onPayload: "WAKE" };
+  const off = deferred(); const publish = r.mqtt.publish.bind(r.mqtt);
+  r.mqtt.publish = async (topic, payload, options) => {
+    const result = await publish(topic, payload, options);
+    if (payload === '{"state":"OFF"}') { await off.promise; return { ...result, outcome: "timeout", ok: false }; }
+    return result;
+  };
+  await r.scheduler.start();
+  await until(() => r.scheduler.loop("p")?.deviceErrors === 1);
+  const old = r.scheduler.loop("p"); assert.ok(old);
+  for (const [index, ms] of [1000, 2000, 4000, 8000, 10000, 10000, 10000, 10000, 10000].entries()) {
+    await r.clock.advance(ms); await until(() => old.deviceErrors === index + 2);
+  }
+  await until(() => r.mqtt.messages.length === 1);
+  r.change(r.devices.map((/** @type {any} */ d) => d.name === "p" ? { ...d, powerCyclePlugin: { topic: "new-plug" } } : d), { devicesChanged: { p: ["powerCyclePlugin"] } });
+  await flush(); await r.clock.advance(6001);
+  await until(() => r.tokens.get("p") === 2);
+  assert.equal(r.mqtt.messages.length, 1, "retirement and replacement wait for OFF to settle");
+  off.resolve(null); await until(() => r.mqtt.messages.length === 2);
+  assert.equal(r.mqtt.messages[1]?.topic, "old-plug");
+  assert.equal(r.mqtt.messages[1]?.payload, "WAKE");
+  await until(() => !old.plugOnOwed);
 });
 
 test("watchdog restarts a dead runtime only and reports its measured liveness", async (t) => {

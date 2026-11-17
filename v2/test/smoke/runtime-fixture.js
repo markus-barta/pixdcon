@@ -1,6 +1,7 @@
 /** Fake-device harness for W3: real driver/loop/model, injected scene surface. */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { DeviceError } from "../../src/core/errors.js";
 import { startFakePixoo } from "../../dev/fake-pixoo.js";
 import { startFakeAwtrix } from "../../dev/fake-awtrix.js";
 import { manualClock, systemClock } from "../../src/core/clock.js";
@@ -183,4 +184,38 @@ export function loopRig(t, options = {}) {
   t.after(async () => { const stop = loop.stop({ deadlineMs: 5 }); await clock.advance(6); await stop; health.stop(); });
   loop.start();
   return { loop, clock, health, previews, mqtt, calls, options, renders: () => renders, replace() { current = false; } };
+}
+
+/** Scheduler with real loopback drivers/probes and a scene's controllable device failure.
+ * @param {import('node:test').TestContext} t @param {{slowOn?: boolean}} [options] */
+export async function owedOnRig(t, options = {}) {
+  // Use the same DeviceError as transport rejection, without blocking clock advancement on HTTP.
+  const r = await rig(t, { start: false, render: async (/** @type {string} */ _, /** @type {string} */ name, /** @type {any} */ surface) => {
+    if (name === "p") throw new DeviceError("frame rejected");
+    await surface.paint(3); return 1200000;
+  } });
+  r.devices[0].powerCyclePlugin = { topic: "original-plug", onPayload: "ON-OLD", offPayload: "OFF-OLD" };
+  r.devices[0].maxPowerCycles = 1;
+  r.mqtt.outcomes = ["confirmed", ...Array(500).fill("timeout")];
+  const publish = r.mqtt.publish.bind(r.mqtt);
+  let inFlight = 0; let maxInFlight = 0;
+  r.mqtt.publish = async (topic, payload, opts) => {
+    inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+    try {
+      const result = await publish(topic, payload, opts);
+      if (options.slowOn && payload === "ON-OLD") await r.clock.sleep(opts.timeoutMs ?? 5000);
+      return result;
+    } finally { inFlight--; }
+  };
+  await r.scheduler.start();
+  await until(() => r.scheduler.loop("p")?.deviceErrors === 1);
+  const loop = r.scheduler.loop("p"); assert.ok(loop);
+  for (const [index, ms] of [1000, 2000, 4000, 8000, 10000, 10000, 10000, 10000, 10000].entries()) {
+    await r.clock.advance(ms);
+    await until(() => loop.deviceErrors === index + 2);
+  }
+  await until(() => loop.status().powerCycleCount === 1); await flush();
+  await r.clock.advance(10000);
+  await until(() => r.mqtt.messages.some((m) => m.payload === "ON-OLD"));
+  return { ...r, loop, maxInFlight: () => maxInFlight };
 }

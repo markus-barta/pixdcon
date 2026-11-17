@@ -34,10 +34,13 @@
  *    ordinary backoff probes only end the wait and preserve frame errors. Only an
  *    accepted frame or manual retry (retryNow/play while playing) starts the cycle budget over (B-035, S-8).
  *  - An OFF result other than certain error owes ON until QoS-1 confirmation.
- *    Reconnects wake retries; stop keeps trying within its deadline (D-124).
+ *    The scheduler retains the original plug across runtime replacement and
+ *    retirement. Reconnects wake ON retries only; offline retries wait 30 s.
+ *    apply()/retryNow() wait for ON; stop keeps trying within its deadline (D-124).
  *    The log says what was really sent (D-B16).
  *  - stop() has a deadline; a render that hangs cannot block the process (B-044, A-028).
- *  - Output "shadow": no MQTT publish, so no power cycle, ever. `device.output`
+ *  - Output "shadow" initiates no MQTT publish or power cycle. A scheduler-owned
+ *    ON owed by an earlier driven runtime must still be restored. `device.output`
  *    is the resolved policy, the same value that selected the driver.
  *  - A good frame is reported to the health model as a fact, without the
  *    delay the scene asked for: health is by the clock since the last good
@@ -62,6 +65,7 @@
 
 import { DeviceError, SceneError } from "../core/errors.js";
 import { isBuiltin } from "../drivers/builtin-modes.js";
+import { PlugRecovery } from "./plug-recovery.js";
 
 /** @typedef {import("../types.js").PlaybackMode} PlaybackMode */
 /** @typedef {import("../types.js").EffectiveState} EffectiveState */
@@ -100,6 +104,7 @@ export const LOOP_DEFAULTS = Object.freeze({
  * @property {import("../types.js").Clock} clock
  * @property {import("../types.js").Logger} logger
  * @property {() => number} [probeIntervalMs] effective health config; default 10000
+ * @property {PlugRecovery} [plugRecovery] scheduler-owned debt survives runtime replacement
  */
 
 export class RenderLoop {
@@ -120,15 +125,8 @@ export class RenderLoop {
     this.deviceErrors = 0;
     this.errors = 0;
     this.cycles = 0;
-    this.plugOnOwed = false;
-    this.plugWake = false;
     this.stopUntil = /** @type {number|null} */ (null);
-    this.plugSleeper = /** @type {AbortController|null} */ (null);
-    this.onConnect = () => {
-      if (!this.plugOnOwed) return;
-      this.plugWake = true;
-      this.plugSleeper?.abort();
-    };
+    this.plugRecovery = deps.plugRecovery ?? new PlugRecovery({ name: deps.device.name, mqtt: deps.mqtt, clock: deps.clock, logger: deps.logger, until: () => this.running ? Infinity : this.stopUntil ?? 0 });
     this.pausedFrame = false;
     this.lastSceneBrightness = /** @type {number|null} */ (null);
     this.appliedNative = /** @type {number|null} */ (null);
@@ -148,7 +146,6 @@ export class RenderLoop {
     if (this.running) return;
     this.running = this.alive = true;
     this.stopUntil = null;
-    this.deps.mqtt?.on("connect", this.onConnect);
     this.task = this.run().catch((error) => {
       this.deps.logger.error(`[RenderLoop] ${this.deps.device.name}: loop ended`, error);
     }).finally(() => { this.alive = false; });
@@ -165,7 +162,7 @@ export class RenderLoop {
     this.stopUntil = this.deps.clock.now() + deadlineMs;
     this.running = false;
     this.sleeper?.abort();
-    this.plugSleeper?.abort();
+    this.plugRecovery.wake();
     if (!this.task) return { clean: true };
     const deadline = new AbortController();
     const clean = await Promise.race([
@@ -173,7 +170,7 @@ export class RenderLoop {
       this.deps.clock.sleep(deadlineMs, deadline.signal).then(() => false),
     ]);
     deadline.abort();
-    this.deps.mqtt?.off("connect", this.onConnect);
+    if (!this.deps.plugRecovery) this.plugRecovery.close();
     if (this.plugOnOwed) this.deps.logger.warn(`[RenderLoop] ${this.deps.device.name}: stop deadline reached with plug ON unconfirmed`);
     if (!clean) {
       this.alive = false;
@@ -226,8 +223,11 @@ export class RenderLoop {
    * alive false: the task is not running although it should; the scheduler restarts it (A-027)
    */
   status() {
-    return { ...this.effective, alive: this.alive, lastTickAt: this.lastTickAt, nextWakeAt: this.nextWakeAt, consecutiveErrors: this.errors, powerCycleCount: this.cycles };
+    const recovery = this.plugOnOwed ? this.plugRecovery : null;
+    return { ...this.effective, alive: this.alive, lastTickAt: recovery?.lastTickAt ?? this.lastTickAt, nextWakeAt: recovery?.nextWakeAt ?? this.nextWakeAt, consecutiveErrors: this.errors, powerCycleCount: this.cycles };
   }
+
+  get plugOnOwed() { return this.plugRecovery.owed; }
 
   /** @param {Partial<EffectiveState>} patch */
   report(patch) {
@@ -322,43 +322,15 @@ export class RenderLoop {
 
   /** Retry the owed ON serially; neither an uncertain answer nor retirement forgives it. */
   async restorePlugOn() {
-    const { device, mqtt } = this.deps;
-    const plug = device.powerCyclePlugin;
-    if (!plug || !mqtt) return !this.plugOnOwed;
-    while (this.plugOnOwed && (this.running || this.deps.clock.now() < (this.stopUntil ?? 0))) {
-      this.plugWake = false;
-      try {
-        const on = await mqtt.publish(plug.topic, plug.onPayload ?? '{"state":"ON"}', { qos: 1, retain: false });
-        this.plugOnOwed = on.outcome !== "confirmed";
-        this.deps.logger[this.plugOnOwed ? "warn" : "info"](`[RenderLoop] ${device.name}: plug ON ${on.outcome}`);
-      } catch (error) { this.deps.logger.warn(`[RenderLoop] ${device.name}: plug ON failed: ${String(error)}`); }
-      if (!this.plugOnOwed) return true;
-      if (this.plugWake) continue; // a new connection arrived during the publish
-      const retryMs = mqtt.status().state === "connected" ? LOOP_DEFAULTS.initialBackoffMs : LOOP_DEFAULTS.maxBackoffMs;
-      const wait = Math.min(retryMs, this.running ? Infinity : (this.stopUntil ?? 0) - this.deps.clock.now());
-      if (wait <= 0) break;
-      this.report({ phase: "retrying", nextRetryAt: new Date(this.deps.clock.now() + wait).toISOString() });
-      const sleeper = new AbortController();
-      this.plugSleeper = sleeper;
-      this.nextWakeAt = new Date(this.deps.clock.now() + wait).toISOString();
-      await this.deps.clock.sleep(wait, sleeper.signal);
-      if (this.plugSleeper === sleeper) this.plugSleeper = null;
-      this.nextWakeAt = null;
-    }
-    return !this.plugOnOwed;
+    if (this.plugOnOwed) this.report({ phase: "retrying", nextRetryAt: this.plugRecovery.nextWakeAt });
+    return this.plugRecovery.restore();
   }
 
   async powerCycle() {
     const { device, mqtt, health } = this.deps;
     const plug = device.powerCyclePlugin;
     if (device.output !== "drive" || !plug || mqtt?.status().state !== "connected") return false;
-    // Set before sending: a thrown/timeout/offline answer cannot prove OFF was not sent.
-    this.plugOnOwed = true;
-    try {
-      const off = await mqtt.publish(plug.topic, plug.offPayload ?? '{"state":"OFF"}', { qos: 1, retain: false });
-      if (off.outcome === "error") { this.plugOnOwed = false; return false; }
-      this.deps.logger.info(`[RenderLoop] ${device.name}: plug OFF ${off.outcome}`);
-    } catch (error) { this.deps.logger.warn(`[RenderLoop] ${device.name}: plug OFF uncertain: ${String(error)}`); }
+    if (!await this.plugRecovery.powerOff(plug)) return false;
     this.cycles += 1;
     health.powerCycles(device.name, { count: this.cycles, exhausted: false });
     // Once OFF may have been sent, ON is owed even if stop interrupts the wait.
@@ -374,6 +346,8 @@ export class RenderLoop {
     try {
       while (this.running) {
         this.lastTickAt = this.iso();
+        if (this.plugOnOwed && !await this.restorePlugOn()) break;
+        if (!this.running) break;
         if (this.retry) {
           this.retry = false; this.errors = this.deviceErrors = this.cycles = 0; this.reinit = true;
           this.deps.health.powerCycles(this.deps.device.name, { count: 0, exhausted: false });
