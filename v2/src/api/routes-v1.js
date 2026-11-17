@@ -15,7 +15,21 @@
  * Owner: API + live channel worker.
  */
 
-import { todo } from "../core/todo.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { HttpError } from "../core/errors.js";
+import { NotImplementedError } from "../core/todo.js";
+import { HANDLED } from "./http-server.js";
+import {
+  deviceCommand,
+  devicePatch,
+  invalid,
+  newDevice,
+  object,
+  requireDrive,
+  text,
+} from "./commands.js";
+import { copyScene } from "./scene-copy.js";
 
 /** @typedef {import("./http-server.js").RouteMeta} RouteMeta */
 
@@ -101,6 +115,17 @@ export const V1_ROUTES = Object.freeze([
   },
   {
     method: "POST",
+    path: "/api/device/save",
+    summary:
+      "Merge editable device fields including scene in one atomic config write (v1 compatibility)",
+    body: "{deviceName, patch: {displayName?, comment?, ip?, scene?, enabled?, preview?}}",
+    ok: "{ok: true, device: saved device}",
+    errors:
+      "400 invalid_field, 404 unknown_device, 409 config_invalid or overlay_only_device",
+    rows: "B-079, S-1",
+  },
+  {
+    method: "POST",
     path: "/api/scene",
     summary:
       "Choose a device's scene: saved, applied at once, scene overlays of the device superseded",
@@ -128,7 +153,7 @@ export const V1_ROUTES = Object.freeze([
     body: "{deviceName, sceneName, values}",
     ok: "{ok: true, overlay: {…}}",
     errors:
-      "503 mqtt_offline (fix: v1 answered 500), 404 unknown device or scene",
+      "503 mqtt_offline (fix: v1 answered 500), 404 unknown device or scene, 409 shadow_output",
     rows: "A-138, C-098",
   },
   {
@@ -137,7 +162,7 @@ export const V1_ROUTES = Object.freeze([
     summary: "Clear the setting overlays of one device and scene",
     body: "{deviceName, sceneName}",
     ok: "{ok: true, overlay: {…keys that could not be cleared…}}",
-    errors: "503 mqtt_offline",
+    errors: "503 mqtt_offline, 409 shadow_output",
     rows: "A-139, C-102",
   },
   {
@@ -154,7 +179,7 @@ export const V1_ROUTES = Object.freeze([
     method: "POST",
     path: "/api/overlay",
     summary: "Store a retained scene overlay for a device",
-    body: "{deviceName, scene}",
+    body: "{deviceName, scene?} (omitted, empty or null clears)",
     ok: "{ok: true}",
     errors:
       "400 without deviceName (fix), 404 unknown device (fix), 503 mqtt_offline or publish not confirmed (fix)",
@@ -192,6 +217,7 @@ export const V1_ROUTES = Object.freeze([
 
 /**
  * @typedef {object} ApiDeps What route handlers may use. Built by main.js.
+ * @property {string} [versioningDir] injected shared-path seam for the pinned presentation assets
  * @property {import("../types.js").Epoch} epoch
  * @property {import("../config/config-store.js").ConfigStore} config
  * @property {import("../state/runtime-config.js").RuntimeConfig} runtime
@@ -213,18 +239,358 @@ export const V1_ROUTES = Object.freeze([
  */
 
 /**
- * Register every v1 route. In the skeleton each one answers 501.
+ * Register the v1 wire adapters. The stores remain the source of applied state.
  *
  * @param {import("./http-server.js").HttpServer} server
  * @param {ApiDeps} deps
  */
 export function registerV1Routes(server, deps) {
-  for (const { method, path, ...meta } of V1_ROUTES) {
-    server.route(
-      method,
-      path,
-      (ctx) => todo(`${method} ${path}`, ctx, deps),
-      meta,
-    );
-  }
+  /** @type {Record<string, import("./http-server.js").RouteHandler>} */
+  const built = {
+    "GET /vendor/inspr-versioning/:file": async (ctx) => {
+      const types = {
+        "version.js": "text/javascript; charset=utf-8",
+        "presentation.js": "text/javascript; charset=utf-8",
+        "version-interaction.js": "text/javascript; charset=utf-8",
+        "display.json": "application/json",
+        "schemes.json": "application/json",
+        LICENSE: "text/plain; charset=utf-8",
+      };
+      if (!Object.hasOwn(types, ctx.params.file))
+        throw new HttpError(404, "not_found", "Not found");
+      if (!deps.versioningDir)
+        throw new NotImplementedError("ApiDeps.versioningDir");
+      const content = await readFile(join(deps.versioningDir, ctx.params.file));
+      ctx.res.writeHead(200, {
+        "Content-Type":
+          types[/** @type {keyof typeof types} */ (ctx.params.file)],
+        "Cache-Control": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+      });
+      ctx.res.end(content);
+      return HANDLED;
+    },
+    "GET /api/config": () => deps.state.runningConfigV1(),
+    "GET /api/config/file": () => {
+      if (!deps.config.file().valid)
+        throw new HttpError(
+          409,
+          "config_invalid",
+          "config.json is invalid on disk",
+        );
+      return deps.config.get();
+    },
+    "POST /api/config/file": async (ctx) => {
+      await deps.config.replaceRaw(JSON.stringify(await ctx.body()));
+      return { ok: true };
+    },
+    "GET /api/scenes": () => ({
+      ...Object.fromEntries(
+        deps.scenes.list().map((scene) => [
+          scene.key,
+          {
+            key: scene.key,
+            path: scene.path,
+            name: scene.name,
+            pretty_name: scene.pretty_name,
+            description: scene.description,
+            deviceType: scene.deviceType,
+            settingsSchema: scene.settingsSchema,
+          },
+        ]),
+      ),
+      builtins: deps.builtinModes,
+    }),
+    "GET /api/scene-settings": () => deps.settings.toV1(),
+    "GET /api/previews": () => deps.previews.toV1(),
+    "GET /api/status": () => statusV1(deps),
+    "POST /api/device": async (ctx) => {
+      await deps.config.addDevice(newDevice(await ctx.body()));
+      return { ok: true };
+    },
+    "POST /api/device/save": async (ctx) => {
+      const body = await ctx.body();
+      const name = text(body.deviceName, "deviceName");
+      const patch = devicePatch(object(body.patch, "patch"), true);
+      return deviceCommand(deps, name, async () => {
+        const view = deps.state.view(name);
+        if (view.origin === "blob")
+          throw new HttpError(
+            409,
+            "overlay_only_device",
+            "Add this device to config.json first",
+          );
+        const scene = /** @type {string|null} */ (patch.scene || null);
+        if ("scene" in patch) {
+          const problem = deps.scenes.check(scene, view.type);
+          if (problem) throw new HttpError(400, "unknown_scene", problem);
+        }
+        await deps.config.updateDevice(name, (device) => {
+          for (const [key, value] of Object.entries(patch)) {
+            device[key] =
+              key === "scene"
+                ? scene
+                : key === "preview"
+                  ? {
+                      ...object(device.preview ?? {}, "preview"),
+                      ...object(value, "preview"),
+                    }
+                  : value;
+          }
+        });
+        return {
+          ok: true,
+          device: deps.config
+            .get()
+            .devices.find((device) => device.name === name),
+        };
+      });
+    },
+    "POST /api/scene": async (ctx) => {
+      try {
+        const body = await ctx.body();
+        const name = text(body.deviceName, "deviceName");
+        if (
+          body.scene !== undefined &&
+          body.scene !== null &&
+          typeof body.scene !== "string"
+        )
+          invalid("scene", "scene must be a string or null");
+        return await deviceCommand(deps, name, async () => {
+          const result = await deps.state.chooseScene(
+            name,
+            /** @type {string|null} */ (body.scene || null),
+          );
+          return {
+            ok: true,
+            ...(result.persisted ? {} : { persisted: false }),
+          };
+        });
+      } catch (error) {
+        if (error instanceof HttpError)
+          throw new HttpError(error.statusCode, error.code, error.message, {
+            ...error.extra,
+            ok: false,
+          });
+        throw error;
+      }
+    },
+    "POST /api/scene-settings/save": async (ctx) => {
+      const body = await ctx.body();
+      const device = text(body.deviceName, "deviceName"),
+        scene = text(body.sceneName, "sceneName");
+      const values = object(body.values, "values");
+      return deviceCommand(deps, device, async () => {
+        const before = deps.settings.state(device, scene);
+        // v1 keeps schema keys whose values normalise and replaces the
+        // saved set. The v2 save validates all keys before applying anything.
+        let set = Object.fromEntries(
+          Object.entries(values).filter(([key]) =>
+            Object.hasOwn(before.schema, key),
+          ),
+        );
+        const resets = () =>
+          Object.keys(before.values).filter(
+            (key) => "saved" in before.values[key] && !Object.hasOwn(set, key),
+          );
+        let result = await deps.settings.save(device, scene, {
+          set,
+          reset: resets(),
+        });
+        if (Object.keys(result.rejected).length) {
+          set = Object.fromEntries(
+            Object.entries(set).filter(
+              ([key]) => !Object.hasOwn(result.rejected, key),
+            ),
+          );
+          result = await deps.settings.save(device, scene, {
+            set,
+            reset: resets(),
+          });
+        }
+        if (Object.keys(result.rejected).length)
+          throw new HttpError(
+            400,
+            "invalid_field",
+            "Some settings are invalid",
+            { rejected: result.rejected },
+          );
+        return {
+          ok: true,
+          saved: Object.fromEntries(
+            Object.entries(result.state.values)
+              .filter(([, value]) => "saved" in value)
+              .map(([key, value]) => [key, value.saved]),
+          ),
+        };
+      });
+    },
+    "POST /api/scene-settings/overlay": async (ctx) => {
+      const body = await ctx.body();
+      const device = text(body.deviceName, "deviceName"),
+        scene = text(body.sceneName, "sceneName");
+      requireDrive(deps, device);
+      deps.settings.state(device, scene);
+      const result = await deps.overlays.publishSettings(
+        device,
+        scene,
+        object(body.values, "values"),
+      );
+      if (result.rejected.length)
+        throw new HttpError(400, "invalid_field", "Some settings are invalid", {
+          rejected: result.rejected,
+        });
+      if (result.failed.length)
+        throw new HttpError(
+          503,
+          "mqtt_offline",
+          "Some overlays were not confirmed",
+          { failed: result.failed },
+        );
+      return { ok: true, overlay: deps.overlays.settingValues(device, scene) };
+    },
+    "POST /api/scene-settings/overlay/clear": async (ctx) => {
+      const body = await ctx.body();
+      const device = text(body.deviceName, "deviceName"),
+        scene = text(body.sceneName, "sceneName");
+      requireDrive(deps, device);
+      deps.settings.state(device, scene);
+      const result = await deps.overlays.clearSettings(device, scene);
+      if (result.failed.length)
+        throw new HttpError(
+          503,
+          "mqtt_offline",
+          "Some overlays were not cleared",
+          { failed: result.failed },
+        );
+      return { ok: true, overlay: deps.overlays.settingValues(device, scene) };
+    },
+    "POST /api/scene/clone": async (ctx) => {
+      const body = await ctx.body();
+      const options = {
+        targetKey: body.targetSceneKey,
+        name: body.targetPrettyName,
+        replace: body.overwrite,
+      };
+      for (const key of Object.keys(options))
+        if (options[/** @type {keyof typeof options} */ (key)] === undefined)
+          delete options[/** @type {keyof typeof options} */ (key)];
+      const result = await copyScene(
+        deps,
+        text(body.sceneName, "sceneName"),
+        options,
+        { backupSource: true },
+      );
+      return { ok: true, sceneKey: result.scene.key, path: result.path };
+    },
+    "POST /api/overlay": async (ctx) => {
+      const body = await ctx.body();
+      const name = text(body.deviceName, "deviceName");
+      deps.state.view(name);
+      if (body.scene != null && typeof body.scene !== "string")
+        invalid("scene", "scene must be a string or null");
+      const result = await deps.overlays.publishSceneOverlay(
+        name,
+        /** @type {string|null} */ (body.scene || null),
+      );
+      if (!result.confirmed)
+        throw new HttpError(
+          503,
+          "mqtt_offline",
+          "The scene overlay was not confirmed",
+        );
+      return { ok: true };
+    },
+    "POST /api/overlay/clear": async (ctx) => {
+      const body = await ctx.body();
+      await deps.state.clearSceneOverlay(text(body.deviceName, "deviceName"));
+      return { ok: true };
+    },
+    "POST /api/mode": async (ctx) => {
+      const body = await ctx.body();
+      const name = text(body.deviceName, "deviceName");
+      if (
+        typeof body.mode !== "string" ||
+        !["play", "pause", "stop"].includes(body.mode)
+      )
+        throw new HttpError(400, "invalid_mode", "Choose play, pause or stop");
+      await deviceCommand(deps, name, () =>
+        deps.state.setMode(
+          name,
+          /** @type {import("../types.js").PlaybackMode} */ (body.mode),
+        ),
+      );
+      return { ok: true };
+    },
+    "POST /api/brightness": async (ctx) => {
+      const body = await ctx.body();
+      const name = text(body.deviceName, "deviceName");
+      if (typeof body.enabled !== "boolean")
+        invalid("enabled", "enabled must be boolean");
+      if (
+        body.enabled &&
+        (typeof body.value !== "number" ||
+          !Number.isFinite(body.value) ||
+          body.value < 1 ||
+          body.value > 100)
+      )
+        throw new HttpError(
+          400,
+          "invalid_brightness",
+          "Brightness must be from 1 to 100",
+        );
+      await deviceCommand(deps, name, () =>
+        deps.state.setBrightness(
+          name,
+          body.enabled ? Math.round(Number(body.value)) : null,
+        ),
+      );
+      return { ok: true };
+    },
+  };
+  for (const { method, path, ...meta } of V1_ROUTES)
+    server.route(method, path, built[`${method} ${path}`], meta);
+}
+
+/** The fields consumed by the v1 UI and deploy scripts; brightness stays percent.
+ * @param {ApiDeps} deps
+ */
+export function statusV1(deps) {
+  const controller = deps.controller();
+  const devices = deps.state.list();
+  return {
+    mqttConnected: deps.mqtt?.status().state === "connected",
+    version: controller.version,
+    version_scheme: controller.version_scheme,
+    deviceModes: Object.fromEntries(
+      devices.map((d) => [d.name, d.desired.mode.value]),
+    ),
+    deviceBrightness: Object.fromEntries(
+      devices.map((d) => [
+        d.name,
+        {
+          override: d.desired.brightness.override,
+          last: d.effective.lastBrightness,
+        },
+      ]),
+    ),
+    deviceHealth: Object.fromEntries(
+      devices.map((d) => [
+        d.name,
+        {
+          online: d.health.state !== "offline",
+          consecutiveErrors: d.health.consecutiveErrors,
+          lastSuccessAgoMs: d.health.lastFrameAt
+            ? Math.max(0, deps.clock.now() - Date.parse(d.health.lastFrameAt))
+            : null,
+          ip: d.runtime.address,
+          type: d.type,
+          apSsid: d.health.apSsid,
+        },
+      ]),
+    ),
+    deviceScenes: Object.fromEntries(
+      devices.map((d) => [d.name, d.effective.scene]),
+    ),
+  };
 }

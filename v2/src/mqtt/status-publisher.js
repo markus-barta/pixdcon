@@ -66,12 +66,16 @@
  *    drives nothing (edge lane, shadow) must not use v1's status base.
  *  - Nothing is rebuilt here: device entries come from the runtime config,
  *    the v1-shaped running config from the state store.
+ *  - Controller health/state/config publications use QoS 0, as v1 does.
+ *    The gateway's stored last will keeps its QoS 1 contract. Per-device
+ *    availability uses QoS 1: retirement needs broker
+ *    acknowledgements. Retained payloads publish on meaningful change, on
+ *    connect and every 30 s. Frame counters and freshness timestamps do not
+ *    trigger publishes; the periodic refresh carries their latest values.
  *
  * Owner: API + live channel worker. The last will below is finished code, so
  * the gateway (core/state worker) does not depend on this file being built.
  */
-
-import { todo } from "../core/todo.js";
 
 /**
  * @typedef {object} V1HealthPayload
@@ -240,26 +244,115 @@ export class StatusPublisher {
   /** @param {StatusPublisherDeps} deps */
   constructor(deps) {
     this.deps = deps;
+    this.ledger = createAvailabilityLedger();
+    this.startedAt = deps.clock.now();
+    this.running = false;
+    this.everDriven = false;
+    this.dirty = false;
+    this.force = false;
+    /** @type {Map<string, string>} meaningful payload last handed to the gateway per controller topic */
+    this.lastSent = new Map();
+    /** @type {Map<string, "online"|"offline">} last availability handed to the gateway per device */
+    this.lastAvailability = new Map();
+    this.errorCount = 0;
+    /** @type {{message: string, timestamp: string}|null} */
+    this.lastError = null;
+    /** @type {Map<string, {at: string, count: number, message: string}>} */
+    this.errors = new Map();
+    /** @type {Array<() => void>} */
+    this.stops = [];
+    /** @type {Promise<void>|null} */
+    this.pending = null;
   }
 
   /** Publish now, on every connect, on every relevant change and every `intervalMs`. */
   start() {
-    return todo("StatusPublisher.start");
+    if (this.running) return;
+    this.#devices(); // Fail synchronously while the runtime is still a skeleton.
+    this.running = true;
+    /** @param {import("node:events").EventEmitter} source @param {string} event @param {boolean} [force] */
+    const follow = (source, event, force = false) => {
+      const changed = () => {
+        this.#observeErrors();
+        this.#request(force);
+      };
+      source.on(event, changed);
+      this.stops.push(() => source.off(event, changed));
+    };
+    for (const event of ["device", "device-added", "device-removed"])
+      follow(this.deps.state, event);
+    follow(this.deps.runtime, "changed");
+    follow(this.deps.mqtt, "connect", true);
+    const timer = this.deps.clock.every(
+      () => this.#request(true),
+      this.deps.intervalMs ?? 30000,
+    );
+    this.stops.push(() => timer.cancel());
+    this.#request(true);
   }
 
   /** Publish running false and health "offline", retire the availability of every display that may still be "online" on the broker (planAvailability with no device driven), then stop the timers. */
   async stop() {
-    return todo("StatusPublisher.stop");
+    const wasRunning = this.running;
+    this.running = false;
+    for (const stop of this.stops.splice(0)) stop();
+    await this.pending;
+    if (wasRunning) await this.#publish(false, true);
   }
 
   /** @returns {V1HealthPayload} */
   buildHealth() {
-    return todo("StatusPublisher.buildHealth");
+    const devices = this.#devices().filter((device) => device.driven);
+    const states = devices.map((device) => ({
+      name: device.name,
+      health: this.deps.state.get(device.name)?.health,
+    }));
+    this.#observeErrors();
+    return {
+      status: this.running
+        ? states.some(
+            ({ health }) =>
+              health?.state === "stale" || health?.state === "offline",
+          )
+          ? "degraded"
+          : "ok"
+        : "offline",
+      timestamp: new Date(this.deps.clock.now()).toISOString(),
+      devices: states.map(({ name, health }) => ({
+        name,
+        status: !this.running
+          ? "offline"
+          : health?.state === "offline"
+            ? "failed"
+            : health?.state === "stale"
+              ? "degraded"
+              : "ok",
+        lastSeen: health?.lastContactAt ?? null,
+      })),
+      errorCount: this.errorCount,
+      lastError: this.lastError,
+    };
   }
 
   /** @returns {V1StatePayload} */
   buildState() {
-    return todo("StatusPublisher.buildState");
+    return {
+      running: this.running,
+      currentScene: null,
+      uptime: Math.floor((this.deps.clock.now() - this.startedAt) / 1000),
+      devices: this.#devices()
+        .filter((device) => device.driven)
+        .map((device) => {
+          const state = this.deps.state.get(device.name);
+          return {
+            name: device.name,
+            scene: state?.effective.scene ?? null,
+            frameCount: state?.effective.frameCount ?? 0,
+            mode: state?.desired.mode.value ?? "play",
+            source: state?.desired.scene.source ?? "fallback",
+          };
+        }),
+    };
   }
 
   /**
@@ -270,6 +363,193 @@ export class StatusPublisher {
    * @returns {"online"|"offline"|null} null: nothing to publish. That is a device this instance does not drive and owes no "offline" for (owesOffline)
    */
   buildAvailability(device) {
-    return todo("StatusPublisher.buildAvailability", device);
+    return (
+      planAvailability(this.ledger, this.running ? this.#devices() : []).find(
+        (entry) => entry.device === device,
+      )?.payload ?? null
+    );
+  }
+
+  // Observe every state event, including while a previous MQTT batch waits
+  // for acknowledgements. Sampling only at publish time loses quick recovery.
+  #observeErrors() {
+    const states = this.#devices()
+      .filter((device) => device.driven)
+      .map((device) => ({
+        name: device.name,
+        health: this.deps.state.get(device.name)?.health,
+      }));
+    for (const { name, health } of states) {
+      const previous = this.errors.get(name);
+      if (
+        health?.lastError &&
+        (!previous ||
+          health.lastError.at !== previous.at ||
+          health.lastError.message !== previous.message ||
+          health.consecutiveErrors > previous.count)
+      ) {
+        this.errorCount += Math.max(
+          1,
+          health.consecutiveErrors - (previous?.count ?? 0),
+        );
+        this.lastError = {
+          message: health.lastError.message,
+          timestamp: health.lastError.at,
+        };
+      }
+      if (health)
+        this.errors.set(name, {
+          at: health.lastError?.at ?? "",
+          count: health.consecutiveErrors,
+          message: health.lastError?.message ?? "",
+        });
+    }
+  }
+
+  #devices() {
+    return this.deps.runtime.get().devices.map((device) => ({
+      name: device.name,
+      driven: device.enabled && device.output.mode === "drive",
+      health: this.deps.state.get(device.name)?.health.state ?? null,
+    }));
+  }
+
+  /** @param {boolean} [force] connect and timer refresh unchanged payloads too */
+  #request(force = false) {
+    if (!this.running) return;
+    this.dirty = true;
+    this.force ||= force;
+    if (this.pending) return;
+    this.pending = this.#flush()
+      .catch((error) => {
+        this.deps.logger.error("[Status] Publish failed", error);
+      })
+      .finally(() => {
+        this.pending = null;
+        if (this.running && this.dirty) this.#request();
+      });
+  }
+
+  async #flush() {
+    do {
+      this.dirty = false;
+      const force = this.force;
+      this.force = false;
+      await this.#publish(true, force);
+    } while (this.running && this.dirty);
+  }
+
+  /** Every batch is built when it is sent, never from the event that woke it.
+   * @param {boolean} running
+   * @param {boolean} force
+   */
+  async #publish(running, force) {
+    const { topics } = this.deps;
+    const devices = this.#devices();
+    const driven = new Set(
+      devices.filter((device) => device.driven).map((device) => device.name),
+    );
+    for (const name of this.lastAvailability.keys()) {
+      if (!driven.has(name)) this.lastAvailability.delete(name);
+    }
+    this.everDriven ||= devices.some((device) => device.driven);
+    /** @type {Array<Promise<unknown>>} */
+    const writes = [];
+    // A shadow instance never claims v1's status namespace. After driving,
+    // it still removes the departed devices from its owned controller lists.
+    if (topics.statusBase !== topics.base || this.everDriven) {
+      const config = this.deps.state.runningConfigV1();
+      const effective = {
+        ...config,
+        devices: /** @type {Array<{name: string}>} */ (
+          config.devices ?? []
+        ).filter((device) => driven.has(device.name)),
+      };
+      writes.push(
+        this.#controller(
+          topics.health,
+          /** @type {Record<string, unknown>} */ (this.buildHealth()),
+          force,
+        ),
+      );
+      writes.push(
+        this.#controller(
+          topics.state,
+          /** @type {Record<string, unknown>} */ (this.buildState()),
+          force,
+        ),
+      );
+      writes.push(
+        this.#controller(
+          topics.config,
+          {
+            configPath: this.deps.config.options.path,
+            deviceCount: effective.devices.length,
+            sceneCount: Object.keys(/** @type {object} */ (config.scenes ?? {}))
+              .length,
+            timestamp: new Date(this.deps.clock.now()).toISOString(),
+          },
+          force,
+        ),
+      );
+      writes.push(this.#controller(topics.configEffective, effective, force));
+    }
+    for (const item of planAvailability(this.ledger, running ? devices : [])) {
+      if (
+        !force &&
+        !item.retire &&
+        this.lastAvailability.get(item.device) === item.payload
+      )
+        continue;
+      const sent = availabilitySent(this.ledger, item.device, item.payload);
+      writes.push(
+        this.#availability(item.device, item.payload, sent, item.retire),
+      );
+    }
+    await Promise.all(writes);
+  }
+
+  /** @param {string} topic @param {Record<string, unknown>} payload @param {boolean} force */
+  async #controller(topic, payload, force) {
+    const volatile = new Set([
+      "timestamp",
+      "uptime",
+      "frameCount",
+      "lastFrameAt",
+      "since",
+      "lastSeen",
+      "lastContactAt",
+    ]);
+    const value = JSON.stringify(payload, (key, value) =>
+      topic !== this.deps.topics.configEffective && volatile.has(key)
+        ? undefined
+        : value,
+    );
+    if (!force && this.lastSent.get(topic) === value) return;
+    // Even an uncertain send may be stored. Retry unchanged content on connect
+    // or the timer; a newer value always replaces this attempted value.
+    this.lastSent.set(topic, value);
+    await this.deps.mqtt.publish(topic, payload, {
+      retain: true,
+      qos: 0,
+    });
+  }
+
+  /** @param {string} device @param {"online"|"offline"} payload @param {number} sent @param {boolean} retire */
+  async #availability(device, payload, sent, retire) {
+    const { mqtt, topics } = this.deps;
+    this.lastAvailability.set(device, payload);
+    try {
+      const result = await mqtt.publish(topics.availability(device), payload, {
+        retain: true,
+        qos: 1,
+      });
+      availabilityOutcome(this.ledger, device, payload, sent, result.outcome);
+      if (retire && result.outcome === "confirmed")
+        this.lastAvailability.delete(device);
+    } catch (error) {
+      availabilityOutcome(this.ledger, device, payload, sent, "error");
+      throw error;
+    }
   }
 }

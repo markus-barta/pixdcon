@@ -24,15 +24,18 @@
  *    column; anything else: 500 {"code": "internal"} without internals, logged
  *    at error. 4xx are logged at debug (A-121, A-BUG-23)
  *
- * To do in phase 3: retry a failed bind every 30 s (A-117), HEAD, ETag for
- * static files and previews, request ids in the log.
+ * Bind conflicts retry every 30 s (A-117), cancelled on stop. HEAD reuses
+ * GET metadata; static files and previews support ETag. Requests carry
+ * a process-local id in the log and X-Request-Id.
  *
  * Owner: API + live channel worker.
  */
 
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, resolve, sep } from "node:path";
+import { systemClock } from "../core/clock.js";
 import { ConfigError, HttpError } from "../core/errors.js";
 import { NotImplementedError } from "../core/todo.js";
 
@@ -90,6 +93,7 @@ export class HttpServer {
   /**
    * @param {object} options
    * @param {number} options.port 0 picks a free port (tests)
+   * @param {import("../types.js").Clock} [options.clock] injectable bind retry clock
    * @param {string} [options.host] default "0.0.0.0"
    * @param {string} options.webRoot directory of the UI files
    * @param {import("../types.js").Logger} options.logger
@@ -103,6 +107,9 @@ export class HttpServer {
     this.server = null;
     /** @type {Set<import("node:net").Socket>} */
     this.sockets = new Set();
+    this.requests = 0;
+    /** @type {AbortController|null} */
+    this.binding = null;
   }
 
   /**
@@ -157,13 +164,52 @@ export class HttpServer {
       socket.on("close", () => this.sockets.delete(socket));
     });
     this.server = server;
-    await new Promise((resolveListen, rejectListen) => {
-      server.once("error", rejectListen);
-      server.listen(this.options.port, this.options.host ?? "0.0.0.0", () => {
-        server.off("error", rejectListen);
-        resolveListen(undefined);
-      });
-    });
+    const binding = new AbortController();
+    this.binding = binding;
+    const clock = this.options.clock ?? systemClock();
+    while (!binding.signal.aborted) {
+      try {
+        await new Promise((resolveListen, rejectListen) => {
+          const cleanup = () => {
+            server.off("error", failed);
+            server.off("listening", ready);
+            binding.signal.removeEventListener("abort", aborted);
+          };
+          const ready = () => {
+            cleanup();
+            resolveListen(undefined);
+          };
+          /** @param {Error} error */
+          const failed = (error) => {
+            cleanup();
+            rejectListen(error);
+          };
+          const aborted = () =>
+            failed(new HttpError(503, "shutting_down", "pixdcon is stopping"));
+          server.once("error", failed);
+          server.once("listening", ready);
+          binding.signal.addEventListener("abort", aborted, { once: true });
+          server.listen(this.options.port, this.options.host ?? "0.0.0.0");
+        });
+        break;
+      } catch (error) {
+        const code = /** @type {NodeJS.ErrnoException} */ (error).code;
+        if (code !== "EADDRINUSE" && code !== "EACCES") throw error;
+        this.options.logger.warn(
+          `[WebServer] Cannot bind port ${this.options.port} (${code}); retry in 30 s`,
+        );
+        await clock.sleep(30000, binding.signal);
+      }
+    }
+    if (binding.signal.aborted) {
+      server.close();
+      throw new HttpError(
+        503,
+        "shutting_down",
+        "pixdcon stopped while waiting for its HTTP port",
+      );
+    }
+    this.binding = null;
     const address = server.address();
     const port =
       typeof address === "object" && address ? address.port : this.options.port;
@@ -173,6 +219,7 @@ export class HttpServer {
 
   /** Stop accepting, end open connections (the live channel keeps them open). */
   async stop() {
+    this.binding?.abort();
     const server = this.server;
     if (!server) return;
     this.server = null;
@@ -187,12 +234,19 @@ export class HttpServer {
    * @param {import("node:http").ServerResponse} res
    */
   async #handle(req, res) {
-    const url = new URL(req.url ?? "/", "http://pixdcon.invalid");
-    const path = url.pathname;
     const method = (req.method ?? "GET").toUpperCase();
+    const requestId = String(++this.requests);
+    res.setHeader("X-Request-Id", requestId);
+    let path = "/";
     try {
+      const url = new URL(req.url ?? "/", "http://pixdcon.invalid");
+      path = url.pathname;
+      this.options.logger.debug(`[WebServer] #${requestId} ${method} ${path}`);
       const candidates = this.table.filter((route) => route.regex.test(path));
-      const route = candidates.find((candidate) => candidate.method === method);
+      const route = candidates.find(
+        (candidate) =>
+          candidate.method === (method === "HEAD" ? "GET" : method),
+      );
       if (!route) {
         if (candidates.length > 0) {
           throw new HttpError(
@@ -201,16 +255,30 @@ export class HttpServer {
             `${method} is not available for ${path}`,
           );
         }
-        if (method === "GET" && (await this.#static(path, res))) return;
+        if (
+          (method === "GET" || method === "HEAD") &&
+          (await this.#static(path, req, res))
+        )
+          return;
         res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("Not found");
         return;
       }
+      if (["POST", "PUT", "PATCH", "DELETE"].includes(method))
+        requireJsonType(req);
       const match = /** @type {RegExpExecArray} */ (route.regex.exec(path));
       /** @type {Record<string, string>} */
       const params = Object.create(null);
       route.keys.forEach((key, index) => {
-        params[key] = decodeURIComponent(match[index + 1]);
+        try {
+          params[key] = decodeURIComponent(match[index + 1]);
+        } catch {
+          throw new HttpError(
+            400,
+            "invalid_path",
+            "The request path is not valid UTF-8",
+          );
+        }
       });
       const result = await route.handler({
         req,
@@ -233,7 +301,10 @@ export class HttpServer {
       sendJson(res, shaped.status, shaped.body ?? {}, position);
     } catch (error) {
       if (res.headersSent) throw error;
-      const { status, body } = this.#errorBody(error, `${method} ${path}`);
+      const { status, body } = this.#errorBody(
+        error,
+        `#${requestId} ${method} ${path}`,
+      );
       sendJson(res, status, body, this.options.position?.());
     }
   }
@@ -277,10 +348,11 @@ export class HttpServer {
    * Serve a UI file. Only files below the web root, only known types.
    *
    * @param {string} path
+   * @param {import("node:http").IncomingMessage} req
    * @param {import("node:http").ServerResponse} res
    * @returns {Promise<boolean>} true when a file was sent
    */
-  async #static(path, res) {
+  async #static(path, req, res) {
     const root = resolve(this.options.webRoot);
     let relative;
     try {
@@ -294,12 +366,18 @@ export class HttpServer {
     if (!type || !file.startsWith(root + sep)) return false;
     try {
       const content = await readFile(file);
-      res.writeHead(200, {
+      const etag = `"${createHash("sha256").update(content).digest("hex")}"`;
+      const unchanged = String(req.headers["if-none-match"] ?? "")
+        .split(/\s*,\s*/)
+        .some((value) => value === "*" || value.replace(/^W\//, "") === etag);
+      res.writeHead(unchanged ? 304 : 200, {
+        ETag: etag,
+        "Content-Length": content.length,
         "Content-Type": type,
         "Cache-Control": "no-cache",
         "X-Content-Type-Options": "nosniff",
       });
-      res.end(content);
+      res.end(unchanged || req.method === "HEAD" ? undefined : content);
       return true;
     } catch {
       return false;
@@ -330,20 +408,14 @@ export function sendJson(res, status, body, position) {
  * @returns {Promise<Record<string, unknown>>}
  */
 export async function readJsonBody(req) {
-  const type = String(req.headers["content-type"] ?? "");
-  if (!/^application\/json\b/i.test(type)) {
-    throw new HttpError(
-      415,
-      "unsupported_media_type",
-      "Send the request with Content-Type: application/json",
-    );
-  }
+  requireJsonType(req);
   /** @type {Buffer[]} */
   const chunks = [];
   let size = 0;
-  for await (const chunk of req) {
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
     if (size > MAX_BODY_BYTES) {
+      req.resume(); // drain without retaining, so the 413 can reach the caller
       throw new HttpError(
         413,
         "body_too_large",
@@ -362,4 +434,16 @@ export async function readJsonBody(req) {
     throw new HttpError(400, "json_object_required", "JSON object required");
   }
   return value;
+}
+
+/** @param {import("node:http").IncomingMessage} req */
+function requireJsonType(req) {
+  const type = String(req.headers["content-type"] ?? "");
+  if (!/^application\/json(?:\s*;|$)/i.test(type)) {
+    throw new HttpError(
+      415,
+      "unsupported_media_type",
+      "Send the request with Content-Type: application/json",
+    );
+  }
 }
