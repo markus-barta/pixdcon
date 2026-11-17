@@ -220,24 +220,24 @@
       "test": "test/contract/client.test.js: r3 ops (the operation rule):"
     },
     {
-      "site": "web/js/pages/config-raw.js:298",
+      "site": "web/js/pages/config-raw.js:347",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "Save and Reload from disk of the raw editor",
       "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "api.js: one request at a time (raw-save, raw-reload); the config state in the answer goes through store.applyAnswer (decideAnswer); every request answers to the opening of the page it was sent from, and what comes back after the page was left changes nothing on it",
-      "test": "test/contract/client.test.js: client controls:"
+      "fence": "ops.js (the operation rule): an operation in the slot of the identity it acts on, with a token; a start while the slot is busy is ignored before anything is said (B-176), the outcome changes the slot only while its token is current, a failure is kept beside the action (B-175), every request is bounded in time (api.js); the answer goes through store.applyAnswer first (decideView for a DeviceView or SettingsState, decideAnswer for a whole resource); Save and Reload are the slots raw-save and raw-reload; Reload drops the load on its way (raw-load), so its late answer or failure says nothing; the text reaches the editor only after the fence took the answer, and only while the editor is at the revision the load started from",
+      "test": "test/contract/client.test.js: r3 gate 4.2 (raw, late failure):"
     },
     {
-      "site": "web/js/pages/config-raw.js:299",
+      "site": "web/js/pages/config-raw.js:348",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "typing in the raw editor",
       "metadata": "a command of the user (a click, a key, a form)",
       "fence": "none",
       "why": "the text is checked as JSON in the page and the gutter redrawn; nothing is sent",
-      "test": "test/contract/client.test.js: client controls:"
+      "test": "test/contract/client.test.js: r3 gate 4.1 (finding 1, raw retry):"
     },
     {
-      "site": "web/js/pages/config-raw.js:300",
+      "site": "web/js/pages/config-raw.js:349",
       "id": "listener:root.addEventListener(\"scroll\")#1",
       "input": "the raw editor scrolled",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -246,12 +246,12 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/config-raw.js:301",
+      "site": "web/js/pages/config-raw.js:350",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Raw config.json page",
       "metadata": "none: the store calls it after a change it applied",
-      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply. The text of GET /api/v2/config/raw reaches the editor only after the store took the answer's state (decideAnswer: newest request for config, not before the copy on screen), only for the opening of the page it was sent from, and only while the editor holds what it held when the request left; an answer the store did not take is asked again (at once when it stood before the copy on screen, else at the store's next change)",
-      "test": "test/contract/client.test.js: r2 finding 1, raw config:"
+      "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply. A load whose answer the fence did not take is asked again (slot raw-load, ops.js follow: the newest load makes older ones obsolete) from the same base: the opening and the editor revision it started from (rule 6), so what was typed since stays",
+      "test": "test/contract/client.test.js: r3 gate 4.1 (finding 1, raw retry):"
     },
     {
       "site": "web/js/pages/config.js:321",

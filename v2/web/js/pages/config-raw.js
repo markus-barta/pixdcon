@@ -10,18 +10,26 @@
  * (PUT …/raw answers 400 invalid_config with line and column, and nothing
  * is written). One request at a time per button (build rule 2).
  *
- * Order (finding 1 of the first gate): every request belongs to the
- * opening of the page it was sent from (`opened`); what comes back after
- * the page was left, or left and opened again, changes nothing on it. The
- * text of an answer reaches the editor only after the store's fence took
- * the answer's state (the newest request for "config", not standing
- * before the copy the page holds), and only while the editor still holds
- * what it held when the request left: what was typed since stays.
+ * Order (finding 1 of the first and second gate): every request belongs
+ * to the opening of the page it was sent from (`opened`); what comes back
+ * after the page was left, or left and opened again, changes nothing on
+ * it. The text of an answer reaches the editor only after the store's
+ * fence took the answer's state (the newest request for "config", not
+ * standing before the copy the page holds), and only while the editor is
+ * still at the revision the load started from (`revision`, raised by every
+ * input): what was typed since stays. A load that is asked again (its
+ * answer stood before the copy the page holds) keeps that revision.
+ *
+ * Operations (ops.js): the loads are one slot, `raw-load`, where the newest
+ * load makes older ones obsolete; Save and Reload are `raw-save` and
+ * `raw-reload` (busy across openings). The line under the editor says the
+ * newest outcome of the three; a failure stays there until the next one.
  *
  * Owner: UI worker.
  */
 
 import { ApiError, request } from "../api.js";
+import { clearNote, drop, failureText, follow, forgetIdle, op, start } from "../ops.js";
 import { icon, setHtml, setStatusLine } from "../dom.js";
 import { clock, esc } from "../format.js";
 import { applyAnswer, getState, subscribe } from "../store.js";
@@ -34,16 +42,22 @@ let unsubscribe = null;
 /** The text as pixdcon last gave it. */
 let loaded = "";
 let loading = true;
-/** @type {string|null} */
-let busy = null;
-/** The reserved line under the editor: what the last Save or Reload said. @type {{text: string, bad: boolean}|null} */
-let outcome = null;
 /** Line marked in the gutter by pixdcon's answer. @type {number|null} */
 let errorLine = null;
 /** Counts the openings of the page; a request answers to the opening it was sent from. */
 let opened = 0;
-/** A load whose answer the store did not take (another run, or older than the copy the page holds): asked again when the store changes next. */
-let again = false;
+/** The editor's revision in this opening: raised by every input. */
+let revision = 0;
+/**
+ * Where a load started: the opening and the editor's revision then. A load
+ * that is asked again keeps it (rule 6), so what was typed after the first
+ * request left is never replaced by the text of the retry.
+ *
+ * @typedef {{opened: number, revision: number}} Base
+ */
+/** A load whose answer the store did not take: asked again, from the same base, when the store changes next. @type {Base|null} */
+let again = null;
+const SLOTS = ["raw-load", "raw-save", "raw-reload"];
 
 /** @returns {HTMLTextAreaElement|null} */
 const editorOf = () =>
@@ -81,9 +95,12 @@ export function checkJson(text) {
 /** @param {import("../store.js").ClientState} state */
 function render(state) {
   if (!root) return;
-  if (again && state.loaded && busy === null) {
-    again = false;
-    void load();
+  const saving = op("raw-save");
+  const reloading = op("raw-reload");
+  if (again && state.loaded && !saving.busy && !reloading.busy) {
+    const base = again;
+    again = null;
+    load(base);
   }
   const q = (/** @type {string} */ selector) =>
     /** @type {HTMLElement} */ (/** @type {HTMLElement} */ (root).querySelector(selector));
@@ -117,15 +134,21 @@ function render(state) {
     setHtml(stateSlot, `${icon("x")}<span class="num">${check.line ? `Line ${check.line}, column ${check.column}: ` : ""}${esc(check.message)}</span>`);
   }
   const save = /** @type {HTMLButtonElement} */ (q('[data-act="save"]'));
-  save.disabled = loading || !check.ok || !changed || busy !== null || state.live.state === "lost";
-  setHtml(save, busy === "save" ? `${icon("spinner")}Saving…` : `${icon("save")}Save`);
+  const working = saving.busy || reloading.busy;
+  save.disabled = loading || !check.ok || !changed || working || state.live.state === "lost";
+  setHtml(save, saving.busy ? `${icon("spinner")}Saving…` : `${icon("save")}Save`);
   const reload = /** @type {HTMLButtonElement} */ (q('[data-act="reload"]'));
-  reload.disabled = busy !== null || state.live.state === "lost";
-  setHtml(reload, busy === "reload" ? `${icon("spinner")}Reloading…` : `${icon("reload")}Reload from disk`);
+  reload.disabled = working || state.live.state === "lost";
+  setHtml(reload, reloading.busy ? `${icon("spinner")}Reloading…` : `${icon("reload")}Reload from disk`);
   gutter(text, check.ok ? errorLine : (check.line ?? errorLine));
+  // The newest outcome of a load, Save or Reload (the highest token).
+  const said = SLOTS.map((key) => op(key))
+    .filter((slot) => !slot.busy && (slot.failure || slot.note))
+    .sort((a, b) => b.token - a.token)[0];
+  const bad = Boolean(said?.failure);
   setHtml(
     q(".errline"),
-    outcome ? `${outcome.bad ? icon("alert") : icon("check")}<span${outcome.bad ? "" : ' style="color:var(--text-2)"'}>${esc(outcome.text)}</span>` : "",
+    said ? `${bad ? icon("alert") : icon("check")}<span${bad ? "" : ' style="color:var(--text-2)"'}>${esc(said.failure ?? said.note ?? "")}</span>` : "",
   );
 }
 
@@ -141,106 +164,128 @@ function gutter(text, marked) {
 }
 
 /**
- * Ask pixdcon for the text.
+ * Ask pixdcon for the text, in the slot `raw-load`: a newer load makes
+ * this one obsolete, so its late answer or failure changes nothing.
  *
+ * @param {Base} [base] where the load started; a retry passes its own on
  * @param {number} [tries] answers that stood before the copy the page holds, so far
  */
-async function load(tries = 0) {
-  const mine = opened;
-  const before = editorOf()?.value ?? "";
+function load(base = { opened, revision }, tries = 0) {
   loading = true;
-  /** @type {import("../api.js").Answer} */
-  let answer;
-  try {
-    answer = await request("GET", "/api/v2/config/raw", { resource: "config" });
-  } catch (error) {
-    if (mine !== opened || !root) return;
-    outcome = { text: `config.json could not be loaded: ${error instanceof ApiError ? error.message : "the request failed."}`, bad: true };
-    loading = false;
-    redraw();
-    return;
-  }
-  // The fence first: the text and the state of one answer go together.
-  const decision = applyAnswer(answer);
-  if (mine !== opened || !root) return;
-  if (decision.action !== "apply") {
-    // A newer request of this page brings the text (Reload from disk).
-    if (decision.reason === "superseded_source") return;
-    // The page holds a newer copy of the config: the file changed after
-    // this answer was built. Ask again.
-    if (decision.reason === "not_newer" && tries < 3) return load(tries + 1);
-    again = true;
-    return;
-  }
+  follow(
+    "raw-load",
+    async () => {
+      const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });
+      // The fence first: the text and the state of one answer go together.
+      return { answer, decision: applyAnswer(answer) };
+    },
+    {
+      done: ({ answer, decision }) => {
+        if (base.opened !== opened || !root) return;
+        if (decision.action === "apply") {
+          takeText(answer, base);
+          return;
+        }
+        // A newer request of this page brings the text (Reload from disk).
+        if (decision.reason === "superseded_source") return;
+        // The page holds a newer copy of the config: the file changed after
+        // this answer was built. Ask again, from the same base.
+        if (decision.reason === "not_newer" && tries < 3) load(base, tries + 1);
+        else again = base;
+      },
+      describe: (error) => `config.json could not be loaded: ${failureText(error)}`,
+      failed: () => {
+        if (base.opened !== opened || !root) return;
+        loading = false;
+        redraw();
+      },
+    },
+  );
+}
+
+/**
+ * The text of an answer the store took: it is pixdcon's copy now, and it
+ * goes into the editor only while the editor is at the revision the load
+ * started from.
+ *
+ * @param {import("../api.js").Answer} answer
+ * @param {Base} base
+ */
+function takeText(answer, base) {
   loaded = String(answer.body?.text ?? "");
   const editor = editorOf();
-  if (editor && editor.value === before) editor.value = loaded;
+  if (editor && base.opened === opened && base.revision === revision) editor.value = loaded;
   loading = false;
   redraw();
 }
 
-async function save() {
+function save() {
   const editor = editorOf();
-  if (!editor || busy) return;
+  if (!editor) return;
   const mine = opened;
   const text = editor.value;
-  busy = "save";
-  outcome = null;
-  errorLine = null;
-  redraw();
-  try {
-    const answer = await request("PUT", "/api/v2/config/raw", {
-      resource: "config",
-      key: "raw-save",
-      body: { text },
-    });
-    applyAnswer(answer);
-    if (mine !== opened || !root) return;
-    loaded = text;
-    const diff = answer.body?.diff ?? {};
-    const changed = [
-      ...(diff.devicesAdded ?? []),
-      ...(diff.devicesRemoved ?? []),
-      ...Object.keys(diff.devicesChanged ?? {}),
-    ];
-    outcome = {
-      text: changed.length
-        ? `Saved · applied to ${changed.join(", ")}`
-        : "Saved · nothing that runs changed",
-      bad: false,
-    };
-  } catch (error) {
-    if (mine !== opened || !root) return;
-    if (error instanceof ApiError && error.code === "invalid_config") {
-      errorLine = typeof error.extra.line === "number" ? error.extra.line : null;
-      outcome = { text: `Not saved. ${error.message}`, bad: true };
-    } else
-      outcome = { text: `Not saved: ${error instanceof ApiError ? error.message : "the request failed."}`, bad: true };
-  }
-  busy = null;
+  const started = start(
+    "raw-save",
+    async () => {
+      const answer = await request("PUT", "/api/v2/config/raw", {
+        resource: "config",
+        key: "raw-save",
+        body: { text },
+      });
+      applyAnswer(answer);
+      return answer;
+    },
+    {
+      label: "Saving…",
+      done: (answer) => {
+        if (mine === opened && root) loaded = text;
+        const diff = answer.body?.diff ?? {};
+        const changed = [
+          ...(diff.devicesAdded ?? []),
+          ...(diff.devicesRemoved ?? []),
+          ...Object.keys(diff.devicesChanged ?? {}),
+        ];
+        return changed.length
+          ? `Saved · applied to ${changed.join(", ")}`
+          : "Saved · nothing that runs changed";
+      },
+      describe: (error) =>
+        error instanceof ApiError && error.code === "invalid_config"
+          ? `Not saved. ${error.message}`
+          : `Not saved: ${failureText(error)}`,
+      failed: (error) => {
+        if (mine !== opened || !root) return;
+        if (error instanceof ApiError && error.code === "invalid_config")
+          errorLine = typeof error.extra.line === "number" ? error.extra.line : null;
+      },
+    },
+  );
+  if (started) errorLine = null;
   redraw();
 }
 
-async function reloadFromDisk() {
-  if (busy) return;
-  const mine = opened;
-  busy = "reload";
-  outcome = null;
-  redraw();
-  try {
-    applyAnswer(await request("POST", "/api/v2/config/reload", { resource: "config", key: "raw-reload", body: {} }));
-    if (mine !== opened || !root) return;
-    busy = null;
-    await load();
-    if (mine !== opened || !root) return;
-    outcome = { text: "Reloaded from disk", bad: false };
-  } catch (error) {
-    if (mine !== opened || !root) return;
-    outcome = { text: `Not reloaded: ${error instanceof ApiError ? error.message : "the request failed."}`, bad: true };
-    // This request took the place of a load that was still on its way.
-    if (loading) again = true;
-  }
-  busy = null;
+/**
+ * Reload from disk, then the text: one operation in `raw-reload`. The load
+ * it brings takes the place of any load still on its way (`raw-load` is
+ * dropped), so an older load's late answer or failure says nothing.
+ */
+function reloadFromDisk() {
+  const base = { opened, revision };
+  start(
+    "raw-reload",
+    async () => {
+      applyAnswer(await request("POST", "/api/v2/config/reload", { resource: "config", key: "raw-reload", body: {} }));
+      drop("raw-load");
+      const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });
+      if (applyAnswer(answer).action === "apply" && base.opened === opened && root) takeText(answer, base);
+      else if (base.opened === opened) loading = false;
+    },
+    {
+      label: "Reloading…",
+      done: () => "Reloaded from disk",
+      describe: (error) => `Not reloaded: ${failureText(error)}`,
+    },
+  );
   redraw();
 }
 
@@ -248,8 +293,8 @@ async function reloadFromDisk() {
 function onClick(event) {
   const button = /** @type {HTMLElement} */ (event.target).closest?.("[data-act]");
   if (!(button instanceof HTMLButtonElement) || button.disabled) return;
-  if (button.dataset.act === "save") void save();
-  else if (button.dataset.act === "reload") void reloadFromDisk();
+  if (button.dataset.act === "save") save();
+  else if (button.dataset.act === "reload") reloadFromDisk();
 }
 
 /** Draw again from the store after a local change. */
@@ -260,8 +305,10 @@ function redraw() {
 /** @param {Event} event */
 function onInput(event) {
   if (!(event.target instanceof HTMLTextAreaElement)) return;
-  outcome = null;
+  revision += 1;
   errorLine = null;
+  // What the last success said goes; a failure stays until the next try.
+  for (const key of SLOTS) clearNote(key);
   redraw();
 }
 
@@ -279,12 +326,14 @@ export const page = {
     opened += 1;
     root = target;
     root.className = "p-raw";
-    again = false;
+    again = null;
     loaded = "";
     loading = true;
-    busy = null;
-    outcome = null;
+    revision = 0;
     errorLine = null;
+    // A fresh opening says nothing of the last one; a Save or Reload that
+    // still runs keeps its slot (busy), and says its outcome when it comes.
+    forgetIdle((key) => SLOTS.includes(key));
     root.innerHTML = `
   <a class="crumb" href="#/config">${icon("left")}Config</a>
   <div class="head"><h1 tabindex="-1">Raw config.json</h1><span class="sub" role="status"></span></div>
@@ -299,7 +348,7 @@ export const page = {
     root.addEventListener("input", onInput);
     root.addEventListener("scroll", onScroll, true);
     unsubscribe = subscribe((state) => state, render);
-    void load();
+    load();
   },
   unmount() {
     opened += 1;

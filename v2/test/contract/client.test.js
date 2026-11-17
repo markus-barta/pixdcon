@@ -1866,6 +1866,56 @@ test("r3 gate Q6 (one busy owner across pages): a switch started on the Device p
   }
 });
 
+test("r3 gate 4.1 (finding 1, raw retry): a load asked again keeps the editor revision it started from; what was typed meanwhile stays", async () => {
+  const boot = bootPages((e) => [view("d1", { epoch: e })]);
+  const calls = heldFetch();
+  const root = pageRoot();
+  rawPage.mount(root, {});
+  try {
+    const first = pending(calls, "GET", "/api/v2/config/raw");
+    const editor = root.querySelector("textarea");
+    typeInto(editor, '{"devices":[],"keep":"my edit"}');
+    live(boot, "config", 20, { ...CONFIG_STATE, rev: 2 });
+    first.answer(200, { text: '{"devices": []}', state: CONFIG_STATE }, `${boot.epoch}-11`);
+    await settle();
+    const retry = pending(calls, "GET", "/api/v2/config/raw");
+    retry.answer(200, { text: '{"devices": ["disk"]}', state: { ...CONFIG_STATE, rev: 3 } }, `${boot.epoch}-21`);
+    await settle();
+    assert.equal(editor.value, '{"devices":[],"keep":"my edit"}', "the retry did not replace the edit");
+    assert.match(root.querySelector(".edbar .state").textContent, /unsaved changes/);
+    assert.doesNotMatch(root.querySelector(".edbar .state").textContent, /no unsaved changes/);
+  } finally {
+    rawPage.unmount();
+    await drain(calls);
+  }
+});
+
+test("r3 gate 4.2 (raw, late failure): the first load's late failure does not overwrite what a newer Reload said", async () => {
+  const boot = bootPages((e) => [view("d1", { epoch: e })]);
+  const calls = heldFetch();
+  const root = pageRoot();
+  rawPage.mount(root, {});
+  try {
+    const first = pending(calls, "GET", "/api/v2/config/raw");
+    assert.equal(click(root.querySelector('[data-act="reload"]')), true);
+    await settle();
+    pending(calls, "POST", "/api/v2/config/reload").answer(200, { state: { ...CONFIG_STATE, rev: 2 } }, `${boot.epoch}-12`);
+    await settle();
+    const reloaded = calls.filter((c) => c.method === "GET" && c.url === "/api/v2/config/raw")[1];
+    assert.ok(reloaded, "Reload asks for the text");
+    reloaded.answer(200, { text: '{"devices": ["b"]}', state: { ...CONFIG_STATE, rev: 2 } }, `${boot.epoch}-13`);
+    await settle();
+    assert.match(root.querySelector(".errline").textContent, /Reloaded from disk/);
+    first.answer(500, {});
+    await settle();
+    assert.match(root.querySelector(".errline").textContent, /Reloaded from disk/, "the newer outcome stays");
+    assert.equal(root.querySelector("textarea").value, '{"devices": ["b"]}');
+  } finally {
+    rawPage.unmount();
+    await drain(calls);
+  }
+});
+
 test("r3 sweep (device controls): a control's outcome belongs to its device; device A's late failure is not said on device B's page", async () => {
   const calls = heldFetch();
   const { epoch } = bootPages((e) => [view("d1", { epoch: e }), view("d2", { epoch: e })]);
