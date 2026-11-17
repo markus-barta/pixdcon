@@ -18,8 +18,9 @@
  *   for, not the render time, not a backoff. The thresholds are inclusive at
  *   their lower end: 29 999 ms is online, 30 000 ms is stale, 119 999 ms is
  *   stale, 120 000 ms is offline. Before the first good frame the same
- *   thresholds count from the start of the runtime (starting, then stale,
- *   then offline).
+ *   thresholds count from entry into play (starting, then stale, then
+ *   offline). Returning from quiet starts a fresh frame window; an older
+ *   frame cannot make the display immediately offline before its next render.
  *
  *   Without an active scene there are no frames to count: pause, stop, a
  *   built-in mode, no scene chosen. There the render loop probes every
@@ -48,7 +49,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { todo } from "../core/todo.js";
+import { classifyError } from "../core/errors.js";
 
 /** @typedef {import("../types.js").DeviceHealth} DeviceHealth */
 /** @typedef {import("../types.js").HealthConfig} HealthConfig */
@@ -59,6 +60,7 @@ import { todo } from "../core/todo.js";
  *
  * @typedef {object} HealthFacts
  * @property {number} startedAt epoch ms when the runtime started
+ * @property {number} framesDueSince epoch ms when this frame window started
  * @property {number|null} lastFrameAt
  * @property {number|null} lastContactAt
  * @property {boolean} framesDue true with an active scene: mode play and a custom scene
@@ -80,7 +82,17 @@ import { todo } from "../core/todo.js";
  * @returns {{state: import("../types.js").HealthState, reason: DeviceHealth["reason"]}}
  */
 export function deriveHealth(facts, now, config) {
-  return todo("deriveHealth", facts, now, config);
+  if (facts.shadow) return { state: "shadow", reason: null };
+  const last = facts.framesDue ? facts.lastFrameAt : facts.lastContactAt;
+  const baseline = facts.framesDue ? Math.max(last ?? facts.startedAt, facts.framesDueSince) : last ?? facts.startedAt;
+  const age = Math.max(0, now - baseline);
+  const reason = facts.powerCycles.exhausted ? "power_cycles_exhausted"
+    : facts.lastError?.kind === "scene" || facts.lastError?.kind === "internal" ? "scene_error"
+    : facts.lastError?.kind === "device" ? "device_unreachable"
+    : last === null ? "not_started" : null;
+  if (age >= config.offlineAfterMs) return { state: "offline", reason: reason ?? "device_unreachable" };
+  if (age >= config.staleAfterMs) return { state: "stale", reason: reason ?? "device_unreachable" };
+  return { state: last === null ? "starting" : !facts.framesDue && !facts.hasScene ? "idle" : "online", reason };
 }
 
 export class HealthModel extends EventEmitter {
@@ -88,15 +100,24 @@ export class HealthModel extends EventEmitter {
   constructor(deps) {
     super();
     this.deps = deps;
+    /** @type {Map<string, HealthFacts>} */
+    this.facts = new Map();
+    /** @type {Map<string, DeviceHealth>} */
+    this.views = new Map();
+    /** @type {{cancel: () => void}|null} */
+    this.timer = null;
   }
 
   /** Re-derive every device on a timer (1 s), so a display turns stale without any new event. */
   start() {
-    return todo("HealthModel.start");
+    if (!this.timer) this.timer = this.deps.clock.every(() => {
+      for (const device of this.facts.keys()) this.update(device);
+    }, 1000);
   }
 
   stop() {
-    return todo("HealthModel.stop");
+    this.timer?.cancel();
+    this.timer = null;
   }
 
   /**
@@ -104,12 +125,19 @@ export class HealthModel extends EventEmitter {
    * @param {{shadow: boolean, powerCycleMax: number, plugTopic: string|null}} options
    */
   register(device, options) {
-    return todo("HealthModel.register", device, options);
+    this.facts.set(device, {
+      startedAt: this.deps.clock.now(), framesDueSince: this.deps.clock.now(), lastFrameAt: null, lastContactAt: null,
+      framesDue: false, hasScene: false, shadow: options.shadow, consecutiveErrors: 0, lastError: null,
+      powerCycles: { count: 0, max: options.powerCycleMax, plugTopic: options.plugTopic, exhausted: false }, apSsid: null,
+    });
+    this.views.delete(device);
+    this.update(device);
   }
 
   /** @param {string} device */
   unregister(device) {
-    return todo("HealthModel.unregister", device);
+    this.facts.delete(device);
+    this.views.delete(device);
   }
 
   /**
@@ -118,7 +146,12 @@ export class HealthModel extends EventEmitter {
    * @param {string} device
    */
   frameOk(device) {
-    return todo("HealthModel.frameOk", device);
+    const facts = this.facts.get(device);
+    if (!facts) return;
+    facts.lastFrameAt = facts.lastContactAt = this.deps.clock.now();
+    facts.consecutiveErrors = 0;
+    facts.lastError = null;
+    this.update(device);
   }
 
   /**
@@ -127,7 +160,12 @@ export class HealthModel extends EventEmitter {
    * @param {{apSsid?: string|null}} [info]
    */
   contactOk(device, info) {
-    return todo("HealthModel.contactOk", device, info);
+    const facts = this.facts.get(device);
+    if (!facts) return;
+    facts.lastContactAt = this.deps.clock.now();
+    if (info?.apSsid !== undefined) facts.apSsid = info.apSsid;
+    if (facts.lastError?.kind === "device") facts.lastError = null;
+    this.update(device);
   }
 
   /**
@@ -136,7 +174,11 @@ export class HealthModel extends EventEmitter {
    * @param {unknown} error classified with core/errors.js classifyError
    */
   renderFailed(device, error) {
-    return todo("HealthModel.renderFailed", device, error);
+    const facts = this.facts.get(device);
+    if (!facts) return;
+    facts.consecutiveErrors += 1;
+    facts.lastError = { ...classifyError(error), at: this.deps.clock.now() };
+    this.update(device);
   }
 
   /**
@@ -145,7 +187,11 @@ export class HealthModel extends EventEmitter {
    * @param {{framesDue: boolean, hasScene: boolean}} expectation
    */
   expect(device, expectation) {
-    return todo("HealthModel.expect", device, expectation);
+    const facts = this.facts.get(device);
+    if (!facts) return;
+    if (expectation.framesDue && !facts.framesDue) facts.framesDueSince = this.deps.clock.now();
+    Object.assign(facts, expectation);
+    this.update(device);
   }
 
   /**
@@ -153,7 +199,10 @@ export class HealthModel extends EventEmitter {
    * @param {{count: number, exhausted: boolean}} cycles
    */
   powerCycles(device, cycles) {
-    return todo("HealthModel.powerCycles", device, cycles);
+    const facts = this.facts.get(device);
+    if (!facts) return;
+    Object.assign(facts.powerCycles, cycles);
+    this.update(device);
   }
 
   /**
@@ -161,7 +210,9 @@ export class HealthModel extends EventEmitter {
    * @returns {DeviceHealth|undefined}
    */
   get(device) {
-    return todo("HealthModel.get", device);
+    this.update(device);
+    const view = this.views.get(device);
+    return view ? structuredClone(view) : undefined;
   }
 
   /**
@@ -169,6 +220,39 @@ export class HealthModel extends EventEmitter {
    * @returns {{status: "ok"|"degraded"|"failed", reasons: string[]}} reasons as listed for ControllerStatus (types.js)
    */
   controller(inputs) {
-    return todo("HealthModel.controller", inputs);
+    const reasons = [];
+    for (const name of this.facts.keys()) {
+      const health = this.get(name);
+      if (health?.state === "stale" || health?.state === "offline") reasons.push(`display_${health.state}:${name}`);
+    }
+    if (!inputs.configValid) reasons.push("config_invalid");
+    if (inputs.mqtt.state !== "disabled" && inputs.mqtt.state !== "connected") reasons.push("mqtt_offline");
+    if (inputs.restartRequired) reasons.push("restart_required");
+    if (!inputs.watchdogAt || this.deps.clock.now() - Date.parse(inputs.watchdogAt) > inputs.watchdogIntervalMs * 2) {
+      reasons.push("watchdog_overdue");
+      return { status: "failed", reasons };
+    }
+    return { status: reasons.length ? "degraded" : "ok", reasons };
+  }
+
+  /** @param {string} device */
+  update(device) {
+    const facts = this.facts.get(device);
+    if (!facts) return;
+    const previous = this.views.get(device);
+    const now = this.deps.clock.now();
+    const derived = deriveHealth(facts, now, this.deps.config());
+    const iso = (/** @type {number|null} */ at) => at === null ? null : new Date(at).toISOString();
+    const { count, max, plugTopic } = facts.powerCycles;
+    const powerCycles = { count, max, plugTopic };
+    const health = {
+      ...derived, since: previous?.state === derived.state ? previous.since : new Date(now).toISOString(),
+      lastFrameAt: iso(facts.lastFrameAt), lastContactAt: iso(facts.lastContactAt),
+      consecutiveErrors: facts.consecutiveErrors,
+      lastError: facts.lastError ? { ...facts.lastError, at: new Date(facts.lastError.at).toISOString() } : null,
+      powerCycles, apSsid: facts.apSsid,
+    };
+    this.views.set(device, health);
+    if (JSON.stringify(health) !== JSON.stringify(previous)) this.emit("health", { device, health: structuredClone(health), previous: previous ? structuredClone(previous) : health });
   }
 }

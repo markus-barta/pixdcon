@@ -23,7 +23,9 @@
  * Owner: drivers worker.
  */
 
-import { todo } from "../core/todo.js";
+import { createPixooDriver } from "./pixoo-driver.js";
+import { createAwtrixDriver } from "./awtrix-driver.js";
+import { createShadowDriver } from "./shadow-driver.js";
 
 /** @typedef {import("../types.js").Frame} Frame */
 /** @typedef {import("../types.js").DeviceType} DeviceType */
@@ -57,12 +59,13 @@ import { todo } from "../core/todo.js";
  * @property {(on: boolean) => Promise<void>} setPower Ulanzi power, Pixoo screen (B-038, B-039)
  * @property {(modeKey: string) => Promise<void>} activateBuiltin hand the display to its firmware, see builtin-modes.js; rejects for an unknown key
  * @property {() => Promise<void>} reclaim take the display back after a built-in mode (custom channel or app, screen on)
- * @property {() => Promise<Record<string, unknown>>} readTelemetry Ulanzi GET /api/stats; Pixoo Channel/GetAllConf mapped to {reachable, brightness, cur_clock_id}
+ * @property {(options?: {signal?: AbortSignal}) => Promise<Record<string, unknown>>} readTelemetry Ulanzi GET /api/stats; Pixoo Channel/GetAllConf mapped to {reachable, brightness, cur_clock_id}. Optional signal cancels a retired telemetry poll without closing the driver.
  * @property {((options?: {signal?: AbortSignal}) => Promise<Frame|null>)|null} readScreen Ulanzi GET /api/screen as a 32×8 frame; null for displays without read-back
  * @property {((notification: Record<string, unknown>) => Promise<void>)|null} notify AWTRIX POST /api/notify, payload unchanged (v1 scene surface only, D-071); null for Pixoo
  * @property {((appName: string) => Promise<void>)|null} switchApp AWTRIX POST /api/switch with any app name (v1 scene surface, D-070); null for Pixoo
  * @property {((index: number) => Promise<void>)|null} selectChannel Pixoo {Command:"Channel/SetIndex", SelectIndex: index} with any index, forwarded unchanged and without touching `ready`, as v1's setChannel (D-008); queued like every request. For the v1 scene surface; the loop itself uses activateBuiltin and reclaim. null for Ulanzi.
  * @property {() => Promise<void>} close cancel requests in flight
+ * @property {(() => Frame|null)} [previewFrame] local shadow raster, no device read
  */
 
 /**
@@ -86,7 +89,9 @@ import { todo } from "../core/todo.js";
  * @returns {DeviceDriver}
  */
 export function createDriver(device, deps) {
-  return todo("createDriver", device, deps);
+  const options = { ...device, ...deps };
+  if (device.output === "shadow") return createShadowDriver(options);
+  return device.type === "pixoo" ? createPixooDriver(options) : createAwtrixDriver(options);
 }
 
 /**

@@ -27,6 +27,7 @@ import { startFakePixoo } from "../../dev/fake-pixoo.js";
 import { startMemoryBroker } from "../../dev/memory-broker.js";
 import { blockedAttempts, coverage } from "../../dev/net-guard.js";
 import { manualClock } from "../../src/core/clock.js";
+import { deferred, flush, loopRig, rig, until } from "./runtime-fixture.js";
 import { requireNetGuard, startStack } from "../helpers/harness.js";
 
 /**
@@ -608,110 +609,52 @@ test("pixdcon 2 boots against the fakes and the in-memory broker, answers, and s
 });
 
 // --- Phase 3: the walks ------------------------------------------------------------------------
-test.todo("both fakes receive frames of their scenes within 2 s of the start");
-test.todo(
-  "switching the scene of one display changes its frames and leaves the other display untouched",
-);
-test.todo(
-  "a display that is offline at the start does not delay the UI or the other display",
-);
-test.todo(
-  "display unplugged: stale after 30 s without a good frame, offline after 2 min, online again after the first good frame",
-);
-test.todo(
-  "health is by the clock, literally: 29 999 ms after the last good frame online, 30 000 ms stale, 119 999 ms stale, 120 000 ms offline",
-);
-test.todo(
-  "health has no exception for a slow scene: a scene that returns a 45 s delay is stale from 30 s after its frame until the next one",
-);
-test.todo(
-  "a quiet display (paused, stopped, built-in mode, no scene) is judged by probes every 10 s with the same two thresholds",
-);
-test.todo(
-  "display hangs (accepts, never answers): the same timing, last error 'Pixoo HTTP timeout after 5000ms'",
-);
-test.todo(
-  "a scene that throws is a scene error: the display stays reachable, no power cycle, the last good frame stays",
-);
-test.todo(
-  "backoff 1, 2, 4, 8, 16, 30 s with a probe every 10 s; a display that answers ends the wait",
-);
-test.todo(
-  "10 failed renders with a plug configured: OFF, 10 s, ON, 30 s on the plug topic, then a re-init",
-);
-test.todo(
-  "power cycles used up: slow probing goes on and 'Retry now' starts over",
-);
-test.todo(
-  "pause holds one frame, stop blanks and switches off, play takes the display back",
-);
-test.todo(
-  "built-in mode: the fake shows the firmware channel or app and receives no frames",
-);
-test.todo(
-  "brightness override: applied at once; cleared: the scene's last level is applied again",
-);
-test.todo(
-  "mode and brightness from retained controls are applied before the first frame",
-);
-test.todo(
-  "shadow output: scenes render and previews update, the fake receives no request, the broker no message",
-);
-test.todo(
-  "interlocked device (config.json says drive, v1 still lists it): the same as shadow, for driver, telemetry, discovery, availability and the plug",
-);
-test.todo(
-  "v1 releases a display (publishes its list without it): that device alone is rebuilt with the real driver and starts to render",
-);
+// Blocked W5: scene resource detection and V1SceneAdapter state redirection are skeletons.
 test.todo(
   "shadow state files: a scene with a state field writes below the data directory, never beside the scene; also under an alias key and as a copy",
 );
+// Blocked W1/W5: effective output construction and the real scene path are skeletons.
 test.todo(
   "PIXDCON2_FORCE_SHADOW=1: no fake receives a request although config.json says drive",
 );
+// Blocked W5: ScenesWatcher, registry and SceneRuntime.invalidate/acquire are skeletons.
 test.todo(
   "a scene file that changes is reloaded for the displays running it; a broken edit keeps the last good version",
 );
+// Blocked W5/W1: replacement loading and instance-scoped MQTT/settings contexts are skeletons.
 test.todo(
   "hot reload with a replacement whose init fails: the running instance keeps its MQTT and settings subscriptions; only the replacement's are released",
 );
+// Blocked W5: per-device module evaluation belongs to SceneRuntime/V1SceneAdapter.
 test.todo(
   "two displays run the same scene: module-level state of the scene file is not shared between them",
 );
-test.todo(
-  "a scene that calls device.setChannel(index) reaches the fake Pixoo as Channel/SetIndex with that index, through the driver queue",
-);
-test.todo("changing one device in config.json restarts that device only");
-test.todo(
-  "a blob overlay that patches minFrameMs and the plug of one device restarts that device only, with the new values; config.json is untouched",
-);
-test.todo(
-  "a device that exists only in the blob overlay runs like any other and stops when the blob is cleared",
-);
+// Blocked W1: gateway reconnect/replay and overlay pending-clear reconciliation are skeletons.
 test.todo(
   "MQTT gone and back: displays keep rendering, retained state is read again, pending clears are sent",
 );
-test.todo(
-  "legacy app cleanup on the fake AWTRIX: every other custom app is deleted once, ours stays",
-);
-test.todo("stop: the process ends within 8 s also while a render hangs");
 
 // --- Ordering (knowledge entry, section 3.0) ---
-test.todo(
-  "render reports in order: a render that hung and comes back after its device runtime was rebuilt reports no good frame, no phase and no preview for the new runtime",
-);
-test.todo(
-  "scheduler in order: a runtime change with a rev that is not higher than the one applied is dropped; desired events of one device are applied in the order they arrive, each device in its own queue",
-);
-test.todo(
-  "telemetry in order: a read that comes back after its device was stopped or rebuilt publishes nothing and counts as no contact; the poll timer only decides when a read starts",
-);
-test.todo(
-  "previews in order: the screen read-back of a replaced driver never overwrites a newer frame",
-);
-test.todo(
-  "drivers in order: a request that timed out is reported once; its late answer is ignored and does not make the driver ready",
-);
-test.todo(
-  "health timers: the 1 s re-derive and the probe only move a display towards stale and offline by the clock; only an accepted frame or an answered probe moves it back",
-);
+
+test("stop: the process ends within 8 s also while a render hangs", async (t) => {
+  const held = deferred();
+  const r = loopRig(t, { render: () => held.promise }); await flush();
+  const stopping = r.loop.stop({ deadlineMs: 6000 });
+  await r.clock.advance(6000); assert.deepEqual(await stopping, { clean: false });
+  assert.equal(r.loop.status().alive, false);
+  held.resolve(null); await flush(); assert.equal(r.loop.status().frameCount, 0);
+  assert.equal(r.calls.filter((call) => call.op === "release").length, 1);
+});
+
+test("render reports in order: a render that hung and comes back after its device runtime was rebuilt reports no good frame, no phase and no preview for the new runtime", async (t) => {
+  const held = deferred();
+  let first = true;
+  const r = await rig(t, { render: async (/** @type {string} */ _, /** @type {string} */ name, /** @type {any} */ surface) => { if (name === "p" && first) { first = false; await held.promise; } await surface.paint(3); return null; } });
+  await until(() => r.renderCalls.has("p"));
+  r.change(r.devices.map((/** @type {any} */ d) => d.name === "p" ? { ...d, minFrameMs: 900 } : d), { devicesChanged: { p: ["minFrameMs"] } });
+  await flush(); await r.clock.advance(6000); await until(() => r.tokens.get("p") === 2);
+  await until(() => r.previews.get("p"));
+  const before = { reports: r.reports.length, preview: r.previews.get("p"), health: r.health.get("p") };
+  held.resolve(null); await flush();
+  assert.equal(r.reports.length, before.reports); assert.deepEqual(r.previews.get("p"), before.preview); assert.deepEqual(r.health.get("p"), before.health);
+});

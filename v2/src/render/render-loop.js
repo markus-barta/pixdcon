@@ -30,10 +30,19 @@
  *  - Built-in activation is checked; failures retry with their own counter
  *    that never triggers a power cycle (D-B04, D-B28). Stop works without a scene (S-34).
  *  - Power cycles used up: phase "exhausted", probing every 60 s, and
- *    retryNow() or a good probe starts over (v1: dead until restart, B-035, S-8).
+ *    a good probe resets errors and retries rendering without replenishing cycles;
+ *    ordinary backoff probes only end the wait and preserve frame errors. Only an
+ *    accepted frame or manual retry (retryNow/play while playing) starts the cycle budget over (B-035, S-8).
+ *    Every sleep wake refreshes the heartbeat before further work or probing.
+ *  - An OFF result other than certain error owes ON until QoS-1 confirmation.
+ *    The scheduler retains the original plug across runtime replacement and
+ *    retirement. Reconnects wake ON retries only; offline retries wait 30 s.
+ *    After the OFF wait (which apply/retryNow/reload may cut short, as in v1),
+ *    commands wait for ON; stop keeps trying within its deadline (D-124).
  *    The log says what was really sent (D-B16).
  *  - stop() has a deadline; a render that hangs cannot block the process (B-044, A-028).
- *  - Output "shadow": no MQTT publish, so no power cycle, ever. `device.output`
+ *  - Output "shadow" initiates no MQTT publish or power cycle. A scheduler-owned
+ *    ON owed by an earlier driven runtime must still be restored. `device.output`
  *    is the resolved policy, the same value that selected the driver.
  *  - A good frame is reported to the health model as a fact, without the
  *    delay the scene asked for: health is by the clock since the last good
@@ -56,7 +65,9 @@
  * Owner: drivers worker.
  */
 
-import { todo } from "../core/todo.js";
+import { DeviceError, SceneError } from "../core/errors.js";
+import { isBuiltin } from "../drivers/builtin-modes.js";
+import { PlugRecovery } from "./plug-recovery.js";
 
 /** @typedef {import("../types.js").PlaybackMode} PlaybackMode */
 /** @typedef {import("../types.js").EffectiveState} EffectiveState */
@@ -94,6 +105,8 @@ export const LOOP_DEFAULTS = Object.freeze({
  * @property {(patch: Partial<EffectiveState>) => void} report to the state store
  * @property {import("../types.js").Clock} clock
  * @property {import("../types.js").Logger} logger
+ * @property {() => number} [probeIntervalMs] effective health config; default 10000
+ * @property {PlugRecovery} [plugRecovery] scheduler-owned debt survives runtime replacement
  */
 
 export class RenderLoop {
@@ -103,12 +116,41 @@ export class RenderLoop {
    */
   constructor(deps, target) {
     this.deps = deps;
-    this.target = target;
+    this.target = { ...target };
+    this.driver = deps.driver;
+    this.running = false;
+    this.alive = false;
+    this.version = 0;
+    this.reinit = true;
+    this.reload = false;
+    this.retry = false;
+    this.deviceErrors = 0;
+    this.errors = 0;
+    this.cycles = 0;
+    this.stopUntil = /** @type {number|null} */ (null);
+    this.plugRecovery = deps.plugRecovery ?? new PlugRecovery({ name: deps.device.name, mqtt: deps.mqtt, clock: deps.clock, logger: deps.logger, until: () => this.running ? Infinity : this.stopUntil ?? 0, report: (nextRetryAt) => this.report({ phase: "retrying", nextRetryAt }) });
+    this.pausedFrame = false;
+    this.lastSceneBrightness = /** @type {number|null} */ (null);
+    this.appliedNative = /** @type {number|null} */ (null);
+    this.instance = /** @type {import('../scenes/scene-runtime.js').SceneInstance|null} */ (null);
+    this.surface = /** @type {import('../scenes/v1-device-facade.js').SceneSurface|null} */ (null);
+    this.sleeper = /** @type {AbortController|null} */ (null);
+    this.task = /** @type {Promise<void>|null} */ (null);
+    this.quietKey = "";
+    this.lastTickAt = /** @type {string|null} */ (null);
+    this.nextWakeAt = /** @type {string|null} */ (null);
+    /** @type {EffectiveState} */
+    this.effective = { scene: null, phase: "idle", showingSince: null, frameCount: 0, lastBrightness: null, appliedBrightness: null, nextRetryAt: null };
   }
 
   /** Start the loop task. Returns at once and never throws; the task ends only through stop(). */
   start() {
-    return todo("RenderLoop.start");
+    if (this.running) return;
+    this.running = this.alive = true;
+    this.stopUntil = null;
+    this.task = this.run().catch((error) => {
+      this.deps.logger.error(`[RenderLoop] ${this.deps.device.name}: loop ended`, error);
+    }).finally(() => { this.alive = false; });
   }
 
   /**
@@ -118,27 +160,65 @@ export class RenderLoop {
    * @returns {Promise<{clean: boolean}>} clean false when the deadline cut a hanging render loose
    */
   async stop(options) {
-    return todo("RenderLoop.stop", options);
+    const deadlineMs = options?.deadlineMs ?? LOOP_DEFAULTS.stopDeadlineMs;
+    this.stopUntil = this.deps.clock.now() + deadlineMs;
+    this.running = false;
+    this.sleeper?.abort();
+    this.plugRecovery.wake();
+    if (!this.task) return { clean: true };
+    const deadline = new AbortController();
+    const clean = await Promise.race([
+      this.task.then(() => true),
+      this.deps.clock.sleep(deadlineMs, deadline.signal).then(() => false),
+    ]);
+    deadline.abort();
+    if (!this.deps.plugRecovery) this.plugRecovery.close();
+    if (this.plugOnOwed) this.deps.logger.warn(`[RenderLoop] ${this.deps.device.name}: stop deadline reached with plug ON unconfirmed`);
+    if (!clean) {
+      this.alive = false;
+      void this.driver.close();
+      // A stuck render must not keep its subscriptions alive during shutdown.
+      if (this.instance) {
+        const instance = this.instance; this.instance = null;
+        void this.deps.scenes.release(instance).catch((error) => this.deps.logger.error("[RenderLoop] release", error));
+      }
+    }
+    return { clean: clean && !this.plugOnOwed };
   }
 
   /**
-   * Change scene, mode or brightness override. Idempotent; wakes every sleep.
-   * Setting mode "play" while playing asks for a re-init (v1).
+   * Change scene, mode or brightness override. Idempotent; wakes ordinary sleeps.
+   * Setting mode "play" while playing is a manual retry and re-init (v1, contract 4.7).
+   * apply()/retryNow()/reloadScene() may cut the OFF wait short, as in v1;
+   * after the OFF wait, commands wait for confirmed ON while it is owed.
    *
    * @param {Partial<LoopTarget>} patch
    */
   apply(patch) {
-    return todo("RenderLoop.apply", patch);
+    const changed = Object.entries(patch).some(([key, value]) => this.target[/** @type {keyof LoopTarget} */ (key)] !== value);
+    const playAgain = patch.mode === "play" && this.target.mode === "play";
+    if (!changed && !playAgain) return;
+    const sceneChanged = patch.scene !== undefined && patch.scene !== this.target.scene;
+    if (sceneChanged) this.effective.showingSince = null;
+    if (patch.mode === "play" || sceneChanged) this.reinit = true;
+    if (playAgain) this.retry = true;
+    if (sceneChanged || patch.mode !== undefined) this.pausedFrame = false;
+    this.target = { ...this.target, ...patch };
+    this.version += 1;
+    this.sleeper?.abort();
   }
 
-  /** "Retry now": leave any wait, re-initialise the display, start counting again. */
+  /** "Retry now": cut the OFF wait short, then await owed ON before re-init/count reset. */
   retryNow() {
-    return todo("RenderLoop.retryNow");
+    this.retry = true;
+    this.sleeper?.abort();
   }
 
   /** The scene file changed or its settings schema did: reload at the next frame boundary. */
   reloadScene() {
-    return todo("RenderLoop.reloadScene");
+    this.reload = true;
+    this.pausedFrame = false;
+    this.sleeper?.abort();
   }
 
   /**
@@ -146,6 +226,246 @@ export class RenderLoop {
    * alive false: the task is not running although it should; the scheduler restarts it (A-027)
    */
   status() {
-    return todo("RenderLoop.status");
+    const recovery = this.plugOnOwed ? this.plugRecovery : null;
+    return { ...this.effective, alive: this.alive, lastTickAt: recovery?.lastTickAt ?? this.lastTickAt, nextWakeAt: recovery?.nextWakeAt ?? this.nextWakeAt, consecutiveErrors: this.errors, powerCycleCount: this.cycles };
+  }
+
+  get plugOnOwed() { return this.plugRecovery.owed; }
+
+  /** @param {Partial<EffectiveState>} patch */
+  report(patch) {
+    if (!this.running) return;
+    Object.assign(this.effective, patch);
+    this.deps.report(patch);
+  }
+
+  /** @param {import('../drivers/driver.js').DeviceOutput} output */
+  async show(output) {
+    if (!this.running) return;
+    const accepted = output.kind === "frame" ? { ...output, frame: { ...output.frame, rgb: output.frame.rgb.slice() } } : output;
+    await this.driver.show(accepted);
+    if (!this.running) return;
+    const name = this.deps.device.name;
+    this.deps.health.frameOk(name);
+    if (accepted.kind === "frame") this.deps.previews.put(name, accepted.frame, this.driver.info.drives ? "runtime" : "simulated");
+    else if (!this.driver.info.drives) {
+      const frame = this.driver.previewFrame?.();
+      if (frame) this.deps.previews.put(name, frame, "simulated");
+    }
+    this.deviceErrors = 0;
+    this.cycles = 0;
+    this.deps.health.powerCycles(name, { count: 0, exhausted: false });
+    this.report({ frameCount: this.effective.frameCount + 1, showingSince: this.effective.showingSince ?? this.iso(), scene: this.instance?.scene ?? this.target.scene });
+  }
+
+  /** @param {number} native @returns {Promise<boolean>} */
+  async requestBrightness(native) {
+    if (!Number.isFinite(native) || !this.running) return false;
+    this.lastSceneBrightness = native;
+    this.report({ lastBrightness: this.percent(native) });
+    try { await this.applyBrightness(); return true; }
+    catch (error) {
+      if (this.running) this.deps.health.renderFailed(this.deps.device.name, error);
+      return false;
+    }
+  }
+
+  /** @param {number} native */
+  percent(native) { return this.deps.device.type === "pixoo" ? Math.max(1, Math.min(100, Math.round(native))) : Math.round(Math.max(0, Math.min(255, native)) / 255 * 100); }
+  iso() { return new Date(this.deps.clock.now()).toISOString(); }
+  probeInterval() {
+    const ms = this.deps.probeIntervalMs?.() ?? LOOP_DEFAULTS.probeIntervalMs;
+    return Number.isFinite(ms) && ms > 0 ? ms : LOOP_DEFAULTS.probeIntervalMs;
+  }
+
+  async applyBrightness() {
+    const native = this.target.brightnessOverride ?? this.lastSceneBrightness;
+    if (native === null || native === this.appliedNative) return;
+    await this.driver.setBrightness(native);
+    if (!this.running) return;
+    this.appliedNative = native;
+    this.deps.health.contactOk(this.deps.device.name);
+    this.report({ appliedBrightness: this.percent(native) });
+  }
+
+  /** Refresh liveness on every wake, including an interrupted wait. @param {number} ms */
+  async sleep(ms) {
+    if (!this.running) return false;
+    const controller = new AbortController();
+    this.sleeper = controller;
+    this.nextWakeAt = new Date(this.deps.clock.now() + ms).toISOString();
+    const elapsed = await this.deps.clock.sleep(ms, controller.signal);
+    if (this.sleeper === controller) this.sleeper = null;
+    this.nextWakeAt = null;
+    this.lastTickAt = this.iso();
+    return elapsed;
+  }
+
+  async probe() {
+    try {
+      await this.driver.probe();
+      if (!this.running) return false;
+      this.deps.health.contactOk(this.deps.device.name);
+      return true;
+    } catch (error) {
+      if (this.running) this.deps.health.renderFailed(this.deps.device.name, error);
+      return false;
+    }
+  }
+
+  /** @param {number} ms @param {boolean} [recover] */
+  async waitWithProbes(ms, recover = true) {
+    const end = this.deps.clock.now() + ms;
+    while (this.running && this.deps.clock.now() < end) {
+      const probeMs = this.probeInterval();
+      const interval = Math.min(probeMs, end - this.deps.clock.now());
+      if (!await this.sleep(interval)) return;
+      if (interval === probeMs && await this.probe() && recover) return;
+    }
+  }
+
+  /** Retry the owed ON serially; neither an uncertain answer nor retirement forgives it. */
+  async restorePlugOn() {
+    if (this.plugOnOwed) this.report({ phase: "retrying", nextRetryAt: this.plugRecovery.nextWakeAt });
+    return this.plugRecovery.restore();
+  }
+
+  async powerCycle() {
+    const { device, mqtt, health } = this.deps;
+    const plug = device.powerCyclePlugin;
+    if (device.output !== "drive" || !plug || mqtt?.status().state !== "connected") return false;
+    if (!await this.plugRecovery.powerOff(plug)) return false;
+    this.cycles += 1;
+    health.powerCycles(device.name, { count: this.cycles, exhausted: false });
+    // Once OFF may have been sent, ON is owed even if stop interrupts the wait.
+    await this.sleep(plug.offWaitMs ?? LOOP_DEFAULTS.powerOffWaitMs);
+    if (await this.restorePlugOn() && this.running) {
+      const wait = plug.onWaitMs ?? LOOP_DEFAULTS.powerOnWaitMs;
+      // Confirmed ON replaces its publish deadline with the remaining recovery wait.
+      this.report({ phase: "retrying", nextRetryAt: new Date(this.deps.clock.now() + wait).toISOString() });
+      await this.sleep(wait);
+    }
+    this.reinit = true;
+    this.appliedNative = null;
+    this.errors = this.deviceErrors = 0;
+    return true;
+  }
+
+  async run() {
+    try {
+      while (this.running) {
+        this.lastTickAt = this.iso();
+        if (this.plugOnOwed && !await this.restorePlugOn()) break;
+        if (!this.running) break;
+        if (this.retry) {
+          this.retry = false; this.errors = this.deviceErrors = this.cycles = 0; this.reinit = true;
+          this.deps.health.powerCycles(this.deps.device.name, { count: 0, exhausted: false });
+        }
+        const version = this.version;
+        const target = { ...this.target };
+        const builtin = isBuiltin(target.scene);
+        const custom = !!target.scene && !builtin;
+        // A paused scene has frame boundaries too: a new instance gets one fresh frame.
+        if (target.mode === "pause" && this.instance && !this.deps.scenes.isCurrent(this.instance)) this.pausedFrame = false;
+        this.deps.health.expect(this.deps.device.name, { framesDue: target.mode === "play" && custom, hasScene: !!target.scene });
+        try {
+          if (target.mode !== "stop") await this.applyBrightness();
+          if (!this.running || version !== this.version) continue;
+          if (this.instance && this.instance.scene !== target.scene) {
+            const old = this.instance; this.instance = null; await this.deps.scenes.release(old);
+          }
+          if (!this.running || version !== this.version) continue;
+          const key = `${target.mode}:${target.scene ?? ""}`;
+          if (target.mode === "stop") {
+            if (this.quietKey !== key) {
+              try { await this.driver.blank(); }
+              catch (error) { this.deps.logger.warn(`[RenderLoop] ${this.deps.device.name}: stop blank failed: ${String(error)}`); }
+              if (!this.running || version !== this.version) continue;
+              await this.driver.setPower(false);
+              if (!this.running || version !== this.version) continue;
+              this.deps.health.contactOk(this.deps.device.name);
+              this.quietKey = key; this.reinit = true;
+              const { width, height } = this.driver.info;
+              this.deps.previews.put(this.deps.device.name, { width, height, rgb: new Uint8Array(width * height * 3) }, this.driver.info.drives ? "runtime" : "simulated");
+            }
+            this.report({ phase: "stopped", nextRetryAt: null });
+          } else if (builtin) {
+            if (this.quietKey !== key || this.reinit) {
+              await this.driver.activateBuiltin(/** @type {string} */ (target.scene));
+              if (!this.running || version !== this.version) continue;
+              this.deps.health.contactOk(this.deps.device.name);
+              this.quietKey = key; this.reinit = false;
+              this.errors = 0;
+            }
+            this.report({ phase: "builtin", scene: target.scene, nextRetryAt: null });
+          } else if (!custom || target.mode === "pause" && this.pausedFrame) {
+            this.report({ phase: custom ? "paused" : "idle", scene: target.scene, nextRetryAt: null });
+          } else {
+            this.report({ phase: this.instance ? "running" : "starting", nextRetryAt: null });
+            if (this.reinit || !this.driver.ready) {
+              await this.driver.reclaim();
+              if (!this.running || version !== this.version) continue;
+              this.reinit = false; this.appliedNative = null;
+              this.deps.health.contactOk(this.deps.device.name);
+              await this.applyBrightness();
+            }
+            if (!this.surface) this.surface = await this.deps.createSurface(this.deps.device, this);
+            if (!this.running || version !== this.version) continue;
+            if (!this.instance || this.reload || !this.deps.scenes.isCurrent(this.instance)) {
+              const next = await this.deps.scenes.acquire(/** @type {string} */ (target.scene), this.deps.device.name);
+              if (!this.running || version !== this.version) { if (next !== this.instance) await this.deps.scenes.release(next); continue; }
+              const old = this.instance; this.instance = next; this.reload = false;
+              if (old && old !== next) await this.deps.scenes.release(old);
+            }
+            if (!this.running || version !== this.version) continue;
+            const startedAt = this.deps.clock.now();
+            const delay = await this.instance.renderFrame(this.surface);
+            if (!this.running || version !== this.version) continue;
+            this.errors = 0; this.quietKey = ""; this.pausedFrame = true;
+            this.report({ phase: target.mode === "pause" ? "paused" : "running", scene: target.scene, nextRetryAt: null });
+            const floor = Math.max(1, this.deps.device.minFrameMs ?? LOOP_DEFAULTS.minFrameMs);
+            const wait = Math.max(typeof delay === "number" && Number.isFinite(delay) && delay > 0 ? delay : 0, floor - (this.deps.clock.now() - startedAt));
+            if (target.mode === "pause" || this.reload || !this.deps.scenes.isCurrent(this.instance)) continue;
+            await this.sleep(Math.max(1, wait));
+            continue;
+          }
+          if (await this.sleep(this.probeInterval())) await this.probe();
+        } catch (error) {
+          if (!this.running) break;
+          if (version !== this.version || this.retry) continue;
+          const classified = error instanceof DeviceError || error instanceof SceneError ? error : new SceneError(error instanceof Error ? error.message : String(error), { cause: error, phase: "render" });
+          this.deps.health.renderFailed(this.deps.device.name, classified);
+          this.errors += 1;
+          if (classified instanceof DeviceError && target.mode === "play" && custom) this.deviceErrors += 1;
+          else this.deviceErrors = 0;
+          if (this.deviceErrors >= LOOP_DEFAULTS.breakerErrors) {
+            if (this.cycles >= this.deps.device.maxPowerCycles && this.deps.device.powerCyclePlugin && this.deps.device.output === "drive") {
+              if (this.plugOnOwed && !await this.restorePlugOn()) continue;
+              if (!this.running || version !== this.version) continue;
+              this.deps.health.powerCycles(this.deps.device.name, { count: this.cycles, exhausted: true });
+              this.report({ phase: "exhausted", nextRetryAt: new Date(this.deps.clock.now() + LOOP_DEFAULTS.exhaustedProbeMs).toISOString() });
+              while (this.running && !this.retry && version === this.version) {
+                if (!await this.sleep(LOOP_DEFAULTS.exhaustedProbeMs)) break;
+                if (await this.probe()) {
+                  this.errors = this.deviceErrors = 0;
+                  this.reinit = true;
+                  this.deps.health.powerCycles(this.deps.device.name, { count: this.cycles, exhausted: false });
+                  break;
+                }
+              }
+              continue;
+            }
+            if (await this.powerCycle()) continue;
+            this.deviceErrors = 0;
+          }
+          const backoff = Math.min(LOOP_DEFAULTS.maxBackoffMs, LOOP_DEFAULTS.initialBackoffMs * 2 ** Math.min(30, this.errors - 1));
+          this.report({ phase: "retrying", nextRetryAt: new Date(this.deps.clock.now() + backoff).toISOString() });
+          await this.waitWithProbes(backoff);
+        }
+      }
+    } finally {
+      if (this.plugOnOwed) await this.restorePlugOn();
+      if (this.instance) { const instance = this.instance; this.instance = null; await this.deps.scenes.release(instance); }
+    }
   }
 }
