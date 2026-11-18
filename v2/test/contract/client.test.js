@@ -6377,15 +6377,11 @@ const R4_KNOWN = new Set([
   "config patch × membership × 500",
   "config patch × membership × success",
   "config patch × membership × timeout",
-  "config patch × reincarnate × success",
-  "config patch × reincarnate × success, last",
   "config patch × reopen × 500, last",
   "config patch × reopen × success, last",
   "config patch × reopen × timeout, last",
   "config patch × revisit × success",
   "config patch × type × success",
-  "settings preview rejected × reincarnate × success",
-  "settings preview rejected × reincarnate × success, last",
   "settings preview rejected × schema × success",
   "settings preview × commit × 500",
   "settings preview × commit × timeout",
@@ -6393,42 +6389,18 @@ const R4_KNOWN = new Set([
   "settings preview × newer draft × timeout",
   "settings preview × other field × 500",
   "settings preview × other field × timeout",
-  "settings preview × reincarnate × 500",
-  "settings preview × reincarnate × 500, last",
-  "settings preview × reincarnate × success",
-  "settings preview × reincarnate × success, last",
-  "settings preview × reincarnate × timeout",
-  "settings preview × reincarnate × timeout, last",
   "settings preview × schema × 500",
   "settings preview × schema × success",
   "settings preview × schema × timeout",
-  "settings revert × reincarnate × 500",
-  "settings revert × reincarnate × 500, last",
-  "settings revert × reincarnate × success",
-  "settings revert × reincarnate × success, last",
-  "settings revert × reincarnate × timeout",
-  "settings revert × reincarnate × timeout, last",
   "settings save rejected × membership × 500",
   "settings save rejected × membership × refused",
   "settings save rejected × membership × timeout",
-  "settings save rejected × reincarnate × 500",
-  "settings save rejected × reincarnate × 500, last",
-  "settings save rejected × reincarnate × refused",
-  "settings save rejected × reincarnate × refused, last",
-  "settings save rejected × reincarnate × timeout",
-  "settings save rejected × reincarnate × timeout, last",
   "settings save rejected × schema × 500",
   "settings save rejected × schema × refused",
   "settings save rejected × schema × timeout",
   "settings save × membership × 500",
   "settings save × membership × success",
   "settings save × membership × timeout",
-  "settings save × reincarnate × 500",
-  "settings save × reincarnate × 500, last",
-  "settings save × reincarnate × success",
-  "settings save × reincarnate × success, last",
-  "settings save × reincarnate × timeout",
-  "settings save × reincarnate × timeout, last",
   "settings save × schema × 500",
   "settings save × schema × timeout",
   // r6: Reset stories expose the same phase-B ownership bugs.
@@ -6438,12 +6410,6 @@ const R4_KNOWN = new Set([
   "settings reset preview × newer draft × timeout",
   "settings reset preview × other field × 500",
   "settings reset preview × other field × timeout",
-  "settings reset preview × reincarnate × 500",
-  "settings reset preview × reincarnate × 500, last",
-  "settings reset preview × reincarnate × success",
-  "settings reset preview × reincarnate × success, last",
-  "settings reset preview × reincarnate × timeout",
-  "settings reset preview × reincarnate × timeout, last",
   "settings reset preview × reset replaced by an edit × 500 (gate r5b G)",
   "settings reset preview × reset replaced by an edit × timeout (gate r5b G)",
   "settings reset preview × reset replaced by equal default × 500 (gate r5b G)",
@@ -6453,14 +6419,8 @@ const R4_KNOWN = new Set([
   "settings reset save × membership × 500",
   "settings reset save × membership × success",
   "settings reset save × membership × timeout",
-  "settings reset save × reincarnate × 500",
-  "settings reset save × reincarnate × success",
-  "settings reset save × reincarnate × timeout",
   "settings reset save × schema × 500",
   "settings reset save × schema × timeout",
-  "settings reset save × reincarnate × 500, last",
-  "settings reset save × reincarnate × success, last",
-  "settings reset save × reincarnate × timeout, last",
 ]);
 
 const R4_STRICT = process.env.R4_HARNESS_STRICT === "1";
@@ -11672,7 +11632,9 @@ for (const kind of R4_KINDS.filter((kind) => kind.page === "raw" || kind.name.st
     for (const last of [false, true])
       test(`r4 harness: ${kind.name} × same-stream epoch × ${end}${last ? ", last" : ""} (B1a r5)`, async (t) => {
         t.mock.timers.enable({ apis: ["setTimeout"] });
-        assert.deepEqual(await r4Case(t, kind, "same stream epoch", end, { last }), []);
+        assert.deepEqual(await (["settings load", "settings clear overlays", "settings end", "settings end retry"].includes(kind.name)
+          ? r5B1bEpochCase(t, kind, end, last)
+          : r4Case(t, kind, "same stream epoch", end, { last })), []);
       });
   for (const end of r4Ends(kind))
     test(`r4 harness: ${kind.name} × successor in its own slot × ${end} (B1a r5)`, async (t) => {
@@ -11974,10 +11936,11 @@ async function r5B1bEpochCase(t, kind, end, last = false, opsOverride) {
   const global = /** @type {any} */ (globalThis);
   const descriptor = Object.getOwnPropertyDescriptor(global, "__r8Operation");
   let hook = global.__r8Operation;
+  const outcomeContext = new AsyncLocalStorage();
   /** @type {any[]} */ const operations = [];
   /** @type {Set<string>} */ const stale = new Set();
   const observeOperation = (/** @type {any} */ run, /** @type {string} */ key, /** @type {any} */ work, /** @type {any} */ options = {}) => {
-    const mine = { key, token: 0, epoch: r4State().epoch };
+    const mine = { key, token: 0, epoch: r4State().epoch, slot: r4State().ops.get(key) };
     operations.push(mine);
     const callbacks = { ...options,
       done: (/** @type {any} */ value) => {
@@ -11989,7 +11952,7 @@ async function r5B1bEpochCase(t, kind, end, last = false, opsOverride) {
         options.failed?.(error);
       },
     };
-    const result = hook(opsOverride ? opsOverride[run.name] : run, key, work, callbacks);
+    const result = outcomeContext.run(mine, () => hook(opsOverride ? opsOverride[run.name] : run, key, work, callbacks));
     mine.token = r4State().ops.get(key)?.token ?? 0;
     return result;
   };
@@ -11998,9 +11961,12 @@ async function r5B1bEpochCase(t, kind, end, last = false, opsOverride) {
   Object.defineProperty(global, "__r8Operation", { configurable: true,
     get: () => observeOperation, set: (next) => { hook = next; } });
   const stop = subscribe((state) => state.ops, (slots) => {
-    for (const mine of operations)
-      if (mine.token && mine.epoch !== r4State().epoch && slots.get(mine.key)?.token === mine.token)
-        stale.add(`${mine.key}: retired native outcome was written`);
+    for (const mine of operations) {
+      const slot = slots.get(mine.key), previous = mine.slot;
+      mine.slot = slot;
+      if (outcomeContext.getStore() === mine && mine.epoch !== r4State().epoch && slot && slot !== previous)
+        stale.add(`${mine.key}: retired native outcome was written (token ${slot.token})`);
+    }
   });
   try {
     return [...await r4Case(t, kind, "same stream epoch", end, { last }), ...stale];
@@ -12031,6 +11997,9 @@ test("r4 harness self-test: B1b same-stream family and B1a L5 pin native central
       assert.deepEqual(await r5B1bEpochCase(t, kind, end), [], `${name}/${end}: current guard control`);
       const differences = await r5B1bEpochCase(t, kind, end, false, ops);
       assert.ok(differences.some((found) => /retired native outcome|old done callback|old failed callback/.test(found)), `${name}/${end}: ${differences.join("\n")}`);
+      assert.ok(differences.some((found) => /retired native outcome was written/.test(found)), `${name}/${end}: any old-key write, including token 0, is observed`);
+      if (name.startsWith("settings "))
+        assert.ok(differences.some((found) => /retired native outcome was written \(token 0\)/.test(found)), `${name}/${end}: L5 catches the actual retired-key token-0 write`);
     }
 });
 
@@ -12412,5 +12381,245 @@ test("r4 harness self-test: B1b retains the original Health old-log recipe and o
   t_log(`B1b retained Health recipe: ${found}`);
 });
 
+
 r8HarnessLoaded = true;
 r8ResolveHarness();
+
+// PIXD-98 B2: additive named device-life and slider-owner histories. Frozen
+// generators, identity classes, piece dependencies and audit predicates stay.
+const R5_B2_OWNER_NAMES = ["device scene", "device mode", "device brightness", "device brightness range", "device return", "device adopt"];
+const R5_B2_LIFE_REMOVAL = /** @type {Array<[string, string]>} */ ([
+  ["if (owner.readers.life && owner.readers.life() !== owner.values.life) return false;", "if (false) return false;"],
+]);
+
+/** A read-only probe of the actual rendered slider intent. It lets an equal
+ * value input prove new ownership even though its pixels have equal values.
+ * The export exists only in this test module copy; no product hook is added.
+ * @param {boolean} [mutant] */
+async function r5B2OwnerModule(mutant = false) {
+  return r5Module("pages/device.js", [
+    ["let sliding = null;", "let sliding = null;\nexport const __b2SliderOwner = () => sliding;"],
+    ...(mutant ? /** @type {Array<[string, string]>} */ ([["if (key) sliding = { key, level: Number(target.value) };", "void key;"]]) : []),
+  ]);
+}
+
+/** Complete the old native operation before enabled slider input. Equal-value
+ * input isolates owner from every world identity, request value and token.
+ * A separate real input+change variant holds the new brightness request.
+ * @param {any} t @param {string} name @param {any} module @param {boolean} [slides] */
+async function r5B2OwnerCase(t, name, module, slides = false) {
+  const original = r4KindOf(name);
+  let checked = 0;
+  const kind = { ...original, completeBeforeChange: true,
+    world: { ...original.world, devices: original.world.devices.map((/** @type {any} */ d) => ({ ...d, o: { ...d.o, override: 30 } })) },
+    // Keep the lost-intent mutant's first input at the new-owner step,
+    // after completion, including for the range operation itself.
+    ...(name === "device brightness range" ? { begin: (/** @type {any} */ ctx) => typeInto(ctx.root.querySelector('input[type="range"]'), "40", "change") } : {}),
+    setup: async (/** @type {any} */ ctx) => {
+      await original.setup?.(ctx);
+      let previous = module.__b2SliderOwner();
+      ctx.root.addEventListener("input", (/** @type {any} */ event) => {
+        if (event.target?.getAttribute("type") !== "range" || event.target.disabled) return;
+        const owner = module.__b2SliderOwner();
+        assert.ok(owner && owner !== previous, "B2 slider owner: enabled input acquires a fresh actual intent");
+        assert.equal(owner.level, Number(event.target.value), "B2 slider owner: the actual intent retains the input level");
+        assert.match(owner.key, /^brightness:d1@/, "B2 slider owner: the intent belongs to the native brightness slot");
+        if (ctx.issuedOp) {
+          assert.equal(ctx.issuedOp.answered, true, "B2 slider owner: the old operation already finished");
+          assert.equal(r4State().ops.get(ctx.slotKey)?.busy, false, "B2 slider owner: its native slot is free before new input");
+        }
+        previous = owner;
+        checked += 1;
+      });
+    },
+  };
+  const differences = await r4Case(t, kind, slides ? "the new owner slides" : "same value slider input", "success", { modules: { device: module.page } });
+  assert.ok(checked >= 2, "B2 slider owner: both case and equal-value reference executed input");
+  return differences;
+}
+
+for (const name of R5_B2_OWNER_NAMES) {
+  test(`r4 harness: ${name} × owner only, equal input after the operation finished (B2)`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    assert.deepEqual(await r5B2OwnerCase(t, name, await r5B2OwnerModule()), []);
+  });
+  if (["device scene", "device mode", "device return", "device adopt"].includes(name))
+    test(`r4 harness: ${name} × the new owner slides, operation already finished (B2 gate r5f)`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      assert.deepEqual(await r5B2OwnerCase(t, name, await r5B2OwnerModule(), true), []);
+    });
+}
+
+test("r4 harness self-test: B2 each completed-operation owner story has a control and must-fail lost-intent mutant", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const name of R5_B2_OWNER_NAMES) {
+    assert.deepEqual(await r5B2OwnerCase(t, name, await r5B2OwnerModule()), []);
+    await assert.rejects(r5B2OwnerCase(t, name, await r5B2OwnerModule(true)), /B2 slider owner: enabled input acquires/);
+    if (["device scene", "device mode", "device return", "device adopt"].includes(name)) {
+      assert.deepEqual(await r5B2OwnerCase(t, name, await r5B2OwnerModule(), true), []);
+      await assert.rejects(r5B2OwnerCase(t, name, await r5B2OwnerModule(true), true), /B2 slider owner: enabled input acquires/);
+    }
+  }
+});
+
+/** Observe actual old-life native outcomes and callbacks, even when life keys
+ * hide them from the new page. No slider event is sent by this observation.
+ * @param {any} t @param {R4Kind} kind @param {R4End} end @param {boolean} [last] @param {any} [opsOverride] */
+async function r5B2LifeCase(t, kind, end, last = false, opsOverride) {
+  if (!r8HarnessLoaded) await r8HarnessReady;
+  await r8MeasurementModules();
+  if (kind.name === "device brightness range") kind = { ...kind,
+    // Commit a range change directly: this variant dispatches no input
+    // event at all, before or after the sole world change (gate r5f LOW).
+    setup: (ctx) => ctx.root.addEventListener("input", (/** @type {any} */ event) => {
+      assert.notEqual(event.target?.getAttribute("type"), "range", "B2 life-only range: no slider input event anywhere in the story");
+    }),
+    begin: (ctx) => typeInto(ctx.root.querySelector('input[type="range"]'), "40", "change"),
+  };
+  const { subscribe } = await import("../../web/js/store.js");
+  const global = /** @type {any} */ (globalThis);
+  const descriptor = Object.getOwnPropertyDescriptor(global, "__r8Operation");
+  let hook = global.__r8Operation;
+  /** @type {any[]} */ const operations = [];
+  /** @type {Set<string>} */ const stale = new Set();
+  const currentLife = () => r4State().devices.get("d1")?.incarnation ?? null;
+  const observeOperation = (/** @type {any} */ run, /** @type {string} */ key, /** @type {any} */ work, /** @type {any} */ options = {}) => {
+    const mine = { key, life: currentLife(), epoch: r4State().epoch, slot: r4State().ops.get(key) };
+    operations.push(mine);
+    const retired = () => mine.epoch === r4State().epoch && mine.life !== currentLife();
+    return hook(opsOverride ? opsOverride[run.name] : run, key, work, { ...options,
+      done: (/** @type {any} */ value) => { if (retired()) stale.add(`${key}: old life done callback`); return options.done?.(value); },
+      failed: (/** @type {any} */ error) => { if (retired()) stale.add(`${key}: old life failed callback`); options.failed?.(error); },
+    });
+  };
+  Object.defineProperty(global, "__r8Operation", { configurable: true, get: () => observeOperation, set: (next) => { hook = next; } });
+  const stop = subscribe((state) => state.ops, (slots) => {
+    for (const mine of operations) {
+      const slot = slots.get(mine.key), previous = mine.slot;
+      mine.slot = slot;
+      if (mine.epoch === r4State().epoch && mine.life !== currentLife() && slot && slot !== previous)
+        stale.add(`${mine.key}: retired life native outcome was written`);
+    }
+  });
+  const first = r8Stories.length;
+  try {
+    const differences = await r4Case(t, kind, "reincarnate", end, { last });
+    const stories = r8Stories.slice(first).filter((story) => story.kind === kind.name && story.completed);
+    assert.ok(stories.some((story) => r8StoryChanges(story.a.identities, story.b.identities).inputs.join() === "life"), "B2 life-only story executed");
+    if (kind.name === "device brightness range")
+      for (const story of stories) {
+        assert.equal(story.a.identities.owner, 0, "B2 life-only brightness: no initial slider input");
+        assert.equal(story.b.identities.owner, 0, "B2 life-only brightness: nobody touches the slider during reincarnation");
+      }
+    return [...differences, ...stale];
+  } finally { stop(); Object.defineProperty(global, "__r8Operation", /** @type {PropertyDescriptor} */ (descriptor)); }
+}
+
+const R5_B2_LIFE_NAMES = ["config patch", "config adopt", "devices scene", "devices restore", ...R5_B2_OWNER_NAMES, "recovery retry", ...R4_KINDS.filter((kind) => kind.name.startsWith("settings ")).map((kind) => kind.name)];
+for (const name of R5_B2_LIFE_NAMES) {
+  const kind = r4KindOf(name);
+  for (const end of r4Ends(kind))
+    for (const last of [false, true])
+      test(`r4 harness: ${name} × life only, nobody touches the slider × ${end}${last ? ", last" : ""} (B2)`, async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        assert.deepEqual(await r5B2LifeCase(t, kind, end, last), []);
+      });
+}
+
+test("r4 harness self-test: B2 each life-only native story has a control and must-fail central life mutant", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mutant = await r5Module("ops.js", [...R5_B2_LIFE_REMOVAL,
+    ["if (owner.slot && op(owner.slot.key).token !== owner.slot.token) return false;", "if (false) return false;"],
+  ]);
+  for (const name of R5_B2_LIFE_NAMES) {
+    const kind = r4KindOf(name);
+    for (const end of r4Ends(kind)) {
+      assert.deepEqual(await r5B2LifeCase(t, kind, end), [], `${name}/${end}: life guard control`);
+      const differences = await r5B2LifeCase(t, kind, end, false, mutant);
+      assert.ok(differences.some((found) => /old life.*callback|retired life native outcome/.test(found)), `${name}/${end}: life guard removal must fail its native named story: ${differences.join("\n")}`);
+    }
+  }
+});
+
+/** Exact-device life admission at the shared API, including disappearance
+ * before a replacement exists and explicit projections that omit life.
+ * @param {any} ops @param {"removed"|"readded"} boundary @param {boolean} failure */
+async function r5B2CentralLife(ops, boundary, failure) {
+  const world = r4World({ devices: [{ name: "d1", o: {} }, { name: "d2", o: {} }] });
+  r4NewEpoch(world);
+  const key = ops.deviceSlot("b2-life", r4State().devices.get("d1"));
+  let resolve = () => {};
+  let reject = (/** @type {Error} */ _error) => {};
+  const held = new Promise((yes, no) => { resolve = () => yes(undefined); reject = no; });
+  let done = 0, failed = 0, starts = 0;
+  /** @type {any} */ let current;
+  const task = ops.follow(key, async (/** @type {any} */ operation) => { current = operation; await held; }, {
+    device: "d1", done: () => { done += 1; }, failed: () => { failed += 1; },
+  });
+  void task.catch(() => {});
+  const captured = current.owner;
+  const old = ops.op(key);
+  try {
+    assert.equal(current(["epoch"]), true, "B2 exact life: live control is admitted");
+    // Changes to another device, scene and membership preserve this life.
+    r4Live(world, "device-removed", { name: "d2", incarnation: 1 });
+    world.lives.set("d2", 2);
+    world.rev += 1;
+    r4Live(world, "device", r4View(world, "d2", world.epoch, 2, world.rev));
+    const view = r4State().devices.get("d1");
+    world.rev += 1;
+    r4Live(world, "device", { ...view, origin: "blob", desired: { ...view.desired, scene: { ...view.desired.scene, scene: "weather" } }, rev: world.rev });
+    assert.equal(current(["epoch"]), true, "B2 exact life: unrelated changes preserve the operation");
+    r4Live(world, "device-removed", { name: "d1", incarnation: 1 });
+    if (boundary === "readded") {
+      world.lives.set("d1", 2);
+      world.rev += 1;
+      r4Live(world, "device", r4View(world, "d1", world.epoch, 2, world.rev));
+    }
+    assert.equal(current(["epoch"]), false, "B2 exact life: removing its device retires an explicit epoch projection");
+    assert.equal(ops.owned(captured, []), false, "B2 exact life: no projection can omit the declared device life");
+    assert.equal(ops.start(`${key}-start`, async () => { starts += 1; }, { owner: captured }), false, "B2 exact life: inherited start is refused");
+    await current.follow(`${key}-child`, async () => { starts += 1; }, { device: "d2" });
+    assert.equal(starts, 0, "B2 exact life: inherited work never refreshes life to a replacement or another device");
+    if (failure) reject(new Error("old life failed")); else resolve();
+    await task.catch(() => {});
+    await settle();
+    assert.equal(ops.op(key), old, "B2 exact life: a retired native outcome remains untouched");
+    assert.deepEqual([done, failed], [0, 0], "B2 exact life: old callbacks are not entered");
+  } finally { resolve(); await task.catch(() => {}); ops.drop(key); ops.drop(`${key}-start`); ops.drop(`${key}-child`); }
+}
+
+test("r4 harness: B2 central life capture owns its exact device, absent interval and inherited starts", async () => {
+  const ops = await r5Module("ops.js");
+  for (const boundary of /** @type {const} */ (["removed", "readded"]))
+    for (const failure of [false, true]) await r5B2CentralLife(ops, boundary, failure);
+});
+
+test("r4 harness self-test: B2 shared life admission has controls and must-fail lost-capture and lost-guard mutants", async () => {
+  await r5B2CentralLife(await r5Module("ops.js"), "removed", false);
+  for (const edits of [R5_B2_LIFE_REMOVAL, /** @type {Array<[string,string]>} */ ([["const inherited = options.owner ?? capture(options.owns, options.device);", "const inherited = options.owner ?? capture(options.owns);"]])])
+    await assert.rejects(r5B2CentralLife(await r5Module("ops.js", edits), "removed", false), /B2 exact life: removing its device/);
+});
+
+test("r4 harness self-test: B2 untouched range has three controls and must fail when only the life prerequisite is removed", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const kind = r4KindOf("device brightness range");
+  const mutant = await r5Module("ops.js", R5_B2_LIFE_REMOVAL);
+  for (const end of R4_ENDS) {
+    assert.deepEqual(await r5B2LifeCase(t, kind, end), []);
+    const differences = await r5B2LifeCase(t, kind, end, false, mutant);
+    assert.ok(differences.some((found) => /retired life native outcome|old life.*callback/.test(found)), `${end}: life alone must retire the untouched range outcome`);
+  }
+});
+
+test("r4 harness self-test: B2 original page-local lifetime mutants cannot cross the central life prerequisite", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const slider = (await r5Module("pages/device.js", [["if (sliding?.key === key) sliding = null;", "sliding = null;"]])).page;
+  for (const end of R4_ENDS)
+    assert.deepEqual(await r4Case(t, r4KindOf("device brightness range"), "reincarnate, then the new owner slides", end, { modules: { device: slider } }), [], `old page-local slider cleanup is unreachable (${end})`);
+  const original = R7_RETURN_MUTANTS.find((mutant) => mutant.name === "X10b");
+  assert.ok(original);
+  const returning = (await r5Module("pages/device.js", /** @type {Array<[string,string]>} */ (original.edits))).page;
+  for (const end of /** @type {R4End[]} */ (["500", "timeout"]))
+    assert.deepEqual(await r4Case(t, r4KindOf("device return"), "reincarnate", end, { modules: { device: returning } }), [], `X10b cannot find an old life failure (${end})`);
+});

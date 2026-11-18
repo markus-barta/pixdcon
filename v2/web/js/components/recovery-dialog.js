@@ -108,7 +108,7 @@ export function openRecoveryDialog(device, opener) {
             body: {},
           }),
         ),
-      { done: () => (scrim.isConnected ? render() : undefined), failed: () => (scrim.isConnected ? render() : undefined) },
+      { device: name, done: () => (scrim.isConnected ? render() : undefined), failed: () => (scrim.isConnected ? render() : undefined) },
     );
     render();
   }

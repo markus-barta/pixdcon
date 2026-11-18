@@ -173,6 +173,7 @@ function patch(name) {
         }),
       ),
     {
+      device: name,
       label: "Saving…",
       done: () => {
         // The row closes, in the opening that saved it.
@@ -197,7 +198,7 @@ function adopt(name) {
         body: {},
       }),
     ),
-  { label: "Adding…" });
+  { device: name, label: "Adding…" });
   render(getState());
 }
 

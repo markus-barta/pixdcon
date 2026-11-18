@@ -257,7 +257,7 @@ export function retryEnd(view, scene, session) {
           }),
         );
       }),
-    { value: "retry", label: op(key).failure ?? "" },
+    { device, value: "retry", label: op(key).failure ?? "" },
   );
 }
 
@@ -287,11 +287,12 @@ export function retryEnd(view, scene, session) {
 /**
  * @param {string|null} scene
  * @param {{epoch?: string|null, incarnation?: number}|undefined} life
+ * @param {string} device
  * @returns {Scope}
  */
-function newScope(scene, life) {
+function newScope(scene, life, device) {
   return {
-    owner: capture(),
+    owner: capture({}, device),
     read: null,
     scene,
     epoch: life?.epoch ?? null,
@@ -314,7 +315,7 @@ export function createSettingsForm(host, options) {
   const session = () =>
     typeof options.session === "function" ? options.session() : options.session;
   /** @type {Scope} */
-  let scope = newScope(null, undefined);
+  let scope = newScope(null, undefined, device);
   let sceneLabel = "";
   /** @type {"none"|"builtin"|"loading"|"failed"|"ready"} */
   let phase = "none";
@@ -958,7 +959,7 @@ export function createSettingsForm(host, options) {
       }
       void leave(scope);
       scope.read?.retire();
-      scope = newScope(next, { epoch, incarnation });
+      scope = newScope(next, { epoch, incarnation }, device);
       sceneLabel = label;
       current = null;
       loadError = "";

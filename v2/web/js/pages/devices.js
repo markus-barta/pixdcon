@@ -337,7 +337,7 @@ function chooseScene(name, scene) {
           body: { scene: scene === "" ? null : scene },
         }),
       ),
-    { label: `Switching to ${sceneName(state, scene, view.type)}…`, value: scene },
+    { device: name, label: `Switching to ${sceneName(state, scene, view.type)}…`, value: scene },
   );
   render(getState());
 }
@@ -361,6 +361,7 @@ function restore(name) {
         key,
       }),
     ),
+    { device: name },
   );
   render(getState());
 }

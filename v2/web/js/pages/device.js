@@ -109,6 +109,7 @@ function act(control, send, busyText) {
     if (sliding?.key === key) sliding = null;
   };
   start(key, async () => applyAnswer(await send(key)), {
+    device: name,
     label: busyText,
     done: settled,
     failed: settled,

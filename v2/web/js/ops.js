@@ -17,7 +17,9 @@
  *  1. An operation takes a token when it starts; the slot's token is the
  *     operation that is current for it.
  *  2. Its outcome changes the slot, and runs the caller's `done`, only while
- *     its token is still the slot's and its captured epoch is current.
+ *     its token is still the slot's and its captured epoch and device life
+ *     are current. Device callers declare `device`; inherited captures keep
+ *     that life through queued work. Missing devices retire their old work.
  *     Page effects declare their identity projection through `effect` or
  *     `current.effect`. Deferred work inherits the capture through `owner`
  *     or `current.follow`; it is checked before any request starts.
@@ -65,7 +67,8 @@ let tokens = 0;
 /**
  * Readers name the identities an effect may project on. Values are taken
  * once, before work starts; a deferred step inherits this same capture.
- * Later slices can add life, definition, visit and draft readers here.
+ * Device life is a baseline for device work, including explicit projections.
+ * Later slices can add definition, visit and draft readers here.
  *
  * @typedef {{readers: Record<string, () => unknown>, values: Record<string, unknown>, slot?: {key: string, token: number}}} Ownership
  */
@@ -74,9 +77,11 @@ let tokens = 0;
  * @typedef {((projection?: string[]) => boolean) & {owner: Ownership, effect: <T>(name: string, work: () => T) => T|undefined, follow: <T>(key: string, work: (current: Operation) => Promise<T>, options?: OpOptions<T>) => Promise<T>}} Operation
  */
 
-/** @param {Record<string, () => unknown>} [owns] @returns {Ownership} */
-export function capture(owns = {}) {
-  const readers = Object.freeze({ epoch: () => getState().epoch, ...owns });
+/** @param {Record<string, () => unknown>} [owns] @param {string} [device] @returns {Ownership} */
+export function capture(owns = {}, device) {
+  const readers = Object.freeze({ epoch: () => getState().epoch, ...owns,
+    ...(device === undefined ? {} : { life: () => getState().devices.get(device)?.incarnation ?? null }),
+  });
   return Object.freeze({
     readers,
     values: Object.freeze(Object.fromEntries(Object.entries(readers).map(([name, read]) => [name, read()]))),
@@ -88,6 +93,7 @@ export function capture(owns = {}) {
  */
 export function owned(owner, projection) {
   if (owner.slot && op(owner.slot.key).token !== owner.slot.token) return false;
+  if (owner.readers.life && owner.readers.life() !== owner.values.life) return false;
   for (const name of projection) {
     const read = owner.readers[name];
     if (read() !== owner.values[name]) return false;
@@ -199,7 +205,8 @@ export function failureText(error) {
  * @property {(error: unknown) => void} [failed] runs only while the operation is current, after the failure was kept
  * @property {Ownership} [owner] inherited capture, never refreshed by deferred work
  * @property {Record<string, () => unknown>} [owns] additional identities, captured at start
- * @property {Record<string, string[]>} [effects] named projections for current.effect, plus start (request admission); slot outcomes always depend on epoch
+ * @property {string} [device] device whose life owns this work; absent for scene/global resources
+ * @property {Record<string, string[]>} [effects] named projections for current.effect, plus start (request admission); slot outcomes always depend on epoch and declared device life
  */
 
 /**
@@ -212,7 +219,7 @@ export function failureText(error) {
  * @returns {boolean} false: the slot was busy, and nothing was started or changed
  */
 export function start(key, work, options = {}) {
-  const owner = options.owner ?? capture(options.owns);
+  const owner = options.owner ?? capture(options.owns, options.device);
   if (!owned(owner, options.effects?.start ?? ["epoch"])) return false;
   if (busy(key)) return false;
   run(key, work, { ...options, owner });
@@ -277,7 +284,7 @@ export function clearNote(key) {
  * @returns {Task<T>}
  */
 function run(key, work, options) {
-  const inherited = options.owner ?? capture(options.owns);
+  const inherited = options.owner ?? capture(options.owns, options.device);
   const projections = options.effects ?? {};
   if (!owned(inherited, projections.start ?? ["epoch"]))
     return task(Promise.resolve(/** @type {T} */ (undefined)));

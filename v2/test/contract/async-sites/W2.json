@@ -89,7 +89,7 @@
       "test": "test/contract/client.test.js: r3 sweep (Overlays, rule 5):"
     },
     {
-      "site": "web/js/components/settings-form.js:936",
+      "site": "web/js/components/settings-form.js:937",
       "id": "listener:host.addEventListener(\"input\")#1",
       "input": "a setting value typed",
       "metadata": "a command of the user (a click, a key, a form); every edit takes the next number of the page's draft counter (view/drafts.js), its identity",
@@ -98,7 +98,7 @@
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:937",
+      "site": "web/js/components/settings-form.js:938",
       "id": "listener:host.addEventListener(\"change\")#1",
       "input": "a checkbox, choice or colour changed",
       "metadata": "a command of the user (a click, a key, a form); every edit takes the next number of the page's draft counter",
@@ -107,7 +107,7 @@
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:938",
+      "site": "web/js/components/settings-form.js:939",
       "id": "listener:host.addEventListener(\"click\")#1",
       "input": "Save, Revert, Clear N overlays, Reset to default, Retry",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -212,7 +212,7 @@
       "test": "test/contract/client.test.js: client settings form:"
     },
     {
-      "site": "web/js/ops.js:300",
+      "site": "web/js/ops.js:307",
       "id": "then:outcome.then#1",
       "input": "the outcome of every operation of the pages: a user action, a load, a retry or a cleanup, success or failure",
       "metadata": "the slot of the operation (the identity it acts on: device with epoch and incarnation, scene, control, editor, page) and the token it took when it started",
@@ -254,7 +254,7 @@
       "test": "test/contract/client.test.js: r3 gate 4.1 (finding 1, raw retry):"
     },
     {
-      "site": "web/js/pages/config.js:343",
+      "site": "web/js/pages/config.js:344",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "Edit, Cancel, Save of a device row, Add to config.json, the theme of this browser",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -262,7 +262,7 @@
       "test": "test/contract/client.test.js: r3 sweep (Overlays, rule 5):"
     },
     {
-      "site": "web/js/pages/config.js:344",
+      "site": "web/js/pages/config.js:345",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "typing in the Add device form",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -271,7 +271,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/config.js:345",
+      "site": "web/js/pages/config.js:346",
       "id": "listener:root.addEventListener(\"submit\")#1",
       "input": "Add device",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -279,7 +279,7 @@
       "test": "test/contract/client.test.js: r3 sweep (Overlays, rule 5):"
     },
     {
-      "site": "web/js/pages/config.js:346",
+      "site": "web/js/pages/config.js:347",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Config page",
       "metadata": "none: the store calls it after a change it applied",
@@ -287,7 +287,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/pages/device.js:747",
+      "site": "web/js/pages/device.js:748",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "scene options, Mode, Brightness Auto/Override, Return to …, Recovery steps, Add to config.json",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -295,7 +295,7 @@
       "test": "test/contract/client.test.js: r3 sweep (device controls):"
     },
     {
-      "site": "web/js/pages/device.js:748",
+      "site": "web/js/pages/device.js:749",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "the brightness slider moving",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -304,7 +304,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/device.js:749",
+      "site": "web/js/pages/device.js:750",
       "id": "listener:root.addEventListener(\"change\")#1",
       "input": "the brightness slider let go",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -312,7 +312,7 @@
       "test": "test/contract/client.test.js: r3 sweep (device controls):"
     },
     {
-      "site": "web/js/pages/device.js:750",
+      "site": "web/js/pages/device.js:751",
       "id": "listener:root.addEventListener(\"submit\")#1",
       "input": "Create copy (Separate copy of this scene)",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -320,7 +320,7 @@
       "test": "test/contract/client.test.js: r3 sweep (device controls):"
     },
     {
-      "site": "web/js/pages/device.js:751",
+      "site": "web/js/pages/device.js:752",
       "id": "listener:root.addEventListener(\"keydown\")#1",
       "input": "arrow keys in the scene radio group",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -328,7 +328,7 @@
       "test": "test/contract/client.test.js: r3 sweep (device controls):"
     },
     {
-      "site": "web/js/pages/device.js:752",
+      "site": "web/js/pages/device.js:753",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Device page",
       "metadata": "none: the store calls it after a change it applied",
@@ -336,7 +336,7 @@
       "test": "test/contract/client.test.js: r3 gate 2.2 (finding 6, failed cleanup):"
     },
     {
-      "site": "web/js/pages/devices.js:463",
+      "site": "web/js/pages/devices.js:464",
       "id": "listener:root.addEventListener(\"change\")#1",
       "input": "a scene chosen in a row's select",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -344,7 +344,7 @@
       "test": "test/contract/client.test.js: r3 gate Q6 (one busy owner across pages):"
     },
     {
-      "site": "web/js/pages/devices.js:464",
+      "site": "web/js/pages/devices.js:465",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "Restore in a row",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -352,7 +352,7 @@
       "test": "test/contract/client.test.js: r3 gate 2.3 (finding 8, Restore across lives):"
     },
     {
-      "site": "web/js/pages/devices.js:465",
+      "site": "web/js/pages/devices.js:466",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "typing in the empty state's Add device form",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -361,7 +361,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/devices.js:466",
+      "site": "web/js/pages/devices.js:467",
       "id": "listener:root.addEventListener(\"submit\")#1",
       "input": "Add device in the empty state",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -369,7 +369,7 @@
       "test": "test/contract/client.test.js: r3 ops (the operation rule):"
     },
     {
-      "site": "web/js/pages/devices.js:467",
+      "site": "web/js/pages/devices.js:468",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Devices page",
       "metadata": "none: the store calls it after a change it applied",
@@ -436,7 +436,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/ops.js:119",
+      "site": "web/js/ops.js:125",
       "id": "subscribe:subscribe#1",
       "input": "a newer streamed config resource position in the current run",
       "metadata": "resource position, stream sequence and snapshot floor; observation generation and active page subscription",
@@ -444,7 +444,7 @@
       "test": "test/contract/client.test.js: r4 harness: B1a r5 deferred resource replacement"
     },
     {
-      "site": "web/js/ops.js:132",
+      "site": "web/js/ops.js:138",
       "id": "timer:queueMicrotask#1",
       "input": "coalesced resource replacement after the current publication/input turn",
       "metadata": "captured epoch and observation generation; active subscription; page eligibility",
