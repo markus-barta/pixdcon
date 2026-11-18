@@ -9031,11 +9031,34 @@ test("r4 inventory: every asynchronous render-state writer has an ownership obli
   }
 });
 
+// PIXD-94 A3/A5: each new draft-book writer has a scoped owner and a real
+// W1/W4 witness. The extractor and its existing ownership tags stay intact.
+const R3_DRAFT_WRITERS = [
+  { fn: "previewResult", name: "edit.previewApplied", kind: "=",
+    ownership: "the submitted key's exact draft in its captured opening/epoch/life/scene/definition; a newer edit is never acknowledged",
+    witness: "gate r3 A3: real atomic preview refusal keeps all edits without previewing" },
+  { fn: "reconcile", name: "edit.removed", kind: "=",
+    ownership: "the current definition of the book's captured opening/epoch/life/scene marks each retained key without deleting its edit",
+    witness: "gate r3 A5: real schema removal retains a visible discardable edit and saves remaining fields" },
+  { fn: "discard", name: "draft", kind: "=",
+    ownership: "an explicit Discard of this book's removed key advances its draft; the captured opening/epoch/life/scene owns the book",
+    witness: "gate r3 A5: real removed Reset discard preserves another edit and its Save" },
+  { fn: "discard", name: "edits", kind: ".delete",
+    ownership: "explicit Discard deletes only the named removed edit of the current book, preserving every other key and Reset intent",
+    witness: "gate r3 A5: real removed Reset discard preserves another edit and its Save" },
+  { fn: "discard", name: "resets", kind: ".delete",
+    ownership: "explicit Discard deletes only the named removed key's Reset intent in the captured opening/epoch/life/scene book",
+    witness: "gate r3 A5: real removed Reset discard preserves another edit and its Save" },
+];
+
 test("r4 inventory: persistent UI state writers across imported helpers all declare ownership (r6)", async () => {
   const { createHash } = await import("node:crypto");
   const rows = r6xPersistentWrites(r4WebFiles());
   assert.ok(rows.length > 100, "all UI modules, not only async spans, were scanned");
   for (const row of rows) assert.ok(row.owner.length > 10, `${r6xWriteKey(row)} requires ownership review`);
+  const scoped = rows.filter((row) => row.file === "web/js/view/drafts.js" && R3_DRAFT_WRITERS.some((entry) => entry.fn === row.fn));
+  const key = (/** @type {any} */ row) => `${row.fn} · ${row.name} · ${row.kind}`;
+  assert.deepEqual(scoped.map(key).sort(), R3_DRAFT_WRITERS.map(key).sort(), "every A3/A5 draft-book writer needs a scoped ownership entry and real-server witness");
   const digest = createHash("sha256").update(rows.map(r6xWriteKey).join("\n")).digest("hex");
   // PIXD-96 B1a inventory review: 377 -> 384 writers; extractor unchanged.
   // API busy.add/request-delete -> busy.set/release-delete: captured request
@@ -9056,7 +9079,13 @@ test("r4 inventory: persistent UI state writers across imported helpers all decl
   // V1/V2/V3 named retirement cases and newer-edit controls cover both writes.
   // B4 inventory-only: 391 -> 401; Config visit/edit counters, stable
   // editor feedback, Health opening lifecycle. No owner-tag changes.
-  assert.equal(digest, "bd3d7684503107b8519edf9143cb4fcb5082035c9659e1c7d87b21f68252615d", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+  // PIXD-94: 401 -> 404. Five A3/A5 writers listed above; two A2 local
+  // builder assignments (previewPlan.values[key], saveBody.set[key]) became
+  // own-property definitions, witnessed by "gate r3 A2: own __proto__ setting
+  // is previewed, submitted and saved by real W1/W4" (plus ordinary n).
+  // Old: bd3d7684503107b8519edf9143cb4fcb5082035c9659e1c7d87b21f68252615d
+  // The request's b07a38… was intermediate; 339b41c already extracts 31de6c….
+  assert.equal(digest, "31de6c11bf4e0b958bb1c6148d26fadd53835d5302c3f77db8c304c5c9b3716c", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
 });
 test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
   for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {
@@ -14792,6 +14821,44 @@ test(`gate r3 A5: real schema ${removed ? "removal retains a visible discardable
   await settle();
   assert.equal(root.querySelector('[data-removed="n"]'), null, "A5: discard only the removed edit");
   assert.equal(ctx.form.hasEdits(), false);
+});
+
+test("gate r3 A5: real removed Reset discard preserves another edit and its Save", async (t) => {
+  const ctx = await intRealForm(t);
+  const { root, calls, s, app, form } = ctx;
+  applyDefaultAnswer(await request("PUT", s, { resource: "settings:ulanzi-t/contract", body: { set: { n: 7 }, reset: [] } }));
+  r4Click(root.querySelector('[data-act="reset"][data-key="n"]'));
+  await intWaitFor(() => calls.some((call) => call.path === `${s}/preview` && call.answer?.applied));
+  const { readFile, writeFile } = await import("node:fs/promises");
+  const source = app.modules.scenes.fileOf("contract");
+  assert.ok(source);
+  const original = await readFile(source, "utf8");
+  await writeFile(source, 'export default {deviceType:"ulanzi",settingsSchema:{m:{type:"int",default:1}},render(){return 1000;}};');
+  await app.modules.scenes.refresh(["contract"]);
+  applyDefaultAnswer(await request("GET", s, { resource: "settings:ulanzi-t/contract" }));
+  assert.ok(root.querySelector('[data-removed="n"]'), "A5 Reset: removed Reset remains available for Discard");
+  typeInto(root.querySelector('[data-key="m"]'), "8");
+  await intWaitFor(() => calls.some((call) => call.path === `${s}/preview` && call.body.values.m === 8));
+  const before = calls.length;
+  const draft = Math.max(...calls.filter((call) => call.path === `${s}/preview`).map((call) => call.body.draft));
+  r4Click(root.querySelector('[data-removed="n"] [data-act="discard"]'));
+  await intWaitFor(() => calls.slice(before).some((call) => call.path === `${s}/preview`));
+  assert.ok(calls.slice(before).find((call) => call.path === `${s}/preview`).body.draft > draft, "A5 Discard: advance the remaining preview's draft");
+  assert.equal(root.querySelector('[data-removed="n"]'), null);
+  assert.equal(field(root, "m").value, "8", "A5 Discard: preserve the other edit");
+  assert.equal(form.hasEdits(), true);
+  await writeFile(source, original);
+  await app.modules.scenes.refresh(["contract"]);
+  applyDefaultAnswer(await request("GET", s, { resource: "settings:ulanzi-t/contract" }));
+  const saved = calls.length;
+  r4Click(saveButton(root));
+  await intWaitFor(() => calls.slice(saved).some((call) => call.path === s && call.method === "PUT"));
+  const save = calls.slice(saved).find((call) => call.path === s && call.method === "PUT");
+  assert.deepEqual(save.body.set, { m: 8 });
+  assert.deepEqual(save.body.reset, [], "A5 Discard: the removed key's Reset intent cannot return with its definition");
+  assert.equal(save.status, 200);
+  assert.equal(app.modules.settings.state("ulanzi-t", "contract").values.m.saved, 8);
+  assert.equal(app.modules.settings.state("ulanzi-t", "contract").values.n.saved, 7);
 });
 
 for (const fail of [false, true])
