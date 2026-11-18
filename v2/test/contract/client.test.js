@@ -4628,7 +4628,8 @@ const R5_STORIES = [
   {
     name: "saving d1 then visiting d2 cannot close d2's edited row",
     file: "pages/config.js",
-    edits: [["mine === openings && open === name", "mine === openings && true"]],
+    edits: [["mine === openings && open === name", "mine === openings && true"],
+      ["effects: { slot: [\"epoch\", \"membership\"], done: [\"epoch\", \"opening\", \"visit\", \"revision\", \"membership\"] }", "effects: { slot: [\"epoch\", \"membership\"], done: [\"epoch\", \"opening\", \"membership\"] }"]],
     run: async (_t, m) => {
       const world = r4World({ devices: [{ name: "d1" }, { name: "d2" }] });
       const calls = r4Server(world);
@@ -4659,6 +4660,14 @@ const R5_STORIES = [
     },
   },
 ];
+
+// Config done visit/revision keeps the old local-guard mutant from closing the visited row.
+test("r4 harness self-test: guard story: saving d1 then visiting d2 cannot close d2's edited row — old mutant alone stays caught by the central barrier", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const story = R5_STORIES.find((story) => story.name === "saving d1 then visiting d2 cannot close d2's edited row");
+  assert.ok(story);
+  await story.run(t, await r5Module(story.file, [story.edits[0]]));
+});
 
 /**
  * A browser timer queue keeps callbacks that were already queued when
@@ -5640,6 +5649,7 @@ R5_STORIES.push(
     edits: [
       ["if (base.opened !== opened || !root) return;", "if (false) return;"],
       ['if (decision.reason === "superseded_source") return;', "if (false) return;"],
+      ["effects: { start: [\"epoch\", \"opening\"], done: [\"epoch\", \"opening\"], failed: [\"epoch\", \"opening\"] }", "effects: { start: [\"epoch\"], failed: [\"epoch\", \"opening\"] }"],
     ],
     other: {
       file: "ops.js",
@@ -5702,6 +5712,15 @@ R5_STORIES.push(
       ),
   },
 );
+
+// Raw load done and deferred-start opening keep the old opening's retry out.
+test("r4 harness self-test: guard story: reopened Raw load never retries a late answer from its old opening — old mutant alone stays caught by the central barrier", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const story = R5_STORIES.find((story) => story.name === "reopened Raw load never retries a late answer from its old opening");
+  assert.ok(story?.other);
+  const replace = { [story.other.spec]: await r4Mutant(story.other.file, story.other.edits) };
+  await story.run(t, await r5Module(story.file, story.edits.slice(0, 2), replace));
+});
 
 R5_STORIES.push(
   {
@@ -13575,7 +13594,10 @@ test("r4 harness self-test: B3 r3 A→B→A must fail with 0c55d65 scene on the 
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const old = 'start: ["epoch", "scene"], slot: ["epoch", "scene"]';
   const now = 'start: ["epoch", "scene"], done: ["epoch", "scene"], failed: ["epoch", "scene"]';
-  const form = await r4Mutant("components/settings-form.js", [[now, old]]);
+  const form = await r4Mutant("components/settings-form.js", [[now, old],
+    ['effects: { ...sceneEffects, slot: ["epoch", "membership"] }', "effects: sceneEffects"],
+    ["retireOnChange: true,", "retireOnChange: false,"],
+  ]);
   const settings = (await r5Module("pages/device.js", [], { "../components/settings-form.js": form })).page;
   const copy = (await r5Module("pages/device.js", [[now, old]])).page;
   for (const name of R5_B3_RETURN_NAMES)
@@ -13583,6 +13605,16 @@ test("r4 harness self-test: B3 r3 A→B→A must fail with 0c55d65 scene on the 
       await r5B3ReturnToScene(t, name, end);
       await assert.rejects(r5B3ReturnToScene(t, name, end, name === "device copy" ? copy : settings), /an old scene's own slot must finish/);
     }
+});
+
+// Save's membership slot and retireOnChange release the old scene's slot despite the old scene projection.
+test("r4 harness self-test: B3 r3 A→B→A must fail with 0c55d65 scene on the slot — old mutant alone stays caught by the central barrier", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const old = 'start: ["epoch", "scene"], slot: ["epoch", "scene"]';
+  const now = 'start: ["epoch", "scene"], done: ["epoch", "scene"], failed: ["epoch", "scene"]';
+  const form = await r4Mutant("components/settings-form.js", [[now, old]]);
+  const settings = (await r5Module("pages/device.js", [], { "../components/settings-form.js": form })).page;
+  for (const end of R4_ENDS) await r5B3ReturnToScene(t, "settings save", end, settings);
 });
 
 /** A valid edit is previewing when a later, unparsable edit schedules no work.
