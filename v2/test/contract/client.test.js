@@ -7261,9 +7261,11 @@ test("r4 harness self-test: an old rejection that brings back the edit a Save co
 test("r4 harness self-test: a slider cleanup that runs without its condition is caught when the device's new life slides while the first life's request ends; the real page passes (gate r5a E)", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   // The gate's mutant: the end of a control's request forgets the slider's level, whoever owns the slider now.
-  const device = (await import(await r4Mutant("pages/device.js", [["if (sliding?.key === key) sliding = null;", "sliding = null;"]]))).page;
+  const device = (await import(await r4Mutant("pages/device.js", [["if (sliding?.key === key) sliding = null;", "sliding = null;"]], {
+    "../ops.js": await r4Mutant("ops.js", R5_B2_LIFE_REMOVAL),
+  }))).page;
   // In a new epoch, remove central token/epoch admission as well as the old
-  // page-local cleanup condition. The reincarnation recipe remains unchanged.
+  // page-local cleanup condition. B2 restores only the life path above.
   const epochDevice = (await import(await r4Mutant("pages/device.js", [["if (sliding?.key === key) sliding = null;", "sliding = null;"]], {
     "../ops.js": await r4Mutant("ops.js", R4_B1A_OLD_EPOCH_GUARD_REMOVALS),
   }))).page;
@@ -9402,8 +9404,8 @@ for (const { name, edits } of R7_RETURN_MUTANTS)
         // failure. Retain X10b's foreign-slot reader and restore that path
         // by removing central token/epoch admission only for this mutant.
         /** @type {Record<string, string>} */
-        const replace = name === "X10b" && change === "epoch"
-          ? { "../ops.js": await r4Mutant("ops.js", R4_B1A_OLD_EPOCH_GUARD_REMOVALS) }
+        const replace = name === "X10b"
+          ? { "../ops.js": await r4Mutant("ops.js", change === "epoch" ? R4_B1A_OLD_EPOCH_GUARD_REMOVALS : R5_B2_LIFE_REMOVAL) }
           : {};
         const device = (await r5Module("pages/device.js", fresh, replace)).page;
         const differences = await r4Case(t, kind, change, end, {
@@ -12632,11 +12634,15 @@ test("r4 harness self-test: B2 untouched range has three controls and must fail 
   }
 });
 
-test("r4 harness self-test: B2 original page-local lifetime mutants cannot cross the central life prerequisite", async (t) => {
+test("r4 harness self-test: B2 original page-local slider cleanup cannot cross the central life prerequisite", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const slider = (await r5Module("pages/device.js", [["if (sliding?.key === key) sliding = null;", "sliding = null;"]])).page;
   for (const end of R4_ENDS)
     assert.deepEqual(await r4Case(t, r4KindOf("device brightness range"), "reincarnate, then the new owner slides", end, { modules: { device: slider } }), [], `old page-local slider cleanup is unreachable (${end})`);
+});
+
+test("r4 harness self-test: B2 original page-local X10b cannot cross the central life prerequisite", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const original = R7_RETURN_MUTANTS.find((mutant) => mutant.name === "X10b");
   assert.ok(original);
   const returning = (await r5Module("pages/device.js", /** @type {Array<[string,string]>} */ (original.edits))).page;
