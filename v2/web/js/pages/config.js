@@ -156,6 +156,9 @@ function render(state) {
     setHtml(slot, nextSlot.innerHTML);
     const editor = /** @type {HTMLElement} */ (editing?.closest(".ct-edit"));
     const body = q(".ct-body");
+    // These partial edits bypass setHtml, so dom.js's written cache still
+    // holds the last full .ct-body write. Future partial edits here must
+    // go through setHtml or invalidate that cache.
     const priorRows = [...body.children];
     const rows = Array.from(feedback.children, (row) => row.matches(".ct-edit") ? editor : row);
     let next = null;

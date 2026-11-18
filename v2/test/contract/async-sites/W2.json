@@ -254,7 +254,7 @@
       "test": "test/contract/client.test.js: r3 gate 4.1 (finding 1, raw retry):"
     },
     {
-      "site": "web/js/pages/config.js:388",
+      "site": "web/js/pages/config.js:391",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "Edit, Cancel, Save of a device row, Add to config.json, the theme of this browser",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -262,7 +262,7 @@
       "test": "test/contract/client.test.js: r3 sweep (Overlays, rule 5):"
     },
     {
-      "site": "web/js/pages/config.js:389",
+      "site": "web/js/pages/config.js:392",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "typing in the Add device form",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -271,7 +271,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/config.js:391",
+      "site": "web/js/pages/config.js:394",
       "id": "listener:root.addEventListener(\"submit\")#1",
       "input": "Add device",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -279,7 +279,7 @@
       "test": "test/contract/client.test.js: r3 sweep (Overlays, rule 5):"
     },
     {
-      "site": "web/js/pages/config.js:392",
+      "site": "web/js/pages/config.js:395",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Config page",
       "metadata": "none: the store calls it after a change it applied",
@@ -460,7 +460,7 @@
       "test": "test/contract/client.test.js: r4 harness self-test: B4 membership retirement rejects b7f7daf behaviour beside its unchanged generic control"
     },
     {
-      "site": "web/js/pages/config.js:390",
+      "site": "web/js/pages/config.js:393",
       "id": "listener:root.addEventListener(\"change\")#1",
       "input": "Config edit-row and Add device form changes, including selects and checkboxes",
       "metadata": "mounted opening; monotonic editor and Add revisions; current edit-row visit",
