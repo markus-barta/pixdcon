@@ -6971,7 +6971,7 @@ const r4DeviceWithForm = async (edits, replace = {}) =>
 /** In sendPreview: the scene definition the preview was sent under. @type {[string, string]} */
 const R4_EDIT_SENT_UNDER = ["const plan = of.book.previewPlan(id);\n    of.previewed = true;", "const plan = of.book.previewPlan(id);\n    of.previewed = true;\n    const definition = JSON.stringify(current?.schema);"];
 /** In sendPreview: a transport failure is said only while the definition is the one the preview was sent under (the gate's memory fix). @type {[string, string]} */
-const R4_EDIT_GUARD_FAILURE = ["} catch (error) {\n      of.previewFailure = failureText(error);\n    }", "} catch (error) {\n      if (JSON.stringify(current?.schema) === definition) of.previewFailure = failureText(error);\n    }"];
+const R4_EDIT_GUARD_FAILURE = ["failed: (error) => {\n          of.previewFailure = failureText(error);", "failed: (error) => {\n          if (JSON.stringify(current?.schema) === definition) of.previewFailure = failureText(error);"];
 
 /**
  * The Device page with a settings form that keeps the three parts of the
@@ -7142,9 +7142,10 @@ test("r4 harness self-test: a preview failure written to the scene the form show
   // device's life are the ones the preview was sent in. The scene is not asked.
   const device = await r4DeviceWithForm([
     [
-      "} catch (error) {\n      of.previewFailure = failureText(error);\n    }\n    if (!shown(of)) return;",
-      "} catch (error) {\n      if (!destroyed && scope.epoch === of.epoch && scope.incarnation === of.incarnation) scope.previewFailure = failureText(error);\n    }\n    if (destroyed || scope.epoch !== of.epoch || scope.incarnation !== of.incarnation) return;",
+      "failed: (error) => {\n          of.previewFailure = failureText(error);",
+      "failed: (error) => {\n          if (!destroyed && scope.epoch === of.epoch && scope.incarnation === of.incarnation) scope.previewFailure = failureText(error);",
     ],
+    ["if (!shown(of)) return;\n    if (!owned(of.owner, [\"epoch\"])) return;", "if (destroyed || scope.epoch !== of.epoch || scope.incarnation !== of.incarnation) return;\n    if (!owned(of.owner, [\"epoch\"])) return;"],
   ]);
   const kind = r4KindOf("settings preview");
   // Clock's preview is held, the display shows Weather, Weather's n is edited to 9, then Clock's preview fails, or runs out of time.
@@ -8975,7 +8976,10 @@ const R4_INVENTORY = [
   "web/js/components/settings-form.js · leave · await · none",
   "web/js/components/settings-form.js · leave · await · store",
   "web/js/components/settings-form.js · load · await · store",
-  "web/js/components/settings-form.js · sendPreview · await · field rejection, page callback, page state, preview feedback, render, slot drop, store",
+  "web/js/components/settings-form.js · sendPreview · ops done · field rejection, page state, preview feedback, slot drop",
+  "web/js/components/settings-form.js · sendPreview · ops failed · page state, preview feedback",
+  "web/js/components/settings-form.js · sendPreview · await · page callback, page state, render",
+  "web/js/components/settings-form.js · sendPreview · await · store",
   "web/js/components/settings-form.js · save · await · store",
   "web/js/components/settings-form.js · revert · await · slot drop, store",
   "web/js/components/settings-form.js · clearOverlays · await · store",
@@ -9082,7 +9086,10 @@ test("r4 inventory: persistent UI state writers across imported helpers all decl
   // and named-effect projection stories). Raw render/mount epoch, errorLine
   // and again: current opening/restart (replacement-load story and Raw's
   // admitted-effect runtime probe). Exact before/after rows in the B1a report.
-  assert.equal(digest, "2de91f910f50acedf31143d0c3cbe81350eab7e11252536c9f6639fc25421295", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+  // B1a r5: 384 -> 386: Raw mount composes its disposers; Settings load
+  // retains its returned task for captured-token retirement; tags unchanged.
+  // Covered by deferred-resource closed/epoch/snapshot controls; no retags.
+  assert.equal(digest, "77e068d77242ce8aa4cb7b60f7fc83c8dedc8166c2c55cd0fa7f4a7b01aeb7ce", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
 });
 test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
   for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {
@@ -11519,6 +11526,425 @@ test("r4 harness self-test: r8 every A5 anchor gives a mechanical phase-B re-anc
         return true;
       });
   assert.equal(r8SourceAnchor("if /* formatting only */ (!current()) return;", "if (!current()) return;", "re-anchor token guard"), "if /* formatting only */ (!current()) return;");
+});
+
+// B1a round 5: named histories on the frozen harness. The existing transition,
+// measurement and comparison rules above remain unchanged.
+/** A real successor reuses the product's captured work and callbacks, in its
+ * actual registry slot. Both histories send it with the same values at 10 s.
+ * The reference ends the old operation before observation; the case ends it
+ * afterward (and delivers a timed-out answer late). Neither may finish the
+ * successor or enter old callbacks. Compare native outcomes first, then UI
+ * after both histories received the old end: its state may reach the store.
+ * Only the successor's transport control key is omitted: follow supersedes a
+ * slot while a keyed user action still has its first transport in flight.
+ * @param {any} t @param {R4Kind} kind @param {R4End} end
+ * @param {boolean} reference @param {any} [opsOverride]
+ */
+async function r5B1aSlotRun(t, kind, end, reference, opsOverride) {
+  if (!r8HarnessLoaded) await r8HarnessReady;
+  const modules = await r8MeasurementModules();
+  const ops = opsOverride ?? await import("../../web/js/ops.js");
+  const global = /** @type {any} */ (globalThis);
+  const operationHook = global.__r8Operation, requestHook = global.__r7Request;
+  const successor = new AsyncLocalStorage();
+  /** @type {Map<number, any>} */ const recipes = new Map();
+  global.__r8Operation = (/** @type {any} */ run, /** @type {string} */ key, /** @type {any} */ work, /** @type {any} */ options = {}) => {
+    const recipe = { key, work, options, done: 0, failed: 0 };
+    const tracked = { ...options,
+      ...(options.done ? { done: (/** @type {any} */ result) => { recipe.done += 1; return options.done(result); } } : {}),
+      ...(options.failed ? { failed: (/** @type {any} */ error) => { recipe.failed += 1; return options.failed(error); } } : {}),
+    };
+    const result = operationHook(opsOverride ? ops[run.name] : run, key, work, tracked);
+    recipes.set(r4State().ops.get(key)?.token, recipe);
+    return result;
+  };
+  global.__r7Request = (/** @type {any} */ origin, /** @type {any} */ send, /** @type {any[]} */ ...args) => {
+    if (successor.getStore()) {
+      const options = { ...args[2] };
+      delete options.key;
+      args[2] = options;
+    }
+    return requestHook(origin, send, ...args);
+  };
+  for (const key of [...r4State().ops.keys()]) r4SetOp(key, null);
+  fakeDocument.activeElement = null;
+  const world = r4World(kind.world);
+  /** @type {any} */
+  const ctx = { world, kind, calls: r4Server(world), modules, page: null, root: null,
+    op: null, changed: new Set(["token"]), edits: new Map(), shows: 0,
+    opening: 0, revision: 0, visit: 0, clock: 0, points: [] };
+  world.story = ctx;
+  const absolute = [];
+  try {
+    r4NewEpoch(world);
+    r4Open(ctx, kind.page);
+    await settle();
+    const [method, tail] = kind.request;
+    const matches = (/** @type {any} */ call) => !call.answered && call.method === method && call.path.endsWith(tail);
+    if (kind.atOpen) ctx.op = ctx.calls.find(matches);
+    await r4AnswerAll(ctx, ctx.op);
+    await kind.setup?.(ctx);
+    await settle();
+    if (!kind.atOpen) {
+      const sent = ctx.calls.length;
+      await kind.begin?.(ctx);
+      await settle();
+      ctx.op = ctx.calls.slice(sent).find(matches);
+    }
+    assert.ok(ctx.op, `${kind.name}: its actual request is held`);
+    kind.sent?.(ctx.op);
+    ctx.slotKey = ctx.op.origin?.slotKey;
+    const old = recipes.get(ctx.op.origin?.slotToken);
+    assert.ok(ctx.slotKey && old, `${kind.name}: the request must have its own native operation slot`);
+    ctx.clock = 10_000;
+    t.mock.timers.tick(10_000);
+    const before = r8Frame(ctx);
+    // Invoke the actual product work and outcome callbacks, rather than plant
+    // a registry row. AsyncLocalStorage carries transport admission through
+    // the real end/retry lane as well as work that sends immediately.
+    const replacement = successor.run(true, () => operationHook(ops.follow, old.key, old.work, old.options));
+    void replacement.catch(() => {});
+    await settle();
+    const token = r4State().ops.get(ctx.slotKey)?.token;
+    assert.notEqual(token, before.identities.token, "the native slot issued a successor token");
+    const receipt = r8RecordStory(ctx, before, r8Frame(ctx), `successor in its own slot/${end}/${reference ? "reference" : "case"}`);
+    assert.deepEqual(receipt.measured, ["token"], "only the native generation changes");
+    assert.deepEqual(receipt.a.values, receipt.b.values);
+    assert.deepEqual(receipt.a.timing, receipt.b.timing);
+    const observe = (page = true) => {
+      /** @type {Map<string, {deps: R4Deps, value: string}>} */ const pieces = new Map();
+      if (page) for (const [name, deps, value] of R4_PAGES[ctx.page].pieces(ctx.root))
+        pieces.set(`${ctx.page}: ${name}`, { deps, value: r4InStory(world, value) });
+      pieces.set("native operation outcome", { deps: ["token"], value: JSON.stringify({ ...ops.op(ctx.slotKey), token: "successor" }) });
+      pieces.set("old outcome callbacks", { deps: ["token"], value: JSON.stringify([old.done, old.failed]) });
+      return pieces;
+    };
+    const deliver = (/** @type {R4End} */ ending) => {
+      if (ending === "timeout") { ctx.op.abandon(); return; }
+      if (ending === "success") ctx.op.ok();
+      else if (ending === "refused") {
+        if (kind.refuse) kind.refuse(ctx.op);
+        else ctx.op.answer(422, { code: "invalid_config", error: "config.json is not valid", message: "Line 2: a value is missing.", line: 2 });
+      } else ctx.op.answer(500, {});
+    };
+    if (reference && end !== "timeout") { deliver(end); await settle(); }
+    ctx.points.push(observe(false));
+    if (!reference || end === "timeout") deliver(end);
+    if (end === "timeout") {
+      ctx.clock += 5_000;
+      t.mock.timers.tick(5_000);
+      await settle();
+      if (!reference) ctx.op.late();
+    }
+    await settle();
+    ctx.points.push(observe());
+    for (const device of world.spec.devices) {
+      world.rev += 1;
+      r4Live(world, "device", r4View(world, device.name, world.epoch, world.lives.get(device.name), world.rev));
+    }
+    await settle();
+    ctx.points.push(observe());
+    if (ops.op(ctx.slotKey).token !== token || !ops.op(ctx.slotKey).busy)
+      absolute.push("the old end changed the still-pending successor's native outcome");
+    if (old.done || old.failed) absolute.push("the old end entered its outcome callbacks after supersession");
+    await r4AnswerAll(ctx);
+    await settle();
+    ctx.points.push(observe());
+    return { points: ctx.points, changed: ctx.changed, absolute, definition: [] };
+  } finally {
+    r4Close(ctx);
+    await r4AnswerAll(ctx);
+    t.mock.timers.tick(60_000);
+    await settle();
+    world.story = null;
+    if (r8ActiveStory === ctx) r8ActiveStory = null;
+    global.__r8Operation = operationHook;
+    global.__r7Request = requestHook;
+  }
+}
+
+/** @param {any} t @param {R4Kind} kind @param {R4End} end @param {any} [ops] */
+async function r5B1aSlotCase(t, kind, end, ops) {
+  const want = await r5B1aSlotRun(t, kind, end, true, ops);
+  const got = await r5B1aSlotRun(t, kind, end, false, ops);
+  return [...want.absolute, ...r4Differences("successor in its own slot", got, want, "without", false), ...r4EndAlone(got, want)]
+    .map((found) => found.replaceAll("the story without the old operation", "the reference with the same successor and its old end delivered first"));
+}
+
+for (const kind of R4_KINDS.filter((kind) => kind.page === "raw" || kind.name.startsWith("settings "))) {
+  for (const end of r4Ends(kind))
+    for (const last of [false, true])
+      test(`r4 harness: ${kind.name} × same-stream epoch × ${end}${last ? ", last" : ""} (B1a r5)`, async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        assert.deepEqual(await r4Case(t, kind, "same stream epoch", end, { last }), []);
+      });
+  for (const end of r4Ends(kind))
+    test(`r4 harness: ${kind.name} × successor in its own slot × ${end} (B1a r5)`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      assert.deepEqual(await r5B1aSlotCase(t, kind, end), []);
+    });
+}
+for (const name of ["raw load", "raw reload", "raw reload load"])
+  for (const end of r4Ends(r4KindOf(name)))
+    test(`r4 harness: ${name} × newer config position, nobody types × ${end} (B1a r5)`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      assert.deepEqual(await r4Case(t, r4KindOf(name), "newer config position", end), []);
+    });
+
+test("r4 harness self-test: B1a r5 same-stream epoch control and central admission mutant", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const kind = r4KindOf("raw save");
+  assert.deepEqual(await r4Case(t, kind, "same stream epoch", "500"), []);
+  const ops = await r4Mutant("ops.js", R4_B1A_OLD_EPOCH_GUARD_REMOVALS);
+  const raw = (await import(await r4Mutant("pages/config-raw.js", [], { "../ops.js": ops }))).page;
+  const differences = await r4Case(t, kind, "same stream epoch", "500", { modules: { raw } });
+  assert.ok(differences.some((piece) => /outcome line|Save/.test(piece)), differences.join("\n"));
+});
+
+test("r4 harness self-test: B1a r5 each native successor has a control and must-fail token mutant", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ops = await import(await r4Mutant("ops.js", [
+    ["if (owner.slot && op(owner.slot.key).token !== owner.slot.token) return false;", "if (false) return false;"],
+  ]));
+  for (const kind of R4_KINDS.filter((kind) => kind.page === "raw" || kind.name.startsWith("settings "))) {
+    const end = r4Ends(kind).includes("500") ? "500" : "success";
+    assert.deepEqual(await r5B1aSlotCase(t, kind, end), [], `${kind.name}: real central control`);
+    const differences = await r5B1aSlotCase(t, kind, end, ops);
+    assert.ok(differences.some((piece) => /native outcome|outcome callbacks|native operation outcome|old outcome callbacks/.test(piece)), `${kind.name}: ${differences.join("\n")}`);
+  }
+});
+
+test("r4 harness self-test: B1a r5 a successful Settings load cannot retire its successor", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const kind = r4KindOf("settings load");
+  assert.deepEqual(await r5B1aSlotCase(t, kind, "success"), []);
+  const ops = await import(await r4Mutant("ops.js", [[
+    "return task(outcome, () => dropOwn(key, token));",
+    "return task(outcome, () => dropOwn(key, op(key).token));",
+  ]]));
+  const differences = await r5B1aSlotCase(t, kind, "success", ops);
+  assert.ok(differences.some((piece) => /still-pending successor's native outcome/.test(piece)), differences.join("\n"));
+});
+
+test("r4 harness self-test: B1a r5 resource position control and must-fail observation mutant", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ops = await r4Mutant("ops.js", [["now.position > before.position", "false"]]);
+  const raw = (await import(await r4Mutant("pages/config-raw.js", [], { "../ops.js": ops }))).page;
+  for (const name of ["raw load", "raw reload"]) {
+    const kind = r4KindOf(name);
+    assert.deepEqual(await r4Case(t, kind, "newer config position", "success"), [], `${name}: resource control`);
+    const differences = await r4Case(t, kind, "newer config position", "success", { modules: { raw } });
+    assert.ok(differences.some((piece) => /editor text|load and validity state/.test(piece)), `${name}: ${differences.join("\n")}`);
+  }
+  const retire = await r4Mutant("ops.js", [["drop(key);\n            retireControl(key);", "void key;\n            retireControl(key);"]]);
+  const stale = (await import(await r4Mutant("pages/config-raw.js", [], { "../ops.js": retire }))).page;
+  const kind = r4KindOf("raw reload load");
+  assert.deepEqual(await r4Case(t, kind, "newer config position", "success"), []);
+  assert.ok((await r4Case(t, kind, "newer config position", "success", { modules: { raw: stale } })).some((piece) => /load and validity state/.test(piece)));
+});
+
+test("r4 harness: B1a r5 deferred resource replacement belongs to its observation, run and subscription", async () => {
+  const ops = await import("../../web/js/ops.js");
+  for (const boundary of ["current", "coalesce", "closed", "epoch", "snapshot", "edited"]) {
+    const world = r4World(r4d1());
+    r4NewEpoch(world);
+    let replacements = 0, eligible = true;
+    const stop = ops.observeResource("config", () => { replacements += 1; }, { eligible: () => eligible });
+    const changed = () => {
+      world.rev += 1;
+      r4Live(world, "config", { ...CONFIG_STATE, rev: world.rev });
+    };
+    try {
+      changed();
+      if (boundary === "coalesce") changed();
+      if (boundary === "closed") stop();
+      if (boundary === "edited") eligible = false;
+      if (boundary === "snapshot") r4Snapshot(world);
+      if (boundary === "epoch") {
+        world.seq = 0; world.rev = 0;
+        r4NewEpoch(world, true);
+      }
+      await settle();
+      assert.equal(replacements, ["current", "coalesce"].includes(boundary) ? 1 : 0, boundary);
+    } finally { stop(); }
+  }
+});
+
+test("r4 harness: B1a r5 resource retirement releases only an existing transport control", async () => {
+  const api = await import("../../web/js/api.js");
+  /** @type {Array<[string, boolean]>} */ const changes = [];
+  const stop = api.onBusy((key, busy) => changes.push([key, busy]));
+  try {
+    api.retireControl("b1a-r5-no-such-control");
+    assert.deepEqual(changes, [], "an absent transport control has no release to announce");
+  } finally { stop(); }
+});
+
+test("r4 harness: B1a r5 HTTP config copies and unrelated live events do not restart a resource read", async () => {
+  const ops = await import("../../web/js/ops.js");
+  const world = r4World(r4d1());
+  r4NewEpoch(world);
+  let replacements = 0;
+  const stop = ops.observeResource("config", () => { replacements += 1; });
+  const answer = (/** @type {number} */ seq) => applyDefaultAnswer({
+    resource: "config", generation: beginRequest(defaultFence(), "config"),
+    epoch: world.epoch, seq, body: { state: { ...CONFIG_STATE, rev: ++world.rev } },
+  });
+  try {
+    assert.equal(answer(world.seq + 2).action, "apply");
+    r4Live(world, "ping", {});
+    r4Live(world, "ping", {}); // The stream catches the HTTP copy's position.
+    await settle();
+    assert.equal(replacements, 0, "an unrelated event did not change this resource");
+    r4Live(world, "ping", {});
+    assert.equal(answer(world.seq).action, "apply");
+    await settle();
+    assert.equal(replacements, 0, "an HTTP copy at the stream position cannot request itself");
+    world.rev += 1;
+    r4Live(world, "config", { ...CONFIG_STATE, rev: world.rev });
+    await settle();
+    assert.equal(replacements, 1, "a genuinely newer config event replaces the read");
+  } finally { stop(); }
+});
+
+/** @param {any} raw */
+async function r5B1aReloadReuse(raw) {
+  const api = await import("../../web/js/api.js");
+  await r5Raw(raw, async ({ world, calls, root }) => {
+    pending(calls, "GET", "/config/raw").ok();
+    await settle();
+    r4Click(root.querySelector('[data-act="reload"]'));
+    await settle();
+    const old = pending(calls, "POST", "/config/reload");
+    assert.equal(api.isBusy("raw-reload"), true, "the actual transport owns exactly the declared raw-reload control");
+    world.configVersion += 1;
+    world.rev += 1;
+    r4Live(world, "config", { ...CONFIG_STATE, rev: world.rev });
+    await settle();
+    assert.equal(api.isBusy("raw-reload"), false, "the obsolete transport control is released with its slot");
+    r4Click(root.querySelector('[data-act="reload"]'));
+    await settle();
+    const next = calls.findLast((/** @type {any} */ call) => !call.answered && call.method === "POST");
+    assert.ok(next && next !== old, "the replacement Reload was actually sent");
+    old.ok();
+    await settle();
+    assert.equal(api.isBusy("raw-reload"), true, "old cleanup cannot release the replacement control in the same epoch");
+    assert.equal(root.querySelector('[data-act="reload"]').disabled, true);
+    next.ok();
+    await settle();
+  });
+}
+
+test("r4 harness: B1a r5 a resource-retired Reload control can be reused before its old cleanup", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await r5B1aReloadReuse(await r5Module("pages/config-raw.js"));
+});
+
+test("r4 harness self-test: B1a r5 transport retirement has an isolated must-fail mutant", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await r5B1aReloadReuse(await r5Module("pages/config-raw.js"));
+  const ops = await r4Mutant("ops.js", [["retireControl(key);", "void key;"]]);
+  const raw = await r5Module("pages/config-raw.js", [], { "../ops.js": ops });
+  await assert.rejects(r5B1aReloadReuse(raw), (/** @type {any} */ error) => error.name === "AssertionError" && /obsolete transport control/.test(error.message));
+});
+
+test("r4 harness: B1a r5 stopping a resource observation disconnects its store subscription", async () => {
+  const store = new URL("../../web/js/store.js", import.meta.url).href;
+  const monitored = `data:text/javascript;base64,${Buffer.from(`
+    export * from ${JSON.stringify(store)};
+    import { subscribe as actual } from ${JSON.stringify(store)};
+    export let listeners = 0;
+    export function subscribe(...args) {
+      listeners += 1;
+      const stop = actual(...args);
+      return () => { listeners -= 1; stop(); };
+    }
+  `).toString("base64")}`;
+  const counter = await import(monitored);
+  const ops = await r5Module("ops.js", [], { "./store.js": monitored });
+  const stop = ops.observeResource("config", () => {});
+  assert.equal(counter.listeners, 1);
+  stop();
+  assert.equal(counter.listeners, 0, "the observer's closure is released on unmount");
+});
+
+test("r4 guard probe: B1a r5 preview slot inherits the already admitted scope", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const form = await r5Module("components/settings-form.js", [
+    ["let ids = 0;", "let ids = 0;\nexport const __r5PreviewAdmissions = [];"],
+    ['await follow(`preview:${scopeKey(of)}`, async () => {', '__r5PreviewAdmissions.push({epoch:of.owner.values.epoch, now:getState().epoch, left:of.left});\n      await follow(`preview:${scopeKey(of)}`, async () => {'],
+  ]);
+  for (const failure of [false, true]) await r5Form(t, form, async ({ world, form, values, calls, edit }) => {
+    await edit("2");
+    await edit("3");
+    const old = r5Previews(calls)[0];
+    r4NewEpoch(world);
+    form.setScene("clock", "Clock", { epoch: world.epoch, incarnation: 1 });
+    form.update(values("clock"));
+    await edit("4");
+    if (failure) old.answer(500, {}); else old.ok();
+    await settle();
+    assert.equal(calls.filter((/** @type {any} */ c) => c.method === "DELETE").length, 0);
+  });
+  assert.ok(form.__r5PreviewAdmissions.length >= 4, "both runs admitted old and current previews");
+  for (const admitted of form.__r5PreviewAdmissions) {
+    assert.equal(admitted.epoch, admitted.now, "the synchronous pre-admission already checked the inherited run");
+    assert.equal(admitted.left, false);
+  }
+});
+
+test("r4 harness: B1a r5 a returned task retires only its own captured operation", async () => {
+  const ops = await import("../../web/js/ops.js");
+  const world = r4World(r4d1());
+  r4NewEpoch(world);
+  /** @type {Array<() => void>} */ const finish = [];
+  const hold = () => new Promise((resolve) => { finish.push(() => resolve(undefined)); });
+  const key = "b1a-r5-task";
+  const old = ops.follow(key, hold);
+  const next = ops.follow(key, hold);
+  const token = ops.op(key).token;
+  try {
+    old.retire();
+    assert.equal(ops.op(key).token, token, "an old task cannot cancel the successor");
+    assert.equal(ops.op(key).busy, true);
+    next.retire();
+    assert.equal(ops.op(key).busy, false, "the current task can retire its own operation");
+    const owner = ops.capture();
+    r4NewEpoch(world);
+    const current = ops.follow(key, hold);
+    const latest = ops.op(key).token;
+    const refused = ops.follow(key, async () => { throw new Error("stale work started"); }, { owner });
+    refused.retire();
+    assert.equal(ops.op(key).token, latest, "a refused start has no operation it can retire");
+    current.retire();
+    await refused;
+  } finally {
+    for (const done of finish) done();
+    await Promise.all([old, next]);
+    await settle();
+    ops.drop(key);
+  }
+});
+
+test("r4 harness: B1a r5 Settings retires its captured read on values, scene change and destroy", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ops = await import("../../web/js/ops.js");
+  for (const boundary of ["values", "scene", "destroy"]) {
+    await r5Form(t, await r5Module("components/settings-form.js"), async ({ world, form, values, calls }) => {
+      const key = `load:d1/clock@${world.epoch}/1`;
+      const token = ops.op(key).token;
+      assert.equal(ops.op(key).busy, true, "the actual settings read is held");
+      if (boundary === "values") form.update(values("clock"));
+      if (boundary === "scene") form.setScene("weather", "Weather", { epoch: world.epoch, incarnation: 1 });
+      if (boundary === "destroy") form.destroy();
+      assert.notEqual(ops.op(key).token, token, `${boundary}: the captured read was retired`);
+      assert.equal(ops.op(key).busy, false);
+      pending(calls, "GET", "/settings/clock").answer(500, {});
+      await settle();
+      assert.equal(ops.op(key).failure, null, `${boundary}: the retired read cannot leave a failure`);
+    }, { ready: false });
+  }
 });
 
 r8HarnessLoaded = true;

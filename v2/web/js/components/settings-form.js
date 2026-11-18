@@ -49,6 +49,8 @@
  *    (DELETE). So an end never overtakes a newer preview, and a preview
  *    typed during Revert leaves after Revert's end. Each request is
  *    bounded in time (api.js); one that runs out fails and frees the lane
+ *  - each preview outcome uses `preview:…` of its scope: the central token
+ *    guard admits its field rejection, failure and preview-end cleanup
  *  - an end that fails is kept in the slot `end:<device>/<scene>`; the
  *    device page says it with Retry (failedEnds, retryEnd). A newer
  *    preview of the scene, or an end that works, replaces it
@@ -279,6 +281,7 @@ export function retryEnd(view, scene, session) {
  * @property {boolean} previewed a preview of this scope was sent: pixdcon may hold one for this page
  * @property {boolean} left the form shows another scope now, or was left
  * @property {import("../ops.js").Ownership} owner identities captured when this scope began; queued cleanup inherits them
+ * @property {import("../ops.js").Task<unknown>|null} read the load this form started; retiring it cannot drop a successor
  */
 
 /**
@@ -289,6 +292,7 @@ export function retryEnd(view, scene, session) {
 function newScope(scene, life) {
   return {
     owner: capture(),
+    read: null,
     scene,
     epoch: life?.epoch ?? null,
     incarnation: Number(life?.incarnation ?? 0),
@@ -413,7 +417,7 @@ export function createSettingsForm(host, options) {
     phase = "loading";
     loadError = "";
     render();
-    follow(
+    mine.read = follow(
       loadKey(mine),
       async () => applyAnswer(await request("GET", base(mine), { resource: resource(mine) })),
       {
@@ -445,19 +449,30 @@ export function createSettingsForm(host, options) {
     if (!owned(of.owner, ["epoch"])) return;
     const plan = of.book.previewPlan(id);
     of.previewed = true;
+    // The lane orders transport; its operation slot owns each outcome. A
+    // replacement preview can supersede this one without changing the scope.
     try {
-      const answer = await request("PUT", `${base(of)}/preview`, {
-        resource: resource(of),
-        key: `preview:${device}/${of.scene}`,
-        body: plan.body,
+      await follow(`preview:${scopeKey(of)}`, async () => {
+        const answer = await request("PUT", `${base(of)}/preview`, {
+          resource: resource(of),
+          key: `preview:${device}/${of.scene}`,
+          body: plan.body,
+        });
+        applyAnswer(answer);
+        return answer;
+      }, {
+        owner: of.owner,
+        done: (answer) => {
+          of.book.rejected(plan.sent, answer.body?.rejected);
+          of.previewFailure = null;
+          drop(endKey(of));
+        },
+        failed: (error) => {
+          of.previewFailure = failureText(error);
+        },
       });
-      applyAnswer(answer);
-      if (!owned(of.owner, ["epoch"])) return;
-      of.book.rejected(plan.sent, answer.body?.rejected);
-      of.previewFailure = null;
-      drop(endKey(of));
-    } catch (error) {
-      of.previewFailure = failureText(error);
+    } catch {
+      // The central slot already kept the failure.
     }
     if (!shown(of)) return;
     if (!owned(of.owner, ["epoch"])) return;
@@ -942,7 +957,7 @@ export function createSettingsForm(host, options) {
         return;
       }
       void leave(scope);
-      drop(loadKey(scope));
+      scope.read?.retire();
       scope = newScope(next, { epoch, incarnation });
       sceneLabel = label;
       current = null;
@@ -973,13 +988,13 @@ export function createSettingsForm(host, options) {
         phase = "ready";
         // Values of the scope are here: its load is no longer wanted, and
         // a late failure of it changes nothing (the operation rule, 2).
-        drop(loadKey(scope));
+        scope.read?.retire();
       }
       render();
     },
     destroy() {
       destroyed = true;
-      drop(loadKey(scope));
+      scope.read?.retire();
       host.removeEventListener("input", onEdit);
       host.removeEventListener("change", onEdit);
       host.removeEventListener("click", onClick);

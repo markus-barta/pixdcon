@@ -9,6 +9,7 @@
  *                                           adopt, retry, patch)
  *   settings:<device>/<scene>@<epoch>/<incarnation>   Save, Revert, Clear of a form
  *   load:<device>/<scene>@<epoch>/<incarnation>       the settings values of a scope
+ *   preview:<device>/<scene>@<epoch>/<incarnation>   one preview lane outcome
  *   end:<device>/<scene>                    the end of this page's preview of a scene
  *   copy:<scene>  overlay:<id>  add-device  raw-load  raw-save  raw-reload  log
  *
@@ -38,12 +39,14 @@
  * cleanups: it always starts, and the operation that ran in the slot
  * before becomes obsolete. Pages render busy labels, failures and notes
  * from `op(key)`; the store calls them when a slot changes.
+ * A resource observation can retire declared slots when a newer streamed
+ * copy arrives; deferred replacement keeps its run, observation and visit.
  *
  * Owner: UI worker.
  */
 
-import { ApiError } from "./api.js";
-import { getState, setOp } from "./store.js";
+import { ApiError, retireControl } from "./api.js";
+import { fence, getState, setOp, subscribe } from "./store.js";
 
 /** @typedef {import("./store.js").OpSlot} OpSlot */
 
@@ -65,6 +68,9 @@ let tokens = 0;
  * Later slices can add life, definition, visit and draft readers here.
  *
  * @typedef {{readers: Record<string, () => unknown>, values: Record<string, unknown>, slot?: {key: string, token: number}}} Ownership
+ */
+/** @template T @typedef {Promise<T> & {retire: () => void}} Task a pending operation with cancellation bound to its captured token */
+/**
  * @typedef {((projection?: string[]) => boolean) & {owner: Ownership, effect: <T>(name: string, work: () => T) => T|undefined, follow: <T>(key: string, work: (current: Operation) => Promise<T>, options?: OpOptions<T>) => Promise<T>}} Operation
  */
 
@@ -93,6 +99,42 @@ export function owned(owner, projection) {
 export function effect(owner, projection, work) {
   if (!owned(owner, projection)) return;
   return work();
+}
+
+/** Observe a newer streamed copy of a resource in the same run. HTTP answers
+ * can advance the resource position without moving the stream; they must not
+ * recursively request themselves. Capture before calling back: replacing an
+ * operation publishes the registry synchronously.
+ * @param {string} resource @param {() => void} changed
+ * @param {{eligible?: () => boolean, slots?: string[]}} [options]
+ * @returns {() => void}
+ */
+export function observeResource(resource, changed, options = {}) {
+  /** @type {{epoch: string|null, seq: number, position: number}|undefined} */
+  let previous;
+  let generation = 0;
+  let active = true;
+  const unsubscribe = subscribe(
+    () => ({ epoch: getState().epoch, seq: fence().seq, position: fence().applied.get(resource) ?? 0 }),
+    (now) => {
+      const before = previous;
+      previous = now;
+      if (before && now.seq > before.seq && now.position > before.position) {
+        const mine = ++generation;
+        // Coalesce one publication/input turn; recheck local eligibility and
+        // the captured run before starting deferred replacement work.
+        queueMicrotask(() => {
+          if (!active || mine !== generation || getState().epoch !== now.epoch || fence().floor >= now.position || !(options.eligible?.() ?? true)) return;
+          for (const key of options.slots ?? []) {
+            drop(key);
+            retireControl(key);
+          }
+          changed();
+        });
+      }
+    },
+  );
+  return () => { active = false; unsubscribe(); };
 }
 
 /** Drop only the operation this continuation actually superseded.
@@ -177,11 +219,14 @@ export function start(key, work, options = {}) {
  * @param {string} key
  * @param {(current: Operation) => Promise<T>} work
  * @param {OpOptions<T>} [options]
- * @returns {Promise<T>} the work itself, for a caller that waits for it (a lane); its failure is kept in the slot already
+ * @returns {Task<T>} the work itself, with retire() bound to this operation; its failure is kept in the slot already
  */
 export function follow(key, work, options = {}) {
   return run(key, work, options);
 }
+
+/** @template T @param {Promise<T>} outcome @param {() => void} [retire] @returns {Task<T>} */
+const task = (outcome, retire = () => {}) => Object.assign(outcome, { retire });
 
 /**
  * The slot's operation is no longer wanted (its values came by another way,
@@ -221,13 +266,13 @@ export function clearNote(key) {
  * @param {string} key
  * @param {(current: Operation) => Promise<T>} work
  * @param {OpOptions<T>} options
- * @returns {Promise<T>}
+ * @returns {Task<T>}
  */
 function run(key, work, options) {
   const inherited = options.owner ?? capture(options.owns);
   const projections = options.effects ?? {};
   if (!owned(inherited, projections.start ?? ["epoch"]))
-    return Promise.resolve(/** @type {T} */ (undefined));
+    return task(Promise.resolve(/** @type {T} */ (undefined)));
   tokens += 1;
   const token = tokens;
   const owner = { ...inherited, slot: { key, token } };
@@ -268,5 +313,5 @@ function run(key, work, options) {
       options.failed?.(error);
     },
   );
-  return outcome;
+  return task(outcome, () => dropOwn(key, token));
 }

@@ -80,6 +80,15 @@ function release(key, control) {
   }
 }
 
+/** A resource guard retired this control's operation. Its old finally still
+ * holds the old object and cannot release a subsequently reused control.
+ * @param {string} key
+ */
+export function retireControl(key) {
+  const control = busy.get(key);
+  if (control) release(key, control);
+}
+
 /**
  * The sentence for an error answer: pixdcon's own `error` sentence when it
  * sent one, else one that names the status.

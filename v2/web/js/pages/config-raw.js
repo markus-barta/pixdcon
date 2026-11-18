@@ -19,6 +19,8 @@
  * still at the revision the load started from (`revision`, raised by every
  * input): what was typed since stays. A load that is asked again (its
  * answer stood before the copy the page holds) keeps that revision.
+ * A newer config event replaces the read of an untouched editor through
+ * ops.observeResource; equal reconnect snapshots keep the existing read.
  *
  * Operations (ops.js): the loads are one slot, `raw-load`, where the newest
  * load makes older ones obsolete; Save and Reload are `raw-save` and
@@ -29,7 +31,7 @@
  */
 
 import { ApiError, request } from "../api.js";
-import { capture, clearNote, dropOwn as drop, effect, failureText, follow, forgetIdle, op, start } from "../ops.js";
+import { capture, clearNote, dropOwn as drop, effect, failureText, follow, forgetIdle, observeResource, op, start } from "../ops.js";
 import { icon, setHtml, setStatusLine } from "../dom.js";
 import { clock, esc } from "../format.js";
 import { applyAnswer, getState, subscribe } from "../store.js";
@@ -374,8 +376,16 @@ export const page = {
     root.addEventListener("click", onClick);
     root.addEventListener("input", onInput);
     root.addEventListener("scroll", onScroll, true);
+    // A newer streamed config replaces an untouched editor's read even when
+    // its old request fails. Typed text stays under its captured revision.
+    const unobserve = observeResource("config", () => load(), {
+      eligible: () => editorOf()?.value === loaded,
+      slots: ["raw-load", "raw-reload"],
+    });
     unsubscribe = subscribe((state) => state, render);
     load();
+    const unrender = unsubscribe;
+    unsubscribe = () => { unobserve(); unrender(); };
   },
   unmount() {
     opened += 1;
