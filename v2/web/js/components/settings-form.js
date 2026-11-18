@@ -486,6 +486,7 @@ export function createSettingsForm(host, options) {
         done: (answer) => {
           effect(owner, ["epoch", "scene", "schema"], () => {
             of.book.rejected(plan.sent, answer.body?.rejected);
+            of.book.previewResult(plan.sent, answer.body?.applied !== false);
           });
           effect(owner, feedback, () => { of.previewFailure = null; });
           drop(endKey(of));
@@ -818,6 +819,8 @@ export function createSettingsForm(host, options) {
           let marker;
           let changed = false;
           if (bad) marker = `<span class="bad">not previewed, not saved</span>`;
+          else if (edit?.previewApplied === false)
+            marker = `<span class="warn">not previewed · showing ${esc(markValue(field, layer.effective))}</span>`;
           else if (edit && scope.previewFailure) {
             // The last preview failed: this edit is not on the display (Tick Q1).
             changed = true;
@@ -900,6 +903,8 @@ export function createSettingsForm(host, options) {
     else if (firstError)
       line = { text: errorLine(firstError[0], firstError[1]), cls: "chg warn" };
     else if (blocked) line = { text: "Saving is blocked until config.json is valid JSON again", cls: "warn" };
+    else if ([...edits.values()].some((edit) => edit.previewApplied === false))
+      line = { text: "Changes not previewed · not saved; pixdcon kept its previous settings", cls: "warn" };
     else if (action.note && changes === 0) line = { text: action.note, cls: "" };
     else if (changes > 0 || serverPreview > 0) {
       const n = Math.max(changes, serverPreview);

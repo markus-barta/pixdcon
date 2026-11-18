@@ -14654,3 +14654,32 @@ test(`gate r3 A2: own ${key} setting is previewed, submitted and saved by real W
   assert.match(statusText(root), /Saved to config.json/);
   assert.equal(ctx.form.hasEdits(), false);
 });
+
+for (const rejected of [false, true])
+test(`gate r3 A3: real atomic preview ${rejected ? "refusal keeps all edits without previewing" : "acceptance still previews"}`, async (t) => {
+  const { root, calls, s, app, form } = await intRealForm(t);
+  const previews = () => calls.filter((call) => call.path === `${s}/preview`);
+  typeInto(root.querySelector('[data-key="m"]'), "2");
+  if (!rejected) {
+    await intWaitFor(() => previews().length === 1);
+    await settle();
+    assert.equal(app.modules.settings.state("ulanzi-t", "contract").values.m.effective, 2);
+    assert.match(root.querySelector('[data-row="m"] .mk').textContent, /^previewing/);
+    return;
+  }
+  // A JSON string parses in the form but is refused as JSON by real W1.
+  typeInto(root.querySelector('[data-key="payload"]'), '"not-json"');
+  typeInto(root.querySelector('[data-key="m"]'), "3");
+  await intWaitFor(() => previews().some((call) => call.body.values.m === 3));
+  await settle();
+  const last = previews().at(-1);
+  assert.equal(last.answer.applied, false, "A3: the real server rejected the whole preview");
+  assert.ok(last.answer.rejected.payload);
+  assert.equal(app.modules.settings.state("ulanzi-t", "contract").values.m.effective, 2);
+  assert.equal(root.querySelector('[data-key="m"]').value, "3", "A3: retain the user's edit");
+  for (const key of Object.keys(last.body.values))
+    assert.doesNotMatch(root.querySelector(`[data-row="${key}"] .mk`).textContent, /previewing/, `A3: ${key} was not applied`);
+  assert.match(root.querySelector('[data-row="m"] .mk').textContent, /showing 2/, "A3: show the server's measured value");
+  assert.equal(root.querySelector('[data-act="save"]').disabled, true);
+  assert.equal(form.hasEdits(), true);
+});

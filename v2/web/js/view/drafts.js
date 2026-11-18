@@ -35,6 +35,7 @@
  * @property {unknown} [value] the parsed value, when it parses
  * @property {string} [error] why it does not parse, or why pixdcon rejected it; such an edit is never previewed or saved
  * @property {boolean} [refused] the error is pixdcon's reason: the preview's answer refused the value (Tick Q2: "pixdcon refused this value: <reason>")
+ * @property {boolean} [previewApplied] the server's verdict on this submitted edit; false keeps the edit without claiming it is displayed
  * @property {number} draft the draft number of this edit: its identity
  */
 
@@ -129,6 +130,13 @@ export function createDraftBook() {
           sent.set(key, edit.draft);
         }
       return { body: { session, draft, values }, sent };
+    },
+    /** @param {Map<string, number>} sent @param {boolean} applied */
+    previewResult(sent, applied) {
+      for (const [key, number] of sent) {
+        const edit = edits.get(key);
+        if (edit?.draft === number) edit.previewApplied = applied;
+      }
     },
     /**
      * The preview's answer named values that pixdcon did not take
