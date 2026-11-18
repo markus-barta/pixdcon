@@ -2798,7 +2798,7 @@ function r4PreviewFeedback(root) {
   // End failures own a Retry control; preview timeouts share the localized
   // unconfirmed wording but still belong to the submitted draft.
   const line = root.querySelector(".dev-head .sub");
-  const title = r4Text(line).includes("Settings not previewed:") || R4_TIMEOUT_TEXT.test(r4Text(line)) && !line.querySelector('[data-act="end-retry"]');
+  const title = r4Text(line).includes("Settings not previewed:") || R4_TIMEOUT_TEXT.test(r4Text(line)) && R4_TIMEOUT_TEXT.test(r4Text(root.querySelector(".why .v-disp"))) && !line.querySelector('[data-act="end-retry"]');
   const marker = root.querySelectorAll(".set-body .mk").some((/** @type {any} */ mk) => /^not previewed/.test(r4Text(mk)));
   return `title ${title ? "says it" : "-"} · marker ${marker ? "says it" : "-"}`;
 }
@@ -3826,6 +3826,8 @@ async function r4Run(t, kind, change, end, mode, modules, last = false) {
   // Fault injection remains disabled unless r7Coverage selects an outcome.
   const measuredModules = await r8MeasurementModules();
   modules = { ...measuredModules, ...modules };
+  if (R3_REAL_SAVE_STORIES[kind.name]?.includes(change) && (change !== null || mode === "source" || r7Coverage))
+    return r3RealSaveRun(t, kind, change, end, mode, modules);
   for (const key of [...r4State().ops.keys()]) r4SetOp(key, null);
   fakeDocument.activeElement = null;
   const world = r4World(kind.world);
@@ -6313,6 +6315,19 @@ R5_PROBES.push(
 // r6 / gate F-J. Extra histories supplement every A5 story and assertion.
 /** @type {Array<{name: string, kind: string, change: string, end: R4End}>} */
 const R6_CASES = [];
+// Real W1 owns the applied verdict, including equal drafts and atomic
+// rejection. Keep the frozen fake/calibration for every other history.
+/** @type {Record<string, Array<string|null>>} */
+const R3_REAL_SAVE_STORIES = {
+  "settings save": [null, "equal value retyped", "value changed away and back", "newer draft", "other field", "another field reset"],
+  "settings reset save": [null, "reset replaced by an edit", "reset replaced by equal default", "newer draft", "other field", "schema"],
+  "settings save rejected": [null, "other field", "schema"],
+};
+// These fake-era pixel equalities are replaced only in the histories above:
+// real duplicate/atomic verdicts and retained server previews can differ
+// across commuted histories. r3RealSaveRun asserts each actual verdict,
+// action outcome, button, edit identity and the next HTTP Save instead.
+const R3_REAL_SAVE_PIECES = ["preview feedback", "row marker of n", "row marker of m", "settings status line", "edits the next Save sends", "settings Save and Revert"];
 const R8_EQUAL_OVERLAY_RECORDS = ["o1", "o2", "o3"].map((id) => ({ ...record("same-topic", "setting", { device: "d1", scene: "clock", key: "n", value: 8 }), id }));
 for (const change of ["equal value retyped", "value changed away and back"])
   for (const end of R4_ENDS) R6_CASES.push({ name: `settings save × ${change} × ${end} (gate r5b F)`, kind: "settings save", change, end });
@@ -11301,7 +11316,9 @@ async function r8RunStoryAudit(t, requirements, modules) {
       kind.world = { ...kind.world, overlays: () => overlays };
     }
     for (const requirement of http.filter((r) => r.kind === kind.name && r.identity !== "overlay")) {
-      for (const [change] of changes.filter(([, axes]) => axes.length === 1 && axes[0] === requirement.identity)) {
+      const candidates = changes.filter(([, axes]) => axes.length === 1 && axes[0] === requirement.identity)
+        .sort(([a], [b]) => Number(R3_REAL_SAVE_STORIES[kind.name]?.includes(b)) - Number(R3_REAL_SAVE_STORIES[kind.name]?.includes(a)));
+      for (const [change] of candidates) {
         const start = r8Stories.length;
         try {
           const experiment = requirement.identity === "owner" ? { ...kind, completeBeforeChange: true, world: { ...kind.world, devices: kind.world.devices.map((/** @type {any} */ d) => ({ ...d, o: { ...d.o, override: 30 } })) } } : kind;
@@ -11335,6 +11352,9 @@ async function r8RunStoryAudit(t, requirements, modules) {
   });
   if (process.env.R8_STORY_REPORT) r4Append(process.env.R8_STORY_REPORT, JSON.stringify({ requirements: requirements.map((r) => r.key), stories: r8Stories.map(({ points: _points, compared, ...s }) => ({ ...s, compared: [...compared] })) }) + "\n");
   const stories = r8Stories.slice(firstReceipt);
+  for (const kind of Object.keys(R3_REAL_SAVE_STORIES))
+    if (requirements.some((requirement) => requirement.kind === kind && requirement.identity === "draft"))
+      assert.ok(stories.some((story) => story.kind === kind && story.backend === "real W1/W4" && story.completed && story.measured.join() === "draft" && [...story.compared.values()].some((deps) => deps.includes("draft"))), `${kind}: the replacement draft witness must execute against real W1/W4`);
   r8RequireStoryIsolation(requirements, stories);
   return stories;
 }
@@ -14630,6 +14650,190 @@ test("r4 harness self-test: intw2 L4 corrected-field observer rejects a stale ti
 
 // Gate r3 integration stories reuse the existing DOM only. HTTP, settings,
 // overlays, configuration and lifecycle are real; no r4 fake is extended.
+/** Replay only the product-driven Save replacements through real W1/W4.
+ * The response-delivery seam holds real bodies; 500/loss are transport
+ * faults after W1 processed the request. No preview verdict is invented.
+ * Existing pieces, reference comparisons, survival checks and mutants run
+ * over the mounted Device page, including instrumented audit modules.
+ * @param {any} t @param {R4Kind} kind @param {string|null} change
+ * @param {R4End} end @param {string} mode @param {Record<string, any>} modules
+ */
+async function r3RealSaveRun(t, kind, change, end, mode, modules) {
+  const { resolve } = await import("node:path");
+  const { writeFile } = await import("node:fs/promises");
+  const world = r4World(kind.world), clock = intClock();
+  const scene = r4Showing(world), resource = `settings:d1/${scene}`, path = `/api/v2/devices/d1/settings/${scene}`;
+  const rejectedSave = kind.name === "settings save rejected";
+  if (rejectedSave) {
+    // W1 normalizes numeric bounds. A JSON string which is not itself JSON
+    // is a real atomic refusal; the next definition accepts it as a string.
+    const definitions = [{ ...R4_SCHEMA, n: { type: "json", default: {} } }, { ...R4_SCHEMA, n: { type: "string", default: "" } }];
+    world.definitions = { ...world.definitions, [scene]: definitions };
+    world.schemas.set(scene, definitions[0]);
+  }
+  const files = new Map();
+  const source = (/** @type {any} */ schema) => `export default {deviceType:"ulanzi",settingsSchema:${JSON.stringify(schema)},render(){return 1000;}};`;
+  const stack = await intStartStack(t, { clock,
+    config(config) { config.devices = [{ name: "d1", type: "ulanzi", ip: "127.0.0.1:19", enabled: false, scene, sceneSettings: structuredClone(R4_SAVED) }]; config.scenes = {}; },
+    async prepare({ config, dataDir }) {
+      for (const [key, schema] of world.schemas) {
+        const file = resolve(dataDir, `${key}.mjs`); files.set(key, file);
+        await writeFile(file, source(schema)); config.scenes[key] = { path: file };
+      }
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  /** @type {any} */ const ctx = { world, kind, modules, calls: [], edits: new Map(), points: [], changed: new Set(change ? r4StepChanges(change) : []), page: "device", root: pageRoot(), opening: 1, shows: 0, revision: 0, clock: 0 };
+  let holdSave = false, losePreview = kind.name === "settings save rejected";
+  /** @type {any} */ let held;
+  const drain = async () => {
+    await intWaitFor(() => ctx.calls.every((/** @type {any} */ call) => call.ready && (call === held || call.delivered)), "real Save response delivery");
+    await settle();
+  };
+  globalThis.fetch = async (input, init) => {
+    const url = String(input), method = init?.method ?? "GET";
+    if (!url.startsWith("/")) return intHttpFetch(input, init);
+    /** @type {any} */ const call = { origin: r7RequestSource, path: url, url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined, status: 0, answered: false, ready: false, delivered: false, submitted: new Map(ctx.edits), storyTime: ctx.clock };
+    ctx.calls.push(call);
+    if (method === "PUT" && url === `${path}/preview`) queueMicrotask(() => { call.submitted = new Map(ctx.edits); });
+    const isHeld = holdSave && method === "PUT" && url === path;
+    if (isHeld) { holdSave = false; held = call; }
+    const response = await intHttpFetch(`${stack.base}${url}`, init);
+    const text = await response.text();
+    call.serverStatus = response.status;
+    call.answer = text ? JSON.parse(text) : null;
+    call.ready = true;
+    const deliver = (/** @type {number} */ status, /** @type {string} */ body) => {
+      call.status = call.abandoned ? 0 : status; call.answered = true; call.delivered = true;
+      return new Response(body, { status, headers: response.headers });
+    };
+    if (isHeld) return new Promise((resolve) => {
+      call.release = (/** @type {number} */ status = response.status) => resolve(deliver(status, status === response.status ? text : "{}"));
+    });
+    if (losePreview && method === "PUT" && url === `${path}/preview`) {
+      losePreview = false;
+      return deliver(500, "{}"); // lose the real atomic rejection, as in r4Unverified
+    }
+    return deliver(response.status, text);
+  };
+  const page = modules.device ?? devicePage;
+  const observe = () => new Map(R4_PAGES.device.pieces(ctx.root).map(([name, deps, value]) => [`device: ${name}`, { deps, value: r4InStory(world, value).replaceAll(stack.dataDir, "<fixture>") }]));
+  const make = async () => {
+    const before = r8Frame(ctx);
+    if (change === "schema") {
+      world.schemas.set(scene, world.definitions[scene][1]);
+      await writeFile(files.get(scene), source(world.schemas.get(scene)));
+      await stack.app.modules.scenes.refresh([scene]);
+      applyDefaultAnswer(await request("GET", path, { resource }));
+    } else if (change) await (R4_CHANGE[/** @type {R4Change} */ (change)] ?? R4_STEP[change])(ctx);
+    await drain();
+    const receipt = /** @type {any} */ (r8RecordStory(ctx, before, r8Frame(ctx), `real W1/${change ?? "no change"}/${end}/${mode}`));
+    receipt.completed = true; receipt.backend = "real W1/W4";
+  };
+  /** @type {string[]} */ const absolute = [];
+  /** @type {string[]} */ const definition = [];
+  const checkDefinition = () => {
+    if (change !== "schema") return;
+    const state = stack.app.modules.settings.state("d1", scene);
+    for (const [key, edit] of ctx.edits) {
+      const said = r4Refusal(ctx.root, key), reason = r4Verdict(state.schema[key], Number(edit.value));
+      if (said !== "none" && !reason) definition.push(`after the end: row ${key} says "${said}" about ${edit.value}: a reason of an earlier scene definition`);
+      if (reason && said === "none" && !r4State().ops.get(ctx.slotKey)?.busy) definition.push(`the edit ${key} remains but the current scene definition refuses it: the edits that remain were not revalidated`);
+    }
+  };
+  try {
+    for (const key of [...r4State().ops.keys()]) r4SetOp(key, null);
+    applyDefaultAnswer(await request("GET", "/api/v2/bootstrap", { resource: "bootstrap" }));
+    const store = await import("../../web/js/store.js");
+    store.setLive({ state: "live", lastEventAt: Date.now(), lostSince: null, retryEveryMs: 5000 });
+    world.epoch = r4State().epoch; world.epochs = [world.epoch]; world.lives.set("d1", r4State().devices.get("d1").incarnation);
+    world.story = ctx; r8ActiveStory = ctx;
+    page.mount(ctx.root, { name: "d1" });
+    await intWaitFor(() => field(ctx.root, "n"));
+    if (kind.name === "settings reset save") r6Reset(ctx, "m"); else r4Edit(ctx, "n", rejectedSave ? '"not-json"' : "2");
+    await drain();
+    if (mode !== "without") {
+      holdSave = true;
+      r4Click(saveButton(ctx.root));
+      await intWaitFor(() => held?.ready, "real Save was processed before its response was held");
+      ctx.op = held; ctx.issuedOp = held; ctx.slotKey = held.origin?.slotKey ?? [...r4State().ops].find(([, slot]) => slot.busy)?.[0];
+      if (kind.name === "settings save rejected") assert.equal(held.serverStatus, 400, "real W1 refused the Save atomically");
+      else assert.equal(held.serverStatus, 200, "real W1 processed the Save");
+    }
+    if (mode === "source") return { points: ctx.points, changed: ctx.changed, absolute, definition, origin: held?.origin, calls: ctx.calls };
+    if (mode === "early") { held?.release(); await drain(); }
+    if (mode !== "after") await make();
+    if (r7Coverage) { r7Coverage.ctx = ctx; await r7ProbeOutcomes(ctx); }
+    ctx.points.push(observe());
+    if (mode !== "early" && held) {
+      if (end === "timeout") { held.abandoned = true; t.mock.timers.tick(15_000); await settle(); held.release(); }
+      else held.release(end === "500" ? 500 : held.serverStatus);
+      await drain();
+    }
+    if (r7Coverage) await r7ProbeOutcomes(ctx);
+    ctx.points.push(observe()); checkDefinition();
+    applyDefaultAnswer(await request("GET", "/api/v2/bootstrap", { resource: "bootstrap" }));
+    await drain();
+    ctx.points.push(observe());
+    if (mode === "after") await make();
+    await drain();
+    if (r7Coverage) await r7ProbeOutcomes(ctx);
+    ctx.points.push(observe()); checkDefinition();
+    const survival = r4Survival(ctx);
+    if (rejectedSave && Object.hasOwn(survival.pending, "n")) /** @type {any} */ (survival.pending).n = "not-json";
+    const errors = ctx.root.querySelectorAll(".ferr, .jerr").some((/** @type {any} */ el) => String(el.textContent ?? "").trim());
+    const pendingEdits = Object.keys(survival.pending).length + survival.resets.length;
+    if (saveButton(ctx.root).disabled !== (!pendingEdits || Boolean(errors))) absolute.push("edits the next Save sends: its availability disagrees with the retained edits and real field verdicts");
+    const status = statusText(ctx.root);
+    if (held && mode !== "early" && end === "timeout" && !R4_TIMEOUT_TEXT.test(status)) absolute.push(`the timed-out Save lost its unconfirmed feedback: ${status}`);
+    if (held && mode !== "early" && end === "500" && !/^Not saved:.*500/.test(status)) absolute.push(`the failed Save lost its 500 feedback: ${status}`);
+    const current = r4State().settings.get(`d1/${scene}`);
+    const serverPreview = Object.values(current?.values ?? {}).some((/** @type {any} */ layer) => Object.hasOwn(layer, "preview"));
+    const revert = ctx.root.querySelector('.set-h [data-act="revert"]');
+    if (Boolean(revert) !== Boolean(pendingEdits || serverPreview)) absolute.push("Revert availability disagrees with the real preview and retained edits");
+    // A repeated real preview of an already accepted draft returns false.
+    // Its explicit A3 verdict changes feedback pixels relative to a history
+    // with no Save. Judge those pixels against the actual response, while
+    // retaining the original field/edit-survival and next-Save comparisons.
+    for (const [key, edit] of ctx.edits) {
+      const saved = ctx.calls.some((/** @type {any} */ call) => call.path === path && call.method === "PUT" && call.status === 200 && call.submitted.get(key) === edit);
+      if (saved) continue;
+      const preview = ctx.calls.findLast((/** @type {any} */ call) => call.path === `${path}/preview` && call.submitted.get(key) === edit && call.delivered);
+      if (!preview) continue;
+      const notApplied = preview.status !== 200 || preview.answer?.applied === false || preview.answer?.rejected?.[key];
+      const marker = r4Marker(ctx.root, key);
+      if (!(notApplied ? /^not previewed/ : /^previewing/).test(marker)) absolute.push(`real preview verdict for ${key}: applied=${preview.answer?.applied}, row marker "${marker}" disagrees with its own response`);
+    }
+    absolute.push(...definition, ...survival.found);
+    let nextSave = null;
+    if (Object.keys(survival.pending).length || survival.resets.length) {
+      if (saveButton(ctx.root).disabled) {
+        if (!errors) absolute.push("edits the next Save sends: Save is disabled although the story still holds an edit");
+      } else {
+        const at = ctx.calls.length;
+        r4Click(saveButton(ctx.root)); await drain();
+        const next = ctx.calls.slice(at).find((/** @type {any} */ call) => call.method === "PUT" && call.path === path);
+        const expected = { set: survival.pending, reset: survival.resets };
+        nextSave = next ? JSON.stringify({ set: next.body.set, reset: next.body.reset }) : "no Save sent";
+        if (nextSave !== JSON.stringify(expected)) absolute.push(`edits the next Save sends ${nextSave}; the story requires ${JSON.stringify(expected)}`);
+      }
+    }
+    for (const receipt of r8Stories.filter((story) => story.points === ctx.points)) {
+      receipt.observations = { nextSave, status, serverPreview, pending: survival.pending, resets: survival.resets };
+      if (!absolute.length) receipt.compared.set("real Save verdict, retained edits and next HTTP Save", [...R4_BOOKKEEPING, "epoch", "life", "token"]);
+    }
+    for (const point of ctx.points)
+      for (const piece of R3_REAL_SAVE_PIECES) point.delete(`device: ${piece}`);
+    return { points: ctx.points, changed: ctx.changed, absolute, definition, nextSave, origin: held?.origin, calls: ctx.calls, sent: ctx.calls.map(r4Request), op: held ? r4Request(held) : null };
+  } finally {
+    held?.release?.();
+    page.unmount(); ctx.root.remove(); world.story = null;
+    if (r8ActiveStory === ctx) r8ActiveStory = null;
+    await drain(); globalThis.fetch = originalFetch;
+    await stack.cleanup.run();
+  }
+}
+
 /** @param {any} t */
 async function intRealClient(t) {
   const { resolve } = await import("node:path");
@@ -14843,7 +15047,9 @@ test("gate r3 A5: real removed Reset discard preserves another edit and its Save
   const draft = Math.max(...calls.filter((call) => call.path === `${s}/preview`).map((call) => call.body.draft));
   r4Click(root.querySelector('[data-removed="n"] [data-act="discard"]'));
   await intWaitFor(() => calls.slice(before).some((call) => call.path === `${s}/preview`));
-  assert.ok(calls.slice(before).find((call) => call.path === `${s}/preview`).body.draft > draft, "A5 Discard: advance the remaining preview's draft");
+  const nextPreview = calls.slice(before).find((call) => call.path === `${s}/preview`);
+  assert.ok(nextPreview);
+  assert.ok(nextPreview.body.draft > draft, "A5 Discard: advance the remaining preview's draft");
   assert.equal(root.querySelector('[data-removed="n"]'), null);
   assert.equal(field(root, "m").value, "8", "A5 Discard: preserve the other edit");
   assert.equal(form.hasEdits(), true);
@@ -14854,6 +15060,7 @@ test("gate r3 A5: real removed Reset discard preserves another edit and its Save
   r4Click(saveButton(root));
   await intWaitFor(() => calls.slice(saved).some((call) => call.path === s && call.method === "PUT"));
   const save = calls.slice(saved).find((call) => call.path === s && call.method === "PUT");
+  assert.ok(save);
   assert.deepEqual(save.body.set, { m: 8 });
   assert.deepEqual(save.body.reset, [], "A5 Discard: the removed key's Reset intent cannot return with its definition");
   assert.equal(save.status, 200);
