@@ -120,7 +120,7 @@ export function createDraftBook() {
      */
     previewPlan(session) {
       /** @type {Record<string, unknown>} */
-      const values = {};
+      const values = Object.create(null);
       /** @type {Map<string, number>} */
       const sent = new Map();
       for (const [key, edit] of edits)
@@ -157,7 +157,7 @@ export function createDraftBook() {
     saveBody(session) {
       if (this.errors().length > 0) return null;
       /** @type {Record<string, unknown>} */
-      const set = {};
+      const set = Object.create(null);
       /** @type {Map<string, number>} */
       const committed = new Map();
       for (const [key, edit] of edits) {

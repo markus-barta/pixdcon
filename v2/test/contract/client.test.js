@@ -19,6 +19,8 @@ process.env.TZ = "Europe/Vienna";
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import test, { mock } from "node:test";
+import { startStack as intStartStack, waitFor as intWaitFor } from "../helpers/harness.js";
+import { manualClock as intClock } from "../../src/core/clock.js";
 import { functions as r8Functions, requestSites as r8RequestSites, sourceAnchor as r8SourceAnchor, structure as r8Structure, syntax as r8Syntax, walk as r8Walk } from "./harness-r8.js";
 import { ApiError, isBusy, onBusy, request, requestFrame } from "../../web/js/api.js";
 import { clock, clockShort } from "../../web/js/format.js";
@@ -54,6 +56,7 @@ import {
 } from "../../web/js/view/model.js";
 
 const A = "aaaaaaaa";
+const intHttpFetch = globalThis.fetch;
 const B = "bbbbbbbb";
 const at = (/** @type {string} */ hms) => new Date(`2026-11-16T${hms}+01:00`).toISOString();
 
@@ -14584,4 +14587,70 @@ test("r4 harness self-test: intw2 L4 corrected-field observer rejects a stale ti
     ['setAttr(parts.error, "title", bad && edit ? errorText(edit) : null);', 'setAttr(parts.error, "title", bad && edit ? errorText(edit) : parts.error?.getAttribute("title") ?? null);'],
   ]);
   await assert.rejects(intw2RefusalClear(mutant), /L4 refusal: a corrected field clears its title/);
+});
+
+// Gate r3 integration stories reuse the existing DOM only. HTTP, settings,
+// overlays, configuration and lifecycle are real; no r4 fake is extended.
+/** @param {any} t */
+async function intRealClient(t) {
+  const { resolve } = await import("node:path");
+  const { writeFile } = await import("node:fs/promises");
+  const clock = intClock();
+  const stack = await intStartStack(t, {
+    clock,
+    config(config) { for (const device of config.devices) device.enabled = false; },
+    async prepare({ config, dataDir }) {
+      const path = resolve(dataDir, "ui-contract.mjs");
+      await writeFile(path, 'export default {deviceType:"ulanzi",settingsSchema:{["__proto__"]:{type:"int",default:1},n:{type:"int",default:1},m:{type:"int",default:1},payload:{type:"json",default:{}}},render(){return 1000;}};');
+      config.scenes.contract = {path};
+    },
+  });
+  /** @type {Array<{path: string, method: string, body: any, status: number, answer: any}>} */
+  const calls = [];
+  const saved = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const path = String(input);
+    const response = await intHttpFetch(path.startsWith("/") ? `${stack.base}${path}` : input, init);
+    if (path.startsWith("/")) calls.push({path,method:init?.method ?? "GET",body:init?.body ? JSON.parse(String(init.body)) : undefined,status:response.status,answer:await response.clone().json().catch(() => null)});
+    return response;
+  };
+  t.after(() => { globalThis.fetch = saved; });
+  applyDefaultAnswer(await request("GET", "/api/v2/bootstrap", {resource:"bootstrap"}));
+  const store = await import("../../web/js/store.js");
+  store.setLive({state:"live",lastEventAt:Date.now(),lostSince:null});
+  return { ...stack, clock, calls, store, d:"/api/v2/devices/ulanzi-t", s:"/api/v2/devices/ulanzi-t/settings/contract" };
+}
+
+/** @param {any} t @param {any} [module] */
+async function intRealForm(t, module) {
+  const ctx = await intRealClient(t);
+  module ??= await r5Module("components/settings-form.js");
+  const root = pageRoot();
+  const form = module.createSettingsForm(root, {device:"ulanzi-t",session:"int-real"});
+  const stop = ctx.store.subscribe((state) => state, (state) => form.update(state.settings.get("ulanzi-t/contract")));
+  t.after(() => { stop(); form.destroy(); root.remove(); });
+  form.setScene("contract", "Contract", ctx.store.getState().devices.get("ulanzi-t"));
+  await intWaitFor(() => root.querySelector('[data-key="n"]'));
+  return { ...ctx, root, form };
+}
+
+for (const key of ["__proto__", "n"])
+test(`gate r3 A2: own ${key} setting is previewed, submitted and saved by real W1/W4`, async (t) => {
+  const ctx = await intRealForm(t);
+  const { root, calls, s, app } = ctx;
+  typeInto(root.querySelector(`[data-key="${key}"]`), "2");
+  await intWaitFor(() => calls.some((call) => call.method === "PUT" && call.path === `${s}/preview`));
+  await settle();
+  const preview = calls.find((call) => call.path === `${s}/preview`);
+  assert.equal(Object.hasOwn(preview.body.values, key), true, "A2: preview submits an own key");
+  assert.equal(app.modules.settings.state("ulanzi-t", "contract").values[key].effective, 2);
+  click(root.querySelector('[data-act="save"]'));
+  await intWaitFor(() => calls.some((call) => call.method === "PUT" && call.path === s));
+  await settle();
+  const save = calls.find((call) => call.method === "PUT" && call.path === s);
+  assert.equal(Object.hasOwn(save.body.set, key), true, "A2: Save submits the acknowledged key");
+  assert.equal(save.status, 200);
+  assert.equal(app.modules.settings.state("ulanzi-t", "contract").values[key].saved, 2);
+  assert.match(statusText(root), /Saved to config.json/);
+  assert.equal(ctx.form.hasEdits(), false);
 });
