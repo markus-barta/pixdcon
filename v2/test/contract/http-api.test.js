@@ -41,7 +41,14 @@ test("gate r3 UI contract: all 23 request shapes through real HttpServer + regis
       config.scenes.contract = { path: source };
     },
   });
-  await waitFor(() => stack.app.modules.mqtt.status().state === "connected");
+  const mqtt = stack.app.modules.mqtt;
+  assert.ok(mqtt);
+  await waitFor(() => mqtt.status().state === "connected");
+  await mqtt.settle();
+  await stack.broker.inject(stack.app.topics.overlayBlob, JSON.stringify({devices:[
+    {name:"adopt-me",type:"ulanzi",ip:stack.awtrix.address,enabled:false},
+  ]}), {retain:true});
+  await waitFor(() => stack.app.modules.state.views().some((view) => view.name === "adopt-me"));
   const transport = globalThis.fetch;
   /** @type {Array<{method: string, path: string, headers: Headers, body: unknown, status: number}>} */
   const sent = [];
@@ -53,7 +60,7 @@ test("gate r3 UI contract: all 23 request shapes through real HttpServer + regis
   };
   t.after(() => { globalThis.fetch = transport; });
   const d = "/api/v2/devices/ulanzi-t", s = `${d}/settings/contract`;
-  const raw = await (await transport(`${stack.base}/api/v2/config/raw`)).json();
+  const raw = /** @type {{text: string}} */ (await (await transport(`${stack.base}/api/v2/config/raw`)).json());
   /** @type {Array<[string, string, unknown, number]>} */
   const shapes = [
     ["GET", "/api/v2/bootstrap", undefined, 200],
@@ -62,7 +69,7 @@ test("gate r3 UI contract: all 23 request shapes through real HttpServer + regis
     ["POST", "/api/v2/devices", {name:"added",type:"ulanzi",ip:stack.awtrix.address}, 201],
     ["PATCH", d, {displayName:"Contract device"}, 200],
     ["PUT", `${d}/scene`, {scene:"contract"}, 200],
-    ["POST", `${d}/adopt`, {}, 409],
+    ["POST", "/api/v2/devices/adopt-me/adopt", {}, 200],
     ["PUT", `${d}/mode`, {mode:"pause"}, 200],
     ["PUT", `${d}/brightness`, {override:30}, 200],
     ["POST", `${d}/retry`, {}, 200],
@@ -73,7 +80,7 @@ test("gate r3 UI contract: all 23 request shapes through real HttpServer + regis
     ["DELETE", `${s}/preview?session=shape-session`, undefined, 200],
     ["DELETE", `${s}/overlays`, undefined, 200],
     ["POST", "/api/v2/preview-sessions/shape-session/end", {}, 200],
-    ["DELETE", "/api/v2/overlays/unknown-shape", undefined, 404],
+    ["DELETE", "/api/v2/overlays/blob", undefined, 200],
     ["POST", "/api/v2/scenes/contract/copy", {targetKey:"contract-copy",name:"Contract copy",replace:false}, 201],
     ["GET", "/api/v2/config/raw", undefined, 200],
     ["PUT", "/api/v2/config/raw", {text:raw.text}, 200],
@@ -88,6 +95,7 @@ test("gate r3 UI contract: all 23 request shapes through real HttpServer + regis
       if (path.includes("/events?")) {
         const response = await fetch(path);
         assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
+        assert.ok(response.body);
         const reader = response.body.getReader();
         assert.match(new TextDecoder().decode((await reader.read()).value), /event: snapshot/);
         await reader.cancel();
@@ -96,11 +104,13 @@ test("gate r3 UI contract: all 23 request shapes through real HttpServer + regis
       } else if (path.includes("/preview-sessions/")) {
         // main.js's beacon sends this JSON Blob, which supplies its type.
         const response = await fetch(path, {method:"POST",body:new Blob(["{}"],{type:"application/json"})});
-        assert.equal((await response.json()).ended, 0);
+        const result = /** @type {{ended: number}} */ (await response.json());
+        assert.equal(result.ended, 0);
       } else await request(/** @type {any} */ (method), path, {resource:path === "/api/v2/bootstrap" ? "bootstrap" : "contract",body});
     } catch (error) { refusal = error; }
     assert.equal(sent.length, before + 1, "exactly one real request");
     const actual = sent.at(-1);
+    assert.ok(actual);
     assert.notEqual(actual.status, 415, `${method} ${path}: UI headers satisfy the real server`);
     assert.equal(actual.status, expected, `${method} ${path}: ${refusal ?? ""}`);
     if (path.includes("/preview-sessions/")) assert.equal(/** @type {Blob} */ (actual.body).type, "application/json");
