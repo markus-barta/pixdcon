@@ -14607,6 +14607,8 @@ async function intRealClient(t) {
   });
   /** @type {Array<{path: string, method: string, body: any, status: number, answer: any}>} */
   const calls = [];
+  const mqtt = stack.app.modules.mqtt;
+  assert.ok(mqtt);
   const saved = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     const path = String(input);
@@ -14617,8 +14619,8 @@ async function intRealClient(t) {
   t.after(() => { globalThis.fetch = saved; });
   applyDefaultAnswer(await request("GET", "/api/v2/bootstrap", {resource:"bootstrap"}));
   const store = await import("../../web/js/store.js");
-  store.setLive({state:"live",lastEventAt:Date.now(),lostSince:null});
-  return { ...stack, clock, calls, store, d:"/api/v2/devices/ulanzi-t", s:"/api/v2/devices/ulanzi-t/settings/contract" };
+  store.setLive({state:"live",lastEventAt:Date.now(),lostSince:null,retryEveryMs:5000});
+  return { ...stack, clock, calls, store, mqtt, d:"/api/v2/devices/ulanzi-t", s:"/api/v2/devices/ulanzi-t/settings/contract" };
 }
 
 /** @param {any} t @param {any} [module] */
@@ -14642,12 +14644,14 @@ test(`gate r3 A2: own ${key} setting is previewed, submitted and saved by real W
   await intWaitFor(() => calls.some((call) => call.method === "PUT" && call.path === `${s}/preview`));
   await settle();
   const preview = calls.find((call) => call.path === `${s}/preview`);
+  assert.ok(preview);
   assert.equal(Object.hasOwn(preview.body.values, key), true, "A2: preview submits an own key");
   assert.equal(app.modules.settings.state("ulanzi-t", "contract").values[key].effective, 2);
   click(root.querySelector('[data-act="save"]'));
   await intWaitFor(() => calls.some((call) => call.method === "PUT" && call.path === s));
   await settle();
   const save = calls.find((call) => call.method === "PUT" && call.path === s);
+  assert.ok(save);
   assert.equal(Object.hasOwn(save.body.set, key), true, "A2: Save submits the acknowledged key");
   assert.equal(save.status, 200);
   assert.equal(app.modules.settings.state("ulanzi-t", "contract").values[key].saved, 2);
@@ -14673,6 +14677,7 @@ test(`gate r3 A3: real atomic preview ${rejected ? "refusal keeps all edits with
   await intWaitFor(() => previews().some((call) => call.body.values.m === 3));
   await settle();
   const last = previews().at(-1);
+  assert.ok(last);
   assert.equal(last.answer.applied, false, "A3: the real server rejected the whole preview");
   assert.ok(last.answer.rejected.payload);
   assert.equal(app.modules.settings.state("ulanzi-t", "contract").values.m.effective, 2);
@@ -14688,7 +14693,7 @@ test(`gate r3 A3: real atomic preview ${rejected ? "refusal keeps all edits with
 async function intInject(ctx, topic, payload) {
   await ctx.app.modules.mqtt.settle();
   await ctx.broker.inject(topic, payload, {retain:true});
-  await intWaitFor(() => ctx.app.modules.overlays.list().some((record) => record.topic === topic && record.raw === payload));
+  await intWaitFor(() => ctx.app.modules.overlays.list().some((/** @type {any} */ record) => record.topic === topic && record.raw === payload));
   await ctx.clock.advance(300);
   await ctx.app.modules.config.readRaw();
   await ctx.clock.advance(300);
@@ -14697,7 +14702,7 @@ async function intInject(ctx, topic, payload) {
 for (const kind of ["granular", "blob", "missing own record"])
 test(`gate r3 A4: real held explanation uses exact device ${kind}`, async (t) => {
   const ctx = await intRealClient(t);
-  const { app, broker, clock } = ctx;
+  const { app, broker, clock, mqtt } = ctx;
   await intInject(ctx, app.topics.overlayDeviceIp("pixoo-t"), "127.0.0.1:19");
   await intInject(ctx, app.topics.overlayBlob, JSON.stringify({devices:[
     {name:"ulanzi-t",ip:"127.0.0.1:29"},
@@ -14705,12 +14710,12 @@ test(`gate r3 A4: real held explanation uses exact device ${kind}`, async (t) =>
   ]}));
   const release = broker.holdRetained();
   t.after(release);
-  const connection = app.modules.mqtt.status().connection;
+  const connection = mqtt.status().connection;
   await broker.dropClients();
-  await intWaitFor(() => app.modules.mqtt.status().state === "offline");
+  await intWaitFor(() => mqtt.status().state === "offline");
   await clock.advance(5000);
-  await intWaitFor(() => app.modules.mqtt.status().connection > connection);
-  await app.modules.mqtt.settle();
+  await intWaitFor(() => mqtt.status().connection > connection);
+  await mqtt.settle();
   await clock.advance(300);
   applyDefaultAnswer(await request("GET", "/api/v2/bootstrap", {resource:"bootstrap"}));
   const state = ctx.store.getState();
@@ -14744,7 +14749,9 @@ test(`gate r3 A5: real schema ${removed ? "removal retains a visible discardable
     return;
   }
   const { writeFile } = await import("node:fs/promises");
-  await writeFile(app.modules.scenes.fileOf("contract"), 'export default {deviceType:"ulanzi",settingsSchema:{m:{type:"int",default:1}},render(){return 1000;}};');
+  const source = app.modules.scenes.fileOf("contract");
+  assert.ok(source);
+  await writeFile(source, 'export default {deviceType:"ulanzi",settingsSchema:{m:{type:"int",default:1}},render(){return 1000;}};');
   await app.modules.scenes.refresh(["contract"]);
   const before = calls.length;
   applyDefaultAnswer(await request("GET", s, {resource:"settings:ulanzi-t/contract"}));
@@ -14764,6 +14771,7 @@ test(`gate r3 A5: real schema ${removed ? "removal retains a visible discardable
   await intWaitFor(() => calls.some((call) => call.path === s && call.method === "PUT"));
   await settle();
   const save = calls.find((call) => call.path === s && call.method === "PUT");
+  assert.ok(save);
   assert.deepEqual(save.body.set, {m:8});
   assert.deepEqual(save.body.reset, []);
   assert.equal(save.status, 200);
@@ -14791,11 +14799,12 @@ test(`gate r3 A6: real Restore ${fail ? "failure preserves the choice and button
   const second = button.closest(".src2");
   const prefix = second.childNodes[0].textContent;
   assert.match(prefix, /^Your choice: /);
-  if (fail) await ctx.app.modules.mqtt.stop();
+  if (fail) await ctx.mqtt.stop();
   click(button);
   await intWaitFor(() => ctx.calls.some((call) => call.method === "DELETE" && call.path === `${ctx.d}/scene-overlay`));
   await settle();
   const response = ctx.calls.find((call) => call.method === "DELETE" && call.path === `${ctx.d}/scene-overlay`);
+  assert.ok(response);
   assert.equal(response.status, fail ? 503 : 200);
   if (fail) {
     assert.equal(second.childNodes[0].textContent, prefix, "A6: the choice prefix is unchanged on failure");
@@ -14815,12 +14824,13 @@ test(`gate r3 A7: real ${control} applies before withheld HTTP body; ${lang} tim
   applyDefaultAnswer(await request("PUT", `${ctx.d}/scene`, {resource:"device:ulanzi-t",body:{scene:null}}));
   if (control === "brightness") applyDefaultAnswer(await request("PUT", `${ctx.d}/brightness`, {resource:"device:ulanzi-t",body:{override:30}}));
   const bridge = globalThis.fetch;
-  let release;
+  let release = () => {};
+  let held = false;
   globalThis.fetch = async (input, init) => {
     const response = await bridge(input, init);
     if (String(input) === `${ctx.d}/${control}` && init?.method === "PUT") {
       const actualBody = await response.text();
-      response.text = () => new Promise((resolve) => { release = () => resolve(actualBody); });
+      Object.defineProperty(response, "text", {value: () => new Promise((resolve) => { held = true; release = () => resolve(actualBody); })});
     }
     return response;
   };
@@ -14831,7 +14841,7 @@ test(`gate r3 A7: real ${control} applies before withheld HTTP body; ${lang} tim
     t.mock.timers.enable({apis:["setTimeout"]});
     if (control === "mode") click(root.querySelector('[data-act="mode"][data-mode="pause"]'));
     else typeInto(root.querySelector('input[type="range"]'), "70", "change");
-    await intWaitFor(() => release);
+    await intWaitFor(() => held);
     // Bootstrap carries the actual measurement while the write's HTTP body
     // is still withheld. This is the same store admission used for SSE.
     applyDefaultAnswer(await request("GET", "/api/v2/bootstrap", {resource:"bootstrap"}));
@@ -14865,6 +14875,7 @@ test("gate r3 A7: real refusals retain their action label; every timeout label n
   const { failureMessage } = await import("../../web/js/format.js");
   let refusal;
   try { await request("PUT", `${ctx.d}/mode`, {resource:"device:ulanzi-t",body:{mode:"invalid"}}); } catch (error) { refusal = error; }
+  assert.ok(refusal instanceof ApiError);
   assert.equal(refusal.status, 400);
   for (const lang of ["en", "de"]) {
     document.documentElement.setAttribute("lang", lang);
@@ -14889,20 +14900,21 @@ test(`gate r3 A8: terminal old-life ${refused ? "refusal" : "success"} retires o
     const response = await bridge(input, init);
     if (String(input) === `${ctx.d}/mode` && init?.method === "PUT") {
       const body = await response.text();
-      response.text = () => new Promise((resolve) => { releases.push(() => resolve(body)); });
+      Object.defineProperty(response, "text", {value: () => new Promise((resolve) => { releases.push(() => resolve(body)); })});
     }
     return response;
   };
   t.after(() => { globalThis.fetch = bridge; for (const release of releases) release(); });
   const oldView = ctx.store.getState().devices.get("ulanzi-t");
   const key = ops.deviceSlot("mode", oldView);
+  /** @type {string[]} */
   const effects = [];
-  const send = (mode) => async () => applyDefaultAnswer(await request("PUT", `${ctx.d}/mode`, {resource:"device:ulanzi-t",body:{mode}}));
+  const send = (/** @type {string} */ mode) => async () => applyDefaultAnswer(await request("PUT", `${ctx.d}/mode`, {resource:"device:ulanzi-t",body:{mode}}));
   const old = ops.follow(key, send(refused ? "invalid" : "pause"), {device:"ulanzi-t",done:() => {effects.push("old");},failed:() => {effects.push("old failure");}}).catch((error) => error);
   await intWaitFor(() => releases.length === 1);
   const raw = await request("GET", "/api/v2/config/raw", {resource:"config"});
   const config = JSON.parse(raw.body.text);
-  config.devices = config.devices.filter((device) => device.name !== "ulanzi-t");
+  config.devices = config.devices.filter((/** @type {any} */ device) => device.name !== "ulanzi-t");
   await request("PUT", "/api/v2/config/raw", {resource:"config",body:{text:JSON.stringify(config)}});
   await request("POST", "/api/v2/devices", {resource:"device:ulanzi-t",body:{name:"ulanzi-t",type:"ulanzi",ip:ctx.awtrix.address}});
   applyDefaultAnswer(await request("GET", "/api/v2/bootstrap", {resource:"bootstrap"}));

@@ -34,7 +34,7 @@ export function failureMessage(message, prefix = "") {
   const timeout = /pixdcon did not answer within (\d+) s\.|pixdcon hat innerhalb von (\d+) s nicht geantwortet\./.exec(message);
   if (timeout) {
     const seconds = timeout[1] ?? timeout[2];
-    return globalThis.document?.documentElement?.getAttribute("lang")?.toLowerCase().startsWith("de")
+    return /** @type {any} */ (globalThis).document?.documentElement?.getAttribute("lang")?.toLowerCase().startsWith("de")
       ? `Nicht bestätigt: pixdcon hat innerhalb von ${seconds} s nicht geantwortet.`
       : `Not confirmed: pixdcon did not answer within ${seconds} s.`;
   }

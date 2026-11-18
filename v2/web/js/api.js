@@ -148,7 +148,7 @@ function bound(outer) {
 }
 
 /**
- * @param {"GET"|"POST"|"PUT"|"PATCH"|"DELETE"} method
+ * @param {"GET"|"HEAD"|"POST"|"PUT"|"PATCH"|"DELETE"} method
  * @param {string} path e.g. "/api/v2/devices/pixoo-159/scene"
  * @param {object} options
  * @param {string} options.resource what the answer is about (see Answer)
