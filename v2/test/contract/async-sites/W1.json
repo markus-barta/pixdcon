@@ -523,7 +523,7 @@
       "test": "test/contract/overlay-rules.test.js: overlay rule 10 "
     },
     {
-      "site": "src/overlay/overlay-service.js:839",
+      "site": "src/overlay/overlay-service.js:846",
       "id": "work:this.deps.mqtt.publish#1",
       "input": "explicit whole-blob or granular clear publish outcome",
       "metadata": "API command; current output permission and gateway connection",
@@ -532,7 +532,7 @@
       "was": "OverlayService.clear"
     },
     {
-      "site": "src/overlay/overlay-service.js:937",
+      "site": "src/overlay/overlay-service.js:944",
       "id": "work:this.deps.mqtt.publish#2",
       "input": "explicit v1 scene overlay write publish outcome",
       "metadata": "API command; current output permission and gateway connection",
@@ -541,7 +541,7 @@
       "was": "OverlayService.publishSceneOverlay"
     },
     {
-      "site": "src/overlay/overlay-service.js:1085",
+      "site": "src/overlay/overlay-service.js:1092",
       "id": "work:this.deps.mqtt.publish#3",
       "input": "scene reducer clear/blob-rewrite publish result",
       "metadata": "reducer write number, choice generations, captured connection",
@@ -549,7 +549,7 @@
       "test": "test/contract/overlay-rules.test.js: overlay service and scene layers:"
     },
     {
-      "site": "src/overlay/overlay-service.js:1086",
+      "site": "src/overlay/overlay-service.js:1093",
       "id": "then:this.deps.mqtt?.publish().then#1",
       "input": "scene reducer clear/blob-rewrite publish result",
       "metadata": "reducer write number, choice generations, captured connection",
@@ -558,7 +558,7 @@
       "was": "OverlayService.applySupersede"
     },
     {
-      "site": "src/overlay/overlay-service.js:1131",
+      "site": "src/overlay/overlay-service.js:1138",
       "id": "timer:this.deps.clock.sleep#1",
       "input": "300 ms change-notice debounce expires or is cancelled",
       "metadata": "exact debounce AbortController and active service",
@@ -566,7 +566,7 @@
       "test": "test/contract/overlay-rules.test.js: overlay rule 26 "
     },
     {
-      "site": "src/overlay/overlay-service.js:1131",
+      "site": "src/overlay/overlay-service.js:1138",
       "id": "then:this.deps.clock.sleep().then#1",
       "input": "300 ms change-notice debounce expires or is cancelled",
       "metadata": "exact debounce AbortController and active service",
@@ -574,7 +574,7 @@
       "test": "test/contract/overlay-rules.test.js: overlay rule 26 "
     },
     {
-      "site": "src/overlay/overlay-service.js:1185",
+      "site": "src/overlay/overlay-service.js:1192",
       "id": "work:this.deps.mqtt.publish#4",
       "input": "mirror own-write result",
       "metadata": "unique mirror write number, key and captured connection",

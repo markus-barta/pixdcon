@@ -2,7 +2,7 @@
   "owner": "W2",
   "rows": [
     {
-      "site": "web/js/api.js:130",
+      "site": "web/js/api.js:131",
       "id": "timer:setTimeout#1",
       "input": "the time bound of one request (REQUEST_TIMEOUT_MS, 15 s), of request and requestFrame",
       "metadata": "the request it was armed for; it is cleared when that request is done",
@@ -11,7 +11,7 @@
       "test": "test/contract/client.test.js: r3 api (rule 4):"
     },
     {
-      "site": "web/js/api.js:186",
+      "site": "web/js/api.js:187",
       "id": "fetch:fetch#1",
       "input": "the answer of a request: status and JSON body",
       "metadata": "generation of the request for its resource (beginRequest, or openSource for the bootstrap), taken before it is sent; epoch and seq of X-Pixdcon-Position",
@@ -20,7 +20,7 @@
       "was": "api.request"
     },
     {
-      "site": "web/js/api.js:272",
+      "site": "web/js/api.js:273",
       "id": "fetch:fetch#2",
       "input": "the last frame of one display as bytes (GET /api/v2/devices/<name>/preview)",
       "metadata": "generation of the request for \"frame:<device>\", taken before it is sent; the page epoch and the incarnation of the device when it was sent",
@@ -89,7 +89,7 @@
       "test": "test/contract/client.test.js: r3 sweep (Overlays, rule 5):"
     },
     {
-      "site": "web/js/components/settings-form.js:973",
+      "site": "web/js/components/settings-form.js:994",
       "id": "listener:host.addEventListener(\"input\")#1",
       "input": "a setting value typed",
       "metadata": "a command of the user (a click, a key, a form); every edit takes the next number of the page's draft counter (view/drafts.js), its identity",
@@ -98,7 +98,7 @@
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:974",
+      "site": "web/js/components/settings-form.js:995",
       "id": "listener:host.addEventListener(\"change\")#1",
       "input": "a checkbox, choice or colour changed",
       "metadata": "a command of the user (a click, a key, a form); every edit takes the next number of the page's draft counter",
@@ -107,7 +107,7 @@
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:975",
+      "site": "web/js/components/settings-form.js:996",
       "id": "listener:host.addEventListener(\"click\")#1",
       "input": "Save, Revert, Clear N overlays, Reset to default, Retry",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -212,7 +212,7 @@
       "test": "test/contract/client.test.js: client settings form:"
     },
     {
-      "site": "web/js/ops.js:341",
+      "site": "web/js/ops.js:342",
       "id": "then:outcome.then#1",
       "input": "the outcome of every operation of the pages: a user action, a load, a retry or a cleanup, success or failure",
       "metadata": "the slot of the operation (the identity it acts on: device with epoch and incarnation, scene, control, editor, page) and the token it took when it started",
@@ -436,7 +436,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/ops.js:141",
+      "site": "web/js/ops.js:142",
       "id": "subscribe:subscribe#1",
       "input": "a newer streamed config resource position in the current run",
       "metadata": "resource position, stream sequence and snapshot floor; observation generation and active page subscription",
@@ -444,7 +444,7 @@
       "test": "test/contract/client.test.js: r4 harness: B1a r5 deferred resource replacement"
     },
     {
-      "site": "web/js/ops.js:154",
+      "site": "web/js/ops.js:155",
       "id": "timer:queueMicrotask#1",
       "input": "coalesced resource replacement after the current publication/input turn",
       "metadata": "captured epoch and observation generation; active subscription; page eligibility",
@@ -452,7 +452,7 @@
       "test": "test/contract/client.test.js: r4 harness: B1a r5 deferred resource replacement"
     },
     {
-      "site": "web/js/ops.js:334",
+      "site": "web/js/ops.js:335",
       "id": "subscribe:subscribe#2",
       "input": "store changes while a retiring operation owns a pending or completed slot",
       "metadata": "captured slot token and immutable owner; retireOnChange opt-in and the slot identity projection",
