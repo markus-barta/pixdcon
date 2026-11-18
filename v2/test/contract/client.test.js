@@ -12397,10 +12397,28 @@ const R5_B2_LIFE_REMOVAL = /** @type {Array<[string, string]>} */ ([
  * The export exists only in this test module copy; no product hook is added.
  * @param {boolean} [mutant] */
 async function r5B2OwnerModule(mutant = false) {
-  return r5Module("pages/device.js", [
+  const url = await r4Mutant("pages/device.js", [
     ["let sliding = null;", "let sliding = null;\nexport const __b2SliderOwner = () => sliding;"],
     ...(mutant ? /** @type {Array<[string, string]>} */ ([["if (key) sliding = { key, level: Number(target.value) };", "void key;"]]) : []),
   ]);
+  let src = Buffer.from(url.split(",")[1], "base64").toString("utf8");
+  // Keep the frozen neutral native-operation/request adapters on this probe
+  // copy too: its primary slot must come from its executed work, not a busy
+  // slot fallback. Only the extra read-only intent export differs.
+  const file = "web/js/pages/device.js", functions = r4xFunctions(r4xCodeOnly(src));
+  /** @type {Array<{at: number, end: number, text: string}>} */ const edits = [];
+  r8Walk(r8Syntax(src), (node) => {
+    if (node.type === "CallExpression" && node.callee.name === "start")
+      edits.push({ at: node.callee.start, end: src.indexOf("(", node.callee.end) + 1, text: "globalThis.__r8Operation(start, " });
+  });
+  for (const call of r8RequestSites([{ file, src }]).filter((call) => !call.frame)) {
+    const fn = functions.filter((fn) => fn.start <= call.at && call.at <= fn.end).sort((a, b) => a.end - a.start - (b.end - b.start))[0];
+    assert.ok(fn, "B2 owner probe: each actual request has a source function");
+    const origin = { file, fn: fn.name, anchor: src.slice(fn.start, fn.end + 1).replace(/\s+/g, " "), call: call.call, site: call.site, callee: call.callee };
+    edits.push({ at: call.at, end: src.indexOf("(", call.at + call.callee.length) + 1, text: `globalThis.__r7Request(${JSON.stringify(origin)}, ${call.callee}, ` });
+  }
+  for (const edit of edits.sort((a, b) => b.at - a.at)) src = src.slice(0, edit.at) + edit.text + src.slice(edit.end);
+  return import(`data:text/javascript;base64,${Buffer.from(src).toString("base64")}`);
 }
 
 /** Complete the old native operation before enabled slider input. Equal-value
@@ -12426,6 +12444,8 @@ async function r5B2OwnerCase(t, name, module, slides = false) {
         assert.match(owner.key, /^brightness:d1@/, "B2 slider owner: the intent belongs to the native brightness slot");
         if (ctx.issuedOp) {
           assert.equal(ctx.issuedOp.answered, true, "B2 slider owner: the old operation already finished");
+          assert.equal(ctx.issuedOp.origin.slotKey, ctx.slotKey, "B2 slider owner: the executed request captured its actual native key");
+          assert.equal(ctx.issuedOp.origin.slotToken, r4State().ops.get(ctx.slotKey)?.token, "B2 slider owner: the native generation is from its actual work");
           assert.equal(r4State().ops.get(ctx.slotKey)?.busy, false, "B2 slider owner: its native slot is free before new input");
         }
         previous = owner;
