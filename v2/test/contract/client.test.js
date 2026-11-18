@@ -7115,6 +7115,7 @@ test("r4 harness self-test: a Health page that asks again in a new run but keeps
   const keeping = (
     await import(
       await r4Mutant("pages/health.js", [
+        ["const unobserve = observeResource(null, loadLog);", "const unobserve = () => {};"],
         ['let copied = "";', 'let copied = "";\n/** @type {any[]} */\nlet r4Kept = [];'],
         [
           'followOp("log", async () => applyAnswer(await request("GET", "/api/v2/log", { resource: "log" })), {',
