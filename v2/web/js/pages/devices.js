@@ -18,7 +18,7 @@
  * second start is ignored before anything is said (B-176), and its outcome
  * is shown only while it is the slot's current one. Answers go through the
  * store's fence. A failure stays beside its action, which stays (B-175):
- * "Not switched: …" in the select's own line, "Not restored: …" before the
+ * "Not switched: …" in the select's own line, "Not restored: …" after the
  * Restore button.
  *
  * Owner: UI worker.
@@ -203,7 +203,7 @@ function updateRow(row, view, state) {
     const failure = restoring.failure && !busy
       ? `<span class="fail">${icon("alert")}${esc(`Not restored: ${restoring.failure}`)}</span>`
       : "";
-    second = `${failure ? "" : esc(lines.second.text)} <button class="link rw" type="button" data-act="restore"${disabled ? " disabled" : ""}${busy ? ' aria-busy="true"' : ""}${restore.title ? ` title="${esc(restore.title)}"` : ""}><span>${busy ? working : idle}</span><span aria-hidden="true">${busy ? idle : working}</span></button>${failure ? ` ${failure}` : ""}`;
+    second = `${esc(lines.second.text)} <button class="link rw" type="button" data-act="restore"${disabled ? " disabled" : ""}${busy ? ' aria-busy="true"' : ""}${restore.title ? ` title="${esc(restore.title)}"` : ""}><span>${busy ? working : idle}</span><span aria-hidden="true">${busy ? idle : working}</span></button>${failure ? ` ${failure}` : ""}`;
   } else if (lines.second.cls === "ovr")
     second = `<span style="color:var(--ovr);display:inline-flex;align-items:center;gap:6px">${lines.second.icon ? icon(lines.second.icon) : ""}${esc(lines.second.text)}</span>`;
   else second = esc(lines.second.text);
@@ -346,7 +346,7 @@ function chooseScene(name, scene) {
  * Restore: clear the scene overlay of a row's device, in the slot of the
  * device's life, shared with the Device page's "Return to your choice".
  * While it runs the button shows "Restoring…" and takes no click (B-176);
- * a failure stands before the button, which stays to try again (B-175).
+ * a failure follows the unchanged choice and button, which stays to retry.
  *
  * @param {string} name
  */

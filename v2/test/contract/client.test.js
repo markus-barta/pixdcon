@@ -14775,3 +14775,34 @@ test(`gate r3 A5: real schema ${removed ? "removal retains a visible discardable
   assert.equal(root.querySelector('[data-removed="n"]'), null, "A5: discard only the removed edit");
   assert.equal(ctx.form.hasEdits(), false);
 });
+
+for (const fail of [false, true])
+test(`gate r3 A6: real Restore ${fail ? "failure preserves the choice and button before its error" : "success preserves normal feedback"}`, async (t) => {
+  const ctx = await intRealClient(t);
+  applyDefaultAnswer(await request("PUT", `${ctx.d}/scene`, {resource:"device:ulanzi-t",body:{scene:"contract"}}));
+  await intInject(ctx, ctx.app.topics.overlayDeviceScene("ulanzi-t"), "clock");
+  applyDefaultAnswer(await request("GET", "/api/v2/bootstrap", {resource:"bootstrap"}));
+  const page = (await r5Module("pages/devices.js")).page;
+  const root = pageRoot();
+  page.mount(root, {});
+  t.after(() => { page.unmount(); root.remove(); });
+  const button = root.querySelector('[data-name="ulanzi-t"] [data-act="restore"]') ?? root.querySelector('[data-act="restore"]');
+  assert.ok(button);
+  const second = button.closest(".src2");
+  const prefix = second.childNodes[0].textContent;
+  assert.match(prefix, /^Your choice: /);
+  if (fail) await ctx.app.modules.mqtt.stop();
+  click(button);
+  await intWaitFor(() => ctx.calls.some((call) => call.method === "DELETE" && call.path === `${ctx.d}/scene-overlay`));
+  await settle();
+  const response = ctx.calls.find((call) => call.method === "DELETE" && call.path === `${ctx.d}/scene-overlay`);
+  assert.equal(response.status, fail ? 503 : 200);
+  if (fail) {
+    assert.equal(second.childNodes[0].textContent, prefix, "A6: the choice prefix is unchanged on failure");
+    assert.match(second.textContent, /Your choice: .*Restore.*Not restored: MQTT is offline/);
+    const restore = second.querySelector('[data-act="restore"]');
+    assert.equal(restore.children[0].textContent, "Restore");
+    assert.equal(restore.disabled, false);
+    assert.equal(second.childNodes.indexOf(restore) < second.childNodes.indexOf(second.querySelector(".fail")), true);
+  } else assert.doesNotMatch(root.textContent, /Not restored/);
+});
