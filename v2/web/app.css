@@ -506,6 +506,13 @@ canvas.pv {
   line-height: 16px;
   color: var(--bad);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ferr > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .ferr:empty {
   display: none;

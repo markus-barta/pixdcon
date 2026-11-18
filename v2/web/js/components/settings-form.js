@@ -812,6 +812,7 @@ export function createSettingsForm(host, options) {
           if (parts.hex && document.activeElement !== parts.hex) parts.hex.value = String(shown ?? "");
           /** @type {HTMLInputElement} */ (parts.input).disabled = frozen;
           if (parts.error) setHtml(parts.error, bad && edit ? `${icon("alert")}<span>${esc(errorText(edit))}</span>` : "");
+          if (field.type !== "json") setAttr(parts.error, "title", bad && edit ? errorText(edit) : null);
           setAttr(parts.input, "aria-invalid", bad ? "true" : null);
           const was = "saved" in layer ? layer.saved : layer.default;
           let marker;

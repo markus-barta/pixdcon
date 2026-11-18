@@ -14497,3 +14497,87 @@ test("r4 harness self-test: B4 Config surrounding rows reject a frozen body besi
 });
 
 test("r4 harness: B4 Config surrounding rows refresh beside an unchanged saved editor", async () => r5B4ConfigSurroundingRows(await r5Module("pages/config.js"), false));
+
+/** Every refusal rule, including later overrides and its flex text child.
+ * @param {string} css
+ */
+function intw2RefusalOverflow(css) {
+  const rules = [...css.matchAll(/\.ferr(\s*>\s*span)?\s*\{([^}]+)\}/g)];
+  assert.ok(rules.some((rule) => !rule[1]), "L4 refusal: a field-error rule is present");
+  for (const [, child, declaration] of rules) {
+    const properties = new Map([...declaration.matchAll(/(?:^|;)\s*([\w-]+)\s*:\s*([^;]*)/g)].map((match) => [match[1], match[2].trim().replace(/\s*!important$/, "")]));
+    for (const [property, value] of [["overflow", "hidden"], ["text-overflow", "ellipsis"], ["min-width", "0"]])
+      assert.equal(properties.get(property), value, `L4 refusal: every ${child ? "text-child" : "field-error"} rule keeps ${property}`);
+    if (!child) assert.equal(properties.get("white-space"), "nowrap", "L4 refusal: every field-error rule stays on one line");
+  }
+  assert.ok(rules.some((rule) => rule[1]), "L4 refusal: the flex text child can shrink and show its ellipsis");
+}
+
+test("r4 harness: intw2 L4 every refusal rule clips one line with an ellipsis", () => {
+  intw2RefusalOverflow(r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8"));
+});
+test("r4 harness self-test: intw2 L4 rejects 6b0537d CSS and later overflowing rules", () => {
+  const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
+  intw2RefusalOverflow(css);
+  const previous = css
+    .replace(/(\.ferr\s*\{[^}]*?)\n {2}overflow: hidden;\n {2}text-overflow: ellipsis;/, "$1")
+    .replace("\n.ferr > span {\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}", "");
+  assert.throws(() => intw2RefusalOverflow(previous), /L4 refusal: every field-error rule keeps overflow/);
+  assert.throws(() => intw2RefusalOverflow(`${css}\n@media (max-width:760px) { .ferr { white-space:nowrap; overflow:visible; text-overflow:clip; min-width:auto; } }`), /L4 refusal: every field-error rule keeps overflow/);
+  const uncutChild = css.replace(/(\.ferr\s*>\s*span\s*\{[^}]*?)overflow: hidden;/, "$1overflow: visible;");
+  assert.throws(() => intw2RefusalOverflow(uncutChild), /L4 refusal: every text-child rule keeps overflow/);
+});
+
+/** A full long refusal remains available when its inline text is clipped.
+ * @param {any} module
+ */
+async function intw2RefusalTitle(module) {
+  await r5Form({}, module, async ({ calls, root, edit, values }) => {
+    const error = root.querySelector('[data-row="n"] .ferr');
+    assert.equal(error.getAttribute("title"), null, "L4 refusal: an idle field has no title");
+    const reason = 'value "<2>" exceeds 1 & must be reduced; '.repeat(12).trim();
+    const fullText = `pixdcon refused this value: ${reason}`;
+    await edit("2");
+    r5Previews(calls)[0].answer(200, { state: values("clock"), rejected: { n: reason } });
+    await settle();
+    assert.equal(r4Text(error), fullText, "L4 refusal: the full reason remains in the DOM");
+    assert.equal(error.getAttribute("title"), fullText, "L4 refusal: title equals the full refusal text");
+    assert.equal(root.querySelector('[data-row="m"] .ferr').getAttribute("title"), null, "L4 refusal: another field has no refusal title");
+  });
+}
+/** The previous head was already right when there is no refusal to reveal.
+ * @param {any} module
+ */
+async function intw2RefusalClear(module) {
+  await r5Form({}, module, async ({ calls, root, edit, values }) => {
+    const error = root.querySelector('[data-row="n"] .ferr');
+    assert.equal(error.getAttribute("title"), null, "L4 refusal: an idle field has no title");
+    await edit("2");
+    r5Previews(calls)[0].answer(200, { state: values("clock"), rejected: { n: "above the maximum of 1" } });
+    await settle();
+    assert.match(r4Text(error), /above the maximum of 1/);
+    await edit("3");
+    assert.equal(r4Text(error), "", "L4 refusal: a corrected field clears its refusal");
+    assert.equal(error.getAttribute("title"), null, "L4 refusal: a corrected field clears its title");
+  });
+}
+test("r4 harness: intw2 L4 long field refusal has its full title", async () => {
+  await intw2RefusalTitle(await r5Module("components/settings-form.js"));
+});
+test("r4 harness: intw2 L4 idle and corrected fields have no stale title", async () => {
+  await intw2RefusalClear(await r5Module("components/settings-form.js"));
+});
+test("r4 harness self-test: intw2 L4 title observer rejects 6b0537d missing title", async () => {
+  await intw2RefusalTitle(await r5Module("components/settings-form.js"));
+  const previous = await r5Module("components/settings-form.js", [
+    ['if (field.type !== "json") setAttr(parts.error, "title", bad && edit ? errorText(edit) : null);', "// 6b0537d: no full refusal title"],
+  ]);
+  await assert.rejects(intw2RefusalTitle(previous), /L4 refusal: title equals the full refusal text/);
+});
+test("r4 harness self-test: intw2 L4 corrected-field observer rejects a stale title", async () => {
+  await intw2RefusalClear(await r5Module("components/settings-form.js"));
+  const mutant = await r5Module("components/settings-form.js", [
+    ['setAttr(parts.error, "title", bad && edit ? errorText(edit) : null);', 'setAttr(parts.error, "title", bad && edit ? errorText(edit) : parts.error?.getAttribute("title") ?? null);'],
+  ]);
+  await assert.rejects(intw2RefusalClear(mutant), /L4 refusal: a corrected field clears its title/);
+});
