@@ -65,15 +65,33 @@ jobs:
         working-directory: v2
         run: npm run sites
 
-      - name: Test all three kinds
+      # Evidence run 44333481424: CPU contention caused timing failures while
+      # the single-file W2 client suite was still running at the 120 s deadline.
+      # Run it separately with a larger CI budget; local `npm test` is unchanged.
+      - name: Test golden, contract (except client) and smoke
         working-directory: v2
         timeout-minutes: 3
-        # GitHub-hosted runners are slower than dev machines (evidence run 44323051585).
-        # Still a hang guard; per-test --test-timeout=20000 is unchanged.
-        # Local and default runs keep 55 s; the step timeout sits above the run.js budget so run.js's own deadline report wins.
         env:
           PIXDCON2_TEST_DEADLINE_MS: "120000"
-        run: npm test
+        run: |
+          shopt -s nullglob
+          files=()
+          for file in test/golden/*.test.js test/contract/*.test.js test/smoke/*.test.js; do
+            [[ "$file" == test/contract/client.test.js ]] && continue
+            files+=("$file")
+          done
+          if (( ${#files[@]} == 0 )) || [[ " ${files[*]} " == *" test/contract/client.test.js "* ]]; then
+            echo "Invalid test file list: empty or contains the W2 client contract" >&2
+            exit 1
+          fi
+          node test/helpers/run.js "${files[@]}"
+
+      - name: Test the W2 client contract
+        working-directory: v2
+        timeout-minutes: 6
+        env:
+          PIXDCON2_TEST_DEADLINE_MS: "300000"
+        run: node test/helpers/run.js test/contract/client.test.js
 
   # PUBLIC repository: v1's exact native runner matrix, without QEMU.
   # Move this workflow to self-hosted runners BEFORE making the repo private.
