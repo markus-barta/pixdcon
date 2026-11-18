@@ -546,6 +546,8 @@ export function createSettingsForm(host, options) {
           const notCleared = answer.body?.overlaysNotCleared ?? [];
           return notCleared.length
             ? `Saved · ${notCleared.length} MQTT ${notCleared.length !== 1 ? "overlays" : "overlay"} could not be cleared`
+            : [...mine.book.edits.values()].some((edit) => edit.removed)
+              ? "Submitted settings saved · removed edits kept"
             : SAVED;
         },
         describe: (error) =>
@@ -679,16 +681,20 @@ export function createSettingsForm(host, options) {
   /** Build the rows when the schema changed; values are written by render(). */
   function buildRows() {
     const schema = current?.schema ?? {};
-    const signature = `${scope.scene}|${JSON.stringify(schema)}`;
+    const removed = [...scope.book.edits].filter(([, edit]) => edit.removed);
+    const signature = `${scope.scene}|${JSON.stringify(schema)}|${JSON.stringify(removed)}`;
     if (signature === schemaSignature) return;
     schemaSignature = signature;
     rows = new Map();
-    const html = groupsOf(schema)
+    let html = groupsOf(schema)
       .map(
         ({ group, keys }) =>
           `<div class="grp"><h3>${esc(group)}</h3>${keys.map((key) => rowHtml(key, schema[key])).join("")}</div>`,
       )
       .join("");
+    if (removed.length) html += `<div class="grp"><h3>Removed settings · edits kept</h3>${removed.map(([key, edit]) =>
+      `<div class="fr" data-removed="${esc(key)}"><label>${esc(key)}</label><div class="ctl"><output class="mono">${esc(edit.raw)}</output> <button class="link" type="button" data-act="discard" data-key="${esc(key)}">Discard edit</button></div><div class="mk"><span class="warn">Removed from schema · not previewed or saved</span></div></div>`,
+    ).join("")}</div>`;
     // Through setHtml, so its record of what the body shows stays true: the
     // loading line of the same scene, after a restart, is written again.
     setHtml(body, html);
@@ -795,12 +801,14 @@ export function createSettingsForm(host, options) {
       );
     } else if (current) {
       const keys = Object.keys(current.schema ?? {});
-      if (keys.length === 0) {
+      if (keys.length === 0 && ![...edits.values()].some((edit) => edit.removed)) {
         schemaSignature = "";
         rows = new Map();
         setHtml(body, "");
       } else {
         buildRows();
+        for (const button of body.querySelectorAll('[data-act="discard"]'))
+          /** @type {HTMLButtonElement} */ (button).disabled = frozen;
         for (const [key, parts] of rows) {
           const field = current.schema[key];
           const layer = current.values?.[key] ?? {};
@@ -863,7 +871,7 @@ export function createSettingsForm(host, options) {
         `<button class="btn" type="button" data-act="clear"${disabled || busy ? " disabled" : ""} title="${esc(reason)}">${busy === "clear" ? `${icon("spinner")}Clearing…` : `${icon("x")}Clear ${overlays} ${overlays === 1 ? "overlay" : "overlays"}`}</button>`,
       );
     } else setHtml(clearSlot, "");
-    if ((changes > 0 || serverPreview > 0 || busy === "revert") && phase === "ready")
+    if ((edits.size > 0 || changes > 0 || serverPreview > 0 || busy === "revert") && phase === "ready")
       setHtml(
         revertSlot,
         `<button class="btn" type="button" data-act="revert"${busy || frozen ? " disabled" : ""} title="Puts the display back to the saved values">${busy === "revert" ? `${icon("spinner")}Reverting…` : `${icon("undo")}Revert`}</button>`,
@@ -891,7 +899,7 @@ export function createSettingsForm(host, options) {
     else if (phase === "builtin") line = { text: "This scene has no settings", cls: "" };
     else if (phase === "loading") line = { text: "", cls: "" };
     else if (phase === "failed") line = { text: "", cls: "" };
-    else if (current && Object.keys(current.schema ?? {}).length === 0)
+    else if (current && Object.keys(current.schema ?? {}).length === 0 && edits.size === 0)
       line = { text: "This scene has no settings", cls: "" };
     // Every failure is said beside the action (B-175), also while edits
     // are unsaved: a failed Save, Revert or Clear (kept in the scope's
@@ -906,6 +914,8 @@ export function createSettingsForm(host, options) {
     else if ([...edits.values()].some((edit) => edit.previewApplied === false))
       line = { text: "Changes not previewed · not saved; pixdcon kept its previous settings", cls: "warn" };
     else if (action.note && changes === 0) line = { text: action.note, cls: "" };
+    else if (changes === 0 && edits.size > 0)
+      line = { text: "Removed setting edits kept below · not previewed or saved", cls: "warn" };
     else if (changes > 0 || serverPreview > 0) {
       const n = Math.max(changes, serverPreview);
       line = {
@@ -972,6 +982,12 @@ export function createSettingsForm(host, options) {
         preview();
         break;
       }
+      case "discard":
+        scope.book.discard(String(button.dataset.key));
+        clearNote(actionKey(scope));
+        render();
+        preview();
+        break;
     }
   }
 
@@ -1029,6 +1045,7 @@ export function createSettingsForm(host, options) {
         const previousDefinition = current?.schema ? JSON.stringify(current.schema) : null;
         current = settingsState;
         phase = "ready";
+        scope.book.reconcile(current.schema ?? {});
         if (previousDefinition !== null && previousDefinition !== JSON.stringify(current.schema) && scope.book.edits.size > 0) {
           scope.book.revalidate();
           scope.previewFailure = null;

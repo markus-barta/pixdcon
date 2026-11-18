@@ -14730,3 +14730,48 @@ test(`gate r3 A4: real held explanation uses exact device ${kind}`, async (t) =>
     assert.doesNotMatch(model.deviceCondition({...state,overlays:unrelated}, device).text, /127\.0\.0\.1:19/);
   }
 });
+
+for (const removed of [false, true])
+test(`gate r3 A5: real schema ${removed ? "removal retains a visible discardable edit and saves remaining fields" : "retains current fields"}`, async (t) => {
+  const ctx = await intRealForm(t);
+  const { root, calls, s, app } = ctx;
+  typeInto(root.querySelector('[data-key="n"]'), "7");
+  await intWaitFor(() => calls.some((call) => call.path === `${s}/preview`));
+  await settle();
+  if (!removed) {
+    assert.equal(root.querySelector('[data-key="n"]').value, "7");
+    assert.equal(root.querySelector('[data-act="save"]').disabled, false);
+    return;
+  }
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(app.modules.scenes.fileOf("contract"), 'export default {deviceType:"ulanzi",settingsSchema:{m:{type:"int",default:1}},render(){return 1000;}};');
+  await app.modules.scenes.refresh(["contract"]);
+  const before = calls.length;
+  applyDefaultAnswer(await request("GET", s, {resource:"settings:ulanzi-t/contract"}));
+  await intWaitFor(() => calls.slice(before).some((call) => call.path === `${s}/preview`));
+  await settle();
+  const orphan = root.querySelector('[data-removed="n"]');
+  assert.ok(orphan, "A5: the removed field's edit stays visible");
+  assert.match(orphan.textContent, /7.*Discard edit.*not previewed or saved/);
+  for (const call of calls.slice(before).filter((call) => call.path === `${s}/preview`))
+    assert.equal(Object.hasOwn(call.body.values, "n"), false, "A5: never preview a removed key");
+  assert.equal(root.querySelector('[data-act="save"]').disabled, true, "A5: no empty Save acknowledged");
+  typeInto(root.querySelector('[data-key="m"]'), "8");
+  await intWaitFor(() => calls.some((call) => call.path === `${s}/preview` && call.body.values.m === 8));
+  await settle();
+  assert.equal(root.querySelector('[data-act="save"]').disabled, false, "A5: a retained edit cannot block visible valid edits");
+  click(root.querySelector('[data-act="save"]'));
+  await intWaitFor(() => calls.some((call) => call.path === s && call.method === "PUT"));
+  await settle();
+  const save = calls.find((call) => call.path === s && call.method === "PUT");
+  assert.deepEqual(save.body.set, {m:8});
+  assert.deepEqual(save.body.reset, []);
+  assert.equal(save.status, 200);
+  assert.equal(app.modules.settings.state("ulanzi-t", "contract").values.m.saved, 8);
+  assert.equal(ctx.form.hasEdits(), true, "A5: Save keeps the excluded edit");
+  assert.ok(root.querySelector('[data-removed="n"]'));
+  click(root.querySelector('[data-removed="n"] [data-act="discard"]'));
+  await settle();
+  assert.equal(root.querySelector('[data-removed="n"]'), null, "A5: discard only the removed edit");
+  assert.equal(ctx.form.hasEdits(), false);
+});

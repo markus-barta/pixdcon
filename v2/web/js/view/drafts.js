@@ -36,6 +36,7 @@
  * @property {string} [error] why it does not parse, or why pixdcon rejected it; such an edit is never previewed or saved
  * @property {boolean} [refused] the error is pixdcon's reason: the preview's answer refused the value (Tick Q2: "pixdcon refused this value: <reason>")
  * @property {boolean} [previewApplied] the server's verdict on this submitted edit; false keeps the edit without claiming it is displayed
+ * @property {boolean} [removed] the current schema no longer owns this key; retain it for individual discard, never submit it
  * @property {number} draft the draft number of this edit: its identity
  */
 
@@ -66,6 +67,17 @@ export function createDraftBook() {
           delete edit.error;
           delete edit.refused;
         }
+    },
+    /** @param {Record<string, unknown>} schema */
+    reconcile(schema) {
+      for (const [key, edit] of edits) edit.removed = !Object.hasOwn(schema, key);
+    },
+    /** @param {string} key a removed field's retained edit */
+    discard(key) {
+      if (!edits.get(key)?.removed) return;
+      draft = ++pageDraft;
+      edits.delete(key);
+      resets.delete(key);
     },
     /**
      * A field changed.
@@ -98,11 +110,11 @@ export function createDraftBook() {
     },
     /** @returns {Array<[string, Edit]>} the edits that do not parse */
     errors() {
-      return [...edits].filter(([, edit]) => edit.error !== undefined);
+      return [...edits].filter(([, edit]) => !edit.removed && edit.error !== undefined);
     },
     /** @returns {number} unsaved changes: edits and resets */
     changes() {
-      return edits.size + [...resets].filter((key) => !edits.has(key)).length;
+      return [...edits.values()].filter((edit) => !edit.removed).length + [...resets].filter((key) => !edits.has(key)).length;
     },
     /**
      * The body of PUT …/preview: the newest draft and every edit that parses.
@@ -125,7 +137,7 @@ export function createDraftBook() {
       /** @type {Map<string, number>} */
       const sent = new Map();
       for (const [key, edit] of edits)
-        if (edit.error === undefined) {
+        if (!edit.removed && edit.error === undefined) {
           values[key] = edit.value;
           sent.set(key, edit.draft);
         }
@@ -169,11 +181,12 @@ export function createDraftBook() {
       /** @type {Map<string, number>} */
       const committed = new Map();
       for (const [key, edit] of edits) {
+        if (edit.removed) continue;
         committed.set(key, edit.draft);
         if (!resets.has(key)) set[key] = edit.value;
       }
       return {
-        body: { set, reset: [...resets], ...(session ? { session, draft } : {}) },
+        body: { set, reset: [...resets].filter((key) => !edits.get(key)?.removed), ...(session ? { session, draft } : {}) },
         committed,
       };
     },
