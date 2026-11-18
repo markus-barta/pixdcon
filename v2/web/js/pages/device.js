@@ -27,7 +27,7 @@ import { createPixelPreview } from "../components/pixel-preview.js";
 import { openRecoveryDialog } from "../components/recovery-dialog.js";
 import { createSettingsForm, failedEnds, retryEnd } from "../components/settings-form.js";
 import { dot, icon, setAttr, setClass, setHtml } from "../dom.js";
-import { esc, percent, topicHtml } from "../format.js";
+import { esc, failureMessage, percent, topicHtml } from "../format.js";
 import { getSession } from "../session.js";
 import { deviceSlot, forgetIdle, op, start } from "../ops.js";
 import { applyAnswer, getState, subscribe } from "../store.js";
@@ -304,7 +304,7 @@ function draw(state) {
   const ended = failedEnds(view)[0];
   const sub = q(".dev-head .sub");
   if (ended) {
-    const text = `Settings preview of ${sceneName(state, ended.scene, view.type)} not ended: ${ended.failure}`;
+    const text = failureMessage(ended.failure, `Settings preview of ${sceneName(state, ended.scene, view.type)} not ended`);
     setClass(sub, "sub warn");
     setHtml(
       sub,
@@ -376,7 +376,7 @@ function draw(state) {
     setHtml(modeHint, `${icon("spinner")} ${esc(moding.label)}`);
   } else if (moding.failure) {
     setClass(modeHint, "hint mode-hint");
-    setHtml(modeHint, `<span style="color:var(--bad)">Not changed: ${esc(moding.failure)}</span>`);
+    setHtml(modeHint, `<span style="color:var(--bad)">${esc(failureMessage(moding.failure, "Not changed"))}</span>`);
   } else if (mode.source === "mqtt") {
     setClass(modeHint, "hint mode-hint ovr");
     setHtml(modeHint, `Set by an MQTT overlay since ${esc(new Date(mode.since).toTimeString().slice(0, 8))}. Pause holds the current frame; Stop blanks the display.`);
@@ -411,7 +411,7 @@ function draw(state) {
     setHtml(briHint, `${icon("spinner")} ${esc(briOp.label)}`);
   } else if (briOp.failure) {
     setClass(briHint, "hint bri-hint");
-    setHtml(briHint, `<span style="color:var(--bad)">Not changed: ${esc(briOp.failure)}</span>`);
+    setHtml(briHint, `<span style="color:var(--bad)">${esc(failureMessage(briOp.failure, "Not changed"))}</span>`);
   } else if (override !== null) {
     setClass(briHint, "hint bri-hint ovr");
     setHtml(
@@ -528,7 +528,7 @@ function draw(state) {
   let below = "";
   if (switching.busy) below = `${icon("spinner")}${esc(switching.label)}`;
   else if (switching.failure)
-    below = `<span style="color:var(--bad);display:flex;align-items:center;gap:6px">${icon("alert")}Not switched: ${esc(switching.failure)}</span>`;
+    below = `<span style="color:var(--bad);display:flex;align-items:center;gap:6px">${icon("alert")}${esc(failureMessage(switching.failure, "Not switched"))}</span>`;
   else if (scene.source === "ui" && choice.persisted === false && choice.notSavedReason === "config_invalid")
     below = `<span style="color:var(--warn);display:flex;align-items:center;gap:6px">${icon("alert")}Not saved: ${esc(state.config?.error?.message ?? "config.json is not valid JSON")}. The display switched anyway.</span>`;
   else if (!showing) below = "Choose a scene to start drawing on this display.";
@@ -573,7 +573,7 @@ function draw(state) {
     setHtml(
       slot,
       copying.failure
-        ? `<span style="color:var(--bad)">Not copied: ${esc(copying.failure)}</span>`
+        ? `<span style="color:var(--bad)">${esc(failureMessage(copying.failure, "Not copied"))}</span>`
         : esc(copying.note ?? ""),
     );
   }

@@ -18,7 +18,7 @@
 import { request } from "../api.js";
 import { deviceSlot, op, start } from "../ops.js";
 import { icon, setHtml } from "../dom.js";
-import { clock, esc } from "../format.js";
+import { clock, esc, failureMessage } from "../format.js";
 import { applyAnswer, getState } from "../store.js";
 import { deviceTitle, typeLabel } from "../view/model.js";
 
@@ -88,7 +88,7 @@ export function openRecoveryDialog(device, opener) {
     const note = q(".retry-note");
     if (retrying.failure) {
       note.style.color = "var(--bad)";
-      note.textContent = `Not retried: ${retrying.failure}`;
+      note.textContent = failureMessage(retrying.failure, "Not retried");
     } else {
       note.style.color = "";
       note.textContent = "Retry wakes the render loop and re-initialises the display.";

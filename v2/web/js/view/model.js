@@ -18,7 +18,7 @@
  * Owner: UI worker.
  */
 
-import { ago, clock, clockShort, duration, percent } from "../format.js";
+import { ago, clock, clockShort, duration, failureMessage, percent } from "../format.js";
 
 /** @typedef {import("../store.js").ClientState} ClientState */
 
@@ -639,7 +639,7 @@ export function deviceCondition(state, view, local = {}) {
  * @returns {string}
  */
 export function previewFailureText(message) {
-  return `Settings not previewed: ${message}`;
+  return failureMessage(message, "Settings not previewed");
 }
 
 /**

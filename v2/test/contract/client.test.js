@@ -1767,7 +1767,7 @@ test("r3 api (rule 4): a request that gets no answer fails after 15 s with code 
   t.mock.timers.tick(15_000);
   const error = await outcome;
   assert.ok(error instanceof ApiError);
-  assert.deepEqual([error.code, error.message], ["timeout", "pixdcon did not answer within 15 s."]);
+  assert.deepEqual([error.code, error.message], ["timeout", "Not confirmed: pixdcon did not answer within 15 s."]);
   assert.equal(isBusy("mode:test"), false, "the key is free again");
   await drain(calls);
 });
@@ -1936,7 +1936,7 @@ test("r3 gate Q5 (time bound): an end that gets no answer fails after 15 s with 
     const next = previewOf(calls)[1];
     assert.ok(next, "after the time bound the waiting preview leaves");
     assert.deepEqual(next.body.values, { n: 6 });
-    assert.match(titleLine(root).textContent, /Settings preview of Clock not ended: pixdcon did not answer within 15 s\./);
+    assert.match(titleLine(root).textContent, /Not confirmed: pixdcon did not answer within 15 s\./);
     assert.ok(titleLine(root).querySelector('[data-act="end-retry"]'), "with Retry");
     next.answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 4, effective: { n: 6 }, preview: { session: "s1", draft: next.body.draft } }), rejected: {}, applied: true }, `${epoch}-14`);
     await settle();
@@ -8397,7 +8397,7 @@ test("r4 harness self-test: brightness feedback cached by old work is observed i
       const kind = r4KindOf("device brightness range");
       assert.deepEqual(await r4Case(t, kind, change, end), []);
       const differences = await r4Case(t, kind, change, end, { modules: { device } });
-      assert.ok(differences.some((d) => /brightness feedback.*Not changed/.test(d)), differences.join("\n"));
+      assert.ok(differences.some((d) => /brightness feedback.*(?:Not changed|Not confirmed)/.test(d)), differences.join("\n"));
       const view = r4State().devices.get("d1");
       const current = [...r4State().ops].filter(([key]) => key === `brightness:d1@${view.epoch}/${view.incarnation}`);
       assert.equal(current.filter(([, slot]) => slot.failure).length, 0, "no retained failure in the new owner's brightness slot explains the hint");
@@ -14806,3 +14806,73 @@ test(`gate r3 A6: real Restore ${fail ? "failure preserves the choice and button
     assert.equal(second.childNodes.indexOf(restore) < second.childNodes.indexOf(second.querySelector(".fail")), true);
   } else assert.doesNotMatch(root.textContent, /Not restored/);
 });
+
+for (const lang of ["en", "de"])
+for (const control of ["mode", "brightness"])
+test(`gate r3 A7: real ${control} applies before withheld HTTP body; ${lang} timeout stays unconfirmed at 15 s`, async (t) => r6Browser(async ({ document }) => {
+  document.documentElement.setAttribute("lang", lang);
+  const ctx = await intRealClient(t);
+  applyDefaultAnswer(await request("PUT", `${ctx.d}/scene`, {resource:"device:ulanzi-t",body:{scene:null}}));
+  if (control === "brightness") applyDefaultAnswer(await request("PUT", `${ctx.d}/brightness`, {resource:"device:ulanzi-t",body:{override:30}}));
+  const bridge = globalThis.fetch;
+  let release;
+  globalThis.fetch = async (input, init) => {
+    const response = await bridge(input, init);
+    if (String(input) === `${ctx.d}/${control}` && init?.method === "PUT") {
+      const actualBody = await response.text();
+      response.text = () => new Promise((resolve) => { release = () => resolve(actualBody); });
+    }
+    return response;
+  };
+  const page = (await r5Module("pages/device.js")).page;
+  const root = pageRoot();
+  page.mount(root, {name:"ulanzi-t"});
+  try {
+    t.mock.timers.enable({apis:["setTimeout"]});
+    if (control === "mode") click(root.querySelector('[data-act="mode"][data-mode="pause"]'));
+    else typeInto(root.querySelector('input[type="range"]'), "70", "change");
+    await intWaitFor(() => release);
+    // Bootstrap carries the actual measurement while the write's HTTP body
+    // is still withheld. This is the same store admission used for SSE.
+    applyDefaultAnswer(await request("GET", "/api/v2/bootstrap", {resource:"bootstrap"}));
+    const measured = () => ctx.store.getState().devices.get("ulanzi-t").desired[control];
+    assert.equal(control === "mode" ? measured().value : measured().override, control === "mode" ? "pause" : 70);
+    const ops = await import("../../web/js/ops.js");
+    const key = ops.deviceSlot(control, ctx.store.getState().devices.get("ulanzi-t"));
+    t.mock.timers.tick(14999);
+    await settle();
+    assert.equal(ops.op(key).busy, true, "A7: the request still owns its slot before 15 s");
+    t.mock.timers.tick(1);
+    await settle();
+    assert.equal(ops.op(key).busy, false, "A7: the existing 15 s deadline releases the operation");
+    assert.equal(isBusy(key), false);
+    const hint = root.querySelector(control === "mode" ? ".mode-hint" : ".bri-hint");
+    const expected = lang === "de" ? "Nicht bestätigt: pixdcon hat innerhalb von 15 s nicht geantwortet." : "Not confirmed: pixdcon did not answer within 15 s.";
+    assert.equal(hint.textContent, expected, "A7: a timeout never claims Not changed");
+    assert.doesNotMatch(hint.textContent, /Not changed|Nicht geändert/);
+    const before = hint.textContent;
+    release();
+    await settle();
+    assert.equal(hint.textContent, before, "A7: the late real body cannot rewrite timeout feedback");
+    assert.equal(control === "mode" ? measured().value : measured().override, control === "mode" ? "pause" : 70, "A7: retain the measured state");
+  } finally {
+    release?.(); t.mock.timers.reset(); page.unmount(); root.remove(); globalThis.fetch = bridge;
+  }
+}));
+
+test("gate r3 A7: real refusals retain their action label; every timeout label normalizes in EN and DE", async (t) => r6Browser(async ({ document }) => {
+  const ctx = await intRealClient(t);
+  const { failureMessage } = await import("../../web/js/format.js");
+  let refusal;
+  try { await request("PUT", `${ctx.d}/mode`, {resource:"device:ulanzi-t",body:{mode:"invalid"}}); } catch (error) { refusal = error; }
+  assert.equal(refusal.status, 400);
+  for (const lang of ["en", "de"]) {
+    document.documentElement.setAttribute("lang", lang);
+    assert.match(failureMessage(refusal.message, "Not changed"), /^Not changed:/);
+    for (const label of ["Not changed", "Not switched", "Not saved", "Not restored", "Not copied", "Not cleared", "Not retried", "Not reverted", "Not reloaded", "Not previewed", "The log could not be loaded", "config.json could not be loaded"]) {
+      const text = failureMessage(`${label}: pixdcon did not answer within 15 s.`, label);
+      assert.match(text, lang === "de" ? /^Nicht bestätigt:/ : /^Not confirmed:/);
+      assert.doesNotMatch(text, /Not changed|Nicht geändert/);
+    }
+  }
+}));

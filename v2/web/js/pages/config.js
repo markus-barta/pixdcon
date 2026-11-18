@@ -20,7 +20,7 @@
 import { request } from "../api.js";
 import { deviceSlot, forgetIdle, op, start } from "../ops.js";
 import { icon, setHtml, setStatusLine } from "../dom.js";
-import { clock, esc } from "../format.js";
+import { clock, esc, failureMessage } from "../format.js";
 import { applyAnswer, getState, subscribe } from "../store.js";
 import { savedTheme, setTheme } from "../theme.js";
 import { pageCondition, sceneName } from "../view/model.js";
@@ -99,7 +99,7 @@ function rowHtml(state, view) {
         <span role="cell" class="act">${action}</span>
       </div>`;
   const adoptNote = adopting.failure && view.origin === "blob"
-    ? `<div class="slot" style="color:var(--bad)">${esc(`Not added: ${adopting.failure}`)}</div>`
+    ? `<div class="slot" style="color:var(--bad)">${esc(failureMessage(adopting.failure, "Not added"))}</div>`
     : "";
   if (!isOpen) return row + adoptNote;
   return row + editHtml(view);
@@ -109,7 +109,7 @@ function rowHtml(state, view) {
 function editHtml(view) {
   const patching = op(deviceSlot("patch", view));
   const busy = patching.busy;
-  const outcome = patching.failure ? { text: `Not saved: ${patching.failure}`, bad: true } : null;
+  const outcome = patching.failure ? { text: failureMessage(patching.failure, "Not saved"), bad: true } : null;
   const poll =
     view.type === "ulanzi"
       ? `<label>Preview poll (ms)<input class="input mono num" style="width:128px" type="number" name="pollMs" min="1000" max="10000" step="500" value="${esc(view.preview?.pollMs ?? 2000)}"><span class="hint">1000 – 10 000. How often the preview reads this display’s screen.</span></label>`

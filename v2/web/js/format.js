@@ -27,6 +27,20 @@ function toDate(at) {
 
 const two = (/** @type {number} */ n) => String(n).padStart(2, "0");
 
+/** A missing acknowledgement says nothing about whether a write took effect.
+ * @param {string} message @param {string} [prefix] ordinary refusal label
+ */
+export function failureMessage(message, prefix = "") {
+  const timeout = /pixdcon did not answer within (\d+) s\.|pixdcon hat innerhalb von (\d+) s nicht geantwortet\./.exec(message);
+  if (timeout) {
+    const seconds = timeout[1] ?? timeout[2];
+    return globalThis.document?.documentElement?.getAttribute("lang")?.toLowerCase().startsWith("de")
+      ? `Nicht bestätigt: pixdcon hat innerhalb von ${seconds} s nicht geantwortet.`
+      : `Not confirmed: pixdcon did not answer within ${seconds} s.`;
+  }
+  return prefix ? `${prefix}: ${message}` : message;
+}
+
 /** @param {string|number|null|undefined} at ISO time or epoch ms @returns {string} "18:42:06" or "—" */
 export function clock(at) {
   const date = toDate(at);

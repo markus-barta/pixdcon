@@ -21,7 +21,7 @@
 import { request } from "../api.js";
 import { follow as followOp, observeResource, op } from "../ops.js";
 import { dot, icon, setHtml, setStatusLine } from "../dom.js";
-import { clock, duration, esc, prettyVersion } from "../format.js";
+import { clock, duration, esc, failureMessage, prettyVersion } from "../format.js";
 import { applyAnswer, getState, subscribe, tick } from "../store.js";
 import { setVersionDisplay, versionDisplay } from "../theme.js";
 import {
@@ -132,7 +132,7 @@ function render(state) {
   // The load of this opening failed and no line is there yet: say so.
   const failure = state.log.length === 0 ? op("log").failure : null;
   const text = failure
-    ? esc(`The log could not be loaded: ${failure} New lines still arrive.`)
+    ? esc(`${failureMessage(failure, "The log could not be loaded")} New lines still arrive.`)
     : lines.map(logLine).join("\n");
   if (setHtml(pane, text) && (follow || wasAtBottom))
     pane.scrollTop = pane.scrollHeight;

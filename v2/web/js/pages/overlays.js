@@ -22,7 +22,7 @@
 import { request } from "../api.js";
 import { forgetIdle, op, start } from "../ops.js";
 import { icon, setHtml, setStatusLine } from "../dom.js";
-import { esc } from "../format.js";
+import { esc, failureMessage } from "../format.js";
 import { applyAnswer, getState, subscribe } from "../store.js";
 import { deviceTitle, overlayRows, overlaysInEffect, pageCondition, typeLabel } from "../view/model.js";
 
@@ -74,7 +74,7 @@ function rowHtml(state, row) {
     action = `<button class="btn" type="button" data-act="clear" data-id="${esc(row.id)}"${disabled ? " disabled" : ""}${row.clear.reason ? ` title="${esc(row.clear.reason)}"` : ""}>${busy ? `${icon("spinner")}Clearing…` : `${icon("x")}Clear`}</button>`;
     if (row.clear.disabled && row.clear.reason)
       action += `<div class="meta act-why">${esc(row.clear.reason)}</div>`;
-    const said = busy ? null : clearing.failure ? `Not cleared: ${clearing.failure}` : clearing.note;
+    const said = busy ? null : clearing.failure ? failureMessage(clearing.failure, "Not cleared") : clearing.note;
     if (said) action += `<div class="meta act-why" style="color:var(--bad)">${esc(said)}</div>`;
   } else action = "";
   return `<div class="ot-row${row.cleared ? " cleared" : ""}" role="row">

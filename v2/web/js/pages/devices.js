@@ -27,7 +27,7 @@
 import { request } from "../api.js";
 import { createPixelPreview } from "../components/pixel-preview.js";
 import { dot, icon, lineHtml, setAttr, setClass, setHtml, setStatusLine } from "../dom.js";
-import { esc } from "../format.js";
+import { esc, failureMessage } from "../format.js";
 import { deviceSlot, forgetIdle, op, start } from "../ops.js";
 import { applyAnswer, getState, subscribe } from "../store.js";
 import {
@@ -180,7 +180,7 @@ function updateRow(row, view, state) {
     setClass(row.first, "src");
     setHtml(row.first, lineHtml({ icon: "spinner", text: switching.label }));
   } else if (switching.failure) {
-    const text = `Not switched: ${switching.failure}`;
+    const text = failureMessage(switching.failure, "Not switched");
     setClass(row.first, "src bad");
     setAttr(row.first, "title", text);
     setHtml(row.first, `${icon("alert")}<span class="ell">${esc(text)}</span>`);
@@ -201,7 +201,7 @@ function updateRow(row, view, state) {
     // A failed Restore keeps its button, to try again, with the error
     // after it (Tick, B4; B-175).
     const failure = restoring.failure && !busy
-      ? `<span class="fail">${icon("alert")}${esc(`Not restored: ${restoring.failure}`)}</span>`
+      ? `<span class="fail">${icon("alert")}${esc(failureMessage(restoring.failure, "Not restored"))}</span>`
       : "";
     second = `${esc(lines.second.text)} <button class="link rw" type="button" data-act="restore"${disabled ? " disabled" : ""}${busy ? ' aria-busy="true"' : ""}${restore.title ? ` title="${esc(restore.title)}"` : ""}><span>${busy ? working : idle}</span><span aria-hidden="true">${busy ? idle : working}</span></button>${failure ? ` ${failure}` : ""}`;
   } else if (lines.second.cls === "ovr")

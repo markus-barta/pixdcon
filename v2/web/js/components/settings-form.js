@@ -63,7 +63,7 @@
  */
 
 import { ApiError, request } from "../api.js";
-import { esc, grouped } from "../format.js";
+import { esc, failureMessage, grouped } from "../format.js";
 import { icon, setAttr, setClass, setHtml } from "../dom.js";
 import { busy as slotBusy, capture, clearNote, derive, drop, effect, failureText, follow, op, owned, start } from "../ops.js";
 import { applyAnswer, getState } from "../store.js";
@@ -904,10 +904,10 @@ export function createSettingsForm(host, options) {
     // Every failure is said beside the action (B-175), also while edits
     // are unsaved: a failed Save, Revert or Clear (kept in the scope's
     // slot until the next one), then a failed preview.
-    else if (action.failure && !action.busy) line = { text: action.failure, cls: "warn" };
+    else if (action.failure && !action.busy) line = { text: failureMessage(action.failure), cls: "warn" };
     else if (action.note && action.note !== SAVED && !action.busy) line = { text: action.note, cls: "warn" };
     else if (scope.previewFailure)
-      line = { text: `Not previewed: ${scope.previewFailure}`, cls: "warn" };
+      line = { text: failureMessage(scope.previewFailure, "Not previewed"), cls: "warn" };
     else if (firstError)
       line = { text: errorLine(firstError[0], firstError[1]), cls: "chg warn" };
     else if (blocked) line = { text: "Saving is blocked until config.json is valid JSON again", cls: "warn" };

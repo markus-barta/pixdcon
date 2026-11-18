@@ -24,6 +24,7 @@
 
 import { beginRequest, openSource, parsePosition } from "./ordering.js";
 import { fence as storeFence } from "./store.js";
+import { failureMessage } from "./format.js";
 
 /** Thrown for every answer that is not 2xx and for a request that did not reach pixdcon. */
 export class ApiError extends Error {
@@ -107,7 +108,7 @@ function sentence(status, payload) {
 
 /** @returns {ApiError} */
 const timeoutError = () =>
-  new ApiError(`pixdcon did not answer within ${REQUEST_TIMEOUT_MS / 1000} s.`, {
+  new ApiError(failureMessage(`pixdcon did not answer within ${REQUEST_TIMEOUT_MS / 1000} s.`), {
     status: 0,
     code: "timeout",
   });

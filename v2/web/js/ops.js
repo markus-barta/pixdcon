@@ -48,6 +48,7 @@
  */
 
 import { ApiError, retireControl } from "./api.js";
+import { failureMessage } from "./format.js";
 import { fence, getState, setOp, subscribe } from "./store.js";
 
 /** @typedef {import("./store.js").OpSlot} OpSlot */
@@ -357,7 +358,7 @@ function run(key, work, options) {
       setOp(key, {
         ...op(key),
         busy: false,
-        failure: options.describe?.(error) || failureText(error),
+        failure: failureMessage(options.describe?.(error) || failureText(error)),
         note: null,
       });
       if (!projections.failed || current(projections.failed)) options.failed?.(error);
