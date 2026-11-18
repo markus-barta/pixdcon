@@ -1082,6 +1082,15 @@ test("blob writer of a run: with mqtt.statusBaseTopic different from mqtt.baseTo
     await clock.advance(300);
     await state.chooseScene("pixoo-t", "funkeykid");
     await clock.advance(300);
+    // Virtual time does not drain TCP. Cross the same broker round trip in
+    // every case, including the two cases that must publish no blob at all.
+    const mqtt = stack.app.modules.mqtt;
+    assert.ok(mqtt);
+    let settled = false;
+    void mqtt.settle().then((result) => {
+      settled = result.complete;
+    });
+    await until(() => settled);
     const writes = stack.broker
       .published()
       .filter(

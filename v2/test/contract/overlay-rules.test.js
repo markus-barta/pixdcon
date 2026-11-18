@@ -811,9 +811,15 @@ test("overlay rule 22 (N2, R4-2): every blob rewrite on the wire carries the _pi
     await world.state.chooseScene(D, "C");
     await world.flush();
   }
-  const writes = overlayPublications(world).filter(
-    (entry) => entry.topic === world.topics.overlayBlob && entry.payload !== "",
-  );
+  const blobWrites = () =>
+    overlayPublications(world).filter(
+      (entry) =>
+        entry.topic === world.topics.overlayBlob && entry.payload !== "",
+    );
+  // flush() advances virtual time and drains config I/O, not the MQTT socket.
+  await until(() => blobWrites().length >= 40);
+  await world.flush();
+  const writes = blobWrites();
   assert.ok(writes.length >= 40);
   const marks = writes.map((entry) => JSON.parse(entry.payload)._pixdcon);
   assert.equal(new Set(marks).size, marks.length);
