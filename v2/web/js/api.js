@@ -179,7 +179,7 @@ export async function request(method, path, options) {
   try {
     /** @type {Record<string, string>} */
     const headers = { Accept: "application/json" };
-    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (method !== "GET" && method !== "HEAD") headers["Content-Type"] = "application/json";
     let response;
     try {
       response = await time.race(

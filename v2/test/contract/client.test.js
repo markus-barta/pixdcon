@@ -353,6 +353,10 @@ test("client api: every request takes its generation before it is sent; the answ
   await request("PUT", "/api/v2/devices/d1/mode", { resource: "device:d1", body: { mode: "pause" } });
   assert.equal(calls[1].init.headers["Content-Type"], "application/json");
   assert.equal(calls[1].init.body, JSON.stringify({ mode: "pause" }));
+  assert.equal(calls[0].init.headers["Content-Type"], undefined, "GET carries no JSON content type");
+  await request("DELETE", "/api/v2/devices/d1/scene-overlay", { resource: "device:d1" });
+  assert.equal(calls[2].init.headers["Content-Type"], "application/json", "a bodyless DELETE is a JSON write too");
+  assert.equal(calls[2].init.body, undefined);
 
   // Without the header: epoch null, and the store applies none such.
   const bare = await request("GET", "/no-header", { resource: "device:d1" });

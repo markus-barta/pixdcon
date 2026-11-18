@@ -30,6 +30,88 @@ import {
   parsePosition,
 } from "../../web/js/ordering.js";
 
+// Resolve the UI's relative URLs; every answer still comes from real W1/W4.
+test("gate r3 UI contract: all 23 request shapes through real HttpServer + registerV2Routes", async (t) => {
+  const { request, requestFrame } = await import("../../web/js/api.js");
+  const stack = await startStack(t, {
+    config(config) { for (const device of config.devices) device.enabled = false; },
+    async prepare({ config, dataDir }) {
+      const source = resolve(dataDir, "contract-scene.mjs");
+      await writeFile(source, 'export default {name:"Contract",deviceType:"ulanzi",settingsSchema:{n:{type:"int",default:1}},render(){return 1000;}};');
+      config.scenes.contract = { path: source };
+    },
+  });
+  await waitFor(() => stack.app.modules.mqtt.status().state === "connected");
+  const transport = globalThis.fetch;
+  /** @type {Array<{method: string, path: string, headers: Headers, body: unknown, status: number}>} */
+  const sent = [];
+  globalThis.fetch = async (input, init) => {
+    const path = String(input);
+    const response = await transport(path.startsWith("/") ? `${stack.base}${path}` : input, init);
+    if (path.startsWith("/")) sent.push({ method: init?.method ?? "GET", path, headers: new Headers(init?.headers), body: init?.body, status: response.status });
+    return response;
+  };
+  t.after(() => { globalThis.fetch = transport; });
+  const d = "/api/v2/devices/ulanzi-t", s = `${d}/settings/contract`;
+  const raw = await (await transport(`${stack.base}/api/v2/config/raw`)).json();
+  /** @type {Array<[string, string, unknown, number]>} */
+  const shapes = [
+    ["GET", "/api/v2/bootstrap", undefined, 200],
+    ["GET", "/api/v2/events?session=shape-session&since=old-1&log=1", undefined, 200],
+    ["GET", `${d}/preview`, undefined, 204],
+    ["POST", "/api/v2/devices", {name:"added",type:"ulanzi",ip:stack.awtrix.address}, 201],
+    ["PATCH", d, {displayName:"Contract device"}, 200],
+    ["PUT", `${d}/scene`, {scene:"contract"}, 200],
+    ["POST", `${d}/adopt`, {}, 409],
+    ["PUT", `${d}/mode`, {mode:"pause"}, 200],
+    ["PUT", `${d}/brightness`, {override:30}, 200],
+    ["POST", `${d}/retry`, {}, 200],
+    ["DELETE", `${d}/scene-overlay`, undefined, 200],
+    ["GET", s, undefined, 200],
+    ["PUT", s, {set:{n:2},reset:[],session:"shape-session",draft:1}, 200],
+    ["PUT", `${s}/preview`, {session:"shape-session",draft:2,values:{n:3}}, 200],
+    ["DELETE", `${s}/preview?session=shape-session`, undefined, 200],
+    ["DELETE", `${s}/overlays`, undefined, 200],
+    ["POST", "/api/v2/preview-sessions/shape-session/end", {}, 200],
+    ["DELETE", "/api/v2/overlays/unknown-shape", undefined, 404],
+    ["POST", "/api/v2/scenes/contract/copy", {targetKey:"contract-copy",name:"Contract copy",replace:false}, 201],
+    ["GET", "/api/v2/config/raw", undefined, 200],
+    ["PUT", "/api/v2/config/raw", {text:raw.text}, 200],
+    ["POST", "/api/v2/config/reload", {}, 200],
+    ["GET", "/api/v2/log", undefined, 200],
+  ];
+  assert.equal(shapes.length, 23);
+  for (const [method, path, body, expected] of shapes) await t.test(`${method} ${path} → ${expected}`, async () => {
+    const before = sent.length;
+    let refusal;
+    try {
+      if (path.includes("/events?")) {
+        const response = await fetch(path);
+        assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
+        const reader = response.body.getReader();
+        assert.match(new TextDecoder().decode((await reader.read()).value), /event: snapshot/);
+        await reader.cancel();
+      } else if (path.endsWith("/preview") && method === "GET") {
+        assert.equal((await requestFrame("ulanzi-t")).frame, null);
+      } else if (path.includes("/preview-sessions/")) {
+        // main.js's beacon sends this JSON Blob, which supplies its type.
+        const response = await fetch(path, {method:"POST",body:new Blob(["{}"],{type:"application/json"})});
+        assert.equal((await response.json()).ended, 0);
+      } else await request(/** @type {any} */ (method), path, {resource:path === "/api/v2/bootstrap" ? "bootstrap" : "contract",body});
+    } catch (error) { refusal = error; }
+    assert.equal(sent.length, before + 1, "exactly one real request");
+    const actual = sent.at(-1);
+    assert.notEqual(actual.status, 415, `${method} ${path}: UI headers satisfy the real server`);
+    assert.equal(actual.status, expected, `${method} ${path}: ${refusal ?? ""}`);
+    if (path.includes("/preview-sessions/")) assert.equal(/** @type {Blob} */ (actual.body).type, "application/json");
+    else {
+      assert.equal(actual.headers.get("content-type"), ["GET","HEAD"].includes(method) ? null : "application/json");
+      if (body !== undefined) assert.deepEqual(JSON.parse(String(actual.body)), body);
+    }
+    if (expected < 400 && refusal) throw refusal;
+  });
+});
+
 test("HTTP: every documented route is declared exactly once", async (t) => {
   const stack = await startStack(t, { mqtt: false });
   const declared = stack.app.server
