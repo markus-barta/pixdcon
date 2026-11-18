@@ -133,12 +133,12 @@ export function createDraftBook() {
      */
     previewPlan(session) {
       /** @type {Record<string, unknown>} */
-      const values = Object.create(null);
+      const values = {};
       /** @type {Map<string, number>} */
       const sent = new Map();
       for (const [key, edit] of edits)
         if (!edit.removed && edit.error === undefined) {
-          values[key] = edit.value;
+          Object.defineProperty(values, key, { value: edit.value, enumerable: true, configurable: true, writable: true });
           sent.set(key, edit.draft);
         }
       return { body: { session, draft, values }, sent };
@@ -177,13 +177,13 @@ export function createDraftBook() {
     saveBody(session) {
       if (this.errors().length > 0) return null;
       /** @type {Record<string, unknown>} */
-      const set = Object.create(null);
+      const set = {};
       /** @type {Map<string, number>} */
       const committed = new Map();
       for (const [key, edit] of edits) {
         if (edit.removed) continue;
         committed.set(key, edit.draft);
-        if (!resets.has(key)) set[key] = edit.value;
+        if (!resets.has(key)) Object.defineProperty(set, key, { value: edit.value, enumerable: true, configurable: true, writable: true });
       }
       return {
         body: { set, reset: [...resets].filter((key) => !edits.get(key)?.removed), ...(session ? { session, draft } : {}) },
