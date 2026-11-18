@@ -27,6 +27,7 @@
   "W2": [
     "web/",
     "test/contract/client.test.js",
+    "test/contract/harness-r8.js",
     "test/contract/ordering-client.test.js",
     "test/contract/async-sites/W2.json"
   ],

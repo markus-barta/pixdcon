@@ -2,7 +2,7 @@
 /**
  * Live channel client: one EventSource on GET /api/v2/events.
  *
- *  - reconnects by itself, every 5 s, with `since=<epoch>-<last seq>`. When
+ *  - reconnects by itself, every 5 s, with `since=<epoch>-<seq>`. When
  *    pixdcon was restarted meanwhile, that cursor names an epoch that is
  *    gone, and the server answers with a snapshot instead of a replay; the
  *    store then starts over from it (store.js)
@@ -25,10 +25,14 @@
  * generation and is dropped by the store. An event whose id cannot be read
  * is not handed on.
  *
+ * The two timers are hints (ordering rule 3.0): the reconnect timer opens
+ * a new stream, the silence timer declares the stream lost. Neither changes
+ * a value on screen; the page keeps the last values with their time.
+ *
  * Owner: UI worker.
  */
 
-import { todo } from "./todo.js";
+import { openSource, parsePosition } from "./ordering.js";
 
 /**
  * @typedef {object} LiveState
@@ -49,6 +53,32 @@ import { todo } from "./todo.js";
  * @property {any} data
  */
 
+/** The event types of the live channel (types.js LiveEvent). */
+export const EVENT_TYPES = Object.freeze([
+  "snapshot",
+  "device",
+  "device-removed",
+  "preview",
+  "overlays",
+  "settings",
+  "scenes",
+  "config",
+  "mqtt",
+  "controller",
+  "log",
+  "ping",
+]);
+
+const RETRY_MS = 5000;
+const SILENCE_MS = 20000;
+
+/** @returns {string} a page id: 16 hex characters */
+function newSession() {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 /**
  * @param {object} handlers
  * @param {(event: LiveEnvelope) => void} handlers.onEvent every event, in the order of its stream
@@ -57,5 +87,135 @@ import { todo } from "./todo.js";
  * @returns {{session: string, close: () => void, state: () => LiveState}}
  */
 export function connectLive(handlers, options) {
-  return todo("live.connectLive", handlers, options, EventSource);
+  const session = newSession();
+  /** @type {LiveState} */
+  let current = {
+    state: "connecting",
+    lastEventAt: null,
+    lostSince: null,
+    retryEveryMs: RETRY_MS,
+  };
+  /** @type {EventSource|null} */
+  let source = null;
+  let generation = 0;
+  /** "<epoch>-<seq>" of the last event read on the current stream. */
+  let cursor = "";
+  let closed = false;
+  /** @type {ReturnType<typeof setTimeout>|undefined} */
+  let retryTimer;
+  /** @type {ReturnType<typeof setTimeout>|undefined} */
+  let silenceTimer;
+
+  /** @param {Partial<LiveState>} patch */
+  function setState(patch) {
+    const next = { ...current, ...patch };
+    if (
+      next.state === current.state &&
+      next.lastEventAt === current.lastEventAt &&
+      next.lostSince === current.lostSince
+    )
+      return;
+    current = next;
+    handlers.onState({ ...current });
+  }
+
+  function stopStream() {
+    if (source) {
+      source.close();
+      source = null;
+    }
+    clearTimeout(silenceTimer);
+  }
+
+  /** The stream is gone: say since when, and try again in 5 s. */
+  function lose() {
+    stopStream();
+    if (closed) return;
+    setState({
+      state: "lost",
+      lostSince: current.lostSince ?? current.lastEventAt ?? Date.now(),
+    });
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(open, RETRY_MS);
+  }
+
+  /** Arm the silence watchdog again: 20 s without an event is a lost stream. */
+  function armSilence() {
+    clearTimeout(silenceTimer);
+    const mine = generation;
+    silenceTimer = setTimeout(() => {
+      if (mine === generation) lose();
+    }, SILENCE_MS);
+  }
+
+  function open() {
+    if (closed) return;
+    stopStream();
+    generation = openSource(options.fence, "stream");
+    const mine = generation;
+    const query = new URLSearchParams({ session });
+    if (cursor) query.set("since", cursor);
+    if (options.log) query.set("log", "1");
+    const stream = new EventSource(`/api/v2/events?${query}`);
+    source = stream;
+    stream.onopen = () => {
+      if (mine !== generation) return;
+      setState({ state: "live", lostSince: null });
+      armSilence();
+    };
+    stream.onerror = () => {
+      // The browser would retry on its own with the old cursor and the old
+      // generation; this module replaces the stream instead.
+      if (mine !== generation) return;
+      lose();
+    };
+    for (const type of EVENT_TYPES) {
+      stream.addEventListener(type, (/** @type {any} */ message) => {
+        if (mine !== generation) return;
+        receive(mine, type, message);
+      });
+    }
+    armSilence();
+  }
+
+  /**
+   * @param {number} stream generation of the stream it came on
+   * @param {string} type
+   * @param {{lastEventId?: string, data?: string}} message
+   */
+  function receive(stream, type, message) {
+    const position = parsePosition(message.lastEventId);
+    if (!position) return;
+    /** @type {any} */
+    let data;
+    try {
+      data = JSON.parse(message.data ?? "null");
+    } catch {
+      return;
+    }
+    cursor = `${position.epoch}-${position.seq}`;
+    // The time of the last event is kept without a report: the page needs
+    // it only when the stream is lost ("No answer from pixdcon since …").
+    current = { ...current, lastEventAt: Date.now() };
+    setState({ state: "live", lostSince: null });
+    armSilence();
+    handlers.onEvent({
+      type,
+      epoch: position.epoch,
+      seq: position.seq,
+      stream,
+      data,
+    });
+  }
+
+  open();
+  return {
+    session,
+    close() {
+      closed = true;
+      clearTimeout(retryTimer);
+      stopStream();
+    },
+    state: () => ({ ...current }),
+  };
 }
