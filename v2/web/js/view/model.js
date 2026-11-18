@@ -107,14 +107,13 @@ export function heldBy(view, overlays) {
       record.restricts === "held",
   );
   if (own) return own;
+  const blob = list.find((record) =>
+    record.kind === "blob" && record.valid !== false && record.confirmed === false &&
+    typeof blobEntry(record, view.name)?.ip === "string",
+  );
+  if (blob) return blob;
   if (view.desired?.held === true)
-    return list.find((record) => record.restricts === "held") ?? { kind: "device", value: view.desired?.address?.value ?? "" };
-  if (view.desired?.address?.source === "blob") {
-    const blob = list.find(
-      (record) => record.kind === "blob" && record.restricts === "held",
-    );
-    if (blob) return blob;
-  }
+    return { kind: "device", value: view.desired?.address?.value ?? "" };
   return null;
 }
 
@@ -617,7 +616,7 @@ export function deviceCondition(state, view, local = {}) {
     const address =
       held.kind === "device-ip"
         ? String(held.value ?? held.raw ?? "")
-        : String(view.desired?.address?.value ?? "");
+        : String(blobEntry(held, view.name)?.ip ?? view.desired?.address?.value ?? "");
     return {
       text: `On hold: its address comes from an MQTT overlay (${address}) that the broker has not confirmed since the reconnect at ${reconnectAt(state)}. Clear the overlay to use the address in config.json.`,
       cls: "",

@@ -14683,3 +14683,50 @@ test(`gate r3 A3: real atomic preview ${rejected ? "refusal keeps all edits with
   assert.equal(root.querySelector('[data-act="save"]').disabled, true);
   assert.equal(form.hasEdits(), true);
 });
+
+/** @param {any} ctx @param {string} topic @param {string} payload */
+async function intInject(ctx, topic, payload) {
+  await ctx.app.modules.mqtt.settle();
+  await ctx.broker.inject(topic, payload, {retain:true});
+  await intWaitFor(() => ctx.app.modules.overlays.list().some((record) => record.topic === topic && record.raw === payload));
+  await ctx.clock.advance(300);
+  await ctx.app.modules.config.readRaw();
+  await ctx.clock.advance(300);
+}
+
+for (const kind of ["granular", "blob", "missing own record"])
+test(`gate r3 A4: real held explanation uses exact device ${kind}`, async (t) => {
+  const ctx = await intRealClient(t);
+  const { app, broker, clock } = ctx;
+  await intInject(ctx, app.topics.overlayDeviceIp("pixoo-t"), "127.0.0.1:19");
+  await intInject(ctx, app.topics.overlayBlob, JSON.stringify({devices:[
+    {name:"ulanzi-t",ip:"127.0.0.1:29"},
+    {name:"off-third",type:"ulanzi",ip:"127.0.0.1:39",enabled:false},
+  ]}));
+  const release = broker.holdRetained();
+  t.after(release);
+  const connection = app.modules.mqtt.status().connection;
+  await broker.dropClients();
+  await intWaitFor(() => app.modules.mqtt.status().state === "offline");
+  await clock.advance(5000);
+  await intWaitFor(() => app.modules.mqtt.status().connection > connection);
+  await app.modules.mqtt.settle();
+  await clock.advance(300);
+  applyDefaultAnswer(await request("GET", "/api/v2/bootstrap", {resource:"bootstrap"}));
+  const state = ctx.store.getState();
+  const model = await r5Module("view/model.js");
+  const device = state.devices.get(kind === "granular" ? "pixoo-t" : "ulanzi-t");
+  assert.equal(device.desired.held, true);
+  if (kind === "granular") {
+    assert.equal(model.heldBy(device, state.overlays).device, "pixoo-t");
+    assert.match(model.deviceCondition(state, device).text, /127\.0\.0\.1:19/);
+  } else if (kind === "blob") {
+    assert.equal(model.heldBy(device, state.overlays).kind, "blob", "A4: resolve the held device's own blob entry");
+    assert.match(model.deviceCondition(state, device).text, /127\.0\.0\.1:29/);
+    assert.doesNotMatch(model.deviceCondition(state, device).text, /127\.0\.0\.1:19/);
+  } else {
+    const unrelated = state.overlays.filter((record) => record.kind !== "blob");
+    assert.notEqual(model.heldBy(device, unrelated).device, "pixoo-t", "A4: no global fallback to another device");
+    assert.doesNotMatch(model.deviceCondition({...state,overlays:unrelated}, device).text, /127\.0\.0\.1:19/);
+  }
+});
