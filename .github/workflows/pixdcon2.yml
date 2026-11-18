@@ -67,10 +67,10 @@ jobs:
 
       - name: Test all three kinds
         working-directory: v2
-        timeout-minutes: 1
+        timeout-minutes: 3
         # GitHub-hosted runners are slower than dev machines (evidence run 44323051585).
         # Still a hang guard; per-test --test-timeout=20000 is unchanged.
-        # Local and default runs keep 55 s.
+        # Local and default runs keep 55 s; the step timeout sits above the run.js budget so run.js's own deadline report wins.
         env:
           PIXDCON2_TEST_DEADLINE_MS: "120000"
         run: npm test
