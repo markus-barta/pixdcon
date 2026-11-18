@@ -14876,3 +14876,55 @@ test("gate r3 A7: real refusals retain their action label; every timeout label n
     }
   }
 }));
+
+for (const refused of [false, true])
+for (const sameSlot of [false, true])
+test(`gate r3 A8: terminal old-life ${refused ? "refusal" : "success"} retires only its token; ${sameSlot ? "same-slot" : "new-life"} successor stays busy`, async (t) => {
+  const ctx = await intRealClient(t);
+  const ops = await import("../../web/js/ops.js");
+  const bridge = globalThis.fetch;
+  /** @type {Array<() => void>} */
+  const releases = [];
+  globalThis.fetch = async (input, init) => {
+    const response = await bridge(input, init);
+    if (String(input) === `${ctx.d}/mode` && init?.method === "PUT") {
+      const body = await response.text();
+      response.text = () => new Promise((resolve) => { releases.push(() => resolve(body)); });
+    }
+    return response;
+  };
+  t.after(() => { globalThis.fetch = bridge; for (const release of releases) release(); });
+  const oldView = ctx.store.getState().devices.get("ulanzi-t");
+  const key = ops.deviceSlot("mode", oldView);
+  const effects = [];
+  const send = (mode) => async () => applyDefaultAnswer(await request("PUT", `${ctx.d}/mode`, {resource:"device:ulanzi-t",body:{mode}}));
+  const old = ops.follow(key, send(refused ? "invalid" : "pause"), {device:"ulanzi-t",done:() => {effects.push("old");},failed:() => {effects.push("old failure");}}).catch((error) => error);
+  await intWaitFor(() => releases.length === 1);
+  const raw = await request("GET", "/api/v2/config/raw", {resource:"config"});
+  const config = JSON.parse(raw.body.text);
+  config.devices = config.devices.filter((device) => device.name !== "ulanzi-t");
+  await request("PUT", "/api/v2/config/raw", {resource:"config",body:{text:JSON.stringify(config)}});
+  await request("POST", "/api/v2/devices", {resource:"device:ulanzi-t",body:{name:"ulanzi-t",type:"ulanzi",ip:ctx.awtrix.address}});
+  applyDefaultAnswer(await request("GET", "/api/v2/bootstrap", {resource:"bootstrap"}));
+  const nextView = ctx.store.getState().devices.get("ulanzi-t");
+  assert.ok(nextView.incarnation > oldView.incarnation);
+  assert.equal(ops.op(key).busy, true, "A8: the old slot waits only until terminal completion");
+  const nextKey = sameSlot ? key : ops.deviceSlot("mode", nextView);
+  const next = ops.follow(nextKey, send("stop"), {device:"ulanzi-t",done:() => {effects.push("next");}});
+  await intWaitFor(() => releases.length === 2);
+  const token = ops.op(nextKey).token;
+  releases[0]();
+  const outcome = await old;
+  await settle();
+  if (refused) assert.equal(outcome.status, 400);
+  if (!sameSlot) assert.equal(ctx.store.getState().ops.has(key), false, "A8: terminal completion retires the dead life's slot");
+  assert.equal(ops.op(nextKey).token, token, "A8: keep the successor's token");
+  assert.equal(ops.op(nextKey).busy, true, "A8: old completion cannot settle its successor");
+  assert.deepEqual(effects, []);
+  releases[1]();
+  await next;
+  await settle();
+  assert.equal(ops.op(nextKey).busy, false);
+  assert.deepEqual(effects, ["next"]);
+  ops.drop(nextKey);
+});

@@ -341,7 +341,7 @@ function run(key, work, options) {
   const outcome = (async () => work(current))();
   outcome.then(
     (result) => {
-      if (!current()) return;
+      if (!current()) { dropOwn(key, token); return; }
       /** @type {string|null} */
       let note = null;
       try {
@@ -350,11 +350,11 @@ function run(key, work, options) {
       } catch {
         // What the page does with an answer it took cannot undo the answer.
       }
-      if (!current()) return;
+      if (!current()) { dropOwn(key, token); return; }
       setOp(key, { ...op(key), busy: false, failure: null, note });
     },
     (error) => {
-      if (!current()) return;
+      if (!current()) { dropOwn(key, token); return; }
       setOp(key, {
         ...op(key),
         busy: false,
