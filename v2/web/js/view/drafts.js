@@ -44,8 +44,6 @@ let pageDraft = 0;
 export function createDraftBook() {
   /** The newest draft number of this book's edits; 0 before the first. */
   let draft = 0;
-  /** Highest acknowledged draft: earlier preview feedback is obsolete. */
-  let committedDraft = 0;
   /** @type {Map<string, Edit>} */
   const edits = new Map();
   /** Keys whose saved value is removed on Save (Reset to default, B-086). @type {Set<string>} */
@@ -57,7 +55,7 @@ export function createDraftBook() {
     /** @returns {number} the newest draft number of this form */
     draft: () => draft,
     /** Identity of feedback still belonging to an unsaved draft. */
-    feedbackDraft: () => edits.size > 0 && draft > committedDraft ? draft : 0,
+    feedbackDraft: () => edits.size > 0 ? draft : 0,
     /** A new definition needs a new preview, retaining each edit's identity. */
     revalidate() {
       draft = ++pageDraft;
@@ -176,10 +174,8 @@ export function createDraftBook() {
      *
      * @param {Map<string, number>} committed key → draft of the edit that was saved; an edit with another draft was typed after the click and stays, whatever it reads
      * @param {string[]} reset
-     * @param {number} [through] preview draft committed by the Save, including revalidation drafts
      */
-    saved(committed, reset, through = 0) {
-      committedDraft = Math.max(committedDraft, through, ...committed.values());
+    saved(committed, reset) {
       for (const [key, number] of committed) if (edits.get(key)?.draft === number) edits.delete(key);
       for (const key of reset) if (!edits.has(key)) resets.delete(key);
     },

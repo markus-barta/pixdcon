@@ -8867,7 +8867,7 @@ function r4xProjection(file, effect, fn = "") {
       // The end of a control's request forgets the slider's level (gate r5a E): only while the slider is still that
       // request's. Its owner is the brightness slot of one life of the device in one run, and the operation in it.
       if (/pages\/device\.js/.test(file) && fn === "act") return r8Project(["owner", "epoch", "life", "token", "opening"], "the slider's current owner: the brightness slot of the device's life (epoch · life) that the level was typed for · that slot's own operation (slot token) · opening");
-      return settings ? r8Project(["opening", "scene", "epoch", "life", "schema", "draft"], "opening · scope (scene, epoch, life) · scene-definition generation · newest draft and > committed") : raw ? r8Project(["opening", "token", "revision", "epoch"], "opening · load token · editor revision · epoch") : config ? r8Project(["opening", "visit"], "opening · edit-row visit") : r8Project(["opening", "token"], "opening · slot token");
+      return settings ? r8Project(["opening", "scene", "epoch", "life", "schema", "draft"], "opening · scope (scene, epoch, life) · scene-definition generation · newest scheduled preview while edits remain") : raw ? r8Project(["opening", "token", "revision", "epoch"], "opening · load token · editor revision · epoch") : config ? r8Project(["opening", "visit"], "opening · edit-row visit") : r8Project(["opening", "token"], "opening · slot token");
     case "DOM write":
       return raw ? r8Project(["opening", "revision", "epoch", "resource"], "opening · editor revision · epoch · config resource (a replacement load writes the new run's text)") : r8Project([], "none beyond render's reading of the current state");
     case "enable/disable":
@@ -9025,10 +9025,12 @@ test("r4 inventory: persistent UI state writers across imported helpers all decl
   // B1a r5: 384 -> 386: Raw mount composes its disposers; Settings load
   // retains its returned task for captured-token retirement; tags unchanged.
   // Covered by deferred-resource closed/epoch/snapshot controls; no retags.
-  // PIXD-99 B3 inventory-only: 386 -> 389; new-definition feedback reset,
-  // revalidation's preview draft and monotonically committed draft. Same
-  // owner tags; schema/commit/newer-edit controls exercise all three writes.
-  assert.equal(digest, "950c7583350d15aa9f311fb2daaa412bb86b4c770903de3e509a8a53e6cac7a0", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+  // PIXD-99 B3 r3 inventory-only: still 389 writers. Remove redundant
+  // saved.committedDraft; add preview.mine.previewDraft (latest scheduled
+  // preview). Invalid-keystroke failure/success and newer-edit controls
+  // exercise this writer; definition reset/revalidation retain their cases.
+  // Owner tags and identity projections are unchanged.
+  assert.equal(digest, "052db468e6cea096e5c985f9bff2b2fe7eefcb99510837f0467bd4f9be8890be", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
 });
 test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
   for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {
@@ -12684,45 +12686,48 @@ R4_STEP["scene values without editing"] = async (ctx) => {
   assert.ok(r4Text(ctx.root.querySelector("#h-settings")).includes(scene === "clock" ? "Clock" : "Weather"), "B3 scene switch: new values are shown before the old end");
 };
 
-/** Observe native scene-owned outcomes too: distinct keys can hide an old
- * outcome from the current form. Async context attributes token-zero writes
- * to their actual operation, never another operation reusing the key.
- * @param {any} t @param {R4Kind} kind @param {R4End} end @param {any} [opsOverride]
+/** Observe callbacks that change the visible scene, allowing the old slot's
+ * own completion under its own key. A callback returning a note for that
+ * slot is harmless. Do not invent callbacks the caller did not supply.
+ * @param {any} t @param {R4Kind} kind @param {R4End} end @param {any} [opsOverride] @param {boolean} [dirtyCallback]
  */
-async function r5B3SceneCase(t, kind, end, opsOverride) {
+async function r5B3SceneCase(t, kind, end, opsOverride, dirtyCallback = false) {
   if (!r8HarnessLoaded) await r8HarnessReady;
   await r8MeasurementModules();
-  const { subscribe } = await import("../../web/js/store.js");
   const global = /** @type {any} */ (globalThis);
   const descriptor = Object.getOwnPropertyDescriptor(global, "__r8Operation");
   let hook = global.__r8Operation;
-  const context = new AsyncLocalStorage();
   /** @type {Set<string>} */ const stale = new Set();
   const scene = () => r4State().devices.get("d1")?.desired?.scene?.scene;
+  const visible = () => [...r7Leaves(fakeDocument.body)].map(([key, leaf]) => [key, leaf.value]);
   const observe = (/** @type {any} */ run, /** @type {string} */ key, /** @type {any} */ work, /** @type {any} */ options = {}) => {
-    const mine = { key, scene: scene(), epoch: r4State().epoch,
-      // The native resource determines the obligation, independently of a
-      // product declaration that a lost-projection mutant may remove.
+    const mine = { scene: scene(), epoch: r4State().epoch,
       sceneOwned: ["copy:", "load:", "preview:", "settings:"].some((prefix) => key.startsWith(prefix)) };
     const retired = () => mine.sceneOwned && mine.epoch === r4State().epoch && mine.scene !== scene();
-    return context.run(mine, () => hook(opsOverride ? opsOverride[run.name] : run, key, work, { ...options,
-      done: (/** @type {any} */ result) => { if (retired()) stale.add(`${key}: retired scene done callback`); return options.done?.(result); },
-      failed: (/** @type {any} */ error) => { if (retired()) stale.add(`${key}: retired scene failed callback`); return options.failed?.(error); },
-    }));
+    const callbacks = { ...options };
+    for (const name of ["done", "failed"]) {
+      if (!options[name]) continue;
+      callbacks[name] = (/** @type {any} */ result) => {
+        const old = retired();
+        const before = old ? visible() : null;
+        try {
+          if (old && dirtyCallback) fakeDocument.body.querySelector("#h-settings").textContent = "B3 retired callback changed the shown scene";
+          return options[name](result);
+        } finally {
+          if (old && JSON.stringify(visible()) !== JSON.stringify(before)) stale.add(`${key}: retired scene ${name} callback changed the visible scene`);
+        }
+      };
+    }
+    return hook(opsOverride ? opsOverride[run.name] : run, key, work, callbacks);
   };
   Object.defineProperty(global, "__r8Operation", { configurable: true, get: () => observe, set: (next) => { hook = next; } });
-  const stop = subscribe((state) => state.ops, (slots) => {
-    const mine = context.getStore();
-    if (mine?.sceneOwned && mine.epoch === r4State().epoch && mine.scene !== scene() && slots.get(mine.key))
-      stale.add(`${mine.key}: retired scene native outcome was written`);
-  });
   const first = r8Stories.length;
   try {
     const differences = await r4Case(t, kind, "scene values without editing", end);
     const stories = r8Stories.slice(first).filter((story) => story.kind === kind.name && story.completed);
     assert.ok(stories.some((story) => r8StoryChanges(story.a.identities, story.b.identities).inputs.join() === "scene"), "B3 named scene story changes scene alone");
     return [...differences, ...stale];
-  } finally { stop(); Object.defineProperty(global, "__r8Operation", /** @type {PropertyDescriptor} */ (descriptor)); }
+  } finally { Object.defineProperty(global, "__r8Operation", /** @type {PropertyDescriptor} */ (descriptor)); }
 }
 
 const R5_B3_SCENE_NAMES = ["device copy", ...R4_KINDS.filter((kind) => kind.name.startsWith("settings ") && !["settings end", "settings end retry"].includes(kind.name)).map((kind) => kind.name)];
@@ -12736,7 +12741,7 @@ for (const name of R5_B3_SCENE_NAMES)
 test("r4 harness self-test: B3 scene family has controls and must-fail central scene admission mutants", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const mutant = await r5Module("ops.js", [
-    ["if (read() !== owner.values[name]) return false;", "if (name !== 'scene' && read() !== owner.values[name]) return false;"],
+    ["if (read() !== owner.values[name]) return false;", "if (!['scene', 'opening', 'schema', 'draft'].includes(name) && read() !== owner.values[name]) return false;"],
     // The load is independently retired by B1a when its scope changes.
     ["if (owner.slot && op(owner.slot.key).token !== owner.slot.token) return false;", "if (false) return false;"],
   ]);
@@ -12744,7 +12749,9 @@ test("r4 harness self-test: B3 scene family has controls and must-fail central s
     for (const end of R4_ENDS) {
       const kind = r4KindOf(name);
       assert.deepEqual(await r5B3SceneCase(t, kind, end), [], `${name}/${end}: real scene guard control`);
-      assert.ok((await r5B3SceneCase(t, kind, end, mutant)).some((found) => /retired scene/.test(found)), `${name}/${end}: removed central scene admission must fail`);
+      const failure = end !== "success" || name === "settings save rejected";
+      const callback = name === "settings load" ? failure : ["device copy", "settings revert", "settings clear overlays"].includes(name) ? !failure : true;
+      if (callback) assert.ok((await r5B3SceneCase(t, kind, end, mutant, true)).some((found) => /retired scene/.test(found)), `${name}/${end}: an admitted callback changing the visible scene must fail`);
     }
 });
 
@@ -12855,11 +12862,11 @@ test("r4 harness: B3 revalidation preserves submitted edit and Reset identities 
   book.revalidate();
   const newer = book.feedbackDraft();
   assert.ok(newer > Number(plan.body.draft));
-  book.saved(plan.committed, plan.body.reset, plan.body.draft);
+  book.saved(plan.committed, plan.body.reset);
   assert.equal(book.feedbackDraft(), 0, "acknowledgement retires feedback when no edit remains");
   assert.deepEqual([...book.resets], []);
   const next = book.edit("n", "2", { value: 2 });
-  book.saved(plan.committed, plan.body.reset, plan.body.draft);
+  book.saved(plan.committed, plan.body.reset);
   assert.equal(book.feedbackDraft(), next, "a repeated old acknowledgement cannot commit a newer equal-valued edit");
   book.clear();
   assert.equal(book.feedbackDraft(), 0, "Revert retires preview feedback immediately");
@@ -12901,7 +12908,7 @@ test("r4 harness: B3 committing a revalidated draft clears its preview feedback"
   const plan = book.saveBody("b3");
   assert.ok(plan);
   assert.equal(book.feedbackDraft(), plan.body.draft);
-  book.saved(plan.committed, plan.body.reset, plan.body.draft);
+  book.saved(plan.committed, plan.body.reset);
   assert.equal(book.feedbackDraft(), 0, "B3 committed preview feedback is obsolete");
 });
 
@@ -13513,4 +13520,138 @@ test("r4 harness self-test: B3 original page-local no longer reachable: r5a B", 
   const device = await r4DefinitionRuleForm("for (const key of Object.keys(answer.body?.rejected ?? {})) if (of.book.edits.get(key)?.draft === plan.sent.get(key)) of.book.edits.delete(key);");
   assert.deepEqual(await r4Case(t, r4KindOf("settings preview rejected"), "schema", "success", { modules: { device } }), [],
     "no longer reachable: central definition admission prevents the original stale rejection deleting its edit");
+});
+
+// PIXD-99 B3 r3: reversible scene changes release their own action slots.
+/** @param {any} t @param {string} name @param {R4End} end @param {any} [device] */
+async function r5B3ReturnToScene(t, name, end, device) {
+  const kind = r4KindOf(name);
+  const world = r4World(kind.world);
+  const modules = { ...await r8MeasurementModules(), ...(device ? { device } : {}) };
+  const ctx = /** @type {any} */ ({ world, calls: r4Server(world), kind, modules, edits: new Map(), changed: new Set(), shows: 0, clock: 0, opening: 0, revision: 0, visit: 0 });
+  world.story = ctx;
+  r4NewEpoch(world);
+  const key = name === "device copy" ? "copy:clock" : `settings:d1/clock@${world.epoch}/1`;
+  const control = () => name === "device copy" ? ctx.root.querySelector('.adv [data-act="copy"]') : name === "settings revert" ? ctx.root.querySelector('.set-h [data-act="revert"]') : name === "settings clear overlays" ? ctx.root.querySelector('.set-h [data-act="clear"]') : saveButton(ctx.root);
+  try {
+    r4Open(ctx, "device");
+    await r4AnswerAll(ctx);
+    await kind.setup?.(ctx);
+    await settle();
+    await kind.begin?.(ctx);
+    await settle();
+    const held = r4Pending(ctx, kind.request[0], kind.request[1]);
+    assert.equal(r4State().ops.get(key)?.busy, true, "B3 r3: the original action owns the slot");
+    r4Switch(ctx);
+    await settle();
+    await r4AnswerAll(ctx, held);
+    const weather = r4Value(field(ctx.root, "n"));
+    if (end === "success") held.ok();
+    else if (end === "500") held.answer(500, {});
+    else { held.abandon(); t.mock.timers.tick(15_000); await settle(); held.late(); }
+    await settle();
+    await r4AnswerAll(ctx);
+    assert.equal(r4Value(field(ctx.root, "n")), weather, "B3 r3: Clock's outcome leaves Weather's field untouched");
+    assert.equal(r4State().ops.get(key)?.busy, false, "B3 r3: an old scene's own slot must finish while another scene shows");
+    if (end !== "success") assert.match(r4State().ops.get(key)?.failure ?? "", end === "500" ? /500/ : /within 15 s/, "B3 r3: the old key keeps its own failure");
+    r4Switch(ctx);
+    await settle();
+    await r4AnswerAll(ctx);
+    assert.match(r4Text(ctx.root.querySelector("#h-settings")), /Clock/);
+    if (["settings save", "settings revert"].includes(name)) {
+      r4Edit(ctx, "n", "3");
+      await settle();
+      await r4AnswerAll(ctx);
+    }
+    if (name === "device copy") await kind.setup?.(ctx);
+    assert.ok(control(), "B3 r3: returning to Clock exposes the action");
+    assert.equal(control().disabled, false, "B3 r3: the returned scene's action is free and usable");
+    assert.doesNotMatch(r4Text(control()), /Saving|Reverting|Clearing|Creating/, "B3 r3: no completed operation still says busy");
+    const before = ctx.calls.length;
+    await kind.begin?.(ctx);
+    await settle();
+    assert.ok(ctx.calls.slice(before).some((/** @type {any} */ call) => call.method === kind.request[0] && call.path.endsWith(kind.request[1])), "B3 r3: the returned control actually starts a fresh request");
+    await r4AnswerAll(ctx);
+  } finally { r4Close(ctx); await r4AnswerAll(ctx); world.story = null; }
+}
+
+const R5_B3_RETURN_NAMES = ["settings save", "settings revert", "settings clear overlays", "device copy"];
+for (const name of R5_B3_RETURN_NAMES)
+  for (const end of R4_ENDS)
+    test(`r4 harness: B3 r3 ${name} A→B→A releases its slot and acts again × ${end}`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      await r5B3ReturnToScene(t, name, end);
+    });
+
+test("r4 harness self-test: B3 r3 A→B→A must fail with 0c55d65 scene on the slot", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const old = 'start: ["epoch", "scene"], slot: ["epoch", "scene"]';
+  const now = 'start: ["epoch", "scene"], done: ["epoch", "scene"], failed: ["epoch", "scene"]';
+  const form = await r4Mutant("components/settings-form.js", [[now, old]]);
+  const settings = (await r5Module("pages/device.js", [], { "../components/settings-form.js": form })).page;
+  const copy = (await r5Module("pages/device.js", [[now, old]])).page;
+  for (const name of R5_B3_RETURN_NAMES)
+    for (const end of R4_ENDS) {
+      await r5B3ReturnToScene(t, name, end);
+      await assert.rejects(r5B3ReturnToScene(t, name, end, name === "device copy" ? copy : settings), /an old scene's own slot must finish/);
+    }
+});
+
+/** A valid edit is previewing when a later, unparsable edit schedules no work.
+ * @param {any} t @param {"failure lost"|"stale failure kept"} variant @param {R4End} end @param {any} [device] */
+async function r5B3UnparsedFeedback(t, variant, end, device) {
+  const kind = r4KindOf("settings preview");
+  const world = r4World(kind.world);
+  const modules = { ...await r8MeasurementModules(), ...(device ? { device } : {}) };
+  const ctx = /** @type {any} */ ({ world, calls: r4Server(world), kind, modules, edits: new Map(), changed: new Set(), shows: 0, clock: 0, opening: 0, revision: 0, visit: 0 });
+  world.story = ctx;
+  r4NewEpoch(world);
+  const marker = () => r4Text(ctx.root.querySelector('[data-row="n"] .mk'));
+  const status = () => r4Text(ctx.root.querySelector(".set-status"));
+  try {
+    r4Open(ctx, "device");
+    await r4AnswerAll(ctx);
+    r4Edit(ctx, "n", "2");
+    await settle();
+    if (variant === "stale failure kept") {
+      r4Pending(ctx, "PUT", "/settings/clock/preview").answer(500, {});
+      await settle();
+      assert.match(status(), /Not previewed:.*500/, "B3 r3: an earlier preview failure is shown");
+      r4Edit(ctx, "n", "3");
+      await settle();
+    }
+    const held = r4Pending(ctx, "PUT", "/settings/clock/preview");
+    const previews = r5Previews(ctx.calls).length;
+    r4Type(field(ctx.root, "m"), "");
+    await settle();
+    assert.equal(r5Previews(ctx.calls).length, previews, "B3 r3: the invalid keystroke schedules no preview");
+    if (end === "success") held.ok();
+    else if (end === "500") held.answer(500, {});
+    else { held.abandon(); t.mock.timers.tick(15_000); await settle(); held.late(); }
+    await settle();
+    if (variant === "failure lost") {
+      assert.match(marker(), /^not previewed/, "B3 r3: the failed valid edit must say not previewed");
+      assert.match(status(), end === "500" ? /Not previewed:.*500/ : /Not previewed:.*within 15 s/, "B3 r3: the held preview's failure must be visible despite the invalid keystroke");
+    } else {
+      assert.doesNotMatch(status(), /Not previewed:/, "B3 r3: the successful preview must clear the stale failure despite the invalid keystroke");
+      assert.match(marker(), /^previewing/, "B3 r3: the successfully previewed valid edit is said");
+      assert.equal(r4State().settings.get("d1/clock").values.n.effective, 3);
+    }
+  } finally { r4Close(ctx); await r4AnswerAll(ctx); world.story = null; }
+}
+
+const R5_B3_UNPARSED = /** @type {Array<["failure lost"|"stale failure kept", R4End]>} */ ([["failure lost", "500"], ["failure lost", "timeout"], ["stale failure kept", "success"]]);
+for (const [variant, end] of R5_B3_UNPARSED)
+  test(`r4 harness: B3 r3 invalid next keystroke, ${variant} × ${end}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await r5B3UnparsedFeedback(t, variant, end);
+  });
+
+test("r4 harness self-test: B3 r3 invalid keystroke must fail with 0c55d65 book.draft feedback", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = await r4DeviceWithForm([['draft: () => of.book.edits.size > 0 ? of.previewDraft : 0,', 'draft: () => of.book.feedbackDraft(),']]);
+  for (const [variant, end] of R5_B3_UNPARSED) {
+    await r5B3UnparsedFeedback(t, variant, end);
+    await assert.rejects(r5B3UnparsedFeedback(t, variant, end, device), /the failed valid edit must say not previewed|the successful preview must clear the stale failure/);
+  }
 });

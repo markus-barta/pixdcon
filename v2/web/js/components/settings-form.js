@@ -281,6 +281,7 @@ export function retryEnd(view, scene, session) {
  * @property {number} incarnation 0: not said
  * @property {ReturnType<typeof createDraftBook>} book what the user typed, numbered by the page's draft counter
  * @property {string|null} previewFailure why the last preview failed; null when it worked
+ * @property {number} previewDraft newest draft scheduled to preview; invalid edits do not replace its feedback
  * @property {boolean} queued a preview step waits in the lane; it sends the newest draft when its turn comes
  * @property {boolean} previewed a preview of this scope was sent: pixdcon may hold one for this page
  * @property {boolean} left the form shows another scope now, or was left
@@ -303,6 +304,7 @@ function newScope(scene, life, device) {
     incarnation: Number(life?.incarnation ?? 0),
     book: createDraftBook(),
     previewFailure: null,
+    previewDraft: 0,
     queued: false,
     previewed: false,
     left: false,
@@ -372,9 +374,8 @@ export function createSettingsForm(host, options) {
     scene: () => scope.scene,
     opening: () => shown(of),
     schema: () => JSON.stringify(current?.schema),
-    draft: () => of.book.feedbackDraft(),
+    draft: () => of.book.edits.size > 0 ? of.previewDraft : 0,
   });
-  const sceneEffects = { start: ["epoch", "scene"], slot: ["epoch", "scene"] };
   const feedback = ["epoch", "scene", "opening", "schema", "draft"];
 
   /** Tell the page when the last preview of the scope shown failed, or works again. */
@@ -427,6 +428,8 @@ export function createSettingsForm(host, options) {
    * decides; the page hands the store's state of the scope to update(),
    * which also makes the load obsolete once values of the scope are there.
    */
+  // Slot outcomes belong to their own key; scene only gates page callbacks.
+  const sceneEffects = { start: ["epoch", "scene"], done: ["epoch", "scene"], failed: ["epoch", "scene"] };
   function load() {
     const mine = scope;
     phase = "loading";
@@ -503,6 +506,9 @@ export function createSettingsForm(host, options) {
   /** Preview the form's edits: one step in the lane; edits typed while it waits go with it. */
   function preview() {
     const mine = scope;
+    // Only work that will preview supersedes preview feedback, including
+    // valid edits that join an already queued lane step.
+    if (session() && mine.scene && !mine.left) mine.previewDraft = mine.book.draft();
     if (!session() || !mine.scene || mine.left || mine.queued) return;
     mine.queued = true;
     void enqueue(laneOf(mine), () => sendPreview(mine));
@@ -528,7 +534,7 @@ export function createSettingsForm(host, options) {
         label: "Saving…",
         done: (answer) => {
           // What was saved leaves the form; what was typed after the click stays.
-          mine.book.saved(plan.committed, plan.body.reset, plan.body.draft);
+          mine.book.saved(plan.committed, plan.body.reset);
           if (shown(mine) && mine.book.edits.size > 0) preview();
           const notCleared = answer.body?.overlaysNotCleared ?? [];
           return notCleared.length
