@@ -654,8 +654,9 @@ export class OverlayService extends EventEmitter {
    * false, and `deviceHeld` for a device whose address rests on an overlay
    * that is not confirmed. For a blob that is not confirmed, `blobDevices`
    * holds per entry only what state/runtime-config.js overlayDevicePatch
-   * leaves of it then (`enabled` false, and the hold), and `blobScenes` is
-   * empty.
+   * leaves of it then (`enabled` false, and the hold). A disabled entry
+   * also retains type and address as listing identity while held; enabled
+   * false and deviceHeld prevent any runtime or command. `blobScenes` is empty.
    *
    * @returns {import("../types.js").StructuralOverlays}
    */
@@ -686,7 +687,13 @@ export class OverlayService extends EventEmitter {
         if (blob.confirmed)
           structural.blobDevices.push({ ...entry, name: entry.name });
         else if (allowed.patch.enabled === false)
-          structural.blobDevices.push({ name: entry.name, enabled: false });
+          structural.blobDevices.push({
+            name: entry.name,
+            // Identity for a disabled blob-only device, never permission to
+            // use its unconfirmed address: deviceHeld also keeps it stopped.
+            ...(allowed.held ? { type: entry.type, ip: entry.ip } : {}),
+            enabled: false,
+          });
       }
       if (blob.confirmed && object(value.scenes))
         structural.blobScenes = value.scenes;

@@ -921,6 +921,37 @@ test("overlay rule 25 (R4-5): a blob that is not confirmed after a reconnect pat
   assert.equal(world.runtime.device(D)?.held, false);
   assert.ok(world.runtime.device("extra"));
 });
+test("gate r3 C1: a disabled blob-only device stays listed and held while retained replay waits", async (t) => {
+  const world = await serviceWorld(t);
+  const name = "blob-disabled";
+  const entry = { name, type: "ulanzi", ip: world.awtrix.address, enabled: false };
+  await world.inject(world.topics.overlayBlob, JSON.stringify({ devices: [entry] }));
+  const before = world.state.view(name);
+  assert.ok(before, "the confirmed blob lists the disabled device");
+  assert.equal(before.origin, "blob");
+  assert.equal(before.desired.enabled, false);
+  const release = world.broker.holdRetained();
+  t.after(release);
+  await world.reconnect();
+  const held = world.state.view(name);
+  assert.ok(held, "the unconfirmed blob must keep the disabled device visible");
+  assert.equal(held.incarnation, before.incarnation, "reconfirmation preserves the device's life");
+  assert.equal(held.type, entry.type);
+  assert.equal(held.desired.enabled, false);
+  assert.equal(held.desired.held, true);
+  assert.equal(world.runtime.device(name)?.held, true);
+  assert.equal(world.runtime.device(name)?.enabled, false);
+  await world.clock.advance(3000);
+  assert.equal([...world.app.modules.sceneRuntime.instances].some((instance) => instance.device === name), false, "the held identity starts no scene runtime");
+  assert.equal(world.app.modules.scheduler.runtimes.has(name), false, "the unconfirmed address starts no driver or display command");
+  release();
+  await until(() => world.overlays.get("blob")?.confirmed === true);
+  await world.flush();
+  const confirmed = world.state.view(name);
+  assert.equal(confirmed.incarnation, before.incarnation);
+  assert.equal(confirmed.desired.held, false);
+  assert.equal(confirmed.desired.enabled, false, "reconfirmation does not lift the explicit switch-off");
+});
 test("overlay rule 26 (R4-1): every change of what an overlay record does is announced once: the service's changed event names a device when its records wait after a connect, and again when the replay confirms them without changing a value; a state store that computes only on that event shows what GET /api/v2/overlays lists", async (t) => {
   const world = await serviceWorld(t);
   await world.inject(world.topics.overlayDeviceScene(D), "B");
