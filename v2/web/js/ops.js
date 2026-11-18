@@ -217,6 +217,7 @@ export function failureText(error) {
  * @property {string} [label] the busy label
  * @property {unknown} [value] what the operation asks for (shown while it runs)
  * @property {(result: T) => (string|null|void)} [done] runs only while the operation is current; what it returns is the slot's note
+ * @property {(result: T) => (string|null)} [note] pure slot note, evaluated under slot ownership independently of page callback projections; overrides done's return
  * @property {(error: unknown) => (string|void)} [describe] the failure sentence to keep, when it is not the error's own
  * @property {(error: unknown) => void} [failed] runs only while the operation is current, after the failure was kept
  * @property {Ownership} [owner] inherited capture, never refreshed by deferred work
@@ -327,6 +328,7 @@ function run(key, work, options) {
       let note = null;
       try {
         if (!projections.done || current(projections.done)) note = options.done?.(result) ?? null;
+        if (options.note && current()) note = options.note(result);
       } catch {
         // What the page does with an answer it took cannot undo the answer.
       }

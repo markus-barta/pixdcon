@@ -54,7 +54,8 @@ export function createDraftBook() {
     resets,
     /** @returns {number} the newest draft number of this form */
     draft: () => draft,
-    /** Identity of feedback still belonging to an unsaved draft. */
+    /** Historical book-based feedback identity: retained for tests and the
+     * M1 regression mutant. The form uses its scheduled preview identity. */
     feedbackDraft: () => edits.size > 0 ? draft : 0,
     /** A new definition needs a new preview, retaining each edit's identity. */
     revalidate() {

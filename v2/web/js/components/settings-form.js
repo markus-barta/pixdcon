@@ -532,10 +532,15 @@ export function createSettingsForm(host, options) {
         effects: sceneEffects,
         value: "save",
         label: "Saving…",
+        // eslint-disable-next-line no-unused-vars -- Preserve the frozen Save mutant's callback anchor.
         done: (answer) => {
           // What was saved leaves the form; what was typed after the click stays.
           mine.book.saved(plan.committed, plan.body.reset);
+          // An invalid next edit must not revive the committed preview's identity.
+          if (mine.previewDraft <= plan.body.draft) mine.previewDraft = 0;
           if (shown(mine) && mine.book.edits.size > 0) preview();
+        },
+        note: (answer) => {
           const notCleared = answer.body?.overlaysNotCleared ?? [];
           return notCleared.length
             ? `Saved · ${notCleared.length} MQTT ${notCleared.length === 1 ? "overlay" : "overlays"} could not be cleared`
@@ -565,6 +570,7 @@ export function createSettingsForm(host, options) {
     if (slotBusy(key)) return;
     const id = session();
     mine.book.clear();
+    mine.previewDraft = 0;
     start(
       key,
       (current) =>
@@ -608,7 +614,7 @@ export function createSettingsForm(host, options) {
         effects: sceneEffects,
         value: "clear",
         label: "Clearing…",
-        done: (answer) => {
+        note: (answer) => {
           const failed = answer.body?.failed ?? [];
           return failed.length ? `${failed.length} could not be cleared` : null;
         },

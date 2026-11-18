@@ -8687,8 +8687,8 @@ function r4xExtract(files) {
       // range, spans: the continuation's own code and the code it calls (offsets in the file), for the guard-removal sweep.
       rows.push({ site: `${file}:${r4xLineOf(code, at)}`, file, line: r4xLineOf(code, at), kind, fn: holder(at), what, writes, effects: [...effects].sort(), via: [...via].sort(), range, spans });
     };
-    // 1. ops.js callbacks: done (what it returns is the slot's note), failed, describe (the slot's failure text)
-    for (const m of code.matchAll(/\b(done|failed|describe)\s*:\s*/g)) {
+    // 1. ops.js callbacks: done, pure slot note, failed, describe (slot failure text)
+    for (const m of code.matchAll(/\b(done|note|failed|describe)\s*:\s*/g)) {
       const range = r4xFunctionAt(code, fns, m.index + m[0].length);
       const named = /^([A-Za-z_$][\w$]*)\s*[,}\n]/.exec(code.slice(m.index + m[0].length));
       const body = range ? code.slice(range[0], range[1] + 1) : "";
@@ -8696,7 +8696,7 @@ function r4xExtract(files) {
       const text = /["'`]|\b[A-Z][A-Z_]{2,}\b/;
       const returns = range && (code[range[0]] !== "{" ? text.test(body) : [...body.matchAll(/\breturn\s+([^;]*)/g)].some((r) => text.test(r[1])));
       /** @type {string[]} */
-      const extra = m[1] === "describe" ? ["slot failure text"] : m[1] === "done" && returns ? ["slot note"] : [];
+      const extra = m[1] === "describe" ? ["slot failure text"] : (m[1] === "note" || m[1] === "done" && returns) ? ["slot note"] : [];
       add(`ops ${m[1]}`, m.index, range, extra, named?.[1] ?? "");
     }
     // 2. await: from the awaited expression to the end of the async function that holds it
@@ -8746,7 +8746,7 @@ function r4xExtract(files) {
       add(`timer ${m[1]}`, m.index, [open, r4xMatch(code, open)]);
     }
     // The cross-check: an independent line search; every hit must lie inside a continuation of the inventory.
-    const SEARCH = /\bawait\b|\.then\s*\(|\.catch\s*\(|\.finally\s*\(|\bsetTimeout\s*\(|\bsetInterval\s*\(|\bdone\s*:|\bfailed\s*:|\bdescribe\s*:|\.onopen\b|\.onerror\b|\.onmessage\b|source\.addEventListener/;
+    const SEARCH = /\bawait\b|\.then\s*\(|\.catch\s*\(|\.finally\s*\(|\bsetTimeout\s*\(|\bsetInterval\s*\(|\bdone\s*:|\bnote\s*:\s*(?:[A-Za-z_$][\w$]*\s*=>|\([^)]*\)\s*=>|function\b)|\bfailed\s*:|\bdescribe\s*:|\.onopen\b|\.onerror\b|\.onmessage\b|source\.addEventListener/;
     const lines = code.split("\n");
     let offset = 0;
     lines.forEach((line, i) => {
@@ -8899,12 +8899,13 @@ const R4_INVENTORY = [
   "web/js/components/recovery-dialog.js · retry · ops failed · render",
   "web/js/components/recovery-dialog.js · retry · await · store",
   "web/js/components/settings-form.js · load · ops failed · page state, render",
-  "web/js/components/settings-form.js · save · ops done · field rejection, page callback, page state, preview feedback, render, request start, reset, slot drop, slot note, store",
+  "web/js/components/settings-form.js · save · ops done · field rejection, page callback, page state, preview feedback, render, request start, reset, slot drop, store",
+  "web/js/components/settings-form.js · save · ops note · page state, slot note",
   "web/js/components/settings-form.js · save · ops describe · slot failure text",
   "web/js/components/settings-form.js · save · ops failed · field rejection, page callback, page state, preview feedback, render, request start, slot drop, store",
   "web/js/components/settings-form.js · revert · ops done · page callback, page state, preview feedback",
   "web/js/components/settings-form.js · revert · ops describe · slot failure text",
-  "web/js/components/settings-form.js · clearOverlays · ops done · slot note",
+  "web/js/components/settings-form.js · clearOverlays · ops note · slot note",
   "web/js/components/settings-form.js · clearOverlays · ops describe · slot failure text",
   "web/js/components/settings-form.js · enqueue · await · field rejection, page callback, page state, preview feedback, render, request start, slot drop, store",
   "web/js/components/settings-form.js · enqueue · await · none",
@@ -8947,7 +8948,7 @@ const R4_INVENTORY = [
   "web/js/pages/config.js · addDevice · await · store",
   "web/js/pages/device.js · act · ops done · page state",
   "web/js/pages/device.js · act · ops failed · page state",
-  "web/js/pages/device.js · copyScene · ops done · slot note",
+  "web/js/pages/device.js · copyScene · ops note · slot note",
   "web/js/pages/device.js · act · await · store",
   "web/js/pages/devices.js · addDevice · ops done · slot note",
   "web/js/pages/devices.js · chooseScene · await · store",
@@ -9030,7 +9031,9 @@ test("r4 inventory: persistent UI state writers across imported helpers all decl
   // preview). Invalid-keystroke failure/success and newer-edit controls
   // exercise this writer; definition reset/revalidation retain their cases.
   // Owner tags and identity projections are unchanged.
-  assert.equal(digest, "052db468e6cea096e5c985f9bff2b2fe7eefcb99510837f0467bd4f9be8890be", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+  // B3 r4 inventory-only: 389 -> 391; Save/Revert retire mine.previewDraft.
+  // V1/V2/V3 named retirement cases and newer-edit controls cover both writes.
+  assert.equal(digest, "7be1002132c5728930567bf26e393e01ec6737b843cfc3d4bdc619e2991bc78a", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
 });
 test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
   for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {
@@ -12750,7 +12753,7 @@ test("r4 harness self-test: B3 scene family has controls and must-fail central s
       const kind = r4KindOf(name);
       assert.deepEqual(await r5B3SceneCase(t, kind, end), [], `${name}/${end}: real scene guard control`);
       const failure = end !== "success" || name === "settings save rejected";
-      const callback = name === "settings load" ? failure : ["device copy", "settings revert", "settings clear overlays"].includes(name) ? !failure : true;
+      const callback = ["device copy", "settings clear overlays"].includes(name) ? false : name === "settings load" ? failure : name === "settings revert" ? !failure : true;
       if (callback) assert.ok((await r5B3SceneCase(t, kind, end, mutant, true)).some((found) => /retired scene/.test(found)), `${name}/${end}: an admitted callback changing the visible scene must fail`);
     }
 });
@@ -13653,5 +13656,152 @@ test("r4 harness self-test: B3 r3 invalid keystroke must fail with 0c55d65 book.
   for (const [variant, end] of R5_B3_UNPARSED) {
     await r5B3UnparsedFeedback(t, variant, end);
     await assert.rejects(r5B3UnparsedFeedback(t, variant, end, device), /the failed valid edit must say not previewed|the successful preview must clear the stale failure/);
+  }
+});
+
+// PIXD-99 B3 r4: retiring edits retires their scheduled preview identity.
+/** @param {any} t @param {string} variant @param {R4End} end @param {any} [device] */
+async function r5B3RetiredPreview(t, variant, end, device) {
+  const kind = r4KindOf("settings preview");
+  const world = r4World(kind.world);
+  const ctx = /** @type {any} */ ({ world, calls: r4Server(world), kind,
+    modules: { ...await r8MeasurementModules(), ...(device ? { device } : {}) },
+    edits: new Map(), changed: new Set(), shows: 0, clock: 0, opening: 0, revision: 0, visit: 0 });
+  world.story = ctx;
+  r4NewEpoch(world);
+  const status = () => r4Text(ctx.root.querySelector(".set-status"));
+  try {
+    r4Open(ctx, "device");
+    await r4AnswerAll(ctx);
+    r4Edit(ctx, "n", "2");
+    await settle();
+    const preview = r4Pending(ctx, "PUT", "/settings/clock/preview");
+    if (variant === "V1") {
+      preview.answer(500, {});
+      await settle();
+      assert.match(status(), /Not previewed:.*500/, "B3 r4 V1: the earlier failure is visible");
+    }
+    if (variant === "V3") {
+      r4Click(saveButton(ctx.root));
+      await settle();
+      r4Pending(ctx, "PUT", "/settings/clock").ok();
+      await settle();
+      assert.match(status(), /Saved to config.json/, "B3 r4 V3: Save committed the submitted edit");
+    } else {
+      r4Click(ctx.root.querySelector('.set-h [data-act="revert"]'));
+      await settle();
+    }
+    const previews = r5Previews(ctx.calls).length;
+    r4Type(field(ctx.root, "m"), "");
+    await settle();
+    assert.equal(r5Previews(ctx.calls).length, previews, "B3 r4: the invalid edit schedules no preview");
+    const held = variant === "V1" ? r4Pending(ctx, "DELETE", "/settings/clock/preview") : preview;
+    if (end === "success") held.ok();
+    else if (end === "500") held.answer(500, {});
+    else { held.abandon(); t.mock.timers.tick(15_000); await settle(); held.late(); }
+    await settle();
+    if (variant === "V2") {
+      r4Pending(ctx, "DELETE", "/settings/clock/preview").ok();
+      await settle();
+    }
+    assert.doesNotMatch(status(), /Not previewed:/, "B3 r4: retired preview failure must leave the status");
+    assert.doesNotMatch(r4Text(titleLine(ctx.root)), /not previewed|Preview failed|could not preview/i, "B3 r4: retired preview failure must leave the device title");
+    assert.match(status(), /M is not valid/, "B3 r4: the remaining invalid edit explains the status");
+    assert.match(r4Text(ctx.root.querySelector('[data-row="n"] .mk')), variant === "V3" ? /^saved/ : /^default/, "B3 r4: n is saved or reverted, never an unsaved failed preview");
+    assert.equal(r4State().settings.get("d1/clock").preview, null, "B3 r4: no retired preview remains in the store");
+  } finally { r4Close(ctx); await r4AnswerAll(ctx); world.story = null; }
+}
+
+const R5_B3_RETIRED_PREVIEWS = /** @type {Array<[string, R4End]>} */ ([
+  ["V1", "success"], ["V2", "500"], ["V2", "timeout"], ["V3", "500"], ["V3", "timeout"],
+]);
+for (const [variant, end] of R5_B3_RETIRED_PREVIEWS)
+  test(`r4 harness: B3 r4 ${variant} retired preview stays retired after an invalid edit × ${end}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await r5B3RetiredPreview(t, variant, end);
+  });
+
+test("r4 harness self-test: B3 r4 V1–V3 must fail without preview retirement; V3 catches cf7b4c0 commit feedback", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const unretired = await r4DeviceWithForm([
+    ["if (mine.previewDraft <= plan.body.draft) mine.previewDraft = 0;", ""],
+    ["mine.book.clear();\n    mine.previewDraft = 0;", "mine.book.clear();"],
+  ]);
+  // cf7b4c0 did not gate preview failure on its draft: a committed preview
+  // still wrote its failure. Restore that behaviour for the V3 histories.
+  const b2Commit = await r4DeviceWithForm([
+    ["effects: { ...sceneEffects, failed: feedback },", "effects: sceneEffects,"],
+  ]);
+  for (const [variant, end] of R5_B3_RETIRED_PREVIEWS) {
+    await r5B3RetiredPreview(t, variant, end);
+    await assert.rejects(r5B3RetiredPreview(t, variant, end, unretired), /retired preview failure must leave/);
+    if (variant === "V3")
+      await assert.rejects(r5B3RetiredPreview(t, variant, end, b2Commit), /retired preview failure must leave/);
+  }
+});
+
+const R5_B3_SLOT_NOTES = [
+  { name: "Save note", kind: "settings save", note: "Saved to config.json" },
+  { name: "Copy note", kind: "device copy", note: "Created clock-copy at ./scenes/clock-copy.js." },
+  { name: "Clear warning", kind: "settings clear overlays", note: "1 could not be cleared", extra: { failed: ["n"] } },
+  { name: "Save overlay warning", kind: "settings save", note: "Saved · 1 MQTT overlay could not be cleared", extra: { overlaysNotCleared: ["n"] } },
+];
+
+/** @param {any} t @param {typeof R5_B3_SLOT_NOTES[number]} story @param {any} [device] */
+async function r5B3SlotNote(t, story, device) {
+  const kind = r4KindOf(story.kind);
+  const world = r4World(kind.world);
+  const ctx = /** @type {any} */ ({ world, calls: r4Server(world), kind,
+    modules: { ...await r8MeasurementModules(), ...(device ? { device } : {}) },
+    edits: new Map(), changed: new Set(), shows: 0, clock: 0, opening: 0, revision: 0, visit: 0 });
+  world.story = ctx;
+  r4NewEpoch(world);
+  const key = story.kind === "device copy" ? "copy:clock" : `settings:d1/clock@${world.epoch}/1`;
+  const visible = () => [r4Value(field(ctx.root, "n")), r4Text(ctx.root.querySelector(".set-status")), r4Text(ctx.root.querySelector(".adv .slot"))];
+  try {
+    r4Open(ctx, "device");
+    await r4AnswerAll(ctx);
+    await kind.setup?.(ctx);
+    await settle();
+    await kind.begin?.(ctx);
+    await settle();
+    const held = r4Pending(ctx, kind.request[0], kind.request[1]);
+    r4Switch(ctx);
+    await settle();
+    await r4AnswerAll(ctx, held);
+    const weather = visible();
+    held.answer(200, { .../** @type {any} */ (r4Answer(world, held)), ...story.extra });
+    await settle();
+    await r4AnswerAll(ctx);
+    assert.deepEqual(visible(), weather, "B3 r4: Clock's slot note leaves Weather's fields and feedback untouched");
+    assert.equal(r4State().ops.get(key)?.note, story.note, "B3 r4: the old slot keeps its own note while Weather shows");
+    r4Switch(ctx);
+    await settle();
+    await r4AnswerAll(ctx);
+    assert.match(r4Text(ctx.root.querySelector("#h-settings")), /Clock/);
+    assert.equal(r4State().ops.get(key)?.note, story.note, "B3 r4: the old slot note survives A→B→A");
+    const said = r4Text(ctx.root.querySelector(story.kind === "device copy" ? ".adv .slot" : ".set-status"));
+    assert.ok(said.includes(story.note), `B3 r4: Clock says its own note on return: ${said}`);
+    assert.equal(r4State().ops.get(key)?.busy, false);
+  } finally { r4Close(ctx); await r4AnswerAll(ctx); world.story = null; }
+}
+
+for (const story of R5_B3_SLOT_NOTES)
+  test(`r4 harness: B3 r4 ${story.name} survives A→B→A × success`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await r5B3SlotNote(t, story);
+  });
+
+test("r4 harness self-test: B3 r4 slot notes must fail with 1c80077 scene-gated note behaviour", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ops = await r4Mutant("ops.js", [[
+    "if (options.note && current()) note = options.note(result);",
+    'if (options.note && current(projections.done ?? ["epoch"])) note = options.note(result);',
+  ]]);
+  const form = await r4Mutant("components/settings-form.js", [], { "../ops.js": ops });
+  const device = (await r5Module("pages/device.js", [], { "../ops.js": ops, "../components/settings-form.js": form })).page;
+  for (const story of R5_B3_SLOT_NOTES) {
+    await r5B3SlotNote(t, story);
+    await assert.rejects(r5B3SlotNote(t, story, device), /the old slot keeps its own note/);
   }
 });

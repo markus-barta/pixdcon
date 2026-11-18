@@ -217,7 +217,7 @@ function copyScene(copyForm) {
       owns: { scene: () => getState().devices.get(view.name)?.desired?.scene?.scene },
       effects: { start: ["epoch", "scene"], done: ["epoch", "scene"], failed: ["epoch", "scene"] },
       label: "Creating…",
-      done: (answer) =>
+      note: (answer) =>
         replace
           ? `${key} now uses the copy; the original file was backed up${answer.body?.backup ? ` to ${answer.body.backup}` : ""}.`
           : `Created ${answer.body?.scene?.key ?? ""} at ${answer.body?.path ?? ""}.`,
