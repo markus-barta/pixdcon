@@ -50,7 +50,11 @@
  *    typed during Revert leaves after Revert's end. Each request is
  *    bounded in time (api.js); one that runs out fails and frees the lane
  *  - each preview outcome uses `preview:…` of its scope: the central token
- *    guard admits its field rejection, failure and preview-end cleanup
+ *    guard admits its field rejection, failure and preview-end cleanup.
+ *    Rejections belong to the submitted edit and definition; feedback also
+ *    needs the newest uncommitted draft. A changed definition drops old
+ *    verdicts and revalidates remaining edits under a newer preview draft,
+ *    preserving the edit identities a Save may still acknowledge
  *  - an end that fails is kept in the slot `end:<device>/<scene>`; the
  *    device page says it with Retry (failedEnds, retryEnd). A newer
  *    preview of the scene, or an end that works, replaces it
@@ -61,7 +65,7 @@
 import { ApiError, request } from "../api.js";
 import { esc, grouped } from "../format.js";
 import { icon, setAttr, setClass, setHtml } from "../dom.js";
-import { busy as slotBusy, capture, clearNote, drop, failureText, follow, op, owned, start } from "../ops.js";
+import { busy as slotBusy, capture, clearNote, derive, drop, effect, failureText, follow, op, owned, start } from "../ops.js";
 import { applyAnswer, getState } from "../store.js";
 import { createDraftBook } from "../view/drafts.js";
 
@@ -362,6 +366,16 @@ export function createSettingsForm(host, options) {
   const endKey = (/** @type {Scope} */ of) => endSlot(device, String(of.scene), of);
   /** Whether what came back for this scope may change the form: it is the one shown. */
   const shown = (/** @type {Scope} */ of) => !destroyed && of === scope;
+  // A scope owns requests and slot feedback; each preview additionally
+  // captures the definition and active draft it was actually sent under.
+  const owns = (/** @type {Scope} */ of) => derive(of.owner, {
+    scene: () => scope.scene,
+    opening: () => shown(of),
+    schema: () => JSON.stringify(current?.schema),
+    draft: () => of.book.feedbackDraft(),
+  });
+  const sceneEffects = { start: ["epoch", "scene"], slot: ["epoch", "scene"] };
+  const feedback = ["epoch", "scene", "opening", "schema", "draft"];
 
   /** Tell the page when the last preview of the scope shown failed, or works again. */
   function report() {
@@ -422,7 +436,8 @@ export function createSettingsForm(host, options) {
       loadKey(mine),
       async () => applyAnswer(await request("GET", base(mine), { resource: resource(mine) })),
       {
-        owner: mine.owner,
+        owner: owns(mine),
+        effects: { ...sceneEffects, failed: ["epoch", "scene", "opening"] },
         failed: (error) => {
           if (!shown(mine) || phase === "ready") return;
           phase = "failed";
@@ -450,6 +465,7 @@ export function createSettingsForm(host, options) {
     if (!owned(of.owner, ["epoch"])) return;
     const plan = of.book.previewPlan(id);
     of.previewed = true;
+    const owner = owns(of);
     // The lane orders transport; its operation slot owns each outcome. A
     // replacement preview can supersede this one without changing the scope.
     try {
@@ -462,10 +478,13 @@ export function createSettingsForm(host, options) {
         applyAnswer(answer);
         return answer;
       }, {
-        owner: of.owner,
+        owner,
+        effects: { ...sceneEffects, failed: feedback },
         done: (answer) => {
-          of.book.rejected(plan.sent, answer.body?.rejected);
-          of.previewFailure = null;
+          effect(owner, ["epoch", "scene", "schema"], () => {
+            of.book.rejected(plan.sent, answer.body?.rejected);
+          });
+          effect(owner, feedback, () => { of.previewFailure = null; });
           drop(endKey(of));
         },
         failed: (error) => {
@@ -503,12 +522,13 @@ export function createSettingsForm(host, options) {
         return answer;
       },
       {
-        owner: mine.owner,
+        owner: owns(mine),
+        effects: sceneEffects,
         value: "save",
         label: "Saving…",
         done: (answer) => {
           // What was saved leaves the form; what was typed after the click stays.
-          mine.book.saved(plan.committed, plan.body.reset);
+          mine.book.saved(plan.committed, plan.body.reset, plan.body.draft);
           if (shown(mine) && mine.book.edits.size > 0) preview();
           const notCleared = answer.body?.overlaysNotCleared ?? [];
           return notCleared.length
@@ -553,7 +573,8 @@ export function createSettingsForm(host, options) {
           drop(endKey(mine));
         }),
       {
-        owner: mine.owner,
+        owner: owns(mine),
+        effects: { ...sceneEffects, done: feedback },
         value: "revert",
         label: "Reverting…",
         done: () => {
@@ -577,7 +598,8 @@ export function createSettingsForm(host, options) {
         return answer;
       },
       {
-        owner: mine.owner,
+        owner: owns(mine),
+        effects: sceneEffects,
         value: "clear",
         label: "Clearing…",
         done: (answer) => {
@@ -985,8 +1007,15 @@ export function createSettingsForm(host, options) {
         (scope.epoch === null || settingsState.epoch === scope.epoch) &&
         (scope.incarnation === 0 || life === 0 || life === scope.incarnation)
       ) {
+        const previousDefinition = current?.schema ? JSON.stringify(current.schema) : null;
         current = settingsState;
         phase = "ready";
+        if (previousDefinition !== null && previousDefinition !== JSON.stringify(current.schema) && scope.book.edits.size > 0) {
+          scope.book.revalidate();
+          scope.previewFailure = null;
+          report();
+          preview();
+        }
         // Values of the scope are here: its load is no longer wanted, and
         // a late failure of it changes nothing (the operation rule, 2).
         scope.read?.retire();

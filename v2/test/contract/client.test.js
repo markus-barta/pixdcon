@@ -5297,8 +5297,8 @@ const R5_PROBES = [
       const formSource = readFileSync(new URL("../../web/js/components/settings-form.js", import.meta.url), "utf8");
       assert.equal(
         [...formSource.matchAll(/\bpreview\(\)/g)].length,
-        5,
-        "the four preview callers and declaration are all accounted for",
+        6,
+        "the five preview callers (including definition revalidation) and declaration are all accounted for",
       );
       const m = await r5Module("components/settings-form.js", [
         ["let ids = 0;", "let ids = 0;\nexport const __r5Entries = [];"],
@@ -6382,45 +6382,16 @@ const R4_KNOWN = new Set([
   "config patch × reopen × timeout, last",
   "config patch × revisit × success",
   "config patch × type × success",
-  "settings preview rejected × schema × success",
-  "settings preview × commit × 500",
-  "settings preview × commit × timeout",
-  "settings preview × newer draft × 500",
-  "settings preview × newer draft × timeout",
-  "settings preview × other field × 500",
-  "settings preview × other field × timeout",
-  "settings preview × schema × 500",
-  "settings preview × schema × success",
-  "settings preview × schema × timeout",
   "settings save rejected × membership × 500",
   "settings save rejected × membership × refused",
   "settings save rejected × membership × timeout",
-  "settings save rejected × schema × 500",
-  "settings save rejected × schema × refused",
-  "settings save rejected × schema × timeout",
   "settings save × membership × 500",
   "settings save × membership × success",
   "settings save × membership × timeout",
-  "settings save × schema × 500",
-  "settings save × schema × timeout",
   // r6: Reset stories expose the same phase-B ownership bugs.
-  "settings reset preview × commit × 500",
-  "settings reset preview × commit × timeout",
-  "settings reset preview × newer draft × 500",
-  "settings reset preview × newer draft × timeout",
-  "settings reset preview × other field × 500",
-  "settings reset preview × other field × timeout",
-  "settings reset preview × reset replaced by an edit × 500 (gate r5b G)",
-  "settings reset preview × reset replaced by an edit × timeout (gate r5b G)",
-  "settings reset preview × reset replaced by equal default × 500 (gate r5b G)",
-  "settings reset preview × reset replaced by equal default × timeout (gate r5b G)",
-  "settings reset preview × schema × 500",
-  "settings reset preview × schema × timeout",
   "settings reset save × membership × 500",
   "settings reset save × membership × success",
   "settings reset save × membership × timeout",
-  "settings reset save × schema × 500",
-  "settings reset save × schema × timeout",
 ]);
 
 const R4_STRICT = process.env.R4_HARNESS_STRICT === "1";
@@ -9046,7 +9017,10 @@ test("r4 inventory: persistent UI state writers across imported helpers all decl
   // B1a r5: 384 -> 386: Raw mount composes its disposers; Settings load
   // retains its returned task for captured-token retirement; tags unchanged.
   // Covered by deferred-resource closed/epoch/snapshot controls; no retags.
-  assert.equal(digest, "77e068d77242ce8aa4cb7b60f7fc83c8dedc8166c2c55cd0fa7f4a7b01aeb7ce", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+  // PIXD-99 B3 inventory-only: 386 -> 389; new-definition feedback reset,
+  // revalidation's preview draft and monotonically committed draft. Same
+  // owner tags; schema/commit/newer-edit controls exercise all three writes.
+  assert.equal(digest, "950c7583350d15aa9f311fb2daaa412bb86b4c770903de3e509a8a53e6cac7a0", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
 });
 test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
   for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {
@@ -12681,4 +12655,417 @@ test("r4 harness self-test: B2 original page-local X10b cannot cross the central
   const returning = (await r5Module("pages/device.js", /** @type {Array<[string,string]>} */ (original.edits))).page;
   for (const end of /** @type {R4End[]} */ (["500", "timeout"]))
     assert.deepEqual(await r4Case(t, r4KindOf("device return"), "reincarnate", end, { modules: { device: returning } }), [], `X10b cannot find an old life failure (${end})`);
+});
+
+// PIXD-99 B3: additive named histories. Frozen comparisons and dependencies
+// remain unchanged; the scene transition answers values and emits no edit.
+R4_STEPS["scene values without editing"] = ["scene"];
+R4_STEP["scene values without editing"] = async (ctx) => {
+  const edits = [...ctx.edits];
+  const kind = ctx.kind;
+  // Reuse the frozen change's isolating branch. Its data-mutant controls
+  // must still reach every scene history, including this newly named one.
+  ctx.kind = { ...kind, isolation: true };
+  try { await R4_CHANGE.scene(ctx); } finally { ctx.kind = kind; }
+  const scene = r4Showing(ctx.world);
+  await settle();
+  ctx.calls.find((/** @type {any} */ call) => !call.answered && call !== ctx.op && call.method === "GET" && call.path.endsWith(`/settings/${scene}`))?.ok();
+  await settle();
+  await r4FormReady(ctx);
+  assert.deepEqual([...ctx.edits], edits, "B3 scene switch: nobody types or resets a field");
+  assert.ok(r4Text(ctx.root.querySelector("#h-settings")).includes(scene === "clock" ? "Clock" : "Weather"), "B3 scene switch: new values are shown before the old end");
+};
+
+/** Observe native scene-owned outcomes too: distinct keys can hide an old
+ * outcome from the current form. Async context attributes token-zero writes
+ * to their actual operation, never another operation reusing the key.
+ * @param {any} t @param {R4Kind} kind @param {R4End} end @param {any} [opsOverride]
+ */
+async function r5B3SceneCase(t, kind, end, opsOverride) {
+  if (!r8HarnessLoaded) await r8HarnessReady;
+  await r8MeasurementModules();
+  const { subscribe } = await import("../../web/js/store.js");
+  const global = /** @type {any} */ (globalThis);
+  const descriptor = Object.getOwnPropertyDescriptor(global, "__r8Operation");
+  let hook = global.__r8Operation;
+  const context = new AsyncLocalStorage();
+  /** @type {Set<string>} */ const stale = new Set();
+  const scene = () => r4State().devices.get("d1")?.desired?.scene?.scene;
+  const observe = (/** @type {any} */ run, /** @type {string} */ key, /** @type {any} */ work, /** @type {any} */ options = {}) => {
+    const mine = { key, scene: scene(), epoch: r4State().epoch,
+      // The native resource determines the obligation, independently of a
+      // product declaration that a lost-projection mutant may remove.
+      sceneOwned: ["copy:", "load:", "preview:", "settings:"].some((prefix) => key.startsWith(prefix)) };
+    const retired = () => mine.sceneOwned && mine.epoch === r4State().epoch && mine.scene !== scene();
+    return context.run(mine, () => hook(opsOverride ? opsOverride[run.name] : run, key, work, { ...options,
+      done: (/** @type {any} */ result) => { if (retired()) stale.add(`${key}: retired scene done callback`); return options.done?.(result); },
+      failed: (/** @type {any} */ error) => { if (retired()) stale.add(`${key}: retired scene failed callback`); return options.failed?.(error); },
+    }));
+  };
+  Object.defineProperty(global, "__r8Operation", { configurable: true, get: () => observe, set: (next) => { hook = next; } });
+  const stop = subscribe((state) => state.ops, (slots) => {
+    const mine = context.getStore();
+    if (mine?.sceneOwned && mine.epoch === r4State().epoch && mine.scene !== scene() && slots.get(mine.key))
+      stale.add(`${mine.key}: retired scene native outcome was written`);
+  });
+  const first = r8Stories.length;
+  try {
+    const differences = await r4Case(t, kind, "scene values without editing", end);
+    const stories = r8Stories.slice(first).filter((story) => story.kind === kind.name && story.completed);
+    assert.ok(stories.some((story) => r8StoryChanges(story.a.identities, story.b.identities).inputs.join() === "scene"), "B3 named scene story changes scene alone");
+    return [...differences, ...stale];
+  } finally { stop(); Object.defineProperty(global, "__r8Operation", /** @type {PropertyDescriptor} */ (descriptor)); }
+}
+
+const R5_B3_SCENE_NAMES = ["device copy", ...R4_KINDS.filter((kind) => kind.name.startsWith("settings ") && !["settings end", "settings end retry"].includes(kind.name)).map((kind) => kind.name)];
+for (const name of R5_B3_SCENE_NAMES)
+  for (const end of R4_ENDS)
+    test(`r4 harness: ${name} × scene switch, new values answered, nothing typed × ${end} (B3)`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      assert.deepEqual(await r5B3SceneCase(t, r4KindOf(name), end), []);
+    });
+
+test("r4 harness self-test: B3 scene family has controls and must-fail central scene admission mutants", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mutant = await r5Module("ops.js", [
+    ["if (read() !== owner.values[name]) return false;", "if (name !== 'scene' && read() !== owner.values[name]) return false;"],
+    // The load is independently retired by B1a when its scope changes.
+    ["if (owner.slot && op(owner.slot.key).token !== owner.slot.token) return false;", "if (false) return false;"],
+  ]);
+  for (const name of R5_B3_SCENE_NAMES)
+    for (const end of R4_ENDS) {
+      const kind = r4KindOf(name);
+      assert.deepEqual(await r5B3SceneCase(t, kind, end), [], `${name}/${end}: real scene guard control`);
+      assert.ok((await r5B3SceneCase(t, kind, end, mutant)).some((found) => /retired scene/.test(found)), `${name}/${end}: removed central scene admission must fail`);
+    }
+});
+
+/** The callback source is a minimum, not a frozen source-count waiver.
+ * @param {any[]} sites */
+function r5B3RequirePreviewSource(sites) {
+  assert.ok(sites.length >= 34, `B3 callback observation: ${sites.length} sources; 33 sources fails`);
+  assert.ok(sites.some((site) => site.id.startsWith("web/js/pages/device.js · state · previewFailure · ")), "B3 callback observation still lists pages/device.js · state · previewFailure");
+}
+
+test("r4 harness: B3 callback observation log retains pages/device.js · state · previewFailure, 33 sources fails", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const evidence = await r7RunAudits(t);
+  r5B3RequirePreviewSource(evidence.sites);
+  t_log(`B3 r7 observation: ${evidence.sites.length} sources; pages/device.js · state · previewFailure`);
+});
+
+test("r4 harness self-test: B3 missing callback source must fail beside its observed control", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { sites } = await r7RunAudits(t);
+  r5B3RequirePreviewSource(sites);
+  assert.throws(() => r5B3RequirePreviewSource(sites.filter((/** @type {any} */ site) => !site.id.startsWith("web/js/pages/device.js · state · previewFailure · "))), /33 sources fails/);
+  const files = r4WebFiles();
+  for (const shape of ["spread", "late assignment"]) {
+    const changed = files.map((file) => {
+      if (!file.file.endsWith("/pages/device.js")) return file;
+      /** @type {any} */ let call;
+      r8Walk(r8Syntax(file.src), (node) => {
+        if (node.type === "CallExpression" && node.callee.name === "createSettingsForm") call = node;
+      });
+      assert.ok(call, "B3 callback wiring: actual component call exists");
+      const options = call.arguments[1];
+      const object = file.src.slice(options.start, options.end);
+      const callback = options.properties.find((/** @type {any} */ property) => property.key?.name === "onPreviewFailure");
+      assert.ok(callback, "B3 callback wiring: actual callback exists");
+      if (shape === "spread")
+        return { ...file, src: file.src.slice(0, options.start) + "{ ...(" + object + ") }" + file.src.slice(options.end) };
+      const host = file.src.slice(call.arguments[0].start, call.arguments[0].end);
+      const handler = file.src.slice(callback.value.start, callback.value.end);
+      const replacement = "(() => { const lateOptions = {device: name, session: getSession}; lateOptions.onPreviewFailure = function" + handler + "; return createSettingsForm(" + host + ", lateOptions); })()";
+      return { ...file, src: file.src.slice(0, call.start) + replacement + file.src.slice(call.end) };
+    });
+    const extracted = r7OutcomeSites(changed);
+    assert.equal(extracted.length, 33, shape + ": the historical extraction gap is reproduced");
+    assert.throws(() => r5B3RequirePreviewSource(extracted), /33 sources fails/);
+  }
+});
+
+/** A future Settings outcome may be put in a piece whose declaration omits
+ * scene. Compare that actual new leaf explicitly at every post-change point;
+ * the existing dependency-driven comparisons and pieces stay untouched.
+ * @param {any} t @param {R4End} end @param {boolean} [mutant] */
+async function r5B3NewOutcome(t, end, mutant = false) {
+  const name = "B3 newly shown Settings outcome";
+  const pieces = R4_PAGES.device.pieces;
+  /** @type {Record<string, string>} */
+  const ops = mutant ? { "../ops.js": await r4Mutant("ops.js", [
+    ["if (read() !== owner.values[name]) return false;", "if (name !== 'scene' && read() !== owner.values[name]) return false;"],
+  ]) } : {};
+  const device = await r4DeviceWithForm([
+    ['<div class="set-status" role="status"></div>', '<div class="set-status" role="status"></div><span class="b3-new-outcome"></span>'],
+    ["done: (answer) => {\n          // What was saved", 'done: (answer) => {\n          q(".b3-new-outcome").textContent = "Save answered for the old scene";\n          // What was saved'],
+    ['failed: () => {\n          if (shown(mine)', 'failed: () => {\n          q(".b3-new-outcome").textContent = "Save failed for the old scene";\n          if (shown(mine)'],
+  ], ops);
+  R4_PAGES.device.pieces = (root) => [...pieces(root), [name, ["epoch"], r4Text(root.querySelector(".b3-new-outcome"))]];
+  try {
+    const kind = r4KindOf("settings save");
+    const reference = await r4Run(t, kind, "scene values without editing", end, "without", { device });
+    const got = await r4Run(t, kind, "scene values without editing", end, "case", { device });
+    const piece = got.points[0].get(`device: ${name}`);
+    assert.ok(piece);
+    assert.ok(!/** @type {string[]} */ (piece.deps).includes("scene"), "B3 LOW: the added piece deliberately has no scene dependency");
+    const differences = r4Differences("scene values without editing", got, reference, "without", false);
+    for (let i = 0; i < got.points.length; i += 1)
+      if (got.points[i].get(`device: ${name}`)?.value !== reference.points[i].get(`device: ${name}`)?.value)
+        differences.push(`${R4_POINTS[i]}: B3 new outcome without scene changed across the scene switch`);
+    return differences;
+  } finally { R4_PAGES.device.pieces = pieces; }
+}
+
+for (const end of R4_ENDS)
+  test(`r4 harness: B3 a new Settings outcome in a piece without scene is compared across scene switch, nothing typed × ${end}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    assert.deepEqual(await r5B3NewOutcome(t, end), []);
+  });
+
+test("r4 harness self-test: B3 new outcome without scene has controls and must-fail stale-outcome mutants", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const end of R4_ENDS) {
+    assert.deepEqual(await r5B3NewOutcome(t, end), []);
+    assert.ok((await r5B3NewOutcome(t, end, true)).some((found) => /B3 new outcome without scene/.test(found)), `${end}: the missing dependency cannot hide this new outcome`);
+  }
+});
+
+test("r4 harness: B3 revalidation preserves submitted edit and Reset identities while retiring committed feedback", () => {
+  const book = createDraftBook();
+  const n = book.edit("n", "2", { value: 2 });
+  const m = book.reset("m", 6, "6");
+  const sent = book.previewPlan("b3");
+  book.rejected(sent.sent, { n: "old definition refused n" });
+  assert.equal(book.errors().length, 1);
+  book.revalidate();
+  assert.equal(book.errors().length, 0, "the new definition drops only the old refusal");
+  assert.deepEqual([...book.previewPlan("b3").sent], [["n", n], ["m", m]], "revalidation retains each submitted edit's identity");
+  const plan = book.saveBody("b3");
+  assert.ok(plan);
+  assert.ok(Number(plan.body.draft) > m, "revalidation sends a newer transport draft");
+  book.revalidate();
+  const newer = book.feedbackDraft();
+  assert.ok(newer > Number(plan.body.draft));
+  book.saved(plan.committed, plan.body.reset, plan.body.draft);
+  assert.equal(book.feedbackDraft(), 0, "acknowledgement retires feedback when no edit remains");
+  assert.deepEqual([...book.resets], []);
+  const next = book.edit("n", "2", { value: 2 });
+  book.saved(plan.committed, plan.body.reset, plan.body.draft);
+  assert.equal(book.feedbackDraft(), next, "a repeated old acknowledgement cannot commit a newer equal-valued edit");
+  book.clear();
+  assert.equal(book.feedbackDraft(), 0, "Revert retires preview feedback immediately");
+  book.edit("json", "{", { error: "Not valid JSON" });
+  book.revalidate();
+  assert.equal(book.errors()[0][1].error, "Not valid JSON", "client parse errors survive definition changes");
+});
+
+test("r4 harness: B3 definition changes without edits and equal-definition updates send no extra preview", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await r5Form(t, await r5Module("components/settings-form.js"), async ({ world, form, values, calls, edit }) => {
+    world.schemas.set("clock", R4_SCHEMA_2);
+    form.update(values("clock"));
+    await settle();
+    assert.equal(r5Previews(calls).length, 0, "B3 definition: no draft means no revalidation work");
+    await edit("0");
+    const first = r5Previews(calls)[0];
+    first.ok();
+    await settle();
+    form.update(values("clock"));
+    await settle();
+    assert.equal(r5Previews(calls).length, 1, "B3 definition: equal definitions preserve the sent draft");
+    world.schemas.set("clock", R4_SCHEMA);
+    form.update(values("clock"));
+    await settle();
+    const next = r5Previews(calls)[1];
+    assert.ok(next, "B3 definition: the retained edit is revalidated");
+    assert.deepEqual(next.body.values, { n: 0 });
+    assert.ok(next.body.draft > first.body.draft, "B3 definition: the server sees a newer preview draft");
+    next.ok();
+    await settle();
+  });
+});
+
+test("r4 harness: B3 committing a revalidated draft clears its preview feedback", () => {
+  const book = createDraftBook();
+  book.edit("n", "2", { value: 2 });
+  book.revalidate();
+  const plan = book.saveBody("b3");
+  assert.ok(plan);
+  assert.equal(book.feedbackDraft(), plan.body.draft);
+  book.saved(plan.committed, plan.body.reset, plan.body.draft);
+  assert.equal(book.feedbackDraft(), 0, "B3 committed preview feedback is obsolete");
+});
+
+test("r4 harness: B3 first values create no preview before an edit", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await r5Form(t, await r5Module("components/settings-form.js"), async ({ calls }) => {
+    assert.equal(r5Previews(calls).length, 0, "B3 first values do not create a draft or preview");
+  });
+});
+
+test("r4 harness: B3 preview captures the actual form scene, definition, draft, commit and opening readers", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ops = await import("../../web/js/ops.js");
+  for (const boundary of ["scene", "schema", "draft", "commit", "opening"]) {
+    const module = await r5Module("components/settings-form.js", [
+      ["let ids = 0;", "let ids = 0;\nexport const __b3Owners = [];"],
+      ["const owner = owns(of);", "const owner = owns(of);\n    __b3Owners.push({owner, of});"],
+    ]);
+    await r5Form(t, module, async ({ world, form, values, edit, calls, show, root }) => {
+      await edit("2");
+      const { owner, of } = module.__b3Owners.at(-1);
+      assert.ok(owner, "B3 the held preview exposes its actual immutable capture");
+      const projection = boundary === "commit" ? "draft" : boundary;
+      assert.equal(ops.owned(owner, [projection]), true, `B3 ${boundary}: the current preview starts with a live capture`);
+      if (boundary === "scene") show("weather");
+      if (boundary === "schema") {
+        world.schemas.set("clock", R4_SCHEMA_2);
+        form.update(values("clock"));
+      }
+      if (boundary === "draft") await edit("3");
+      if (boundary === "commit") {
+        r4Click(saveButton(root));
+        await settle();
+        r4Pending({ calls }, "PUT", "/settings/clock").ok();
+        await settle();
+      }
+      if (boundary === "opening") form.destroy();
+      assert.equal(ops.owned(owner, [projection]), false, `B3 ${boundary}: actual form reader retires the captured effect`);
+      r5Previews(calls)[0].answer(500, {});
+      await settle();
+      assert.equal(of.previewFailure, null, `B3 ${boundary}: obsolete preview writes no scope feedback`);
+    });
+  }
+});
+
+test("r4 harness: B3 changed definition drops the old preview failure before revalidation answers", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await r5Form(t, await r5Module("components/settings-form.js"), async ({ world, form, values, edit, calls, reports, root }) => {
+    await edit("2");
+    r5Previews(calls)[0].answer(500, {});
+    await settle();
+    assert.ok(reports.at(-1));
+    world.schemas.set("clock", R4_SCHEMA_2);
+    form.update(values("clock"));
+    await settle();
+    assert.equal(reports.at(-1), null, "B3 definition: obsolete transport feedback is dropped immediately");
+    assert.doesNotMatch(r4Text(root.querySelector(".set-status")), /Not previewed:/);
+    assert.equal(r5Previews(calls).length, 2, "B3 definition: new preview is held while feedback is checked");
+    assert.equal(r5Previews(calls)[1].answered, false);
+  });
+});
+
+test("r4 harness: B3 successful preview replaces failed End independently of its stale definition verdict", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ops = await import("../../web/js/ops.js");
+  const module = await r5Module("components/settings-form.js");
+  await r5Form(t, module, async ({ world, form, values, edit, calls }) => {
+    await edit("2");
+    r5Previews(calls)[0].ok();
+    await settle();
+    module.retryEnd(r4State().devices.get("d1"), "clock", "s1");
+    await settle();
+    r4Pending({ calls }, "DELETE", "/settings/clock/preview").answer(500, {});
+    await settle();
+    const key = `end:d1/clock@${world.epoch}/1`;
+    assert.ok(ops.op(key).failure, "B3 same-scene cleanup failed before the replacement preview");
+    await edit("3");
+    const old = r5Previews(calls)[1];
+    world.schemas.set("clock", R4_SCHEMA_2);
+    form.update(values("clock"));
+    await settle();
+    old.ok();
+    await settle();
+    assert.equal(ops.op(key).failure, null, "B3 the successful preview supersedes failed cleanup even when its field verdict is obsolete");
+    assert.equal(r5Previews(calls)[2].answered, false, "the new definition's revalidation has not answered yet");
+  });
+});
+
+for (const operation of ["preview", "revert"])
+  test(`r4 harness: B3 newer edit keeps its feedback while an older ${operation} succeeds`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await r5Form(t, await r5Module("components/settings-form.js"), async ({ edit, calls, reports, root }) => {
+      await edit("2");
+      r5Previews(calls)[0].answer(500, {});
+      await settle();
+      const failure = reports.at(-1);
+      assert.ok(failure);
+      if (operation === "preview") await edit("3");
+      else r4Click(root.querySelector('[data-act="revert"]'));
+      await settle();
+      const old = operation === "preview" ? r5Previews(calls)[1] : pending(calls, "DELETE", "/settings/clock/preview");
+      await edit("4");
+      old.ok();
+      await settle();
+      assert.equal(reports.at(-1), failure, "B3 newest draft: an older success cannot clear feedback of the queued edit");
+      assert.match(r4Text(root.querySelector(".set-status")), /Not previewed:/);
+      const next = r5Previews(calls).at(-1);
+      assert.notEqual(next, old);
+      assert.equal(next.answered, false);
+      next.ok();
+      await settle();
+      assert.equal(reports.at(-1), null, "B3 newest draft: the matching success clears its own feedback");
+    });
+  });
+
+/** Real shared-guard operation: definitions and drafts project callbacks
+ * independently of the slot, while scene owns the entire slot outcome.
+ * @param {any} ops @param {"scene"|"schema"|"draft"|"none"} change @param {boolean} failure */
+async function r5B3Projection(ops, change, failure) {
+  const identities = { scene: "clock", schema: 1, draft: 1 };
+  const scope = ops.capture({ scene: () => identities.scene });
+  const owner = ops.derive(scope, { schema: () => identities.schema, draft: () => identities.draft });
+  let release = () => {};
+  let refuse = (/** @type {Error} */ _error) => {};
+  const held = new Promise((yes, no) => { release = () => yes(undefined); refuse = no; });
+  let done = 0, failed = 0, data = 0;
+  const key = "b3-projection";
+  const task = ops.follow(key, async () => { await held; data += 1; }, {
+    owner,
+    effects: { slot: ["epoch", "scene"], done: ["epoch", "schema"], failed: ["epoch", "draft"] },
+    done: () => { done += 1; return "Saved"; },
+    failed: () => { failed += 1; },
+  });
+  void task.catch(() => {});
+  const slot = ops.op(key);
+  try {
+    if (change === "scene") identities.scene = "weather";
+    if (change === "schema") identities.schema += 1;
+    if (change === "draft") identities.draft += 1;
+    const child = ops.derive(owner, { scene: () => identities.scene, schema: () => identities.schema });
+    assert.equal(child.values.scene, "clock", "B3 derive never refreshes the inherited scene");
+    assert.equal(child.values.schema, 1, "B3 derive never refreshes the inherited definition");
+    assert.equal(ops.owned(child, ["scene", "schema", "draft"]), change === "none", "B3 captured projections compare the original identities");
+    if (failure) refuse(new Error("B3 failure")); else release();
+    await task.catch(() => {});
+    await settle();
+    assert.equal(data, failure ? 0 : 1, "B3 work still delivers its data before UI admission");
+    if (change === "scene") {
+      assert.equal(ops.op(key), slot, "B3 obsolete scene changes no slot outcome");
+      assert.deepEqual([done, failed], [0, 0], "B3 obsolete scene enters no callback");
+    } else {
+      assert.equal(ops.op(key).busy, false, "B3 definition/draft changes release the slot");
+      assert.equal(done, !failure && change !== "schema" ? 1 : 0, "B3 success uses its definition projection");
+      assert.equal(failed, failure && change !== "draft" ? 1 : 0, "B3 failure uses its draft projection");
+    }
+  } finally { release(); await task.catch(() => {}); ops.drop(key); }
+}
+
+test("r4 harness: B3 central guard inherits scene and projects definition and draft callbacks independently", async () => {
+  const ops = await r5Module("ops.js");
+  for (const change of /** @type {const} */ (["scene", "schema", "draft", "none"]))
+    for (const failure of [false, true]) await r5B3Projection(ops, change, failure);
+});
+
+test("r4 harness self-test: B3 shared projection and immutable inheritance controls reject lost guards", async () => {
+  for (const [from, to, change, failure] of /** @type {Array<[string,string,"scene"|"schema"|"draft"|"none",boolean]>} */ ([
+    ['projections.slot ?? ["epoch"]', '["epoch"]', "scene", false],
+    ["!projections.done || current(projections.done)", "true", "schema", false],
+    ["!projections.failed || current(projections.failed)", "true", "draft", true],
+    [".filter(([name]) => !(name in owner.readers))", ".filter(() => true)", "scene", false],
+  ])) {
+    await r5B3Projection(await r5Module("ops.js"), change, failure);
+    await assert.rejects(r5B3Projection(await r5Module("ops.js", [[from, to]]), change, failure), /B3/);
+  }
 });

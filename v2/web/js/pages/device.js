@@ -214,6 +214,8 @@ function copyScene(copyForm) {
         },
       }),
     {
+      owns: { scene: () => getState().devices.get(view.name)?.desired?.scene?.scene },
+      effects: { start: ["epoch", "scene"], slot: ["epoch", "scene"] },
       label: "Creating…",
       done: (answer) =>
         replace

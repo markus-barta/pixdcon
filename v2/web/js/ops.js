@@ -68,7 +68,8 @@ let tokens = 0;
  * Readers name the identities an effect may project on. Values are taken
  * once, before work starts; a deferred step inherits this same capture.
  * Device life is a baseline for device work, including explicit projections.
- * Later slices can add definition, visit and draft readers here.
+ * Child effects add definition and draft readers with derive; the scope's
+ * captured epoch/life/scene values are inherited, never refreshed.
  *
  * @typedef {{readers: Record<string, () => unknown>, values: Record<string, unknown>, slot?: {key: string, token: number}}} Ownership
  */
@@ -85,6 +86,21 @@ export function capture(owns = {}, device) {
   return Object.freeze({
     readers,
     values: Object.freeze(Object.fromEntries(Object.entries(readers).map(([name, read]) => [name, read()]))),
+  });
+}
+
+/** Add effect identities without refreshing any identity already captured.
+ * A preview can capture its definition and draft when it leaves a lane,
+ * while retaining the scope that originally queued it.
+ * @param {Ownership} owner @param {Record<string, () => unknown>} owns
+ * @returns {Ownership}
+ */
+export function derive(owner, owns) {
+  const additions = Object.fromEntries(Object.entries(owns).filter(([name]) => !(name in owner.readers)));
+  return Object.freeze({
+    ...owner,
+    readers: Object.freeze({ ...owner.readers, ...additions }),
+    values: Object.freeze({ ...owner.values, ...Object.fromEntries(Object.entries(additions).map(([name, read]) => [name, read()])) }),
   });
 }
 
@@ -206,7 +222,7 @@ export function failureText(error) {
  * @property {Ownership} [owner] inherited capture, never refreshed by deferred work
  * @property {Record<string, () => unknown>} [owns] additional identities, captured at start
  * @property {string} [device] device whose life owns this work; absent for scene/global resources
- * @property {Record<string, string[]>} [effects] named projections for current.effect, plus start (request admission); slot outcomes always depend on epoch and declared device life
+ * @property {Record<string, string[]>} [effects] named projections for current.effect, plus start, slot, done and failed; slot outcomes always depend on declared device life, with epoch as the default projection
  */
 
 /**
@@ -299,7 +315,7 @@ function run(key, work, options) {
     failure: null,
     note: null,
   });
-  const current = /** @type {Operation} */ ((projection = ["epoch"]) => owned(owner, projection));
+  const current = /** @type {Operation} */ ((projection = projections.slot ?? ["epoch"]) => owned(owner, projection));
   current.owner = owner;
   current.effect = (name, work) => effect(owner, projections[name] ?? ["epoch"], work);
   current.follow = (key, work, options = {}) => follow(key, work, { ...options, owner });
@@ -310,7 +326,7 @@ function run(key, work, options) {
       /** @type {string|null} */
       let note = null;
       try {
-        note = options.done?.(result) ?? null;
+        if (!projections.done || current(projections.done)) note = options.done?.(result) ?? null;
       } catch {
         // What the page does with an answer it took cannot undo the answer.
       }
@@ -325,7 +341,7 @@ function run(key, work, options) {
         failure: options.describe?.(error) || failureText(error),
         note: null,
       });
-      options.failed?.(error);
+      if (!projections.failed || current(projections.failed)) options.failed?.(error);
     },
   );
   return task(outcome, () => dropOwn(key, token));
