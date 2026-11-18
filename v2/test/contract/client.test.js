@@ -9925,14 +9925,7 @@ async function r7RunAudits(t) {
     const requestOrigins = new Map();
     coverage.requestOrigins = requestOrigins;
     for (const kind of R4_KINDS) {
-      const receipt = await r4Run(
-        t,
-        kind,
-        null,
-        r4Ends(kind)[0],
-        "source",
-        modules,
-      );
+      const receipt = await r8SourceReceipt(t, kind, modules, files);
       assert.ok(
         receipt.origin,
         `${kind.name}: its actual request must carry an extracted source receipt`,
@@ -10663,6 +10656,34 @@ function r8RequireRequestKinds(files, origins) {
   }
 }
 
+/** A data change can erase an action before its request starts (for example
+ * reincarnation makes a failed preview-end Retry moot). Reject the missing
+ * executed kind with guaranteed inventory axes, not a generic click error.
+ * These diagnostics never create a source receipt or discharge an obligation.
+ * @param {R4Kind} kind @param {Array<{file: string, src: string}>} files @param {Error} error */
+function r8UnexecutableKind(kind, files, error) {
+  const file = kind.site.split(":", 1)[0];
+  const source = files.find((source) => source.file === file);
+  assert.ok(source, `identity isolation gap: ${kind.name}; missing source inventory ${file}; ${error.message}`);
+  const fns = r4xFunctions(r4xCodeOnly(source.src));
+  const scopes = r8RequestSites([source]).map((call) => {
+    const fn = fns.filter((fn) => fn.start <= call.at && call.at <= fn.end).sort((a, b) => a.end - a.start - (b.end - b.start))[0];
+    return r8ProjectionAxes(r4xProjection(file, "request start", fn?.name));
+  });
+  const guaranteed = (scopes[0] ?? []).filter((axis) => scopes.every((scope) => scope.includes(axis)));
+  assert.ok(guaranteed.length, `identity isolation gap: ${kind.name}; cannot extract its request-scope axes; ${error.message}`);
+  assert.fail(`identity isolation gap: ${guaranteed.map((axis) => `${kind.name} × ${axis}`).join("; ")}; operation kind could not execute: ${error.message}`);
+}
+
+/** @param {any} t @param {R4Kind} kind @param {Record<string, any>} modules @param {Array<{file: string, src: string}>} files */
+async function r8SourceReceipt(t, kind, modules, files) {
+  try { return await r4Run(t, kind, null, r4Ends(kind)[0], "source", modules); }
+  catch (error) {
+    if (error instanceof R4Unreachable || error instanceof Error && /nothing to click|is disabled/.test(error.message)) r8UnexecutableKind(kind, files, error);
+    throw error;
+  }
+}
+
 /** @param {string} file @param {string} fragment */
 function r8AnchorHint(file, fragment) {
   let target = "the reviewed guard/write in this exact fragment; preserve the mutant's semantic change and assertion";
@@ -10901,6 +10922,7 @@ for (const [name, missing] of [["H1", "overlays clear × overlay"], ["H2", "devi
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const { requirements, stories } = await r7RunAudits(t);
     r8RequireStoryIsolation(requirements, stories);
+    if (name === "H3") assert.throws(() => r8UnexecutableKind(r4KindOf("settings end retry"), r4WebFiles(), new R4Unreachable("nothing to click")), /identity isolation gap: .*settings end retry × scene/);
     await r8WithDataMutant(name, () => assert.rejects(r8RunStoryAudit(t, requirements, {}), (/** @type {any} */ error) => {
       assert.match(error.message, /identity isolation gap/);
       assert.ok(error.actual.includes(missing), error.message);
