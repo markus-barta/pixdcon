@@ -7887,11 +7887,12 @@ test("r4 harness: guard probe r6: render fallbacks and authority boundaries have
   state.overlays = [record("other", "mode", { device: "d2", value: "pause" })];
   assert.equal(model.heldBy(own, state.overlays).kind, "device");
   own.desired.address.value = null; assert.equal(model.heldBy(own, state.overlays).value, "");
-  const held = record("held", "blob", { restricts: "held", value: { devices: [{ name: "d1" }] } });
-  state.overlays.push(held); assert.equal(model.heldBy(own, state.overlays), held);
+  // Blob/own-entry authority is witnessed by the real reconnect cases
+  // "gate r3 A4: real held explanation uses exact device …" below. W1
+  // does not emit the former globally-held blob with no own IP entry.
   assert.match(model.deviceCondition(state, own).text, /On hold/);
   own.desired.held = false; assert.equal(model.heldBy(own, state.overlays), null, "the current view's explicit held=false is authoritative");
-  delete own.desired.held; own.desired.address.source = "blob"; assert.equal(model.heldBy(own, state.overlays), held);
+  delete own.desired.held; own.desired.address.source = "blob";
   state.overlays = []; assert.equal(model.heldBy(own, state.overlays), null);
   own.desired.enabled = true; own.desired.scene.source = "blob"; state.controller.mqttNamespace = null;
   assert.match(model.showingNow(state, own).source.topic, /overlay\/blob/);
