@@ -7291,8 +7291,8 @@ test("r4 harness self-test: a slider cleanup that runs without its condition is 
 
 test("r4 harness self-test: no longer reachable: the page-local slider cleanup mutant cannot cross epoch ownership (gate r5a E)", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  // Original A5 mutant. Its life-change defect is still tested above; only
-  // its old-epoch path is now unreachable behind central admission.
+  // Original A5 mutant. Central admission blocks old-epoch and old-life
+  // cleanup; the B2 in-flight owner stories pin cleanup within one life.
   const device = (await import(await r4Mutant("pages/device.js", [["if (sliding?.key === key) sliding = null;", "sliding = null;"]]))).page;
   for (const end of R4_ENDS)
     assert.deepEqual(await r4Case(t, r4KindOf("device brightness range"), "epoch, then the new owner slides", end, { modules: { device } }), [], `no longer reachable: old slider cleanup cannot reset its successor (${end})`);
@@ -9429,8 +9429,8 @@ test("r4 harness self-test: no longer reachable: r7 K2 X10b cannot read an old e
   const edits = /** @type {Array<[string, string]>} */ (original.edits);
   for (const end of /** @type {R4End[]} */ (["500", "timeout"])) {
     assert.deepEqual(await r4Case(t, kind, "epoch", end), [], "the real Return control passes");
-    // Exact A7 page-local recipe; no central guard is removed. Reincarnation
-    // remains reachable and is still caught under the original test name.
+    // Exact A7 page-local recipe; no central guard is removed. Epoch and
+    // reincarnation paths are blocked; the retarget above removes life only.
     const fresh = edits.map(([from, to]) => /** @type {[string, string]} */ ([from, `${to}\n// epoch/${end}\n`]));
     const device = (await r5Module("pages/device.js", fresh)).page;
     assert.deepEqual(await r4Case(t, kind, "epoch", end, { modules: { device } }), [], `no longer reachable: X10b cannot display an old run's Return failure (${end})`);
@@ -11966,6 +11966,8 @@ async function r5B1bEpochCase(t, kind, end, last = false, opsOverride) {
     for (const mine of operations) {
       const slot = slots.get(mine.key), previous = mine.slot;
       mine.slot = slot;
+      if (mine.token && mine.epoch !== r4State().epoch && slot?.token === mine.token)
+        stale.add(`${mine.key}: retired native outcome was written`);
       if (outcomeContext.getStore() === mine && mine.epoch !== r4State().epoch && slot && slot !== previous)
         stale.add(`${mine.key}: retired native outcome was written (token ${slot.token})`);
     }
@@ -12393,6 +12395,37 @@ const R5_B2_OWNER_NAMES = ["device scene", "device mode", "device brightness", "
 const R5_B2_LIFE_REMOVAL = /** @type {Array<[string, string]>} */ ([
   ["if (owner.readers.life && owner.readers.life() !== owner.values.life) return false;", "if (false) return false;"],
 ]);
+
+/** Hold the native operation across new slider input within the same life.
+ * The stored 30 differs from the new owner's 60, exposing late cleanup.
+ * @param {string} name @returns {R4Kind} */
+function r5B2SlidingKind(name) {
+  const kind = r4KindOf(name);
+  return { ...kind, world: { ...kind.world,
+    devices: kind.world.devices.map((/** @type {any} */ d) => ({ ...d, o: { ...d.o, override: 30 } })),
+  } };
+}
+
+for (const name of ["device scene", "device mode", "device return", "device adopt"])
+  for (const end of R4_ENDS)
+    test(`r4 harness: ${name} × the new owner slides while the operation runs × ${end} (B2)`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      assert.deepEqual(await r4Case(t, r5B2SlidingKind(name), "the new owner slides", end), []);
+    });
+
+test("r4 harness self-test: B2 each in-flight owner story has a control and must-fail A5 slider-cleanup mutant", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = (await r5Module("pages/device.js", [["if (sliding?.key === key) sliding = null;", "sliding = null;"]])).page;
+  for (const name of ["device scene", "device mode", "device return", "device adopt"])
+    for (const end of R4_ENDS) {
+      const kind = r5B2SlidingKind(name);
+      assert.deepEqual(await r4Case(t, kind, "the new owner slides", end), [], `${name}/${end}: real slider cleanup control`);
+      const differences = await r4Case(t, kind, "the new owner slides", end, { modules: { device } });
+      const found = differences.find((difference) => /device: brightness \[epoch, life, owner, token\]: "30 \[disabled\] \| 30 % \| xx".*"60 \[disabled\] \| 60 % \| xx"/.test(difference));
+      assert.ok(found, `${name}/${end}: A5 must fail its in-flight named story: ${differences.join("\n")}`);
+      t_log(`B2 A5 ${name}/${end}: ${found}`);
+    }
+});
 
 /** A read-only probe of the actual rendered slider intent. It lets an equal
  * value input prove new ownership even though its pixels have equal values.
