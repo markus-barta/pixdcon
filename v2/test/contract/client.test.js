@@ -6773,6 +6773,8 @@ for (const story of R5_STORIES) {
     const control = story.file === "main.js" ? {} : await r5Module(story.file);
     await story.run(t, control);
     const replace = story.other ? { [story.other.spec]: await r4Mutant(story.other.file, story.other.edits) } : {};
+    if (["old Save success cannot re-preview the new scene's draft", "old Revert success cannot report the new scene's failure again", "old Save cannot start a preview after the display has no scene", "old settings load failure cannot replace the new scene's pending load", "settings values received while their load is pending survive its late failure"].includes(story.name))
+      replace["../ops.js"] = await r5B3RestoredOps(story.other?.edits ?? [], ["old settings load failure cannot replace the new scene's pending load", "settings values received while their load is pending survive its late failure"].includes(story.name));
     const mutant =
       story.file === "main.js" ? { __r5Edits: story.edits } : await r5Module(story.file, story.edits, replace);
     await assert.rejects(
@@ -6890,6 +6892,10 @@ test("r4 harness self-test: a probe finds the combinations the first note exclud
 function r4KindOf(name) {
   return /** @type {R4Kind} */ (R4_KINDS.find((k) => k.name === name));
 }
+const R5_B3_REVALIDATION_REMOVAL = /** @type {[string, string]} */ ([
+  "previousDefinition !== null && previousDefinition !== JSON.stringify(current.schema) && scope.book.edits.size > 0", "false",
+]);
+
 /** The Device page with a changed settings form. @param {Array<[string, string]>} edits @param {Record<string, string>} [replace] what the form imports instead: relative import → module URL */
 const r4DeviceWithForm = async (edits, replace = {}) =>
   (await import(await r4Mutant("pages/device.js", [], { "../components/settings-form.js": await r4Mutant("components/settings-form.js", edits, replace) }))).page;
@@ -6934,6 +6940,7 @@ async function r4DefinitionRuleForm(stale = "") {
 test("r4 harness self-test: Save's acknowledgement suppressed when the scene definition changed during the Save is caught (gate note2 M1)", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const device = await r4DeviceWithForm([
+    R5_B3_REVALIDATION_REMOVAL,
     ["const plan = mine.book.saveBody(session());\n    if (!plan) return;", "const plan = mine.book.saveBody(session());\n    if (!plan) return;\n    const definition = JSON.stringify(current?.schema);"],
     ["done: (answer) => {\n          // What was saved", "done: (answer) => {\n          if (JSON.stringify(current?.schema) !== definition) return null;\n          // What was saved"],
   ]);
@@ -6959,19 +6966,20 @@ test("r4 harness self-test: a fix that guards only transport failures against a 
     return names;
   };
   // The gate's memory fix: the old preview's transport failure is not said in the form of the new definition.
-  const partial = await r4DeviceWithForm([R4_EDIT_SENT_UNDER, R4_EDIT_GUARD_FAILURE]);
+  const partial = await r4DeviceWithForm([R5_B3_REVALIDATION_REMOVAL, R4_EDIT_SENT_UNDER, R4_EDIT_GUARD_FAILURE], { "../ops.js": await r5B3RestoredOps() });
+  const beforeB3 = await r4DeviceWithForm([R5_B3_REVALIDATION_REMOVAL], { "../ops.js": await r5B3RestoredOps() });
   const rejected = r4KindOf("settings preview rejected");
   // It does what it was made for: with the old preview failing in transport, nothing of it is said (the real form says it: R4_KNOWN).
   const transport = await r4Case(t, r4KindOf("settings preview"), "schema", "500", { modules: { device: partial } });
   assert.ok(!transport.some((d) => /preview feedback|Not previewed/.test(d)), `the fix takes the old transport failure off the new form:\n${transport.join("\n")}`);
-  assert.ok((await r4Case(t, r4KindOf("settings preview"), "schema", "500")).some((d) => /preview feedback/.test(d)), "the real form says the old transport failure");
+  assert.ok((await r4Case(t, r4KindOf("settings preview"), "schema", "500", { modules: { device: beforeB3 } })).some((d) => /preview feedback/.test(d)), "the real form says the old transport failure");
   // But the old definition's 200 answer still marks n in the form of the new definition, with the old reason.
   const stale = await r4Case(t, rejected, "schema", "success", { modules: { device: partial } });
   assert.ok(stale.some((d) => /^after the end: row n says "pixdcon refused this value: above the maximum of 1" about 2: a reason of an earlier scene definition/.test(d)), `the harness reports the old definition's rejection:\n${stale.join("\n")}`);
   const withPartial = await failing(partial);
   assert.ok(withPartial.includes("settings preview rejected × schema × success"), "the fix does not make all schema cases pass");
   // A form that keeps the three parts of the rule for a definition (note §3) passes all of them: the checks can be met.
-  const whole = await r4DefinitionRuleForm();
+  const whole = await r5B3DefinitionRuleForm();
   assert.deepEqual(await failing(whole), [], "a form that binds field rejection to its definition and revalidates the edits that remain passes every schema case of the settings form's kinds");
   t_log(`r4 self-test (gate note2 M2): with the transport-only fix these schema cases still fail: ${withPartial.join("; ")}`);
 });
@@ -7072,7 +7080,7 @@ test("r4 harness self-test: a preview failure written to the scene the form show
       "failed: (error) => {\n          if (!destroyed && scope.epoch === of.epoch && scope.incarnation === of.incarnation) scope.previewFailure = failureText(error);",
     ],
     ["if (!shown(of)) return;\n    if (!owned(of.owner, [\"epoch\"])) return;", "if (destroyed || scope.epoch !== of.epoch || scope.incarnation !== of.incarnation) return;\n    if (!owned(of.owner, [\"epoch\"])) return;"],
-  ]);
+  ], { "../ops.js": await r5B3RestoredOps() });
   const kind = r4KindOf("settings preview");
   // Clock's preview is held, the display shows Weather, Weather's n is edited to 9, then Clock's preview fails, or runs out of time.
   for (const end of /** @type {R4End[]} */ (["500", "timeout"])) {
@@ -7101,7 +7109,7 @@ test("r4 harness self-test: a stale rejection that deletes the edit it was sent 
   t.mock.timers.enable({ apis: ["setTimeout"] });
   // The gate's mutant starts from the form that passes every schema case (the control of note2 M2). Its branch for a
   // rejection that an earlier definition gave deletes the edit that was sent, where the rule marks nothing.
-  const mutant = await r4DefinitionRuleForm("for (const key of Object.keys(answer.body?.rejected ?? {})) if (of.book.edits.get(key)?.draft === plan.sent.get(key)) of.book.edits.delete(key);");
+  const mutant = await r5B3DefinitionRuleForm("for (const key of Object.keys(answer.body?.rejected ?? {})) if (of.book.edits.get(key)?.draft === plan.sent.get(key)) of.book.edits.delete(key);");
   const kind = r4KindOf("settings preview rejected");
   const differences = await r4Case(t, kind, "schema", "success", { modules: { device: mutant } });
   for (const piece of [
@@ -7118,7 +7126,7 @@ test("r4 harness self-test: a stale rejection that deletes the edit it was sent 
   // The revalidation alone does not see it (r3 reported []): it reads only the edits the form still shows.
   assert.ok(!differences.some((d) => /scene definition \(|not revalidated|not sent again/.test(d)), differences.join("\n"));
   // The control: the same form without the deletion keeps the edit, and the next Save sends it.
-  const control = await r4DefinitionRuleForm();
+  const control = await r5B3DefinitionRuleForm();
   assert.deepEqual(await r4Case(t, kind, "schema", "success", { modules: { device: control } }), []);
   const kept = await r4Run(t, kind, "schema", "success", "case", { device: control });
   assert.equal(kept.nextSave, 'set {"n":2} · reset []', "with the control the next Save's request carries n = 2");
@@ -13068,4 +13076,441 @@ test("r4 harness self-test: B3 shared projection and immutable inheritance contr
     await r5B3Projection(await r5Module("ops.js"), change, failure);
     await assert.rejects(r5B3Projection(await r5Module("ops.js", [[from, to]]), change, failure), /B3/);
   }
+});
+
+
+// PIXD-99 D2: restore only the new prerequisite in these historical mutant imports.
+/** @param {Array<[string,string]>} [edits] @param {boolean} [restoreFailed] */
+async function r5B3RestoredOps(edits = [], restoreFailed = false) {
+  return r4Mutant("ops.js", [...edits,
+    ["if (read() !== owner.values[name]) return false;", 'if (!["scene", "schema", "draft", "opening"].includes(name) && read() !== owner.values[name]) return false;'],
+    ...(restoreFailed ? /** @type {Array<[string,string]>} */ ([["if (!projections.failed || current(projections.failed)) options.failed?.(error);", "options.failed?.(error);"]]) : []),
+  ]);
+}
+
+// Mutant-local copy: the shared r4DefinitionRuleForm stays byte-identical to 6ad1435.
+async function r5B3DefinitionRuleForm(stale = "") {
+  const book = await r4Mutant("view/drafts.js", [
+    [
+      "    /** Revert: nothing typed is kept. The page's draft number keeps rising. */",
+      "    again() {\n      draft = ++pageDraft;\n      for (const edit of edits.values())\n        if (edit.refused) {\n          delete edit.error;\n          delete edit.refused;\n        }\n    },\n    /** Revert: nothing typed is kept. The page's draft number keeps rising. */",
+    ],
+  ]);
+  return r4DeviceWithForm(
+    [
+      R5_B3_REVALIDATION_REMOVAL,
+      R4_EDIT_SENT_UNDER,
+      R4_EDIT_GUARD_FAILURE,
+      // What pixdcon refused belongs to the definition it judged by: an answer of an earlier definition marks nothing.
+      ["of.book.rejected(plan.sent, answer.body?.rejected);", `if (JSON.stringify(current?.schema) === definition) of.book.rejected(plan.sent, answer.body?.rejected);${stale ? `\n      else ${stale}` : ""}`],
+      // A newer definition: what pixdcon said about the edits that remain is dropped at once, and they are sent again.
+      [
+        'current = settingsState;\n        phase = "ready";',
+        'const before = current?.schema ? JSON.stringify(current.schema) : null;\n        current = settingsState;\n        phase = "ready";\n        if (before !== null && before !== JSON.stringify(current.schema) && scope.book.edits.size > 0) {\n          /** @type {any} */ (scope.book).again();\n          scope.previewFailure = null;\n          report();\n          preview();\n        }',
+      ],
+    ],
+    { "../view/drafts.js": book, "../ops.js": await r5B3RestoredOps() },
+  );
+}
+
+// D1: End owns Clock's resource while the shown form moves Weather → third.
+// A third scene keeps the End target distinct from both measured scenes.
+R4_STEPS["B3 End scene, values answered"] = ["scene"];
+R4_STEP["B3 End scene, values answered"] = async (ctx) => {
+  if (!ctx.kind.b3Observe) return R4_STEP["scene values without editing"](ctx);
+  const edits = [...ctx.edits];
+  const kind = ctx.kind;
+  ctx.kind = { ...kind, isolation: true };
+  try { await R4_CHANGE.scene(ctx); } finally { ctx.kind = kind; }
+  await settle();
+  ctx.calls.find((/** @type {any} */ call) => !call.answered && call !== ctx.op && call.method === "GET" && call.path.endsWith("/settings/third"))?.ok();
+  await settle();
+  await r4FormReady(ctx);
+  assert.deepEqual([...ctx.edits], edits, "D1: nobody types or resets a field");
+  ctx.kind.b3Observe(ctx);
+};
+
+/** @param {any} t @param {string} name @param {R4End} end @param {any} [device] */
+async function r5B3EndScene(t, name, end, device) {
+  /** @type {any} */ let before;
+  const kind = /** @type {R4Kind} */ (/** @type {any} */ ({
+    ...r4KindOf(name), world: { ...r4d1(), definitions: { ...R4_DEFINITIONS, third: R4_DEFINITIONS.clock } },
+    b3Observe: (/** @type {any} */ ctx) => {
+      const state = r4State();
+      before = { old: state.settings.get("d1/clock"), fresh: state.settings.get("d1/third"), edits: [...ctx.edits] };
+      if (ctx.op) assert.equal(ctx.op.path.endsWith("/settings/clock/preview"), true, "D1: held End names Clock");
+      assert.equal(r4Showing(ctx.world), "third", "D1: the visible scene is third");
+    },
+  }));
+  const modules = device ? { device } : undefined;
+  const previous = R4_OTHER_SCENE.weather;
+  R4_OTHER_SCENE.weather = "third";
+  try {
+    const got = await r4Run(t, kind, "B3 End scene, values answered", end, "case", modules);
+    const state = r4State();
+    const old = state.settings.get("d1/clock"), fresh = state.settings.get("d1/third");
+    assert.deepEqual(fresh, before.fresh, "D1: End changes no value of the new scene's store entry");
+    if (end === "success") {
+      assert.ok(old.rev > before.old.rev, "D1: the fenced End updates the OLD scene's store entry");
+      assert.equal(old.preview, null, "D1: Clock's preview ended");
+    } else assert.deepEqual(old, before.old, "D1: failed End leaves the old scene's store entry intact");
+    const title = got.points[1].get("device: title status line")?.value ?? "";
+    if (end === "success") assert.doesNotMatch(title, /not ended/, "D1: successful End clears its title failure");
+    else {
+      assert.match(title, /Settings preview of Clock not ended/, "D1: old-scene failure remains in the title after switching");
+      assert.match(title, /Retry/, "D1: old-scene Retry remains visible after switching");
+      assert.doesNotMatch(title, /Retrying/, "D1: completed failed End leaves an enabled Retry");
+      assert.match(title, end === "500" ? /500/ : /15 s/, "D1: title says the actual failure");
+    }
+    for (const i of [1, 2])
+      for (const [piece, value] of got.points[i]) {
+        const deps = typeof value.deps === "function" ? value.deps(value.value) : value.deps;
+        if (deps.includes("scene")) assert.equal(value.value, got.points[0].get(piece)?.value, `D1: old End leaves new scene control ${piece} untouched`);
+      }
+    const reference = await r4Run(t, kind, "B3 End scene, values answered", end, kind.early ? "early" : "without", modules);
+    return [...r4Differences("B3 End scene, values answered", got, reference, kind.early ? "early" : "without", false), ...r4EndAlone(got, reference)];
+  } finally { R4_OTHER_SCENE.weather = previous; }
+}
+
+for (const name of ["settings end", "settings end retry"])
+  for (const end of R4_ENDS)
+    test(`r4 harness: ${name} × scene, D1 old resource and title Retry × ${end} (B3 r2)`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      assert.deepEqual(await r5B3EndScene(t, name, end), []);
+    });
+
+for (const name of ["settings end", "settings end retry"])
+  for (const change of ["epoch", "reincarnate"])
+    for (const end of R4_ENDS)
+      test(`r4 harness: ${name} × D1 ${change} fence × ${end} (B3 r2)`, async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        assert.deepEqual(await r4Case(t, r4KindOf(name), change, end), []);
+        const state = r4State();
+        for (const settings of state.settings.values()) {
+          assert.equal(settings.epoch, state.epoch, "D1: End/Retry admits no SettingsState of the old epoch");
+          assert.equal(settings.incarnation, state.devices.get(settings.device)?.incarnation, "D1: End/Retry admits no SettingsState of the old life");
+        }
+      });
+
+/** @param {typeof createStore} [makeStore] */
+function r5B3EndResource(makeStore = createStore) {
+  const store = makeStore();
+  const epoch = A;
+  store.applySnapshot(snapshot(epoch, 10, [view("d1", { epoch })]), { generation: 0 });
+  const clock = sceneSettings("d1", "clock", { epoch, rev: 11 });
+  const weather = sceneSettings("d1", "weather", { epoch, rev: 12 });
+  store.applyAnswer({ body: clock, resource: "settings:d1/clock", epoch, seq: 11, generation: 0 });
+  store.applyAnswer({ body: weather, resource: "settings:d1/weather", epoch, seq: 12, generation: 0 });
+  for (const body of [sceneSettings("d1", "weather", { epoch, rev: 99 }), { state: sceneSettings("d1", "weather", { epoch, rev: 100 }) }]) {
+    store.applyAnswer({ body, resource: "settings:d1/clock", epoch, seq: 100, generation: 0 });
+    assert.equal(store.getState().settings.get("d1/clock"), clock, "D1: wrong-resource End cannot update Clock");
+    assert.equal(store.getState().settings.get("d1/weather"), weather, "D1: wrong-resource End cannot update Weather");
+  }
+  for (const state of [
+    sceneSettings("d1", "clock", { epoch: B, rev: 101 }),
+    sceneSettings("d1", "clock", { epoch, incarnation: 0, rev: 102 }),
+    sceneSettings("d1", "clock", { epoch, rev: 10 }),
+  ]) {
+    store.applyAnswer({ body: { state }, resource: "settings:d1/clock", epoch, seq: 101, generation: 0 });
+    assert.equal(store.getState().settings.get("d1/clock"), clock, "D1: End/Retry's old resource must also pass epoch, life and revision fences");
+    assert.equal(store.getState().settings.get("d1/weather"), weather, "D1: fenced End/Retry never applies anything to the new scene");
+  }
+
+}
+
+test("r4 harness: End and Retry reject another scene's SettingsState under the old resource (D1 B3 r2)", () => {
+  r5B3EndResource();
+});
+
+test("r4 harness self-test: D1 End resource admission has a must-fail product guard removal (B3 r2)", async () => {
+  const mutant = await r5Module("store.js", [[
+    'if (kind === "settings" && resource !== `settings:${view?.device}/${view?.scene}`)\n        return drop("no_view");',
+    "",
+  ]]);
+  r5B3EndResource();
+  assert.throws(() => r5B3EndResource(mutant.createStore), /wrong-resource End cannot update Weather/);
+});
+
+const R5_B3_ORIGINAL_STORIES = [
+  "old Save success cannot re-preview the new scene's draft",
+  "old Revert success cannot report the new scene's failure again",
+  "old Save cannot start a preview after the display has no scene",
+  "old settings load failure cannot replace the new scene's pending load",
+  "settings values received while their load is pending survive its late failure",
+];
+// Separate named controls retain each original page-local mutation and detector.
+// The approved prerequisite restoration belongs only to the imported copy.
+for (const name of R5_B3_ORIGINAL_STORIES)
+  test(`r4 harness self-test: B3 original page-local must-fail control: ${name}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const story = /** @type {typeof R5_STORIES[number]} */ (R5_STORIES.find((story) => story.name === name));
+    const restoreFailed = name.includes("load failure") || name.includes("load is pending");
+    const base = { "../ops.js": await r5B3RestoredOps([], restoreFailed) };
+    await story.run(t, await r5Module(story.file, [], base));
+    const replacements = { "../ops.js": await r5B3RestoredOps(story.other?.edits ?? [], restoreFailed) };
+    await assert.rejects(story.run(t, await r5Module(story.file, story.edits, replacements)),
+      (/** @type {any} */ error) => error.name === "AssertionError" || error.name === "ApiError",
+      "the removed guard must violate the same observation the control passed");
+  });
+
+test("r4 harness self-test: B3 original page-local must-fail control: note2 M1", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = await r4DeviceWithForm([
+    R5_B3_REVALIDATION_REMOVAL,
+    ["const plan = mine.book.saveBody(session());\n    if (!plan) return;", "const plan = mine.book.saveBody(session());\n    if (!plan) return;\n    const definition = JSON.stringify(current?.schema);"],
+    ["done: (answer) => {\n          // What was saved", "done: (answer) => {\n          if (JSON.stringify(current?.schema) !== definition) return null;\n          // What was saved"],
+  ]);
+  const kind = r4KindOf("settings save");
+  const differences = await r4Case(t, kind, "schema", "success", { modules: { device } });
+  // n stays an unsaved edit, the next Save would send it again, and "Saved to config.json" is not said: none of these
+  // pieces depends on the scene definition. They are compared because a commuted story is compared in every piece.
+  const pieces = differences.filter((d) => /the story with the change after the end reads/.test(d));
+  for (const piece of [/row marker of n \[draft, membership, schema, scene\]: "previewing".*reads "saved/, /edits the next Save sends \[draft, membership, schema, scene\]: "n".*reads "none"/, /settings status line .*reads "Saved to config\.json"/])
+    assert.ok(pieces.some((d) => piece.test(d)), `the harness reports ${piece}:\n${differences.join("\n")}`);
+  // The same story with the real form passes: pixdcon wrote what was submitted, and the form says so.
+  assert.deepEqual(await r4Case(t, kind, "schema", "success"), []);
+});
+
+test("r4 harness self-test: B3 original page-local must-fail control: note2 M2", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  /** Every case of the change `schema` of the settings form's kinds, with a form: the names of those that fail. @param {any} device */
+  const failing = async (device) => {
+    /** @type {string[]} */
+    const names = [];
+    for (const kind of R4_KINDS.filter((k) => k.name.startsWith("settings ") && !r4Unreachable(k, "schema")))
+      for (const end of r4Ends(kind)) if ((await r4Case(t, kind, "schema", end, { modules: { device } })).length) names.push(`${kind.name} × schema × ${end}`);
+    return names;
+  };
+  // The gate's memory fix: the old preview's transport failure is not said in the form of the new definition.
+  const partial = await r4DeviceWithForm([R5_B3_REVALIDATION_REMOVAL, R4_EDIT_SENT_UNDER, R4_EDIT_GUARD_FAILURE], { "../ops.js": await r5B3RestoredOps() });
+  const beforeB3 = await r4DeviceWithForm([R5_B3_REVALIDATION_REMOVAL], { "../ops.js": await r5B3RestoredOps() });
+  const rejected = r4KindOf("settings preview rejected");
+  // It does what it was made for: with the old preview failing in transport, nothing of it is said (the real form says it: R4_KNOWN).
+  const transport = await r4Case(t, r4KindOf("settings preview"), "schema", "500", { modules: { device: partial } });
+  assert.ok(!transport.some((d) => /preview feedback|Not previewed/.test(d)), `the fix takes the old transport failure off the new form:\n${transport.join("\n")}`);
+  assert.ok((await r4Case(t, r4KindOf("settings preview"), "schema", "500", { modules: { device: beforeB3 } })).some((d) => /preview feedback/.test(d)), "the real form says the old transport failure");
+  // But the old definition's 200 answer still marks n in the form of the new definition, with the old reason.
+  const stale = await r4Case(t, rejected, "schema", "success", { modules: { device: partial } });
+  assert.ok(stale.some((d) => /^after the end: row n says "pixdcon refused this value: above the maximum of 1" about 2: a reason of an earlier scene definition/.test(d)), `the harness reports the old definition's rejection:\n${stale.join("\n")}`);
+  const withPartial = await failing(partial);
+  assert.ok(withPartial.includes("settings preview rejected × schema × success"), "the fix does not make all schema cases pass");
+  // A form that keeps the three parts of the rule for a definition (note §3) passes all of them: the checks can be met.
+  const whole = await r5B3DefinitionRuleForm();
+  assert.deepEqual(await failing(whole), [], "a form that binds field rejection to its definition and revalidates the edits that remain passes every schema case of the settings form's kinds");
+  t_log(`r4 self-test (gate note2 M2): with the transport-only fix these schema cases still fail: ${withPartial.join("; ")}`);
+});
+
+test("r4 harness self-test: B3 original page-local must-fail control: r5a A", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  // The gate's mutant: the failure of a preview goes to the scope the form shows, while the opening, the run and the
+  // device's life are the ones the preview was sent in. The scene is not asked.
+  const device = await r4DeviceWithForm([
+    [
+      "failed: (error) => {\n          of.previewFailure = failureText(error);",
+      "failed: (error) => {\n          if (!destroyed && scope.epoch === of.epoch && scope.incarnation === of.incarnation) scope.previewFailure = failureText(error);",
+    ],
+    ["if (!shown(of)) return;\n    if (!owned(of.owner, [\"epoch\"])) return;", "if (destroyed || scope.epoch !== of.epoch || scope.incarnation !== of.incarnation) return;\n    if (!owned(of.owner, [\"epoch\"])) return;"],
+  ], { "../ops.js": await r5B3RestoredOps() });
+  const kind = r4KindOf("settings preview");
+  // Clock's preview is held, the display shows Weather, Weather's n is edited to 9, then Clock's preview fails, or runs out of time.
+  for (const end of /** @type {R4End[]} */ (["500", "timeout"])) {
+    const differences = await r4Case(t, kind, "scene", end, { modules: { device } });
+    for (const piece of [
+      /after the end, device: preview feedback \[opening, epoch, life, scene, draft, schema\]: "title says it · marker says it" — the story without the old operation reads "title - · marker -"/,
+      /after the end, device: row marker of n \[opening, epoch, life, scene, draft, schema\]: "not previewed" — the story without the old operation reads "previewing"/,
+      /device: settings status line .*: "Not previewed: .*the old operation's end changed it/,
+    ])
+      assert.ok(differences.some((d) => piece.test(d)), `× ${end}: the harness reports ${piece}:\n${differences.join("\n")}`);
+    // The real form passes: Clock's failure stays with Clock's scope.
+    assert.deepEqual(await r4Case(t, kind, "scene", end), [], `settings preview × scene × ${end} with the real form`);
+  }
+  // No change that r3 had sees the mutant: with the page opened again it reports what the real form reports.
+  assert.deepEqual(await r4Case(t, kind, "reopen", "500", { modules: { device } }), await r4Case(t, kind, "reopen", "500"));
+  // Every scene has data of its own: Weather's rows are not Clock's.
+  const shown = await r4Run(t, kind, "scene", "success", "case");
+  const [clock, weather] = [(await r4Run(t, kind, "reopen", "success", "case")).points[R4_LAST], shown.points[R4_LAST]].map((point) => point.get("device: scene definition shown")?.value);
+  assert.match(String(weather), /^Settings · Weather \| n: N of Weather0 – 99; m: M of Weather$/);
+  assert.match(String(clock), /^Settings · Clock \| n: N0 – 50; m: M$/);
+  assert.equal(shown.points[R4_LAST].get("device: field n")?.value, "9", "Weather's edit");
+  assert.equal(shown.points[R4_LAST].get("device: field m")?.value, "8", "Weather's saved value, kept for the device and the scene");
+});
+
+test("r4 harness self-test: B3 original page-local must-fail control: r5a B", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  // The gate's mutant starts from the form that passes every schema case (the control of note2 M2). Its branch for a
+  // rejection that an earlier definition gave deletes the edit that was sent, where the rule marks nothing.
+  const mutant = await r5B3DefinitionRuleForm("for (const key of Object.keys(answer.body?.rejected ?? {})) if (of.book.edits.get(key)?.draft === plan.sent.get(key)) of.book.edits.delete(key);");
+  const kind = r4KindOf("settings preview rejected");
+  const differences = await r4Case(t, kind, "schema", "success", { modules: { device: mutant } });
+  for (const piece of [
+    // From the story's own edits, not from what the form still claims: n = 2 was typed and neither saved nor reverted.
+    /after everything was answered: the edit n = 2 of the story \(neither saved nor reverted, its scope and opening still shown\) is gone: its field reads 1/,
+    // The request of the next Save: the form offers none, and says no reason.
+    /the next Save: the form does not offer Save and says no reason, though the story's edits \{"n":2\} are still to be saved/,
+    // The pending bookkeeping is compared across the change of definition.
+    /device: row marker of n \[draft, membership, schema, scene\]: "default" — the story without the old operation reads "previewing"/,
+    /device: edits the next Save sends \[draft, membership, schema, scene\]: "none" — the story without the old operation reads "n"/,
+    /the next Save \[draft, membership, schema, scene\]: "Save is not offered" — the story without the old operation sends "set \{"n":2\} · reset \[\]"/,
+  ])
+    assert.ok(differences.some((d) => piece.test(d)), `the harness reports ${piece}:\n${differences.join("\n")}`);
+  // The revalidation alone does not see it (r3 reported []): it reads only the edits the form still shows.
+  assert.ok(!differences.some((d) => /scene definition \(|not revalidated|not sent again/.test(d)), differences.join("\n"));
+  // The control: the same form without the deletion keeps the edit, and the next Save sends it.
+  const control = await r5B3DefinitionRuleForm();
+  assert.deepEqual(await r4Case(t, kind, "schema", "success", { modules: { device: control } }), []);
+  const kept = await r4Run(t, kind, "schema", "success", "case", { device: control });
+  assert.equal(kept.nextSave, 'set {"n":2} · reset []', "with the control the next Save's request carries n = 2");
+});
+
+test("r4 harness: B3 frozen definition-rule helper remains a passing control", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = await r4DefinitionRuleForm();
+  assert.deepEqual(await r4Case(t, r4KindOf("settings preview rejected"), "schema", "success", { modules: { device } }), []);
+});
+
+/** Click the title's actual Retry after the measured switch, while no form
+ * is edited. The old Clock resource remains the request's sole target.
+ * @param {any} t @param {R4End} end @param {string} [change] */
+async function r5B3RetryAfterSwitch(t, end, change) {
+  const world = r4World({ ...r4d1(), definitions: { ...R4_DEFINITIONS, third: R4_DEFINITIONS.clock } });
+  const ctx = /** @type {any} */ ({ world, calls: r4Server(world), kind: r4KindOf("settings end retry"),
+    modules: await r8MeasurementModules(), edits: new Map(), changed: new Set(), shows: 0, clock: 0, opening: 0, revision: 0, visit: 0 });
+  world.story = ctx;
+  r4NewEpoch(world);
+  const previous = R4_OTHER_SCENE.weather;
+  R4_OTHER_SCENE.weather = "third";
+  try {
+    r4Open(ctx, "device");
+    await r4AnswerAll(ctx);
+    await r4Previewed(ctx);
+    r4Switch(ctx);
+    await settle();
+    r4Pending(ctx, "GET", "/settings/weather").ok();
+    r4Pending(ctx, "DELETE", "/settings/clock/preview").answer(500, {});
+    await settle();
+    r4Switch(ctx);
+    await settle();
+    r4Pending(ctx, "GET", "/settings/third").ok();
+    await settle();
+    const fresh = r4State().settings.get("d1/third");
+    const old = r4State().settings.get("d1/clock");
+    const controls = () => R4_PAGES.device.pieces(ctx.root).filter(([, deps, text]) =>
+      (typeof deps === "function" ? deps(text) : deps).includes("scene")).map(([name, , value]) => [name, value]);
+    const before = controls();
+    assert.match(r4Text(titleLine(ctx.root)), /Settings preview of Clock not ended/, "D1: failure persists through another switch");
+    r4Click(titleLine(ctx.root).querySelector('[data-act="end-retry"]'));
+    await settle();
+    const retry = r4Pending(ctx, "DELETE", "/settings/clock/preview");
+    assert.equal(ctx.calls.filter((/** @type {any} */ call) => call.method === "DELETE" && call.path.endsWith("/settings/third/preview")).length, 0, "D1: Retry never sends an End for the new scene");
+    assert.match(r4Text(titleLine(ctx.root)), /Retrying/, "D1: pending Retry stays in the title");
+    if (change) {
+      await R4_CHANGE[/** @type {R4Change} */ (change)](ctx);
+      await settle();
+      await r4AnswerAll(ctx, retry);
+    }
+    if (end === "timeout") {
+      retry.abandon();
+      t.mock.timers.tick(15_000);
+      await settle();
+      retry.late();
+    } else if (end === "success") retry.ok();
+    else retry.answer(500, {});
+    await settle();
+    if (change) {
+      for (const settings of r4State().settings.values()) {
+        assert.equal(settings.epoch, r4State().epoch, "D1: title Retry remains epoch fenced");
+        assert.equal(settings.incarnation, r4State().devices.get(settings.device)?.incarnation, "D1: title Retry remains life fenced");
+      }
+      assert.doesNotMatch(r4Text(titleLine(ctx.root)), /Clock not ended/, "D1: old life Retry cannot report in the new life");
+    } else {
+      assert.equal(r4State().settings.get("d1/third"), fresh, "D1: title Retry leaves the new scene store entry untouched");
+      assert.deepEqual(controls(), before, "D1: title Retry leaves all new-scene controls untouched");
+      if (end === "success") {
+        assert.ok(r4State().settings.get("d1/clock").rev > old.rev, "D1: title Retry updates the old scene only");
+        assert.doesNotMatch(r4Text(titleLine(ctx.root)), /not ended/, "D1: successful title Retry clears failure");
+      } else {
+        assert.equal(r4State().settings.get("d1/clock"), old, "D1: failed title Retry changes no SettingsState");
+        assert.match(r4Text(titleLine(ctx.root)), /Clock not ended/, "D1: failed title Retry stays visible");
+        assert.ok(titleLine(ctx.root).querySelector('[data-act="end-retry"]'), "D1: failed title Retry can be retried again");
+      }
+    }
+  } finally {
+    R4_OTHER_SCENE.weather = previous;
+    r4Close(ctx);
+    await r4AnswerAll(ctx);
+    world.story = null;
+  }
+}
+
+for (const end of R4_ENDS)
+  for (const change of [undefined, "epoch", "reincarnate"])
+    test(`r4 harness: settings end retry clicked after D1 scene switch × ${change ?? "same fence"} × ${end} (B3 r2)`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      await r5B3RetryAfterSwitch(t, end, change);
+    });
+
+test("r4 harness self-test: D1 End title and Retry cannot acquire the new form's scene projection (B3 r2)", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = await r4DeviceWithForm([
+    ["{ owner: of.owner },", '{ owner: derive(of.owner, { scene: () => getState().devices.get(device)?.desired?.scene?.scene }), effects: { slot: ["epoch", "scene"] } },'],
+    ['{ device, value: "retry", label: op(key).failure ?? "" },', '{ device, value: "retry", label: op(key).failure ?? "", owns: { scene: () => getState().devices.get(device)?.desired?.scene?.scene }, effects: { slot: ["epoch", "scene"] } },'],
+  ]);
+  for (const name of ["settings end", "settings end retry"])
+    for (const end of /** @type {R4End[]} */ (["500", "timeout"])) {
+      assert.deepEqual(await r5B3EndScene(t, name, end), [], `${name}/${end}: D1 control`);
+      await assert.rejects(r5B3EndScene(t, name, end, device), /old-scene failure remains in the title after switching|completed failed End leaves an enabled Retry/);
+    }
+});
+
+// D2 condition 2: original recipes on the current product, with no restoration.
+// These checks fail if the historical page-local path becomes reachable again.
+for (const name of R5_B3_ORIGINAL_STORIES)
+  test(`r4 harness self-test: B3 original page-local no longer reachable: ${name}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const story = /** @type {typeof R5_STORIES[number]} */ (R5_STORIES.find((story) => story.name === name));
+    const replacements = story.other ? { [story.other.spec]: await r4Mutant(story.other.file, story.other.edits) } : {};
+    const original = await r5Module(story.file, story.edits, replacements);
+    await story.run(t, original);
+  });
+
+test("r4 harness self-test: B3 original page-local no longer reachable: note2 M1", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = await r4DeviceWithForm([
+    ["const plan = mine.book.saveBody(session());\n    if (!plan) return;", "const plan = mine.book.saveBody(session());\n    if (!plan) return;\n    const definition = JSON.stringify(current?.schema);"],
+    ["done: (answer) => {\n          // What was saved", "done: (answer) => {\n          if (JSON.stringify(current?.schema) !== definition) return null;\n          // What was saved"],
+  ]);
+  const differences = await r4Case(t, r4KindOf("settings save"), "schema", "success", { modules: { device } });
+  assert.ok(!differences.some((d) => /the story with the change after the end reads/.test(d) && /row marker of n \[draft, membership, schema, scene\]: "previewing".*reads "saved/.test(d)),
+    `no longer reachable: product revalidation prevents the historical previewing marker; its original detector returned:\n${differences.join("\n")}`);
+});
+
+test("r4 harness self-test: B3 original page-local no longer reachable: note2 M2", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const partial = await r4DeviceWithForm([R4_EDIT_SENT_UNDER, R4_EDIT_GUARD_FAILURE]);
+  const stale = await r4Case(t, r4KindOf("settings preview rejected"), "schema", "success", { modules: { device: partial } });
+  assert.ok(!stale.some((d) => /^after the end: row n says "pixdcon refused this value: above the maximum of 1" about 2: a reason of an earlier scene definition/.test(d)),
+    `no longer reachable: central definition admission prevents the original stale rejection:\n${stale.join("\n")}`);
+  assert.ok(!(await r4Case(t, r4KindOf("settings preview"), "schema", "500")).some((d) => /preview feedback/.test(d)),
+    "no longer reachable: the real form no longer says the old transport failure");
+});
+
+test("r4 harness self-test: B3 original page-local no longer reachable: r5a A", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = await r4DeviceWithForm([
+    [
+      "failed: (error) => {\n          of.previewFailure = failureText(error);",
+      "failed: (error) => {\n          if (!destroyed && scope.epoch === of.epoch && scope.incarnation === of.incarnation) scope.previewFailure = failureText(error);",
+    ],
+    ["if (!shown(of)) return;\n    if (!owned(of.owner, [\"epoch\"])) return;", "if (destroyed || scope.epoch !== of.epoch || scope.incarnation !== of.incarnation) return;\n    if (!owned(of.owner, [\"epoch\"])) return;"],
+  ]);
+  for (const end of /** @type {R4End[]} */ (["500", "timeout"]))
+    assert.deepEqual(await r4Case(t, r4KindOf("settings preview"), "scene", end, { modules: { device } }), [],
+      `no longer reachable: old scene's preview failure cannot cross central admission (${end})`);
+});
+
+test("r4 harness self-test: B3 original page-local no longer reachable: r5a B", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = await r4DefinitionRuleForm("for (const key of Object.keys(answer.body?.rejected ?? {})) if (of.book.edits.get(key)?.draft === plan.sent.get(key)) of.book.edits.delete(key);");
+  assert.deepEqual(await r4Case(t, r4KindOf("settings preview rejected"), "schema", "success", { modules: { device } }), [],
+    "no longer reachable: central definition admission prevents the original stale rejection deleting its edit");
 });

@@ -428,7 +428,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/store.js:726",
+      "site": "web/js/store.js:731",
       "id": "subscribe:main.subscribe#1",
       "input": "a page's subscription, passed on to the default store",
       "metadata": "none: the store calls it after a change it applied",

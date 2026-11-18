@@ -548,6 +548,11 @@ export function createStore() {
       const kind = resource.startsWith("device:") ? "device" : "settings";
       const view =
         kind === "device" ? (body?.device ?? body) : (body?.state ?? body);
+      // An End/Retry may finish after another scene is shown. Its answer
+      // belongs only to the requested resource; the fence still checks
+      // epoch, device life and revision before admitting that old scene.
+      if (kind === "settings" && resource !== `settings:${view?.device}/${view?.scene}`)
+        return drop("no_view");
       const next = draft();
       const decision = takeView(next, view, kind, answer.seq);
       if (decision.action === "apply") {
