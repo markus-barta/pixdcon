@@ -4613,7 +4613,7 @@ const R5_STORIES = [
   {
     name: "superseded successful operation cannot call its done callback",
     file: "ops.js",
-    edits: [["(result) => {\n      if (!current()) return;", "(result) => {\n      if (false) return;"]],
+    edits: [["(result) => {\n      if (!current()) { dropOwn(key, token); return; }", "(result) => {\n      if (false) { dropOwn(key, token); return; }"]],
     run: async (_t, ops) => {
       /** @type {any} */
       let finish;
@@ -5325,8 +5325,8 @@ const R5_PROBES = [
       const formSource = readFileSync(new URL("../../web/js/components/settings-form.js", import.meta.url), "utf8");
       assert.equal(
         [...formSource.matchAll(/\bpreview\(\)/g)].length,
-        6,
-        "the five preview callers (including definition revalidation) and declaration are all accounted for",
+        7,
+        "the six preview callers (including definition revalidation and removed-edit discard) and declaration are all accounted for",
       );
       const m = await r5Module("components/settings-form.js", [
         ["let ids = 0;", "let ids = 0;\nexport const __r5Entries = [];"],
@@ -5585,8 +5585,8 @@ R5_STORIES.push(
     file: "ops.js",
     edits: [
       [
-        "if (!current()) return;\n      setOp(key, { ...op(key), busy: false, failure: null, note });",
-        "if (false) return;\n      setOp(key, { ...op(key), busy: false, failure: null, note });",
+        "if (!current()) { dropOwn(key, token); return; }\n      setOp(key, { ...op(key), busy: false, failure: null, note });",
+        "if (false) { dropOwn(key, token); return; }\n      setOp(key, { ...op(key), busy: false, failure: null, note });",
       ],
     ],
     run: async (_t, ops) => {
@@ -5673,7 +5673,7 @@ R5_STORIES.push(
     other: {
       file: "ops.js",
       spec: "../ops.js",
-      edits: [["(result) => {\n      if (!current()) return;", "(result) => {\n      if (false) return;"]],
+      edits: [["(result) => {\n      if (!current()) { dropOwn(key, token); return; }", "(result) => {\n      if (false) { dropOwn(key, token); return; }"]],
     },
     run: async (_t, m) => {
       const world = r4World({ devices: [{ name: "d1" }] });
@@ -5709,7 +5709,7 @@ R5_STORIES.push(
     other: {
       file: "ops.js",
       spec: "../ops.js",
-      edits: [["(error) => {\n      if (!current()) return;", "(error) => {\n      if (false) return;"]],
+      edits: [["(error) => {\n      if (!current()) { dropOwn(key, token); return; }", "(error) => {\n      if (false) { dropOwn(key, token); return; }"]],
     },
     run: async (t, m) =>
       r5Form(
@@ -5824,7 +5824,7 @@ R5_STORIES.push(
     other: {
       file: "ops.js",
       spec: "../ops.js",
-      edits: [["(error) => {\n      if (!current()) return;", "(error) => {\n      if (false) return;"]],
+      edits: [["(error) => {\n      if (!current()) { dropOwn(key, token); return; }", "(error) => {\n      if (false) { dropOwn(key, token); return; }"]],
     },
     run: async (t, m) =>
       r5Form(
@@ -8948,7 +8948,7 @@ const R4_INVENTORY = [
   "web/js/main.js · (module) · await · request start, store, timer start",
   "web/js/main.js · loadFrame · await · store",
   "web/js/main.js · (module) · timer setInterval · none",
-  "web/js/ops.js · run · .then · slot outcome",
+  "web/js/ops.js · run · .then · slot drop, slot outcome",
   "web/js/pages/config-raw.js · load · ops done · DOM write, page state, render, request start, store",
   "web/js/pages/config-raw.js · load · ops describe · slot failure text",
   "web/js/pages/config-raw.js · load · ops failed · page state, render",
@@ -10722,8 +10722,8 @@ test("r4 harness self-test: r7 matrix superseded failure catches ops #1306 and X
       "#1306",
       [
         [
-          "(error) => {\n      if (!current()) return;",
-          "(error) => {\n      if (false) return;",
+          "(error) => {\n      if (!current()) { dropOwn(key, token); return; }",
+          "(error) => {\n      if (false) { dropOwn(key, token); return; }",
         ],
       ],
     ],
@@ -12623,7 +12623,6 @@ async function r5B2CentralLife(ops, boundary, failure) {
   });
   void task.catch(() => {});
   const captured = current.owner;
-  const old = ops.op(key);
   try {
     assert.equal(current(["epoch"]), true, "B2 exact life: live control is admitted");
     // Changes to another device, scene and membership preserve this life.
@@ -12649,7 +12648,7 @@ async function r5B2CentralLife(ops, boundary, failure) {
     if (failure) reject(new Error("old life failed")); else resolve();
     await task.catch(() => {});
     await settle();
-    assert.equal(ops.op(key), old, "B2 exact life: a retired native outcome remains untouched");
+    assert.equal(r4State().ops.has(key), false, "B2 exact life: terminal completion retires its own native slot");
     assert.deepEqual([done, failed], [0, 0], "B2 exact life: old callbacks are not entered");
   } finally { resolve(); await task.catch(() => {}); ops.drop(key); ops.drop(`${key}-start`); ops.drop(`${key}-child`); }
 }
@@ -13069,7 +13068,6 @@ async function r5B3Projection(ops, change, failure) {
     failed: () => { failed += 1; },
   });
   void task.catch(() => {});
-  const slot = ops.op(key);
   try {
     if (change === "scene") identities.scene = "weather";
     if (change === "schema") identities.schema += 1;
@@ -13083,7 +13081,7 @@ async function r5B3Projection(ops, change, failure) {
     await settle();
     assert.equal(data, failure ? 0 : 1, "B3 work still delivers its data before UI admission");
     if (change === "scene") {
-      assert.equal(ops.op(key), slot, "B3 obsolete scene changes no slot outcome");
+      assert.equal(r4State().ops.has(key), false, "B3 obsolete scene terminal completion retires its own slot");
       assert.deepEqual([done, failed], [0, 0], "B3 obsolete scene enters no callback");
     } else {
       assert.equal(ops.op(key).busy, false, "B3 definition/draft changes release the slot");
@@ -14024,7 +14022,7 @@ test("r4 harness: B4 Tick Restore error follows its button", async () => r5B4Res
 test("r4 harness self-test: B4 Tick Restore rejects b7f7daf error-before-button layout", async () => {
   await r5B4RestoreLayout(await r5Module("pages/devices.js"));
   const mutant = await r5Module("pages/devices.js", [
-    ['second = `${failure ? "" : esc(lines.second.text)} <button', 'second = `${failure || esc(lines.second.text)} <button'],
+    ['second = `${esc(lines.second.text)} <button', 'second = `${failure || esc(lines.second.text)} <button'],
     ['</span></button>${failure ? ` ${failure}` : ""}`;', '</span></button>`;'],
   ]);
   await assert.rejects(r5B4RestoreLayout(mutant), /B4 Restore: error appears after/);
