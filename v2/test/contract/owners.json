@@ -56,6 +56,7 @@
     "test/golden/",
     "test/helpers/",
     "test/contract/scenes.test.js",
+    "test/contract/seed-v1.test.js",
     "test/contract/async-sites/W5.json",
     "package.json",
     "package-lock.json",

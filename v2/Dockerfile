@@ -7,6 +7,19 @@
 #
 # v2/Dockerfile.dockerignore keeps the build context to what is copied below.
 #
+# One-shot edge seed, run INSIDE this image before starting the controller.
+# Bind-mount a COPY of v1's config.json read-only at /seed/v1-config.json;
+# mount the edge data DIRECTORY read-write at /data. Exact container command
+# (also used by the nixcfg oneshot):
+#
+#   node /app/src/config/migrate-v1.js /seed/v1-config.json /data \
+#     --output shadow --status-base-topic home/hsb1/pixdcon2-edge
+#
+# Creates /data/config.json, /data/lib -> /app/lib and /data/assets -> /app/assets.
+# Refuses an existing config.json; leaves the input copy unchanged. Read the
+# JSON change report before starting the edge instance with
+# PIXDCON2_FORCE_SHADOW=1 (also set below in the edge target).
+#
 # Layout in the image (src/scenes/v1-shared.js finds it by itself):
 #   /app/src, /app/web, /app/node_modules     pixdcon 2
 #   /app/lib, /app/scenes, /app/assets        shared with v1, unchanged
