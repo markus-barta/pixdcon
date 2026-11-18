@@ -41,6 +41,8 @@ let filter = "all";
 /** The log pane follows the newest line unless the user scrolled up. */
 let follow = true;
 let copied = "";
+/** Outcomes of a load belong to its mounted opening; data goes to the fence. */
+let openings = 0;
 
 /**
  * @param {any} line LogLine
@@ -186,6 +188,8 @@ function onScroll(event) {
  */
 function loadLog() {
   followOp("log", async () => applyAnswer(await request("GET", "/api/v2/log", { resource: "log" })), {
+    owns: { opening: () => openings },
+    effects: { start: ["epoch", "opening"], done: ["epoch", "opening"], failed: ["epoch", "opening"] },
     failed: () => render(getState()),
   });
 }
@@ -193,6 +197,7 @@ function loadLog() {
 /** @type {import("../router.js").Page} */
 export const page = {
   mount(target, _params) {
+    openings += 1;
     root = target;
     root.className = "p-health";
     filter = "all";
@@ -232,6 +237,7 @@ export const page = {
     loadLog();
   },
   unmount() {
+    openings += 1;
     unsubscribe?.();
     unsubscribe = null;
     if (root) {

@@ -505,6 +505,7 @@ canvas.pv {
   font-size: 12px;
   line-height: 16px;
   color: var(--bad);
+  white-space: nowrap;
 }
 .ferr:empty {
   display: none;

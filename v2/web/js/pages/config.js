@@ -33,6 +33,10 @@ let unsubscribe = null;
 let open = null;
 /** Counts the openings of the page: what an answer does to the page's own state (the open row, the form) belongs to the opening it was sent from. */
 let openings = 0;
+/** Each row visit and each edit is distinct, even when the values return. */
+let visits = 0;
+let revision = 0;
+let addRevision = 0;
 
 const typeName = (/** @type {string} */ type) =>
   type === "pixoo" ? "Pixoo64" : type === "ulanzi" ? "Ulanzi / AWTRIX" : type;
@@ -111,7 +115,7 @@ function editHtml(view) {
       ? `<label>Preview poll (ms)<input class="input mono num" style="width:128px" type="number" name="pollMs" min="1000" max="10000" step="500" value="${esc(view.preview?.pollMs ?? 2000)}"><span class="hint">1000 – 10 000. How often the preview reads this display’s screen.</span></label>`
       : "";
   return `<div class="ct-edit" role="row"><div role="cell">
-        <form class="ef" data-device="${esc(view.name)}">
+        <form class="ef" data-device="${esc(view.name)}" data-owner="${esc(deviceSlot("patch", view))}">
           <label>Display name<input class="input" name="displayName" value="${esc(view.displayName ?? "")}"></label>
           <label>Comment<textarea class="input" name="comment" placeholder="Where it hangs, what it is for">${esc(view.comment ?? "")}</textarea></label>
           ${poll}
@@ -133,8 +137,34 @@ function render(state) {
   // An open row keeps what is typed in it: it is written again only when it opens or closes.
   const editing = root.querySelector(".ct-edit form");
   const typing = editing && editing.contains(document.activeElement);
-  if (!typing)
+  const editedView = open ? state.devices.get(open) : null;
+  const sameEditor = editing && editedView && editing.getAttribute("data-owner") === deviceSlot("patch", editedView);
+  if (!typing && !sameEditor)
     setHtml(q(".ct-body"), [...state.devices.values()].map((view) => rowHtml(state, view)).join(""));
+  else if (editedView) {
+    // Slot feedback changes independently of the editor. Keep its fields
+    // and focused button through an old operation's outcome or a live update.
+    const feedback = document.createElement("div");
+    feedback.innerHTML = [...state.devices.values()].map((view) => rowHtml(state, view)).join("");
+    const nextButton = /** @type {HTMLButtonElement} */ (feedback.querySelector('[data-act="patch"]'));
+    const button = /** @type {HTMLButtonElement} */ (q('.ef-f [data-act="patch"]'));
+    button.disabled = nextButton.disabled;
+    setHtml(button, nextButton.innerHTML);
+    const slot = q(".ef-f .slot");
+    const nextSlot = /** @type {HTMLElement} */ (feedback.querySelector(".ef-f .slot"));
+    slot.setAttribute("style", nextSlot.getAttribute("style") ?? "");
+    setHtml(slot, nextSlot.innerHTML);
+    const editor = /** @type {HTMLElement} */ (editing?.closest(".ct-edit"));
+    const body = q(".ct-body");
+    const priorRows = [...body.children];
+    const rows = Array.from(feedback.children, (row) => row.matches(".ct-edit") ? editor : row);
+    let next = null;
+    for (const row of rows.reverse()) {
+      if (row !== editor) body.insertBefore(row, next);
+      next = row;
+    }
+    for (const row of priorRows) if (row !== editor) row.remove();
+  }
   const scenes = state.scenes ?? [];
   setHtml(
     q(".st-body"),
@@ -174,11 +204,19 @@ function patch(name) {
       ),
     {
       device: name,
+      owns: {
+        opening: () => openings,
+        visit: () => visits,
+        revision: () => revision,
+        membership: () => getState().devices.get(name)?.origin,
+      },
+      effects: { slot: ["epoch", "membership"], done: ["epoch", "opening", "visit", "revision", "membership"] },
+      retireOnChange: true,
       label: "Saving…",
       done: () => {
         // The row closes, in the opening that saved it.
         if (mine === openings && open === name) open = null;
-        /** @type {HTMLElement|null} */ (document.activeElement)?.blur?.();
+        if (root?.contains(document.activeElement)) /** @type {HTMLElement|null} */ (document.activeElement)?.blur?.();
       },
     },
   );
@@ -198,7 +236,7 @@ function adopt(name) {
         body: {},
       }),
     ),
-  { device: name, label: "Adding…" });
+  { device: name, owns: { membership: () => getState().devices.get(name)?.origin }, effects: { slot: ["epoch", "membership"] }, retireOnChange: true, label: "Adding…" });
   render(getState());
 }
 
@@ -222,11 +260,13 @@ function addDevice(form) {
         }),
       ),
     {
+      owns: { opening: () => openings, revision: () => addRevision },
+      effects: { done: ["epoch", "opening", "revision"] },
       label: "Adding…",
       done: () => {
         if (mine === openings) /** @type {HTMLFormElement|null} */ (root?.querySelector("form.addf"))?.reset();
-        return `Added ${data.get("name")}. pixdcon saved it to config.json and starts it now. Choose its scene on the device page.`;
       },
+      note: () => `Added ${data.get("name")}. pixdcon saved it to config.json and starts it now. Choose its scene on the device page.`,
     },
   );
   render(getState());
@@ -270,11 +310,13 @@ function onClick(event) {
   }
   switch (button.dataset.act) {
     case "edit":
+      visits += 1;
       open = open === button.dataset.device ? null : String(button.dataset.device);
       forgetIdle((key) => key.startsWith("patch:"));
       render(getState());
       break;
     case "cancel":
+      visits += 1;
       open = null;
       render(getState());
       break;
@@ -289,8 +331,9 @@ function onClick(event) {
 
 /** @param {Event} event */
 function onInput(event) {
+  if (/** @type {HTMLElement} */ (event.target).closest?.(".ct-edit form")) revision += 1;
   const form = /** @type {HTMLElement} */ (event.target).closest?.("form.addf");
-  if (form instanceof HTMLFormElement) addState();
+  if (form instanceof HTMLFormElement) { addRevision += 1; addState(); }
 }
 
 /** @param {Event} event */
@@ -308,6 +351,7 @@ export const page = {
     root.className = "p-config";
     open = params.open && params.open !== "add" ? params.open : null;
     openings += 1;
+    visits += 1;
     // A fresh opening: what idle rows said before is gone; an operation that
     // runs keeps its slot and says its outcome when it comes.
     forgetIdle((key) => /^(patch|adopt):/.test(key) || key === "add-device");
@@ -343,6 +387,7 @@ export const page = {
   </section>`;
     root.addEventListener("click", onClick);
     root.addEventListener("input", onInput);
+    root.addEventListener("change", onInput);
     root.addEventListener("submit", onSubmit);
     unsubscribe = subscribe((state) => state, render);
     if (params.open === "add") {
@@ -351,11 +396,13 @@ export const page = {
     }
   },
   unmount() {
+    openings += 1;
     unsubscribe?.();
     unsubscribe = null;
     if (root) {
       root.removeEventListener("click", onClick);
       root.removeEventListener("input", onInput);
+      root.removeEventListener("change", onInput);
       root.removeEventListener("submit", onSubmit);
     }
     root = null;

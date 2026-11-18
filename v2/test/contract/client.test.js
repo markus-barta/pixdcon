@@ -6371,28 +6371,8 @@ async function r6Overlays(module, overlap, end, t = /** @type {any} */ (null), i
   }
 }
 
-const R4_KNOWN = new Set([
-  "config add device × type × success",
-  "config patch × leave × success",
-  "config patch × membership × 500",
-  "config patch × membership × success",
-  "config patch × membership × timeout",
-  "config patch × reopen × 500, last",
-  "config patch × reopen × success, last",
-  "config patch × reopen × timeout, last",
-  "config patch × revisit × success",
-  "config patch × type × success",
-  "settings save rejected × membership × 500",
-  "settings save rejected × membership × refused",
-  "settings save rejected × membership × timeout",
-  "settings save × membership × 500",
-  "settings save × membership × success",
-  "settings save × membership × timeout",
-  // r6: Reset stories expose the same phase-B ownership bugs.
-  "settings reset save × membership × 500",
-  "settings reset save × membership × success",
-  "settings reset save × membership × timeout",
-]);
+/** @type {Set<string>} */
+const R4_KNOWN = new Set([]);
 
 const R4_STRICT = process.env.R4_HARNESS_STRICT === "1";
 /** Known cases that executed and passed: a todo must never hide a repaired product. @type {Set<string>} */
@@ -8900,7 +8880,9 @@ const R4_INVENTORY = [
   "web/js/components/recovery-dialog.js · retry · await · store",
   "web/js/components/settings-form.js · load · ops failed · page state, render",
   "web/js/components/settings-form.js · save · ops done · field rejection, page callback, page state, preview feedback, render, request start, reset, slot drop, store",
-  "web/js/components/settings-form.js · save · ops note · page state, slot note",
+  // B4 L7: pure slot note. Equivalent !== plurality avoids the frozen
+  // write heuristic's false assignment at `notCleared.length === 1`.
+  "web/js/components/settings-form.js · save · ops note · slot note",
   "web/js/components/settings-form.js · save · ops describe · slot failure text",
   "web/js/components/settings-form.js · save · ops failed · field rejection, page callback, page state, preview feedback, render, request start, slot drop, store",
   "web/js/components/settings-form.js · revert · ops done · page callback, page state, preview feedback",
@@ -8942,7 +8924,8 @@ const R4_INVENTORY = [
   "web/js/pages/config-raw.js · reloadFromDisk · await · DOM write, page state, render, request start, slot drop, store",
   "web/js/pages/config-raw.js · reloadFromDisk · await · DOM write, page state, render, store",
   "web/js/pages/config.js · patch · ops done · blur, close, page state",
-  "web/js/pages/config.js · addDevice · ops done · reset, slot note",
+  "web/js/pages/config.js · addDevice · ops done · reset",
+  "web/js/pages/config.js · addDevice · ops note · slot note",
   "web/js/pages/config.js · patch · await · store",
   "web/js/pages/config.js · adopt · await · store",
   "web/js/pages/config.js · addDevice · await · store",
@@ -9033,7 +9016,9 @@ test("r4 inventory: persistent UI state writers across imported helpers all decl
   // Owner tags and identity projections are unchanged.
   // B3 r4 inventory-only: 389 -> 391; Save/Revert retire mine.previewDraft.
   // V1/V2/V3 named retirement cases and newer-edit controls cover both writes.
-  assert.equal(digest, "7be1002132c5728930567bf26e393e01ec6737b843cfc3d4bdc619e2991bc78a", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+  // B4 inventory-only: 391 -> 401; Config visit/edit counters, stable
+  // editor feedback, Health opening lifecycle. No owner-tag changes.
+  assert.equal(digest, "bd3d7684503107b8519edf9143cb4fcb5082035c9659e1c7d87b21f68252615d", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
 });
 test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
   for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {
@@ -13805,3 +13790,678 @@ test("r4 harness self-test: B3 r4 slot notes must fail with 1c80077 scene-gated 
     await assert.rejects(r5B3SlotNote(t, story, device), /the old slot keeps its own note/);
   }
 });
+
+// PIXD-100 B4: additive histories; frozen observers and mutant recipes stay.
+// Add the native insertion primitive used by Config's synchronous renderer.
+// Existing stand-in methods, observers and comparisons are unchanged.
+Object.assign(FakeNode.prototype, {
+  /** @this {FakeNode} @param {FakeNode} node @param {FakeNode|null} before */
+  insertBefore(node, before) {
+    if (node === before) return node;
+    if (before === null) { this.append(node); return node; }
+    assert.equal(before.parentNode === this, true, "insertBefore reference is a child");
+    node.remove();
+    node.parentNode = this;
+    this.childNodes.splice(this.childNodes.indexOf(before), 0, node);
+    fakeDomRevision += 1;
+    return node;
+  },
+});
+
+R4_STEPS["leave without editing"] = ["opening"];
+R4_STEP["leave without editing"] = async (ctx) => {
+  const edits = [...ctx.edits];
+  const revision = ctx.revision;
+  ctx.home = ctx.page;
+  r4Close(ctx);
+  r4Open(ctx, r4Away(ctx));
+  ctx.awayFrom = ctx.home;
+  await r4AnswerAll(ctx, ctx.op);
+  assert.deepEqual([...ctx.edits], edits, "B4 leave: no field edit or Reset");
+  assert.equal(ctx.revision, revision, "B4 leave: no input on the next page");
+};
+
+/** The old opening's outcome may still enter the store. Its callbacks may
+ * not change the visible page. Fault controls add a visible stale writer;
+ * the store admission and the request's original end remain unchanged.
+ * @param {any} t @param {R4Kind} kind @param {R4End} end
+ * @param {any} [opsOverride] @param {boolean} [dirtyCallback]
+ */
+async function r5B4LeaveCase(t, kind, end, opsOverride, dirtyCallback = false) {
+  if (!r8HarnessLoaded) await r8HarnessReady;
+  await r8MeasurementModules();
+  const global = /** @type {any} */ (globalThis);
+  const descriptor = Object.getOwnPropertyDescriptor(global, "__r8Operation");
+  let hook = global.__r8Operation;
+  /** @type {Set<string>} */ const stale = new Set();
+  const visible = () => [...r7Leaves(fakeDocument.body)].map(([key, leaf]) => [key, leaf.value]);
+  const observe = (/** @type {any} */ run, /** @type {string} */ key, /** @type {any} */ work, /** @type {any} */ options = {}) => {
+    const opening = r8ActiveStory?.root;
+    const watched = key === "raw-load" || key === "log" || key.startsWith("load:");
+    const callbacks = { ...options };
+    for (const name of ["done", "failed"]) {
+      if (!options[name] && !dirtyCallback) continue;
+      callbacks[name] = (/** @type {any} */ result) => {
+        const retired = watched && !opening?.isConnected;
+        const before = retired ? visible() : null;
+        try {
+          if (retired && dirtyCallback) r8ActiveStory.root.querySelector(".head .sub").textContent = "B4 retired opening changed the visible page";
+          return options[name]?.(result);
+        } finally {
+          if (retired && JSON.stringify(visible()) !== JSON.stringify(before)) stale.add(`${key}: retired opening ${name} callback changed the visible page`);
+        }
+      };
+    }
+    return hook(opsOverride ? opsOverride[run.name] : run, key, work, callbacks);
+  };
+  Object.defineProperty(global, "__r8Operation", { configurable: true, get: () => observe, set: (next) => { hook = next; } });
+  const first = r8Stories.length;
+  try {
+    const differences = await r4Case(t, kind, "leave without editing", end);
+    const stories = r8Stories.slice(first).filter((story) => story.kind === kind.name && story.completed);
+    assert.ok(stories.some((story) => r8StoryChanges(story.a.identities, story.b.identities).inputs.join() === "opening"), "B4 named leave changes opening alone");
+    return [...differences, ...stale];
+  } finally { Object.defineProperty(global, "__r8Operation", /** @type {PropertyDescriptor} */ (descriptor)); }
+}
+
+const R5_B4_LEAVE_NAMES = ["raw load", "settings load", "health log"];
+for (const name of R5_B4_LEAVE_NAMES)
+  for (const end of R4_ENDS)
+    test(`r4 harness: ${name} × leave without editing × ${end} (B4 gate r5f)`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      assert.deepEqual(await r5B4LeaveCase(t, r4KindOf(name), end), []);
+    });
+
+test("r4 harness self-test: B4 every leave-without-editing control rejects a visible stale callback", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mutant = await r5Module("ops.js", [
+    ["if (read() !== owner.values[name]) return false;", 'if (name !== "opening" && read() !== owner.values[name]) return false;'],
+    // Settings explicitly retires the old read on destroy. Restore that
+    // path only in this fault control so the old opening guard is tested.
+    ["if (owner.slot && op(owner.slot.key).token !== owner.slot.token) return false;", "if (false) return false;"],
+  ]);
+  for (const name of R5_B4_LEAVE_NAMES)
+    for (const end of R4_ENDS) {
+      const kind = r4KindOf(name);
+      assert.deepEqual(await r5B4LeaveCase(t, kind, end), [], `${name}/${end}: visible control`);
+      assert.deepEqual(await r5B4LeaveCase(t, kind, end, undefined, true), [], `${name}/${end}: central opening ownership rejects even a faulty callback`);
+      assert.ok((await r5B4LeaveCase(t, kind, end, mutant, true)).some((found) => /retired opening/.test(found)), `${name}/${end}: the stale visible writer must fail`);
+    }
+});
+
+/** Exact K1: only n is cleared; m has the same device/kind, another key.
+ * A7's overlap deliberately clears both ids, so this supplements it.
+ * @param {any} t @param {any} module @param {boolean} overlap @param {R4End} end
+ */
+async function r5B4K1(t, module, overlap, end) {
+  const n = record("n", "setting", { device: "d1", scene: "clock", key: "n", value: 8 });
+  const m = record("m", "setting", { device: "d1", scene: "clock", key: "m", value: 9 });
+  const world = r4World({ ...r4d1(), overlays: () => overlap ? [n, m] : [n] });
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  module.page.mount(root, {});
+  const button = (/** @type {string} */ id) => root.querySelector(`[data-act="clear"][data-id="${id}"]`);
+  const untouched = () => {
+    const control = button("m");
+    assert.ok(control, "B4 K1: m is present");
+    assert.equal(control.disabled, false, "B4 K1: n cannot disable m");
+    assert.doesNotMatch(r4Text(control.closest(".ot-row")), /Clearing|Not cleared/, "B4 K1: m never reports n's pending state or failure");
+  };
+  try {
+    r4Click(button("n"));
+    await settle();
+    const old = pending(calls, "DELETE", "/overlays/n");
+    assert.equal(button("n").disabled, true, "B4 K1: n owns its pending state");
+    assert.match(r4Text(button("n")), /Clearing/);
+    if (!overlap) r4Live(world, "overlays", [m]);
+    await settle();
+    untouched();
+    if (end === "success") old.ok();
+    else if (end === "500") old.answer(500, {});
+    else { old.abandon(); t.mock.timers.tick(15_000); }
+    await settle();
+    untouched();
+    world.rev += 1;
+    r4Live(world, "device", r4View(world, "d1", world.epoch, 1, world.rev));
+    await settle();
+    untouched();
+    assert.equal(calls.filter((/** @type {any} */ call) => call.method === "DELETE").length, 1, "B4 K1: m's Clear was never started");
+    if (overlap && end !== "success") assert.match(r4Text(button("n").closest(".ot-row")), /Not cleared/, "B4 K1: n retains its own failure");
+  } finally {
+    module.page.unmount(); root.remove(); await r4AnswerAll({ calls });
+  }
+}
+for (const overlap of [false, true])
+  for (const end of R4_ENDS)
+    test(`r4 harness: B4 K1 n/m equal-kind ${overlap ? "overlap, only n clears" : "replacement"} × ${end}`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      await r5B4K1(t, await r5Module("pages/overlays.js"), overlap, end);
+    });
+for (const { name, body } of R7_OVERLAY_MUTANTS)
+  test(`r4 harness self-test: B4 K1 exact n/m control and must-fail ${name}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const mutant = await r7OverlaySlotMutant(body);
+    for (const overlap of [false, true])
+      for (const end of R4_ENDS) {
+        await r5B4K1(t, await r5Module("pages/overlays.js"), overlap, end);
+        await assert.rejects(r5B4K1(t, mutant, overlap, end), (/** @type {any} */ error) => error.name === "AssertionError" && /B4 K1: (n cannot disable m|m never reports)/.test(error.message));
+      }
+  });
+
+/** @param {any} module */
+async function r5B4RestoreLayout(module) {
+  const world = r4World(r4KindOf("devices restore").world);
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  module.page.mount(root, {});
+  try {
+    r4Click(restoreIn(root));
+    await settle();
+    pending(calls, "DELETE", "/scene-overlay").answer(500, {});
+    await settle();
+    const line = root.querySelector(".src2");
+    const button = line.querySelector('[data-act="restore"]');
+    const failure = line.querySelector(".fail");
+    assert.ok(button && failure, "B4 Restore: retry button and full error remain visible");
+    assert.ok(line.children.indexOf(button) < line.children.indexOf(failure), "B4 Restore: error appears after the Restore button");
+    assert.equal(button.disabled, false, "B4 Restore: retry remains available");
+  } finally { module.page.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+}
+test("r4 harness: B4 Tick Restore error follows its button", async () => r5B4RestoreLayout(await r5Module("pages/devices.js")));
+test("r4 harness self-test: B4 Tick Restore rejects b7f7daf error-before-button layout", async () => {
+  await r5B4RestoreLayout(await r5Module("pages/devices.js"));
+  const mutant = await r5Module("pages/devices.js", [
+    ['second = `${failure ? "" : esc(lines.second.text)} <button', 'second = `${failure || esc(lines.second.text)} <button'],
+    ['</span></button>${failure ? ` ${failure}` : ""}`;', '</span></button>`;'],
+  ]);
+  await assert.rejects(r5B4RestoreLayout(mutant), /B4 Restore: error appears after/);
+});
+
+/** @param {string} css @param {any} [module] */
+async function r5B4FieldLayout(css, module) {
+  const declaration = /\.ferr\s*\{([^}]+)\}/.exec(css)?.[1] ?? "";
+  assert.match(declaration, /white-space:\s*nowrap\s*;/, "B4 field refusal: its inline text stays on one line");
+  await r5Form({}, module ?? await r5Module("components/settings-form.js"), async ({ calls, root, edit, values }) => {
+    await edit("2");
+    r5Previews(calls)[0].answer(200, { state: values("clock"), rejected: { n: "above the maximum of 1" } });
+    await settle();
+    const input = field(root, "n");
+    const error = root.querySelector('[data-row="n"] .ferr');
+    assert.equal(input.parentElement === error.parentElement, true, "B4 field refusal: one inline row beside its own field");
+    assert.ok(input.parentElement.children.indexOf(input) < input.parentElement.children.indexOf(error), "B4 field refusal: reason follows the control");
+    assert.match(r4Text(error), /pixdcon refused this value: above the maximum of 1/);
+    assert.doesNotMatch(r4Text(root.querySelector('[data-row="m"] .ferr')), /refused/, "B4 field refusal: no error beside another field");
+  });
+}
+test("r4 harness: B4 Tick field refusal is one line beside its field", async () => r5B4FieldLayout(r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8")));
+test("r4 harness self-test: B4 Tick field refusal rejects b7f7daf wrapping", async () => {
+  const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
+  await r5B4FieldLayout(css);
+  const previous = css.replace(/(\.ferr\s*\{[^}]*?)\s*white-space:\s*nowrap;/, "$1");
+  await assert.rejects(r5B4FieldLayout(previous), /B4 field refusal: its inline text stays on one line/);
+});
+
+/** Actual HTTP slots: changed membership retires transport and feedback;
+ * a page-only change keeps the slot but gates its editor callback.
+ * @param {any} ops @param {boolean} membershipOwned
+ */
+async function r5B4MembershipSlot(ops, membershipOwned) {
+  const world = r4World(r4d1());
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const key = "b4-member-slot";
+  let opening = 1;
+  /** @type {string[]} */ const effects = [];
+  const options = () => ({
+    device: "d1",
+    owns: { membership: () => r4State().devices.get("d1")?.origin, opening: () => opening },
+    effects: { ...(membershipOwned ? { slot: ["epoch", "membership"] } : {}), done: ["epoch", "opening"] },
+    retireOnChange: membershipOwned,
+    done: () => { effects.push("editor"); },
+    note: () => "saved",
+  });
+  const send = () => request("GET", "/api/v2/config/raw", { resource: "config", key });
+  const old = ops.follow(key, send, options());
+  void old.catch(() => {});
+  try {
+    const token = ops.op(key).token;
+    opening += 1;
+    const { tick } = await import("../../web/js/store.js");
+    tick(r4State().now + 1);
+    assert.equal(ops.op(key).token, token, "B4 slot: leaving an opening does not retire a busy slot");
+    assert.equal(isBusy(key), true, "B4 slot: leaving keeps the transport's exclusion");
+    r4Membership({ world }, "blob");
+    await settle();
+    if (membershipOwned) {
+      assert.equal(ops.op(key).token, 0, "B4 slot: membership retires pending feedback before the old end");
+      assert.equal(isBusy(key), false, "B4 slot: membership releases only that transport control");
+      assert.equal(ops.start(key, send, options()), true, "B4 slot: the new member can act immediately");
+      const next = pending(calls, "GET", "/config/raw");
+      assert.equal(calls.length, 2, "B4 slot: a new request really starts");
+      const successor = calls[1];
+      next.ok();
+      await old;
+      await settle();
+      assert.equal(ops.op(key).busy, true, "B4 slot: the old end cannot settle its successor");
+      assert.equal(isBusy(key), true, "B4 slot: old cleanup leaves the new transport busy");
+      successor.ok();
+      await settle();
+      assert.equal(ops.op(key).note, "saved", "B4 slot: current member's note is kept");
+      assert.deepEqual(effects, ["editor"], "B4 slot: only the successor touches its editor");
+      r4Membership({ world }, "config");
+      await settle();
+      assert.equal(ops.op(key).token, 0, "B4 slot: a completed note retires too; A→B→A cannot revive it");
+    } else {
+      assert.equal(ops.op(key).busy, true, "B4 slot: unrelated membership leaves a generic slot pending");
+      pending(calls, "GET", "/config/raw").ok();
+      await old;
+      await settle();
+      assert.equal(ops.op(key).note, "saved", "B4 slot: a slot note outlives the opening");
+      assert.deepEqual(effects, [], "B4 slot: its old opening's callback remains obsolete");
+    }
+  } finally { ops.drop(key); await r4AnswerAll({ calls }); await old.catch(() => {}); }
+}
+for (const membershipOwned of [false, true])
+  test(`r4 harness: B4 central ${membershipOwned ? "membership" : "generic"} slot preserves its exact transport and page owner`, async () => r5B4MembershipSlot(await r5Module("ops.js"), membershipOwned));
+test("r4 harness self-test: B4 membership retirement rejects b7f7daf behaviour beside its unchanged generic control", async () => {
+  const ops = await r5Module("ops.js");
+  await r5B4MembershipSlot(ops, true);
+  await r5B4MembershipSlot(ops, false);
+  const previous = await r5Module("ops.js", [['if (options.retireOnChange) {', 'if (false) {']]);
+  await r5B4MembershipSlot(previous, false);
+  await assert.rejects(r5B4MembershipSlot(previous, true), /B4 slot: membership retires pending feedback before the old end/);
+});
+
+/** These are the same frozen observations, with b7f7daf product behaviour
+ * restored only for the affected page/form; unrelated previous behaviour
+ * stays a required passing control.
+ */
+test("r4 harness self-test: B4 Config projections reject b7f7daf while preserving its correct outcomes", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const previous = (await r5Module("pages/config.js", [
+    ['effects: { slot: ["epoch", "membership"], done: ["epoch", "opening", "visit", "revision", "membership"] }', 'effects: { slot: ["epoch"], done: ["epoch"] }'],
+    ['effects: { done: ["epoch", "opening", "revision"] }', 'effects: { done: ["epoch"] }'],
+    ['  unmount() {\n    openings += 1;', '  unmount() {'],
+    ['if (root?.contains(document.activeElement)) /** @type {HTMLElement|null} */ (document.activeElement)?.blur?.();', '/** @type {HTMLElement|null} */ (document.activeElement)?.blur?.();'],
+  ])).page;
+  const wrong = [
+    ["config patch", "membership", "success"], ["config patch", "membership", "500"], ["config patch", "membership", "timeout"],
+    ["config patch", "type", "success"], ["config patch", "revisit", "success"], ["config patch", "leave", "success"],
+    ["config add device", "type", "success"],
+  ];
+  for (const [name, change, end] of wrong) {
+    const kind = r4KindOf(name);
+    assert.deepEqual(await r4Case(t, kind, change, /** @type {R4End} */ (end)), [], `B4 ${name}/${change}/${end}: current control`);
+    assert.ok((await r4Case(t, kind, change, /** @type {R4End} */ (end), { modules: { config: previous } })).length, `B4 ${name}/${change}/${end}: previous-head behaviour must fail`);
+  }
+  for (const name of ["config patch", "config adopt", "config add device"])
+    for (const end of R4_ENDS) {
+      const kind = r4KindOf(name);
+      assert.deepEqual(await r4Case(t, kind, "reconnect", end), [], `B4 ${name}/reconnect/${end}: current control`);
+      assert.deepEqual(await r4Case(t, kind, "reconnect", end, { modules: { config: previous } }), [], `B4 ${name}/reconnect/${end}: b7f7daf was correct`);
+    }
+});
+
+/** @param {any} module */
+async function r5B4OutsideFocus(module) {
+  const world = r4World(r4d1());
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  const outside = fakeDocument.createElement("input");
+  fakeDocument.body.append(outside);
+  module.page.mount(root, {});
+  try {
+    r4Click(root.querySelector('[data-act="edit"][data-device="d1"]'));
+    r4Type(root.querySelector('.ct-edit [name="displayName"]'), "Kitchen");
+    r4Click(root.querySelector('[data-act="patch"]'));
+    await settle();
+    outside.focus();
+    pending(calls, "PATCH", "/devices/d1").ok();
+    await settle();
+    assert.equal(fakeDocument.activeElement === outside, true, "B4 Config: successful Save cannot blur focus outside its opening root");
+    assert.equal(root.querySelector(".ct-edit") === null, true, "B4 Config: its current row still closes");
+  } finally { module.page.unmount(); root.remove(); outside.remove(); await r4AnswerAll({ calls }); }
+}
+test("r4 harness: B4 Config successful patch preserves outside focus", async () => r5B4OutsideFocus(await r5Module("pages/config.js")));
+test("r4 harness self-test: B4 Config outside-focus control rejects b7f7daf unconditional blur", async () => {
+  await r5B4OutsideFocus(await r5Module("pages/config.js"));
+  const previous = await r5Module("pages/config.js", [['if (root?.contains(document.activeElement)) /** @type {HTMLElement|null} */ (document.activeElement)?.blur?.();', '/** @type {HTMLElement|null} */ (document.activeElement)?.blur?.();']]);
+  await assert.rejects(r5B4OutsideFocus(previous), /B4 Config: successful Save cannot blur/);
+});
+
+/** @param {any} module */
+async function r5B4AddSelect(module) {
+  const world = r4World(r4d1());
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  module.page.mount(root, {});
+  try {
+    r4Type(root.querySelector('form.addf [name="name"]'), "d9");
+    r4Type(root.querySelector('form.addf [name="ip"]'), "192.168.1.9");
+    root.querySelector("form.addf").dispatchEvent(new FakeEvent("submit"));
+    await settle();
+    const select = root.querySelector('form.addf [name="type"]');
+    typeInto(select, "pixoo", "change");
+    pending(calls, "POST", "/devices").ok();
+    await settle();
+    assert.equal(root.querySelector('form.addf [name="type"]').value, "pixoo", "B4 Config: changing only Type after Add preserves the newer selection");
+    assert.equal(root.querySelector('form.addf [name="name"]').value, "d9", "B4 Config: an old Add resets none of the revised form");
+    assert.match(r4Text(root.querySelector("#add .slot")), /Added d9/, "B4 Config: the slot still reports its own success");
+  } finally { module.page.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+}
+test("r4 harness: B4 Config Add device preserves a later Type selection", async () => r5B4AddSelect(await r5Module("pages/config.js")));
+test("r4 harness self-test: B4 Config Type control rejects b7f7daf missing change ownership", async () => {
+  await r5B4AddSelect(await r5Module("pages/config.js"));
+  const previous = await r5Module("pages/config.js", [['root.addEventListener("change", onInput);', '// b7f7daf: no select change ownership']]);
+  await assert.rejects(r5B4AddSelect(previous), /B4 Config: changing only Type after Add/);
+});
+
+/** @param {any} module */
+async function r5B4RemovedWhileTyping(module) {
+  const world = r4World(r4d1());
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  module.page.mount(root, {});
+  try {
+    r4Click(root.querySelector('[data-act="edit"][data-device="d1"]'));
+    r4Type(root.querySelector('.ct-edit [name="displayName"]'), "Keep typing");
+    const input = root.querySelector('.ct-edit [name="displayName"]');
+    r4Live(world, "device-removed", { name: "d1", incarnation: 1 });
+    await settle();
+    assert.equal(input.value, "Keep typing", "B4 Config: removing a device while typing preserves the held editor");
+    assert.equal(fakeDocument.activeElement === input, true, "B4 Config: removal leaves the focused editor alone");
+    assert.equal(input.isConnected, true, "B4 Config: the typing editor stays attached");
+    input.blur();
+    world.lives.set("d1", 2);
+    world.rev += 1;
+    r4Live(world, "device", r4View(world, "d1", world.epoch, 2, world.rev));
+    await settle();
+    assert.match(root.querySelector('.ct-edit [name="displayName"]').value, /life 2/, "B4 Config: a replacement life gets its own editor after typing ends");
+
+  } finally { module.page.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+}
+test("r4 harness: B4 Config removal while typing keeps the focused editor safe", async () => r5B4RemovedWhileTyping(await r5Module("pages/config.js")));
+test("r4 harness self-test: B4 Config missing-view control rejects updating feedback without its device", async () => {
+  await r5B4RemovedWhileTyping(await r5Module("pages/config.js"));
+  const mutant = await r5Module("pages/config.js", [['else if (editedView) {', 'else {']]);
+  await assert.rejects(r5B4RemovedWhileTyping(mutant), (/** @type {any} */ error) => error instanceof TypeError && /name|disabled/.test(error.message));
+  const wrongLife = await r5Module("pages/config.js", [['editing.getAttribute("data-owner") === deviceSlot("patch", editedView)', 'true']]);
+  await assert.rejects(r5B4RemovedWhileTyping(wrongLife), /B4 Config: a replacement life gets its own editor/);
+
+});
+
+/** @param {Array<[string, string]>} [edits] */
+async function r5B4WatchCleanup(edits = []) {
+  const store = new URL("../../web/js/store.js", import.meta.url).href;
+  const monitored = `data:text/javascript;base64,${Buffer.from(`
+    export * from ${JSON.stringify(store)};
+    import {subscribe as real} from ${JSON.stringify(store)};
+    const stops = new Set();
+    export const count = () => stops.size;
+    export const clear = () => { for (const stop of [...stops]) stop(); };
+    export function subscribe(select, render) {
+      const dispose = real(select, render);
+      const stop = () => { stops.delete(stop); dispose(); };
+      stops.add(stop);
+      return stop;
+    }
+  `).toString("base64")}`;
+  const monitor = await import(monitored);
+  const ops = await r5Module("ops.js", edits, { "./store.js": monitored });
+  const world = r4World(r4d1());
+  r4NewEpoch(world);
+  const options = { owns: { membership: () => r4State().devices.get("d1")?.origin }, effects: { slot: ["epoch", "membership"] }, retireOnChange: true, note: () => "saved" };
+  try {
+    await ops.follow("b4-watch", async () => {}, options);
+    ops.drop("b4-watch");
+    assert.equal(monitor.count(), 0, "B4 retirement: dropping the slot disconnects its observation");
+    await ops.follow("b4-watch", async () => {}, options);
+    await ops.follow("b4-watch", async () => {}, options);
+    ops.drop("b4-watch");
+    assert.equal(monitor.count(), 0, "B4 retirement: a successor leaves no old subscription behind");
+    await ops.follow("b4-watch", async () => {}, options);
+    r4Membership({ world }, "blob");
+    ops.drop("b4-watch");
+    assert.equal(monitor.count(), 0, "B4 retirement: a changed member disconnects before dropping its slot");
+    // A store subscriber can retire the capture during setOp, before the
+    // new observation receives its disposer from subscribe's first call.
+    r4Membership({ world }, "config");
+    const { subscribe } = await import("../../web/js/store.js");
+    let changed = false;
+    const stop = subscribe((state) => state, () => {
+      if (!changed && ops.op("b4-watch").busy) { changed = true; r4Membership({ world }, "blob"); }
+    });
+    try {
+      await ops.follow("b4-watch", async () => {}, options);
+      assert.equal(monitor.count(), 0, "B4 retirement: synchronous initial retirement also disconnects after subscribe returns");
+    } finally { stop(); }
+
+  } finally { ops.drop("b4-watch"); monitor.clear(); }
+}
+test("r4 harness: B4 retirement observations disconnect on slot removal and replacement", async () => r5B4WatchCleanup());
+test("r4 harness self-test: B4 subscription cleanup has a control and must-fail missing-disposer mutant", async () => {
+  await r5B4WatchCleanup();
+  await assert.rejects(r5B4WatchCleanup([['      unwatch();', '      // missing subscription disposal']]), /B4 retirement: dropping the slot disconnects/);
+});
+
+/** A membership transition retires the operation even if membership comes
+ * back before its answer. No field or scene changes in the meantime.
+ * @param {any} t @param {R4End} end @param {any} [module]
+ */
+async function r5B4SaveMemberReturn(t, end, module) {
+  await r5Form(t, module ?? await r5Module("components/settings-form.js"), async ({ world, calls, root, form, edit, values }) => {
+    await edit("2");
+    r5Previews(calls)[0].ok();
+    await settle();
+    form.update(values("clock"));
+    r4Click(saveButton(root));
+    await settle();
+    const old = pending(calls, "PUT", "/settings/clock");
+    r4Membership({ world }, "blob");
+    form.update(values("clock"), { overlayOnly: true });
+    r4Membership({ world }, "config");
+    form.update(values("clock"), { overlayOnly: false });
+    if (end === "success") old.ok();
+    else if (end === "500") old.answer(500, {});
+    else { old.abandon(); t.mock.timers.tick(15_000); }
+    await settle();
+    assert.equal(form.hasEdits(), true, "B4 Save membership return: the old outcome acknowledges none of the retained edits");
+    assert.doesNotMatch(r4Text(root.querySelector(".set-status")), /Not saved|Saved to config/, "B4 Save membership return: no old-member failure or success returns");
+    assert.equal(saveButton(root).disabled, false, "B4 Save membership return: the returned member can Save again");
+    const before = calls.length;
+    r4Click(saveButton(root));
+    await settle();
+    const next = calls.slice(before).find((/** @type {any} */ call) => call.method === "PUT" && call.path.endsWith("/settings/clock"));
+    assert.ok(next, "B4 Save membership return: a new Save starts");
+    assert.deepEqual(next.body.set, { n: 2 }, "B4 Save membership return: the next body retains the exact edit");
+    next.ok();
+    await settle();
+    assert.equal(form.hasEdits(), false, "B4 Save membership return: only the new Save acknowledges it");
+  });
+}
+for (const end of R4_ENDS)
+  test(`r4 harness: B4 Settings Save membership A→B→A × ${end}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await r5B4SaveMemberReturn(t, end);
+  });
+test("r4 harness self-test: B4 Save membership return rejects b7f7daf outcome admission", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const previous = await r5Module("components/settings-form.js", [
+    ['effects: { ...sceneEffects, slot: ["epoch", "membership"] }', 'effects: sceneEffects'],
+    ['retireOnChange: true,', 'retireOnChange: false,'],
+  ]);
+  for (const end of R4_ENDS) {
+    await r5B4SaveMemberReturn(t, end);
+    await assert.rejects(r5B4SaveMemberReturn(t, end, previous), /B4 Save membership return:/);
+  }
+});
+
+/** @param {any} t @param {string} name @param {R4End} end @param {any} [module] */
+async function r5B4ConfigMemberReturn(t, name, end, module) {
+  const kind = r4KindOf(name);
+  const world = r4World(kind.world);
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  const page = module ?? await r5Module("pages/config.js");
+  page.page.mount(root, {});
+  const ctx = { world, calls, root };
+  const original = r4State().devices.get("d1").origin;
+  const control = () => root.querySelector(name === "config patch" ? '[data-act="patch"]' : '[data-act="adopt"]');
+  try {
+    await kind.setup?.(ctx);
+    await kind.begin?.(ctx);
+    await settle();
+    const old = pending(calls, kind.request[0], kind.request[1]);
+    r4Membership(ctx, original === "config" ? "blob" : "config");
+    r4Membership(ctx, original);
+    await settle();
+    assert.equal(control().disabled, false, "B4 Config membership return: old pending work cannot disable the returned member");
+    assert.doesNotMatch(r4Text(control()), /Saving|Adding/, "B4 Config membership return: old pending text does not return");
+    if (end === "success") old.ok();
+    else if (end === "500") old.answer(500, {});
+    else { old.abandon(); t.mock.timers.tick(15_000); }
+    await settle();
+    assert.ok(control(), "B4 Config membership return: the old success cannot close its revised-membership editor");
+    assert.equal(control().disabled, false, "B4 Config membership return: the action stays free after the old end");
+    assert.doesNotMatch(r4Text(root.querySelector(".ct-body")), /Not saved|Not added/, "B4 Config membership return: no failure from the old member returns");
+    if (name === "config patch") assert.equal(root.querySelector('.ct-edit [name="displayName"]').value, "Kitchen", "B4 Config membership return: the row's edit survives");
+    const before = calls.length;
+    await kind.begin?.(ctx);
+    await settle();
+    assert.ok(calls.slice(before).some((/** @type {any} */ call) => call.method === kind.request[0] && call.path.endsWith(kind.request[1])), "B4 Config membership return: the action starts a new request");
+  } finally { page.page.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+}
+for (const name of ["config patch", "config adopt"])
+  for (const end of R4_ENDS)
+    test(`r4 harness: B4 ${name} membership A→B→A × ${end}`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      await r5B4ConfigMemberReturn(t, name, end);
+    });
+test("r4 harness self-test: B4 Config membership return rejects b7f7daf pending ownership", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ops = await r4Mutant("ops.js", [['if (options.retireOnChange) {', 'if (false) {']]);
+  const previous = await r5Module("pages/config.js", [], { "../ops.js": ops });
+  for (const name of ["config patch", "config adopt"])
+    for (const end of R4_ENDS) {
+      await r5B4ConfigMemberReturn(t, name, end);
+      await assert.rejects(r5B4ConfigMemberReturn(t, name, end, previous), /B4 Config membership return:/);
+    }
+});
+
+/** @param {any} module */
+async function r5B4OtherConfigForm(module) {
+  const world = r4World(r4d1());
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  module.page.mount(root, {});
+  try {
+    r4Click(root.querySelector('[data-act="edit"][data-device="d1"]'));
+    r4Type(root.querySelector('.ct-edit [name="displayName"]'), "Kitchen");
+    r4Click(root.querySelector('[data-act="patch"]'));
+    await settle();
+    r4Type(root.querySelector('form.addf [name="name"]'), "next-device");
+    pending(calls, "PATCH", "/devices/d1").ok();
+    await settle();
+    assert.equal(root.querySelector(".ct-edit") === null, true, "B4 Config: editing Add does not take the row's successful close away");
+    assert.equal(root.querySelector('form.addf [name="name"]').value, "next-device", "B4 Config: the other form retains its own input");
+  } finally { module.page.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+}
+test("r4 harness: B4 Config row success is independent of Add form edits", async () => r5B4OtherConfigForm(await r5Module("pages/config.js")));
+test("r4 harness self-test: B4 Config other-form control rejects a revision shared across editors", async () => {
+  await r5B4OtherConfigForm(await r5Module("pages/config.js"));
+  const mutant = await r5Module("pages/config.js", [['if (/** @type {HTMLElement} */ (event.target).closest?.(".ct-edit form")) revision += 1;', 'if (true) revision += 1;']]);
+  await assert.rejects(r5B4OtherConfigForm(mutant), /B4 Config: editing Add does not take the row/);
+});
+
+/** Same device, same values, same opening: leaving a row visit through
+ * either control is enough to retire only its editor callback.
+ * @param {any} module @param {boolean} toggle
+ */
+async function r5B4ConfigVisit(module, toggle) {
+  const world = r4World(r4d1());
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  module.page.mount(root, {});
+  try {
+    const edit = () => root.querySelector('[data-act="edit"][data-device="d1"]');
+    r4Click(edit());
+    r4Type(root.querySelector('.ct-edit [name="displayName"]'), "Kitchen");
+    r4Click(root.querySelector('[data-act="patch"]'));
+    await settle();
+    r4Click(toggle ? edit() : root.querySelector('[data-act="cancel"]'));
+    if (toggle) r4Click(edit());
+    const focused = root.querySelector(toggle ? '.ct-edit [name="displayName"]' : 'form.addf [name="name"]');
+    focused.focus();
+    const value = focused.value;
+    pending(calls, "PATCH", "/devices/d1").ok();
+    await settle();
+    assert.equal(fakeDocument.activeElement === focused, true, `B4 Config visit: ${toggle ? "Edit toggle" : "Cancel"} prevents the old row from taking focus`);
+    assert.equal(focused.isConnected, true, "B4 Config visit: the successor editor stays attached");
+    assert.equal(focused.value, value, "B4 Config visit: the successor editor's value survives");
+    if (toggle) assert.ok(root.querySelector(".ct-edit"), "B4 Config visit: Edit toggle reopens a distinct visit");
+  } finally { module.page.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+}
+for (const toggle of [false, true])
+  test(`r4 harness: B4 Config ${toggle ? "Edit toggle" : "Cancel"} retires the previous row visit`, async () => r5B4ConfigVisit(await r5Module("pages/config.js"), toggle));
+test("r4 harness self-test: B4 Config visit controls catch each removed visit increment", async () => {
+  for (const toggle of [false, true]) {
+    await r5B4ConfigVisit(await r5Module("pages/config.js"), toggle);
+    const action = toggle ? "edit" : "cancel";
+    const mutant = await r5Module("pages/config.js", [[`case "${action}":\n      visits += 1;`, `case "${action}":`]]);
+    await assert.rejects(r5B4ConfigVisit(mutant, toggle), /B4 Config visit:/);
+  }
+});
+
+/** Other devices and rows still refresh while the active editor is held.
+ * @param {any} module
+ */
+async function r5B4ConfigSurroundingRows(module, draft = true) {
+  const world = r4World({ devices: [{ name: "d1" }, { name: "d2" }] });
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  module.page.mount(root, {});
+  try {
+    r4Click(root.querySelector('[data-act="edit"][data-device="d1"]'));
+    if (draft) r4Type(root.querySelector('.ct-edit [name="displayName"]'), "Kitchen");
+    const input = root.querySelector('.ct-edit [name="displayName"]');
+    const focused = root.querySelector(draft ? '[data-act="patch"]' : ".head h1");
+    focused.focus();
+    const expected = input.value;
+    world.rev += 1;
+    r4Live(world, "device", { ...r4View(world, "d2", world.epoch, 1, world.rev), displayName: "Second device updated" });
+    await settle();
+    assert.match(r4Text(root.querySelector('[data-act="edit"][data-device="d2"]').closest(".ct-row")), /Second device updated/, "B4 Config rows: another device still refreshes while an editor is open");
+    world.spec.devices.push({ name: "d9", o: {} });
+    world.lives.set("d9", 2);
+    world.rev += 1;
+    r4Live(world, "device", r4View(world, "d9", world.epoch, 2, world.rev));
+    await settle();
+    assert.ok(root.querySelector('[data-act="edit"][data-device="d9"]'), "B4 Config rows: a newly added device appears immediately");
+    r4Live(world, "device-removed", { name: "d2", incarnation: 1 });
+    await settle();
+    assert.equal(root.querySelector('[data-act="edit"][data-device="d2"]') === null, true, "B4 Config rows: a removed device disappears immediately");
+    if (draft) assert.equal(root.querySelector('.ct-edit [name="displayName"]') === input, true, "B4 Config rows: the active field node is retained");
+    assert.equal(root.querySelector('.ct-edit [name="displayName"]').value, expected, "B4 Config rows: the active edit is retained");
+    assert.equal(fakeDocument.activeElement === focused, true, "B4 Config rows: the focused button is retained");
+  } finally { module.page.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+}
+test("r4 harness: B4 Config surrounding rows refresh while its active editor stays", async () => r5B4ConfigSurroundingRows(await r5Module("pages/config.js")));
+test("r4 harness self-test: B4 Config surrounding rows reject a frozen body beside their control", async () => {
+  await r5B4ConfigSurroundingRows(await r5Module("pages/config.js"));
+  const mutant = await r5Module("pages/config.js", [['const priorRows = [...body.children];\n    const rows = Array.from(feedback.children, (row) => row.matches(".ct-edit") ? editor : row);\n    let next = null;\n    for (const row of rows.reverse()) {\n      if (row !== editor) body.insertBefore(row, next);\n      next = row;\n    }\n    for (const row of priorRows) if (row !== editor) row.remove();', '// stale body: no surrounding row reconciliation']]);
+  await assert.rejects(r5B4ConfigSurroundingRows(mutant), /B4 Config rows: another device still refreshes/);
+  const previous = await r5Module("pages/config.js", [['const priorRows = [...body.children];\n    const rows = Array.from(feedback.children, (row) => row.matches(".ct-edit") ? editor : row);\n    let next = null;\n    for (const row of rows.reverse()) {\n      if (row !== editor) body.insertBefore(row, next);\n      next = row;\n    }\n    for (const row of priorRows) if (row !== editor) row.remove();', 'body.innerHTML = feedback.innerHTML;']]);
+  await r5B4ConfigSurroundingRows(previous, false);
+  await assert.rejects(r5B4ConfigSurroundingRows(previous), /B4 Config rows: the active field node is retained/);
+});
+
+test("r4 harness: B4 Config surrounding rows refresh beside an unchanged saved editor", async () => r5B4ConfigSurroundingRows(await r5Module("pages/config.js"), false));

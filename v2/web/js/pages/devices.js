@@ -199,11 +199,11 @@ function updateRow(row, view, state) {
     const idle = `${icon("undo")}Restore`;
     const working = `${icon("spinner")}Restoring…`;
     // A failed Restore keeps its button, to try again, with the error
-    // before it (B-175).
-    const lead = restoring.failure && !busy
+    // after it (Tick, B4; B-175).
+    const failure = restoring.failure && !busy
       ? `<span class="fail">${icon("alert")}${esc(`Not restored: ${restoring.failure}`)}</span>`
-      : esc(lines.second.text);
-    second = `${lead} <button class="link rw" type="button" data-act="restore"${disabled ? " disabled" : ""}${busy ? ' aria-busy="true"' : ""}${restore.title ? ` title="${esc(restore.title)}"` : ""}><span>${busy ? working : idle}</span><span aria-hidden="true">${busy ? idle : working}</span></button>`;
+      : "";
+    second = `${failure ? "" : esc(lines.second.text)} <button class="link rw" type="button" data-act="restore"${disabled ? " disabled" : ""}${busy ? ' aria-busy="true"' : ""}${restore.title ? ` title="${esc(restore.title)}"` : ""}><span>${busy ? working : idle}</span><span aria-hidden="true">${busy ? idle : working}</span></button>${failure ? ` ${failure}` : ""}`;
   } else if (lines.second.cls === "ovr")
     second = `<span style="color:var(--ovr);display:inline-flex;align-items:center;gap:6px">${lines.second.icon ? icon(lines.second.icon) : ""}${esc(lines.second.text)}</span>`;
   else second = esc(lines.second.text);

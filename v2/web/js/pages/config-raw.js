@@ -196,6 +196,7 @@ function load(base = { opened, revision }, tries = 0) {
     },
     {
       owner: base.owner,
+      effects: { start: ["epoch", "opening"], done: ["epoch", "opening"], failed: ["epoch", "opening"] },
       done: ({ answer, decision }) => {
         if (base.opened !== opened || !root) return;
         if (decision.action === "apply") {

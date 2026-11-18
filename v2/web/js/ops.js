@@ -224,6 +224,7 @@ export function failureText(error) {
  * @property {Record<string, () => unknown>} [owns] additional identities, captured at start
  * @property {string} [device] device whose life owns this work; absent for scene/global resources
  * @property {Record<string, string[]>} [effects] named projections for current.effect, plus start, slot, done and failed; slot outcomes always depend on declared device life, with epoch as the default projection
+ * @property {boolean} [retireOnChange] retire the slot and its transport when its slot projection changes in the store; callbacks alone do not retire busy work
  */
 
 /**
@@ -317,6 +318,22 @@ function run(key, work, options) {
     note: null,
   });
   const current = /** @type {Operation} */ ((projection = projections.slot ?? ["epoch"]) => owned(owner, projection));
+  // Retiring slot identities also own already-visible busy/failure/note
+  // state. Retire it when those identities change, before any late end.
+  // Keep watching a settled slot until it is replaced or retired.
+  if (options.retireOnChange) {
+    let unwatch = () => {};
+    const check = () => {
+      if (current()) return;
+      unwatch();
+      if (op(key).token === token) {
+        retireControl(key);
+        dropOwn(key, token);
+      }
+    };
+    unwatch = subscribe((state) => state, check);
+    check();
+  }
   current.owner = owner;
   current.effect = (name, work) => effect(owner, projections[name] ?? ["epoch"], work);
   current.follow = (key, work, options = {}) => follow(key, work, { ...options, owner });

@@ -440,7 +440,7 @@ export function createSettingsForm(host, options) {
       async () => applyAnswer(await request("GET", base(mine), { resource: resource(mine) })),
       {
         owner: owns(mine),
-        effects: { ...sceneEffects, failed: ["epoch", "scene", "opening"] },
+        effects: { ...sceneEffects, done: ["epoch", "scene", "opening"], failed: ["epoch", "scene", "opening"] },
         failed: (error) => {
           if (!shown(mine) || phase === "ready") return;
           phase = "failed";
@@ -528,8 +528,9 @@ export function createSettingsForm(host, options) {
         return answer;
       },
       {
-        owner: owns(mine),
-        effects: sceneEffects,
+        owner: derive(owns(mine), { membership: () => getState().devices.get(device)?.origin }),
+        effects: { ...sceneEffects, slot: ["epoch", "membership"] },
+        retireOnChange: true,
         value: "save",
         label: "Saving…",
         // eslint-disable-next-line no-unused-vars -- Preserve the frozen Save mutant's callback anchor.
@@ -543,7 +544,7 @@ export function createSettingsForm(host, options) {
         note: (answer) => {
           const notCleared = answer.body?.overlaysNotCleared ?? [];
           return notCleared.length
-            ? `Saved · ${notCleared.length} MQTT ${notCleared.length === 1 ? "overlay" : "overlays"} could not be cleared`
+            ? `Saved · ${notCleared.length} MQTT ${notCleared.length !== 1 ? "overlays" : "overlay"} could not be cleared`
             : SAVED;
         },
         describe: (error) =>
