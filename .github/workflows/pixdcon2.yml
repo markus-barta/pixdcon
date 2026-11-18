@@ -1,0 +1,203 @@
+name: Build and Push pixdcon2
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  REGISTRY_IMAGE: ghcr.io/markus-barta/pixdcon2
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  checks:
+    # Stable required-check name; no path filters or PR skips. npm test runs
+    # every contract, including the real-server UI shapes and their fakes.
+    name: pixdcon2 Node 24 checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            v2/package-lock.json
+
+      - name: Validate release coordinate and tag
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="$(node scripts/verify-versioning.mjs --tag "${GITHUB_REF#refs/tags/}")"
+          else
+            version="$(node scripts/verify-versioning.mjs)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install shared test and lint dependencies
+        run: npm ci
+
+      - name: Install pixdcon2 dependencies
+        working-directory: v2
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: v2
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: v2
+        run: npm run lint
+
+      - name: Check async-site inventory
+        working-directory: v2
+        run: npm run sites
+
+      - name: Test all three kinds
+        working-directory: v2
+        timeout-minutes: 3
+        # GitHub-hosted runners are slower than dev machines (evidence run 44323051585).
+        # Still a hang guard; per-test --test-timeout=20000 is unchanged.
+        # Local and default runs keep 55 s; the step timeout sits above the run.js budget so run.js's own deadline report wins.
+        env:
+          PIXDCON2_TEST_DEADLINE_MS: "120000"
+        run: npm test
+
+  # PUBLIC repository: v1's exact native runner matrix, without QEMU.
+  # Move this workflow to self-hosted runners BEFORE making the repo private.
+  build:
+    name: pixdcon2 Build ${{ matrix.platform }}
+    needs: checks
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Prepare platform slug
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${MATRIX_PLATFORM//\//-}" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: v2/Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.version=${{ needs.checks.outputs.version }}
+            org.opencontainers.image.version_scheme=inspr-calver-3
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=pixdcon2-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=pixdcon2-${{ env.PLATFORM_PAIR }}
+
+      - name: Export digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          touch "${{ runner.temp }}/digests/${IMAGE_DIGEST#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixdcon2-digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: pixdcon2 Merge multi-arch manifest
+    runs-on: ubuntu-latest
+    needs: [checks, build]
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: pixdcon2-digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ needs.checks.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          tags=()
+          while IFS= read -r tag; do
+            tags+=(-t "$tag")
+          done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          sources=()
+          for digest in *; do
+            sources+=("${REGISTRY_IMAGE}@sha256:$digest")
+          done
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+
+      - name: Inspect image
+        env:
+          IMAGE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && needs.checks.outputs.version || 'latest' }}
+        run: docker buildx imagetools inspect "${{ env.REGISTRY_IMAGE }}:$IMAGE_TAG"
