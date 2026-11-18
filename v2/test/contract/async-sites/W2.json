@@ -212,7 +212,7 @@
       "test": "test/contract/client.test.js: client settings form:"
     },
     {
-      "site": "web/js/ops.js:292",
+      "site": "web/js/ops.js:300",
       "id": "then:outcome.then#1",
       "input": "the outcome of every operation of the pages: a user action, a load, a retry or a cleanup, success or failure",
       "metadata": "the slot of the operation (the identity it acts on: device with epoch and incarnation, scene, control, editor, page) and the token it took when it started",
@@ -220,7 +220,7 @@
       "test": "test/contract/client.test.js: r3 ops (the operation rule):"
     },
     {
-      "site": "web/js/pages/config-raw.js:376",
+      "site": "web/js/pages/config-raw.js:378",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "Save and Reload from disk of the raw editor",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -228,7 +228,7 @@
       "test": "test/contract/client.test.js: r3 gate 4.2 (raw, late failure):"
     },
     {
-      "site": "web/js/pages/config-raw.js:377",
+      "site": "web/js/pages/config-raw.js:379",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "typing in the raw editor",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -237,7 +237,7 @@
       "test": "test/contract/client.test.js: r3 gate 4.1 (finding 1, raw retry):"
     },
     {
-      "site": "web/js/pages/config-raw.js:378",
+      "site": "web/js/pages/config-raw.js:380",
       "id": "listener:root.addEventListener(\"scroll\")#1",
       "input": "the raw editor scrolled",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -246,7 +246,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/config-raw.js:385",
+      "site": "web/js/pages/config-raw.js:388",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Raw config.json page",
       "metadata": "none: the store calls it after a change it applied",
@@ -377,7 +377,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/pages/health.js:226",
+      "site": "web/js/pages/health.js:227",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "the log filter, Copy, the version display",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -386,7 +386,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/health.js:227",
+      "site": "web/js/pages/health.js:228",
       "id": "listener:root.addEventListener(\"scroll\")#1",
       "input": "the log pane scrolled",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -395,7 +395,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/health.js:228",
+      "site": "web/js/pages/health.js:230",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Health page",
       "metadata": "none: the store calls it after a change it applied",
@@ -436,7 +436,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/ops.js:117",
+      "site": "web/js/ops.js:119",
       "id": "subscribe:subscribe#1",
       "input": "a newer streamed config resource position in the current run",
       "metadata": "resource position, stream sequence and snapshot floor; observation generation and active page subscription",
@@ -444,7 +444,7 @@
       "test": "test/contract/client.test.js: r4 harness: B1a r5 deferred resource replacement"
     },
     {
-      "site": "web/js/ops.js:126",
+      "site": "web/js/ops.js:132",
       "id": "timer:queueMicrotask#1",
       "input": "coalesced resource replacement after the current publication/input turn",
       "metadata": "captured epoch and observation generation; active subscription; page eligibility",

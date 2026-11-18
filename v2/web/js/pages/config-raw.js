@@ -20,7 +20,8 @@
  * input): what was typed since stays. A load that is asked again (its
  * answer stood before the copy the page holds) keeps that revision.
  * A newer config event replaces the read of an untouched editor through
- * ops.observeResource; equal reconnect snapshots keep the existing read.
+ * ops.observeResource, including a reconnect snapshot with a newer config
+ * revision; equal reconnect snapshots keep the existing read.
  *
  * Operations (ops.js): the loads are one slot, `raw-load`, where the newest
  * load makes older ones obsolete; Save and Reload are `raw-save` and
@@ -303,8 +304,9 @@ function reloadFromDisk() {
       if (!current(["epoch", "opening"])) return;
       drop("raw-load", superseded);
       const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });
+      const decision = applyAnswer(answer);
       if (!current(["epoch", "opening"])) return;
-      if (applyAnswer(answer).action === "apply" && base.opened === opened && root) takeText(answer, base);
+      if (decision.action === "apply" && base.opened === opened && root) takeText(answer, base);
       else if (base.opened === opened) loading = false;
     },
     {
@@ -381,6 +383,7 @@ export const page = {
     const unobserve = observeResource("config", () => load(), {
       eligible: () => editorOf()?.value === loaded,
       slots: ["raw-load", "raw-reload"],
+      version: () => getState().config?.rev,
     });
     unsubscribe = subscribe((state) => state, render);
     load();

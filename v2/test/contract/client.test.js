@@ -5109,7 +5109,7 @@ R5_STORIES.push(
     file: "pages/config-raw.js",
     edits: [
       [
-        'applyAnswer(answer).action === "apply" && base.opened === opened && root',
+        'decision.action === "apply" && base.opened === opened && root',
         "true && base.opened === opened && root",
       ],
     ],
@@ -5459,7 +5459,7 @@ async function r5RawLifecycle(textOnly) {
     );
     assert.match(
       src,
-      /applyAnswer\(answer\)\.action === "apply" && base\.opened === opened && root\) takeText\(answer, base\)/,
+      /decision\.action === "apply" && base\.opened === opened && root\) takeText\(answer, base\)/,
       "Reload inherits the same opening and root checks",
     );
   }
@@ -5489,8 +5489,8 @@ async function r5RawLifecycle(textOnly) {
       "failed: (error) => {\n        __r5Observed.push({at:'save failed', base:mine, opened, root:!!root});",
     ],
     [
-      "if (applyAnswer(answer).action",
-      "__r5Observed.push({at:'reload text', base:base.opened, opened, root:!!root});\n      if (applyAnswer(answer).action",
+      'if (decision.action === "apply" && base.opened === opened && root) takeText(answer, base);',
+      '__r5Observed.push({at:"reload text", base:base.opened, opened, root:!!root});\n      if (decision.action === "apply" && base.opened === opened && root) takeText(answer, base);',
     ],
   ]);
   for (const action of ["load", "save", "reload"])
@@ -5884,8 +5884,8 @@ test("r4 harness self-test: b1a r4 Reload's follow-up GET cannot finish a replac
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const kind = r4KindOf("raw reload load");
   const raw = (await r5Module("pages/config-raw.js", [[
-    'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      if (!current(["epoch", "opening"])) return;',
-    'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      if (false) return;',
+    'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      const decision = applyAnswer(answer);\n      if (!current(["epoch", "opening"])) return;',
+    'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      const decision = applyAnswer(answer);\n      if (false) return;',
   ]])).page;
   for (const change of ["epoch"]) {
     assert.deepEqual(await r4Case(t, kind, change, "success"), [], `the real follow-up GET preserves the replacement ${change}`);
@@ -6002,8 +6002,8 @@ R5_STORIES.push(
     name: "b1a: Raw's already-started Reload GET cannot finish the replacement run's loading state",
     file: "pages/config-raw.js",
     edits: [[
-      'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      if (!current(["epoch", "opening"])) return;',
-      'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      if (false) return;',
+      'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      const decision = applyAnswer(answer);\n      if (!current(["epoch", "opening"])) return;',
+      'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      const decision = applyAnswer(answer);\n      if (false) return;',
     ]],
     run: async (_t, m) => r5Raw(m, async ({ world, calls, root }) => {
       pending(calls, "GET", "/config/raw").ok();
@@ -6384,12 +6384,6 @@ const R4_KNOWN = new Set([
   "config patch × reopen × timeout, last",
   "config patch × revisit × success",
   "config patch × type × success",
-  "health log × epoch × 500",
-  "health log × epoch × 500, last",
-  "health log × epoch × success",
-  "health log × epoch × success, last",
-  "health log × epoch × timeout",
-  "health log × epoch × timeout, last",
   "settings preview rejected × reincarnate × success",
   "settings preview rejected × reincarnate × success, last",
   "settings preview rejected × schema × success",
@@ -7090,8 +7084,8 @@ test("r4 harness self-test: a Health page that asks again in a new run but keeps
   t.mock.timers.enable({ apis: ["setTimeout"] });
   /** Health asks for the log again when the store holds a new run. @type {[string, string]} */
   const reload = [
-    "unsubscribe = subscribe((state) => state, render);\n    loadLog();",
-    "r4Opened = getState().epoch;\n    let r4Seen = r4Opened;\n    unsubscribe = subscribe((state) => state, (state) => {\n      if (state.epoch !== r4Seen) {\n        r4Seen = state.epoch;\n        loadLog();\n      }\n      render(state);\n    });\n    loadLog();",
+    "const unobserve = observeResource(null, loadLog);",
+    "r4Opened = getState().epoch;\n    const unobserve = observeResource(null, loadLog);",
   ];
   /** @type {[string, string]} */
   const opened = ['let copied = "";', 'let copied = "";\n/** @type {string|null} */\nlet r4Opened = null;'];
@@ -8435,8 +8429,8 @@ test("r4 harness self-test: an old Reset Save cannot delete a replacement edit (
 test("r4 harness self-test: Raw must obey the fence result even after applyAnswer ran (gate r5b H)", async () => {
   await r6RawVersion(await r5Module("pages/config-raw.js"));
   const mutant = await r5Module("pages/config-raw.js", [[
-    'applyAnswer(answer).action === "apply" && base.opened === opened && root',
-    '(applyAnswer(answer), true) && base.opened === opened && root',
+    'decision.action === "apply" && base.opened === opened && root',
+    'true && base.opened === opened && root',
   ]]);
   await assert.rejects(r6RawVersion(mutant), (/** @type {any} */ error) => error.name === "AssertionError" && /saved baseline/.test(error.message));
 });
@@ -11737,7 +11731,7 @@ test("r4 harness self-test: B1a r5 resource position control and must-fail obser
     const differences = await r4Case(t, kind, "newer config position", "success", { modules: { raw } });
     assert.ok(differences.some((piece) => /editor text|load and validity state/.test(piece)), `${name}: ${differences.join("\n")}`);
   }
-  const retire = await r4Mutant("ops.js", [["drop(key);\n            retireControl(key);", "void key;\n            retireControl(key);"]]);
+  const retire = await r4Mutant("ops.js", [["retireControl(key);\n              dropOwn(key, token);", "retireControl(key);\n              void token;"]]);
   const stale = (await import(await r4Mutant("pages/config-raw.js", [], { "../ops.js": retire }))).page;
   const kind = r4KindOf("raw reload load");
   assert.deepEqual(await r4Case(t, kind, "newer config position", "success"), []);
@@ -11945,6 +11939,476 @@ test("r4 harness: B1a r5 Settings retires its captured read on values, scene cha
       assert.equal(ops.op(key).failure, null, `${boundary}: the retired read cannot leave a failure`);
     }, { ready: false });
   }
+});
+
+// PIXD-97 B1b: named histories only. Frozen generators, audit predicates and
+// existing piece dependencies remain unchanged.
+const R5_B1B_NAMES = [
+  "config patch", "config adopt", "config add device", "overlays clear",
+  "devices scene", "devices restore", "devices add device", "device scene",
+  "device mode", "device brightness", "device brightness range", "device return",
+  "device adopt", "device copy", "recovery retry", "health log",
+];
+
+/** Equal retained payloads isolate epoch from overlay contents. The original
+ * matrix still has distinguishable per-run payloads.
+ * @param {string} name @returns {R4Kind} */
+function r5B1bKind(name) {
+  const kind = r4KindOf(name);
+  if (!kind.world.overlays) return kind;
+  const records = kind.world.overlays(A, 0);
+  return { ...kind, world: { ...kind.world, overlays: () => records } };
+}
+
+/** Observe the actual retired slot and callback admission as well as the UI.
+ * Epoch-qualified control keys can hide an orphaned old outcome from the new
+ * page. It must never be written or enter the caller's old callback either.
+ * These probes do not alter product work, keys, values or outcome decisions.
+ * @param {any} t @param {R4Kind} kind @param {R4End} end
+ * @param {boolean} [last] @param {any} [opsOverride] */
+async function r5B1bEpochCase(t, kind, end, last = false, opsOverride) {
+  if (!r8HarnessLoaded) await r8HarnessReady;
+  await r8MeasurementModules();
+  const { subscribe } = await import("../../web/js/store.js");
+  const global = /** @type {any} */ (globalThis);
+  const descriptor = Object.getOwnPropertyDescriptor(global, "__r8Operation");
+  let hook = global.__r8Operation;
+  /** @type {any[]} */ const operations = [];
+  /** @type {Set<string>} */ const stale = new Set();
+  const observeOperation = (/** @type {any} */ run, /** @type {string} */ key, /** @type {any} */ work, /** @type {any} */ options = {}) => {
+    const mine = { key, token: 0, epoch: r4State().epoch };
+    operations.push(mine);
+    const callbacks = { ...options,
+      done: (/** @type {any} */ value) => {
+        if (mine.epoch !== r4State().epoch) stale.add(`${key}: old done callback`);
+        return options.done?.(value);
+      },
+      failed: (/** @type {any} */ error) => {
+        if (mine.epoch !== r4State().epoch) stale.add(`${key}: old failed callback`);
+        options.failed?.(error);
+      },
+    };
+    const result = hook(opsOverride ? opsOverride[run.name] : run, key, work, callbacks);
+    mine.token = r4State().ops.get(key)?.token ?? 0;
+    return result;
+  };
+  // The neutral loader reinstalls its adapter before each reference/case.
+  // Keep that actual adapter underneath this scoped, restored observation.
+  Object.defineProperty(global, "__r8Operation", { configurable: true,
+    get: () => observeOperation, set: (next) => { hook = next; } });
+  const stop = subscribe((state) => state.ops, (slots) => {
+    for (const mine of operations)
+      if (mine.token && mine.epoch !== r4State().epoch && slots.get(mine.key)?.token === mine.token)
+        stale.add(`${mine.key}: retired native outcome was written`);
+  });
+  try {
+    return [...await r4Case(t, kind, "same stream epoch", end, { last }), ...stale];
+  } finally { stop(); Object.defineProperty(global, "__r8Operation", /** @type {PropertyDescriptor} */ (descriptor)); }
+}
+
+for (const name of R5_B1B_NAMES) {
+  const kind = r5B1bKind(name);
+  for (const end of r4Ends(kind)) {
+    for (const last of [false, true])
+      test(`r4 harness: ${name} × same-stream epoch × ${end}${last ? ", last" : ""} (B1b)`, async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        assert.deepEqual(await r5B1bEpochCase(t, kind, end, last), []);
+      });
+    test(`r4 harness: ${name} × successor in its own slot × ${end} (B1b)`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      assert.deepEqual(await r5B1aSlotCase(t, kind, end), []);
+    });
+  }
+}
+
+test("r4 harness self-test: B1b same-stream family and B1a L5 pin native central admission for every kind", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ops = await import(await r4Mutant("ops.js", R4_B1A_OLD_EPOCH_GUARD_REMOVALS));
+  for (const name of [...R5_B1B_NAMES, "settings load", "settings clear overlays", "settings end", "settings end retry"])
+    for (const end of /** @type {R4End[]} */ (["success", "500", "timeout"])) {
+      const kind = r5B1bKind(name);
+      assert.deepEqual(await r5B1bEpochCase(t, kind, end), [], `${name}/${end}: current guard control`);
+      const differences = await r5B1bEpochCase(t, kind, end, false, ops);
+      assert.ok(differences.some((found) => /retired native outcome|old done callback|old failed callback/.test(found)), `${name}/${end}: ${differences.join("\n")}`);
+    }
+});
+
+test("r4 harness self-test: B1b each native successor has a control and must-fail token mutant", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ops = await import(await r4Mutant("ops.js", [
+    ["if (owner.slot && op(owner.slot.key).token !== owner.slot.token) return false;", "if (false) return false;"],
+  ]));
+  for (const name of R5_B1B_NAMES) {
+    const kind = r5B1bKind(name);
+    assert.deepEqual(await r5B1aSlotCase(t, kind, "500"), [], `${name}: native successor control`);
+    const differences = await r5B1aSlotCase(t, kind, "500", ops);
+    assert.ok(differences.some((found) => /native outcome|outcome callbacks|native operation outcome|old outcome callbacks/.test(found)), `${name}: ${differences.join("\n")}`);
+  }
+});
+
+const R5_B1B_STREAMS = [
+  { kind: "web/js/live.js · open · SSE onopen", callback: "open", guard: "queued open of the replaced stream cannot claim the new stream is live" },
+  { kind: "web/js/live.js · open · SSE onerror", callback: "error", guard: "queued error of the replaced stream cannot lose the new live stream" },
+  { kind: "web/js/live.js · open · SSE handler", callback: "event", guard: "queued event of a replaced stream never reaches the current page" },
+  { kind: "web/js/live.js · armSilence · timer setTimeout", callback: "silence", guard: "queued silence timeout of the replaced stream cannot close its successor" },
+];
+
+/** Callback-specific measured reconnect. The frames read the real fence
+ * generations before and after opening two actual EventSource instances.
+ * Old and current callbacks receive equal data at the same manual instant.
+ * @param {any} t @param {any} entry @param {any} module */
+async function r5B1bStreamCase(t, entry, module) {
+  /** @type {any} */ let fence;
+  let delivered = 0;
+  t.mock.method(Date, "now", () => delivered);
+  const wrapped = { connectLive: (/** @type {any} */ handlers, /** @type {any} */ options) => {
+    fence = options.fence;
+    return module.connectLive(handlers, options);
+  } };
+  await r5Live(t, wrapped, ({ sources, timers, states, events, live }) => {
+    const payload = view("d1");
+    const frame = () => ({ device: [payload.name], kind: entry.kind,
+      values: { type: "device", id: `${A}-10`, payload }, timing: { delivered: Date.now() },
+      identities: { epoch: fence.epoch, stream: fence.stream } });
+    sources[0].onopen();
+    const oldWatchdog = timers.at(-1);
+    sources[0].onerror();
+    delivered = 5000;
+    const before = frame();
+    timers.at(-1).callback();
+    const after = frame();
+    assert.notEqual(sources[0], sources[1], "reconnect made a different EventSource");
+    assert.notEqual(before.identities.stream, after.identities.stream, "openSource issued the new generation");
+    if (entry.callback !== "open") sources[1].onopen();
+    const currentWatchdog = timers.at(-1);
+    const observe = () => JSON.stringify({ state: live.state(), states, events,
+      closed: sources.map((/** @type {any} */ source) => source.closed),
+      timers: timers.map((/** @type {any} */ timer) => ({ ms: timer.ms, canceled: timer.canceled })) });
+    const captured = observe();
+    if (entry.callback === "open") sources[0].onopen();
+    else if (entry.callback === "error") sources[0].onerror();
+    else if (entry.callback === "event") sources[0].emit("device", `${A}-10`, payload);
+    else oldWatchdog.callback();
+    assert.equal(observe(), captured, `${entry.callback}: retired callback cannot change connection feedback, admission, closure or timers`);
+    const count = events.length;
+    if (entry.callback === "open") {
+      sources[1].onopen();
+      assert.equal(live.state().state, "live");
+      assert.equal(timers.at(-1).ms, 20000);
+    } else if (entry.callback === "error") {
+      sources[1].onerror();
+      assert.equal(live.state().state, "lost");
+      assert.equal(sources[1].closed, true);
+      assert.equal(timers.at(-1).ms, 5000);
+    } else if (entry.callback === "event") {
+      sources[1].emit("device", `${A}-10`, payload);
+      assert.equal(events.length, count + 1, "equal current event reaches the handler");
+      assert.equal(events.at(-1).stream, after.identities.stream);
+    } else {
+      currentWatchdog.callback();
+      assert.equal(live.state().state, "lost");
+      assert.equal(sources[1].closed, true);
+      assert.equal(timers.at(-1).ms, 5000);
+    }
+    assert.notEqual(observe(), captured, `${entry.callback}: the current callback's positive control is observable`);
+    const receipt = r8RecordStory({ kind: { name: entry.kind }, points: [] }, before, after, `${entry.callback}/retired-current EventSource`);
+    receipt.compared.set(`${entry.callback}: connection feedback, event admission, source closure and timers`, ["stream"]);
+    r8RequireStoryIsolation([{ kind: entry.kind, identity: "stream", key: `${entry.kind} × stream` }], [receipt]);
+  });
+}
+
+for (const entry of R5_B1B_STREAMS) {
+  test(`r4 harness: ${entry.kind} × stream generation only (B1b)`, async (t) => {
+    await r5B1bStreamCase(t, entry, await r5Module("live.js"));
+  });
+  test(`r4 harness self-test: B1b ${entry.callback} stream control and must-fail generation mutant`, async (t) => {
+    await r5B1bStreamCase(t, entry, await r5Module("live.js"));
+    const original = R5_STORIES.find((story) => story.name === entry.guard);
+    assert.ok(original);
+    const mutant = await r5Module("live.js", original.edits);
+    await assert.rejects(r5B1bStreamCase(t, entry, mutant), (/** @type {any} */ error) => error.name === "AssertionError" && /retired callback/.test(error.message));
+  });
+}
+
+/** Actual Reload continuation, with its old opening GET still out. Optionally
+ * start the page's own load again while the POST is held (M4c).
+ * @param {any} module @param {boolean} successor */
+async function r5B1bReloadDrop(module, successor) {
+  const ops = await import("../../web/js/ops.js");
+  await r5Raw(module, async ({ calls, root }) => {
+    const first = ops.op("raw-load").token;
+    r4Click(root.querySelector('[data-act="reload"]'));
+    await settle();
+    if (successor) module.__b1bLoad();
+    const next = ops.op("raw-load");
+    assert.equal(next.busy, true);
+    assert.equal(next.token !== first, successor);
+    pending(calls, "POST", "/config/reload").ok();
+    await settle();
+    if (successor) assert.deepEqual(ops.op("raw-load"), next, "Reload must preserve a newer Raw read (M4c)");
+    else assert.equal(ops.op("raw-load").token, 0, "Reload must retire the captured Raw read (M4c)");
+  });
+}
+const R5_B1B_EXPOSE_LOAD = /** @type {Array<[string, string]>} */ ([
+  ["function load(base = { opened, revision }, tries = 0) {", "export { load as __b1bLoad };\nfunction load(base = { opened, revision }, tries = 0) {"],
+]);
+test("r4 harness: B1b L1 Reload retires its captured read and preserves a newer read (M4c)", async () => {
+  const module = await r5Module("pages/config-raw.js", R5_B1B_EXPOSE_LOAD);
+  for (const successor of [false, true]) await r5B1bReloadDrop(module, successor);
+});
+test("r4 harness self-test: B1b L1 M4c has must-fail unqualified-drop and missing-drop mutants", async () => {
+  for (const [replacement, successor] of /** @type {Array<[string, boolean]>} */ ([
+    ['drop("raw-load", op("raw-load").token);', true], ["void superseded;", false],
+  ])) {
+    const module = await r5Module("pages/config-raw.js", [...R5_B1B_EXPOSE_LOAD,
+      ['drop("raw-load", superseded);', replacement],
+    ]);
+    await assert.rejects(r5B1bReloadDrop(module, successor), (/** @type {any} */ error) => error.name === "AssertionError" && /M4c/.test(error.message));
+  }
+});
+
+/** Resource observation owns the operations present when the event arrived,
+ * including transport admission. A later owner may reuse the same key before
+ * the microtask, or reenter from onBusy(false) during retirement.
+ * @param {any} ops @param {string} boundary */
+async function r5B1bResourceSlots(ops, boundary) {
+  const api = await import("../../web/js/api.js");
+  const { subscribe } = await import("../../web/js/store.js");
+  const world = r4World(r4d1());
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const key = "b1b-resource-reload";
+  const send = () => api.request("POST", "/api/v2/config/reload", { resource: "config", key, body: {} });
+  const begin = () => { const result = ops.follow(key, send); void result.catch(() => {}); return ops.op(key).token; };
+  let replacements = 0, next = 0;
+  if (boundary !== "absent") begin();
+  const stop = ops.observeResource("config", () => { replacements += 1; }, { slots: [key] });
+  const offBusy = api.onBusy((control, busy) => {
+    if (boundary === "reentrant" && control === key && !busy && !next) next = begin();
+  });
+  const offSlot = subscribe((state) => state.ops.get(key)?.token, (token) => {
+    if (boundary === "store-reentrant" && token === undefined && !next) next = begin();
+  });
+  try {
+    world.rev += 1;
+    r4Live(world, "config", { ...CONFIG_STATE, rev: world.rev });
+    if (boundary === "successor") { api.retireControl(key); next = begin(); }
+    if (boundary === "absent") { const result = send(); void result.catch(() => {}); }
+    await settle();
+    assert.equal(replacements, 1);
+    if (boundary === "captured") {
+      assert.equal(ops.op(key).token, 0, "the captured slot is retired");
+      assert.equal(api.isBusy(key), false, "the captured transport is retired");
+    } else {
+      assert.equal(api.isBusy(key), true, "another owner's transport must remain busy");
+      if (boundary !== "absent") {
+        assert.equal(ops.op(key).token, next, "another owner's operation must remain current");
+        assert.equal(ops.op(key).busy, true);
+      }
+    }
+  } finally { offSlot(); offBusy(); stop(); await r4AnswerAll({ calls }); ops.drop(key); }
+}
+test("r4 harness: B1b L2 resource retirement captures event-time slots and survives reentrant owners", async () => {
+  const ops = await import("../../web/js/ops.js");
+  for (const boundary of ["captured", "successor", "reentrant", "store-reentrant", "absent"]) await r5B1bResourceSlots(ops, boundary);
+});
+test("r4 harness self-test: B1b L2 event-time capture and token check each have a must-fail mutant", async () => {
+  const capture = 'const slots = (options.slots ?? []).map((key) => ({ key, token: op(key).token }));';
+  for (const edits of /** @type {Array<Array<[string, string]>>} */ ([
+    [[capture, ""], ["queueMicrotask(() => {", `queueMicrotask(() => {\n          ${capture}`]],
+    [["if (token && op(key).token === token)", "if (token)"]],
+  ])) {
+    const ops = await r5Module("ops.js", edits);
+    await assert.rejects(r5B1bResourceSlots(ops, "successor"), (/** @type {any} */ error) => error.name === "AssertionError" && /another owner's/.test(error.message));
+  }
+});
+
+/** Rule 2: the fence may take an answer after the page effect was retired.
+ * @param {any} module @param {string} boundary */
+async function r5B1bReloadAnswer(module, boundary) {
+  const ops = await import("../../web/js/ops.js");
+  await r5Raw(module, async ({ world, calls, root }) => {
+    pending(calls, "GET", "/config/raw").ok();
+    await settle();
+    r4Click(root.querySelector('[data-act="reload"]'));
+    world.rev += 10;
+    world.configVersion += 1;
+    await settle();
+    pending(calls, "POST", "/config/reload").ok();
+    await settle();
+    const answer = pending(calls, "GET", "/config/raw");
+    const editor = r4Value(root.querySelector("textarea"));
+    const before = r4State().config.rev;
+    assert.notEqual(before, answer.rev);
+    if (boundary === "opening") module.page.unmount();
+    else ops.drop("raw-reload");
+    answer.ok();
+    await settle();
+    assert.equal(r4State().config.rev, answer.rev, "rule 2 applies the Reload answer before checking its retired page effect");
+    assert.equal(r4Value(root.querySelector("textarea")), editor, "the retired Reload cannot write editor text");
+  });
+}
+test("r4 harness: B1b L3 Reload GET reaches the fence after its opening or token retires", async () => {
+  for (const boundary of ["opening", "token"]) await r5B1bReloadAnswer(await r5Module("pages/config-raw.js"), boundary);
+});
+test("r4 harness self-test: B1b L3 a current-check before answer admission must fail", async () => {
+  const module = await r5Module("pages/config-raw.js", [[
+    'const decision = applyAnswer(answer);\n      if (!current(["epoch", "opening"])) return;',
+    'if (!current(["epoch", "opening"])) return;\n      const decision = applyAnswer(answer);',
+  ]]);
+  await assert.rejects(r5B1bReloadAnswer(module, "opening"), (/** @type {any} */ error) => error.name === "AssertionError" && /rule 2/.test(error.message));
+});
+
+/** A real reconnect snapshot, same server epoch, with equal or newer config.
+ * The snapshot itself is built here; no frozen world adapter is changed.
+ * @param {any} module @param {string} mode */
+async function r5B1bRawReconnect(module, mode) {
+  await r5Raw(module, async ({ world, calls, root }) => {
+    pending(calls, "GET", "/config/raw").ok();
+    await settle();
+    const original = r4Value(root.querySelector("textarea"));
+    const typed = '{"devices":[],"keep":"typed before reconnect"}';
+    if (mode === "edited") r4Type(root.querySelector("textarea"), typed);
+    const sent = calls.length;
+    const config = r4State().config;
+    world.configVersion += 1;
+    world.rev += 1;
+    world.seq += 1;
+    world.stream = openSource(defaultFence(), "stream");
+    const data = snapshot(world.epoch, world.seq, [...r4State().devices.values()]);
+    // snapshot()'s fixture defaults are explicit: retain this exact config.
+    data.config = { ...config, rev: mode === "equal" ? config.rev : mode === "older" ? config.rev - 1 : world.rev };
+    assert.equal(applyDefaultEvent({ type: "snapshot", epoch: world.epoch, seq: world.seq, stream: world.stream, data }).action, "apply");
+    await settle();
+    const reads = calls.slice(sent).filter((/** @type {any} */ call) => call.path.endsWith("/config/raw"));
+    assert.equal(reads.length, mode === "newer" ? 1 : 0, "only an untouched editor with a newer snapshot config is refreshed");
+    await r4AnswerAll({ calls });
+    assert.equal(r4Value(root.querySelector("textarea")), mode === "edited" ? typed : mode === "newer" ? R4_RAW(world.epoch, world.configVersion) : original, "the reconnect's current text reaches the untouched Raw editor");
+  });
+}
+test("r4 harness: B1b L4 Raw refreshes newer reconnect config; equal config and typed text stay", async () => {
+  for (const mode of ["newer", "equal", "older", "edited"]) await r5B1bRawReconnect(await r5Module("pages/config-raw.js"), mode);
+});
+test("r4 harness self-test: B1b L4 snapshot-version refresh has a must-fail mutant", async () => {
+  const ops = await r4Mutant("ops.js", [["(now.version ?? 0) > (before.version ?? 0)", "false"]]);
+  const module = await r5Module("pages/config-raw.js", [], { "../ops.js": ops });
+  await assert.rejects(r5B1bRawReconnect(module, "newer"), (/** @type {any} */ error) => error.name === "AssertionError" && /newer snapshot config/.test(error.message));
+});
+
+test("r4 harness: B1b resource observation separates run changes, streamed copies and snapshot revisions", async () => {
+  const ops = await import("../../web/js/ops.js");
+  for (const mode of ["epoch", "epoch-low-seq", "epoch-then-snapshot", "same-run-snapshot", "same-run-event", "stopped"] ) {
+    const world = r4World(r4d1());
+    r4NewEpoch(world);
+    let calls = 0;
+    const stop = ops.observeResource(null, () => { calls += 1; });
+    try {
+      assert.equal(calls, 0, "subscribing does not invent a run change");
+      if (mode === "same-run-event") r4Live(world, "config", { ...CONFIG_STATE, rev: ++world.rev });
+      else if (mode === "same-run-snapshot") r4Snapshot(world);
+      else {
+        if (mode === "epoch-low-seq") world.seq = 0;
+        r4NewEpoch(world, true);
+        if (mode === "epoch-then-snapshot") r4Snapshot(world);
+        if (mode === "stopped") stop();
+      }
+      await settle();
+      assert.equal(calls, mode.startsWith("epoch") ? 1 : 0, `${mode}: run-only observer`);
+    } finally { stop(); }
+  }
+  const world = r4World(r4d1());
+  r4NewEpoch(world);
+  let calls = 0;
+  const stop = ops.observeResource("config", () => { calls += 1; }, { version: () => r4State().config?.rev });
+  try {
+    r4Live(world, "config", { ...CONFIG_STATE, rev: ++world.rev });
+    await settle();
+    assert.equal(calls, 1, "a genuine streamed copy is observed");
+    r4Live(world, "ping", {});
+    await settle();
+    assert.equal(calls, 1, "later unrelated events do not repeat the resource observation");
+    r4NewEpoch(world, true);
+    await settle();
+    assert.equal(calls, 1, "resource observations do not duplicate the page's run-replacement load");
+    const nextEpoch = `${world.epoch}b`;
+    const data = snapshot(nextEpoch, ++world.seq, [view("d1", { epoch: nextEpoch })]);
+    data.config = { ...r4State().config, rev: r4State().config.rev + 10 };
+    assert.equal(applyDefaultEvent({ type: "snapshot", epoch: nextEpoch, seq: world.seq, stream: world.stream, data }).action, "apply");
+    await settle();
+    assert.equal(calls, 1, "a new epoch with a higher config revision also belongs to the run observer");
+  } finally { stop(); }
+});
+
+test("r4 harness: B1b Health epoch observer owns its mounted lifetime and the newest same-run snapshot", async () => {
+  const module = await r5Module("pages/health.js");
+  const world = r4World(r4d1());
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  try {
+    module.page.mount(root, {});
+    assert.equal(calls.length, 1, "mount sends the opening log read");
+    await r4AnswerAll({ calls });
+    const initial = calls.length;
+    module.page.unmount();
+    r4NewEpoch(world, true);
+    await settle();
+    assert.equal(calls.length, initial, "an unmounted Health page starts no replacement read");
+    module.page.mount(root, {});
+    await r4AnswerAll({ calls });
+    const mounted = calls.length;
+    r4NewEpoch(world, true);
+    r4Snapshot(world);
+    await settle();
+    assert.equal(calls.length, mounted + 1, "the new epoch still loads when a newer same-run snapshot overtakes its deferred observation");
+    await r4AnswerAll({ calls });
+    assert.ok(r4Text(root.querySelector(".log")).includes(R4_LOG(world.epoch)[0].message));
+  } finally { module.page.unmount(); root.remove(); await r4AnswerAll({ calls }); }
+});
+
+test("r4 harness: B1b Health disconnects both its run observer and renderer on unmount", async () => {
+  const store = new URL("../../web/js/store.js", import.meta.url).href;
+  const monitored = `data:text/javascript;base64,${Buffer.from(`
+    export * from ${JSON.stringify(store)};
+    import { subscribe as actual } from ${JSON.stringify(store)};
+    export let listeners = 0;
+    export function subscribe(...args) {
+      listeners += 1;
+      const stop = actual(...args);
+      return () => { listeners -= 1; stop(); };
+    }
+  `).toString("base64")}`;
+  const counter = await import(monitored);
+  const ops = await r4Mutant("ops.js", [], { "./store.js": monitored });
+  const health = await r5Module("pages/health.js", [], { "../store.js": monitored, "../ops.js": ops });
+  const world = r4World(r4d1());
+  const calls = r4Server(world);
+  r4NewEpoch(world);
+  const root = pageRoot();
+  try {
+    health.page.mount(root, {});
+    assert.equal(counter.listeners, 2, "one run observer plus one renderer");
+    health.page.unmount();
+    assert.equal(counter.listeners, 0, "both page subscriptions disconnect");
+  } finally { root.remove(); await r4AnswerAll({ calls }); }
+});
+
+test("r4 harness self-test: B1b retains the original Health old-log recipe and observes it before the replacement repairs it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const kind = r4KindOf("health log");
+  assert.deepEqual(await r4Case(t, kind, "epoch", "success"), [], "real Health accepts the replacement and drops old outcomes");
+  // Exact original three-edit gate-note2 M3 recipe, without removing B1b's
+  // new observer. The final pane is repaired; end-alone must still catch it.
+  const keeping = (await r5Module("pages/health.js", [
+    ['let copied = "";', 'let copied = "";\n/** @type {any[]} */\nlet r4Kept = [];'],
+    ['followOp("log", async () => applyAnswer(await request("GET", "/api/v2/log", { resource: "log" })), {',
+      'followOp("log", async () => {\n    const answer = await request("GET", "/api/v2/log", { resource: "log" });\n    r4Kept = Array.isArray(answer.body) ? answer.body : [];\n    applyAnswer(answer);\n  }, {'],
+    ["const lines = state.log.filter(", "const lines = (state.log.length ? state.log : r4Kept).filter("],
+  ])).page;
+  const differences = await r4Case(t, kind, "epoch", "success", { modules: { health: keeping } });
+  const found = differences.find((difference) => /at the next render, health: log pane.*line 1 of run 1.*replacement|at the next render, health: log pane.*line 1 of run 1.*replaced it/.test(difference));
+  assert.ok(found, `the unchanged end-alone detector observes the original mutant: ${differences.join("\n")}`);
+  t_log(`B1b retained Health recipe: ${found}`);
 });
 
 r8HarnessLoaded = true;

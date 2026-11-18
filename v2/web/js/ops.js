@@ -101,33 +101,41 @@ export function effect(owner, projection, work) {
   return work();
 }
 
-/** Observe a newer streamed copy of a resource in the same run. HTTP answers
- * can advance the resource position without moving the stream; they must not
- * recursively request themselves. Capture before calling back: replacing an
- * operation publishes the registry synchronously.
- * @param {string} resource @param {() => void} changed
- * @param {{eligible?: () => boolean, slots?: string[]}} [options]
+/** Observe a newer streamed copy of a resource in the same run, or only run
+ * changes when resource is null. HTTP answers do not move the stream and
+ * must not recursively request themselves. A snapshot replaces an untouched
+ * resource editor only when its declared revision advanced; equal reconnects
+ * preserve its read. Capture the observation and slot tokens before deferring:
+ * neither a later snapshot nor a successor operation belongs to this event.
+ * @param {string|null} resource @param {() => void} changed
+ * @param {{eligible?: () => boolean, slots?: string[], version?: () => number|undefined}} [options]
  * @returns {() => void}
  */
 export function observeResource(resource, changed, options = {}) {
-  /** @type {{epoch: string|null, seq: number, position: number}|undefined} */
+  /** @type {{epoch: string|null, seq: number, position: number, floor: number, version: number|undefined}|undefined} */
   let previous;
   let generation = 0;
   let active = true;
   const unsubscribe = subscribe(
-    () => ({ epoch: getState().epoch, seq: fence().seq, position: fence().applied.get(resource) ?? 0 }),
+    () => ({ epoch: getState().epoch, seq: fence().seq, position: resource === null ? 0 : fence().applied.get(resource) ?? 0,
+      floor: fence().floor, version: options.version?.() }),
     (now) => {
       const before = previous;
       previous = now;
-      if (before && now.seq > before.seq && now.position > before.position) {
+      if (before && (resource === null ? now.epoch !== before.epoch :
+        now.epoch === before.epoch && now.seq > before.seq && now.position > before.position &&
+        (now.position > now.floor || (now.version ?? 0) > (before.version ?? 0)))) {
         const mine = ++generation;
+        const slots = (options.slots ?? []).map((key) => ({ key, token: op(key).token }));
         // Coalesce one publication/input turn; recheck local eligibility and
         // the captured run before starting deferred replacement work.
         queueMicrotask(() => {
-          if (!active || mine !== generation || getState().epoch !== now.epoch || fence().floor >= now.position || !(options.eligible?.() ?? true)) return;
-          for (const key of options.slots ?? []) {
-            drop(key);
-            retireControl(key);
+          if (!active || mine !== generation || getState().epoch !== now.epoch || resource !== null && fence().floor > now.floor || !(options.eligible?.() ?? true)) return;
+          for (const { key, token } of slots) {
+            if (token && op(key).token === token) {
+              retireControl(key);
+              dropOwn(key, token);
+            }
           }
           changed();
         });

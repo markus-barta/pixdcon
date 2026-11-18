@@ -19,7 +19,7 @@
  */
 
 import { request } from "../api.js";
-import { follow as followOp, op } from "../ops.js";
+import { follow as followOp, observeResource, op } from "../ops.js";
 import { dot, icon, setHtml, setStatusLine } from "../dom.js";
 import { clock, duration, esc, prettyVersion } from "../format.js";
 import { applyAnswer, getState, subscribe, tick } from "../store.js";
@@ -181,7 +181,8 @@ function onScroll(event) {
  * The log of this opening, in the slot `log` (ops.js): the load of the
  * next opening makes this one obsolete, so its late failure says nothing
  * there. A failure of the current load is said in the pane while it is
- * empty; the lines of the live channel still arrive.
+ * empty; the lines of the live channel still arrive. The shared resource
+ * observer replaces this read when a snapshot starts another pixdcon run.
  */
 function loadLog() {
   followOp("log", async () => applyAnswer(await request("GET", "/api/v2/log", { resource: "log" })), {
@@ -225,7 +226,9 @@ export const page = {
   </section>`;
     root.addEventListener("click", onClick);
     root.addEventListener("scroll", onScroll, true);
-    unsubscribe = subscribe((state) => state, render);
+    const unobserve = observeResource(null, loadLog);
+    const unrender = subscribe((state) => state, render);
+    unsubscribe = () => { unobserve(); unrender(); };
     loadLog();
   },
   unmount() {
