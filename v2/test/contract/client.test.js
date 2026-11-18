@@ -10747,11 +10747,46 @@ function r8Frame(ctx) {
     },
   };
 }
+
+// Story isolation measures changes made by the world or the person. Native
+// tokens/owners (the operation and control slots) are product outcomes; a
+// required replacement operation may change them along with one input axis.
+// Keep every extracted axis classified: no default class for a new identity.
+/** @type {Readonly<Record<string, "world"|"input"|"internal">>} */
+const R8_IDENTITY_CLASS = Object.freeze({
+  epoch: "world", life: "world", scene: "world", schema: "world",
+  membership: "world", overlay: "world", resource: "world", stream: "world",
+  opening: "input", visit: "input", revision: "input", draft: "input",
+  token: "internal", owner: "internal",
+});
+
+/** @param {string} axis */
+function r8IdentityClass(axis) {
+  assert.ok(Object.hasOwn(R8_IDENTITY_CLASS, axis), `identity isolation gap: unclassified identity ${axis}; classify its measured world/input axis or product-internal outcome`);
+  return R8_IDENTITY_CLASS[axis];
+}
+
+/** Recompute from both frames, including new/removed and unchanged axes, so
+ * an unknown identity cannot hide behind a receipt's declared measurements.
+ * Full frames and measured axes remain evidence; outcomes are never inputs.
+ * @param {Record<string, any>} a @param {Record<string, any>} b */
+function r8StoryChanges(a, b) {
+  /** @type {string[]} */ const inputs = [];
+  /** @type {string[]} */ const outcomes = [];
+  for (const axis of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    const group = r8IdentityClass(axis);
+    if (JSON.stringify(a[axis]) !== JSON.stringify(b[axis]))
+      (group === "internal" ? outcomes : inputs).push(axis);
+  }
+  return { inputs, outcomes };
+}
+
 /** @param {any} ctx @param {any} before @param {any} after @param {string} story */
 function r8RecordStory(ctx, before, after, story) {
   const receipt = {
     kind: ctx.kind.name, story, a: structuredClone(before), b: structuredClone(after),
     measured: Object.keys(before.identities).filter((axis) => JSON.stringify(before.identities[axis]) !== JSON.stringify(after.identities[axis])), completed: true,
+    ...r8StoryChanges(before.identities, after.identities),
     compared: new Map(), points: ctx.points, executions: 1,
   };
   r8Stories.push(receipt);
@@ -10759,16 +10794,54 @@ function r8RecordStory(ctx, before, after, story) {
 }
 /** @param {any[]} requirements @param {any[]} stories */
 function r8RequireStoryIsolation(requirements, stories) {
-  const gaps = requirements.filter((requirement) => !stories.some((story) => {
-    if (story.kind !== requirement.kind || !story.executions || story.completed === false) return false;
-    const { identities: a, ...first } = story.a, { identities: b, ...second } = story.b;
-    if (JSON.stringify(first) !== JSON.stringify(second)) return false;
-    const changed = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((axis) => JSON.stringify(a[axis]) !== JSON.stringify(b[axis]));
-    return changed.length === 1 && changed[0] === requirement.identity &&
-      [...story.compared.values()].some((deps) => deps.includes(requirement.identity));
-  })).map((r) => r.key);
+  const changes = new Map(stories.map((story) => [story, r8StoryChanges(story.a.identities, story.b.identities)]));
+  const gaps = requirements.filter((requirement) => {
+    const group = r8IdentityClass(requirement.identity);
+    return !stories.some((story) => {
+      if (story.kind !== requirement.kind || !story.executions || story.completed === false) return false;
+      const { identities: a, ...first } = story.a, { identities: b, ...second } = story.b;
+      if (JSON.stringify(first) !== JSON.stringify(second)) return false;
+      // Internal outcomes retain their original witness checks, also used by
+      // observation fault injection. Only world/input story measurement changes.
+      const changed = group === "internal"
+        ? [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((axis) => JSON.stringify(a[axis]) !== JSON.stringify(b[axis]))
+        : changes.get(story)?.inputs ?? [];
+      return changed.length === 1 && changed[0] === requirement.identity &&
+        [...story.compared.values()].some((deps) => deps.includes(requirement.identity));
+    });
+  }).map((r) => r.key);
   assert.deepEqual(gaps, [], "identity isolation gap: missing measured story identity × kind (same device, values, kinds and timing; a compared piece must depend on the identity)");
 }
+
+test("r4 harness self-test: r8 story changes count world and input axes while retaining internal outcomes", () => {
+  const inventory = new Set([...Object.keys(R4_IDENTITIES), ...Object.keys(R7_IDENTITY_WORDS), ...Object.values(R4_CHANGES).flat(), ...Object.values(R4_STEPS).flat()]);
+  assert.deepEqual(Object.keys(R8_IDENTITY_CLASS).sort(), [...inventory].sort(), "every inventoried/extracted identity has an explicit class");
+  const frame = (/** @type {Record<string, any>} */ identities) => ({ device: ["d1"], kind: "raw load", values: { request: ["GET", "/api/v2/config/raw"] }, timing: { sent: 0, changed: 0 }, identities });
+  const a = frame({ epoch: "old", opening: 1, token: 62, owner: 1 });
+  const b = frame({ ...a.identities, epoch: "new", token: 63, owner: 2 });
+  const requirement = { kind: "raw load", identity: "epoch", key: "raw load × epoch" };
+  const story = { kind: "raw load", a, b, completed: true, executions: 1, compared: new Map([["load state", ["epoch", "token"]]]) };
+  assert.deepEqual(r8StoryChanges(a.identities, b.identities), { inputs: ["epoch"], outcomes: ["token", "owner"] });
+  r8RequireStoryIsolation([requirement], [story]);
+  for (const identity of inventory) {
+    const group = r8IdentityClass(identity);
+    assert.ok(["world", "input", "internal"].includes(group));
+    const changed = r8StoryChanges({ [identity]: 1 }, { [identity]: 2 });
+    assert.deepEqual(changed, group === "internal" ? { inputs: [], outcomes: [identity] } : { inputs: [identity], outcomes: [] });
+  }
+  for (const identities of [a.identities, { ...a.identities, token: 63, owner: 2 }, { ...b.identities, opening: 2 }, { ...b.identities, life: 2 }])
+    assert.throws(() => r8RequireStoryIsolation([requirement], [{ ...story, b: frame(identities) }]), /identity isolation gap/);
+  const input = { ...requirement, identity: "opening", key: "raw load × opening" };
+  r8RequireStoryIsolation([input], [{ ...story, b: frame({ ...a.identities, opening: 2, token: 63 }), compared: new Map([["load state", ["opening", "token"]]]) }]);
+  assert.throws(() => r8RequireStoryIsolation([input], [{ ...story, b: frame({ ...a.identities, opening: 2, revision: 2 }) }]), /identity isolation gap/);
+  const internal = { ...requirement, identity: "token", key: "raw load × token" };
+  r8RequireStoryIsolation([internal], [{ ...story, b: frame({ ...a.identities, token: 63 }) }]);
+  assert.throws(() => r8RequireStoryIsolation([internal], [story]), /identity isolation gap/, "internal outcome witnesses retain their original isolation checks");
+  const [unknown] = r8ProjectionAxes(r8Project(["new_identity"], "newly extracted identity"), { ...R7_IDENTITY_WORDS, new_identity: /new/ });
+  assert.throws(() => r8RequireStoryIsolation([{ ...requirement, identity: unknown }], [story]), /unclassified identity new_identity/);
+  assert.throws(() => r8StoryChanges({ ...a.identities, new_identity: 1 }, { ...b.identities, new_identity: 1 }), /unclassified identity new_identity/);
+  assert.throws(() => r8StoryChanges(a.identities, { ...b.identities, new_identity: 1 }), /unclassified identity new_identity/);
+});
 
 /** Only observation fault injection constructs a foreign read frame. Its
  * replacement value comes from a measured, unconfounded executed transition;
