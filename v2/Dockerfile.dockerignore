@@ -1,0 +1,21 @@
+# Build context for v2/Dockerfile is the repository root. Everything is left
+# out except what the pixdcon2 image copies (an allow-list, matrix A-158).
+*
+
+!v2/package.json
+!v2/package-lock.json
+!v2/src
+!v2/web
+
+!lib/pixoo-image.js
+!lib/pixoo-font.js
+!lib/version.js
+!lib/collectors
+!scenes
+!assets
+!version.json
+!vendor/inspr-versioning
+
+# Never part of an image: runtime state the scenes write next to themselves.
+scenes/**/.state
+**/node_modules

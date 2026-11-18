@@ -1,0 +1,146 @@
+{
+  "name": "health--wlan-tab-one-device-offline",
+  "scene": "health",
+  "deviceType": "pixoo",
+  "now": "2026-11-16T12:42:07+01:00",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "shellies/bz/boiler/info",
+      "payload": {
+        "wifi_sta": {
+          "rssi": -52
+        }
+      }
+    },
+    {
+      "topic": "shellies/wc/shelly1-tado-bridge/info",
+      "payload": {
+        "wifi_sta": {
+          "rssi": -58
+        }
+      }
+    },
+    {
+      "topic": "jhw2211/health/boiler",
+      "payload": {
+        "state": "ok",
+        "temp_c": "52.37",
+        "nr_running": true
+      }
+    },
+    {
+      "topic": "jhw2211/health/heat-chain",
+      "payload": {
+        "state": "ok"
+      }
+    },
+    {
+      "topic": "shellies/wc/shelly1-tado-bridge/input/0",
+      "payload": "1"
+    },
+    {
+      "topic": "z2m/bz/powercontrol/boiler/availability",
+      "payload": {
+        "state": "online"
+      }
+    },
+    {
+      "topic": "z2m/bz/powercontrol/boiler",
+      "payload": {
+        "linkquality": 180
+      }
+    },
+    {
+      "topic": "z2m/bz/plug/zisp09/availability",
+      "payload": {
+        "state": "online"
+      }
+    },
+    {
+      "topic": "z2m/bz/plug/zisp09",
+      "payload": {
+        "linkquality": 180
+      }
+    },
+    {
+      "topic": "z2m/wz/plug/zisp10/availability",
+      "payload": {
+        "state": "online"
+      }
+    },
+    {
+      "topic": "z2m/wz/plug/zisp10",
+      "payload": {
+        "linkquality": 180
+      }
+    },
+    {
+      "topic": "z2m/vk/waterleak/washingmachine/availability",
+      "payload": {
+        "state": "online"
+      }
+    },
+    {
+      "topic": "z2m/vk/waterleak/washingmachine",
+      "payload": {
+        "linkquality": 180
+      }
+    },
+    {
+      "topic": "z2m/sz/plug/zisp26/availability",
+      "payload": {
+        "state": "online"
+      }
+    },
+    {
+      "topic": "z2m/sz/plug/zisp26",
+      "payload": {
+        "linkquality": 180
+      }
+    },
+    {
+      "topic": "z2m/ki/plug/zisp37/availability",
+      "payload": {
+        "state": "online"
+      }
+    },
+    {
+      "topic": "z2m/ki/plug/zisp37",
+      "payload": {
+        "linkquality": 180
+      }
+    }
+  ],
+  "http": [
+    {
+      "url": "http://192.168.1.169/rpc/Shelly.GetStatus",
+      "body": {
+        "wifi": {
+          "rssi": -55
+        },
+        "switch:0": {
+          "output": true
+        }
+      }
+    },
+    {
+      "url": "http://localhost:1880",
+      "body": {}
+    },
+    {
+      "url": "http://localhost:8123",
+      "body": {}
+    }
+  ],
+  "frames": 1,
+  "note": "The WLAN tab contrasts green signal-strength bars for online devices with red OFF labels for missing peers.",
+  "ping": {
+    "192.168.1.5": true,
+    "192.168.1.8": false,
+    "192.168.1.9": true
+  },
+  "startFrameBeforeAdvance": true,
+  "elapsedMs": 10000
+}

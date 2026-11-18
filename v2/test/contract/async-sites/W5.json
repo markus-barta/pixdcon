@@ -1,0 +1,213 @@
+{
+  "owner": "W5",
+  "rows": [
+    {
+      "site": "src/scenes/scene-runtime.js:181",
+      "id": "work:this.load#1",
+      "input": "a per-device scene module import",
+      "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
+      "fence": "only the current entry generation and resolved output mode install; acquire records a per-entry unreleased holder and checks optional caller output before load and handoff; the last holder or last cancelled first acquire deletes the entry, fences pending init and releases unacquired current; supersede follows stay in the same mode; only the latest reload reports a failure",
+      "test": "test/contract/scenes.test.js: first load output supersede:",
+      "was": "SceneRuntime.acquire"
+    },
+    {
+      "site": "src/scenes/scene-runtime.js:305",
+      "id": "work:this.load#2",
+      "input": "a per-device scene module import",
+      "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
+      "fence": "only the current entry generation and resolved output mode install; acquire records a per-entry unreleased holder and checks optional caller output before load and handoff; the last holder or last cancelled first acquire deletes the entry, fences pending init and releases unacquired current; supersede follows stay in the same mode; only the latest reload reports a failure",
+      "test": "test/contract/scenes.test.js: scene ownership model:",
+      "was": "SceneRuntime.invalidate"
+    },
+    {
+      "site": "src/scenes/scene-runtime.js:351",
+      "id": "import:import#1",
+      "input": "a per-device scene module import",
+      "metadata": "file token, InstanceRef token, captured output mode and runtime entry generation",
+      "fence": "only the current entry generation and resolved output mode install; acquire records a per-entry unreleased holder and checks optional caller output before load and handoff; the last holder or last cancelled first acquire deletes the entry, fences pending init and releases unacquired current; supersede follows stay in the same mode; only the latest reload reports a failure",
+      "test": "test/contract/scenes.test.js: scene runtime order:"
+    },
+    {
+      "site": "src/scenes/v1-scene-adapter.js:210",
+      "id": "subscribe:settings.subscribe#1",
+      "input": "scene settings or MQTT callback",
+      "metadata": "InstanceRef token and runtime entry generation",
+      "fence": "active flag gates callback entry; release removes this instance subscriptions",
+      "test": "test/contract/scenes.test.js: v1 scene contract:",
+      "was": "createV1Instance"
+    },
+    {
+      "site": "src/scenes/v1-scene-adapter.js:224",
+      "id": "subscribe:mqtt.subscribe#1",
+      "input": "scene settings or MQTT callback",
+      "metadata": "InstanceRef token and runtime entry generation",
+      "fence": "active flag gates callback entry; release removes this instance subscriptions",
+      "test": "test/contract/scenes.test.js: v1 scene contract:"
+    },
+    {
+      "site": "src/scenes/v1-scene-adapter.js:228",
+      "id": "subscribe:mqtt.subscribeWildcard#1",
+      "input": "scene settings or MQTT callback",
+      "metadata": "InstanceRef token and runtime entry generation",
+      "fence": "active flag gates callback entry; release removes this instance subscriptions",
+      "test": "test/contract/scenes.test.js: v1 scene contract:"
+    },
+    {
+      "site": "src/scenes/v1-shared.js:167",
+      "id": "import:import#1",
+      "input": "the v1 font module, when the first Pixoo surface is made",
+      "metadata": "none",
+      "fence": "none",
+      "test": "test/golden/golden.test.js: harness: every shared v1 scene loads in v2's process",
+      "why": "loaded once per process and never replaced: main.js keeps the one promise and every surface awaits it"
+    },
+    {
+      "site": "src/scenes/v1-shared.js:216",
+      "id": "import:import#2",
+      "input": "shared reference drawing module imported by the golden harness",
+      "metadata": "immutable shared file URL",
+      "fence": "none",
+      "why": "read-only drawing reference; no controller state changes",
+      "test": "test/golden/golden.test.js: surface--v1-lines-alpha-and-aligned-text"
+    },
+    {
+      "site": "src/scenes/v1-shared.js:219",
+      "id": "import:import#3",
+      "input": "shared reference drawing module imported by the golden harness",
+      "metadata": "immutable shared file URL",
+      "fence": "none",
+      "why": "read-only drawing reference; no controller state changes",
+      "test": "test/golden/golden.test.js: surface--v1-lines-alpha-and-aligned-text"
+    },
+    {
+      "site": "src/scenes/scenes-watcher.js:57",
+      "id": "timer:setInterval#1",
+      "input": "native file hints, watcher errors, debounce and retry timers",
+      "metadata": "watch generation, current directory inode and per-file observed stamp",
+      "fence": "native events only schedule a debounced stamp read; onChange runs serially and checks the active generation; stop cancels queued callbacks; a directory supplier failure retains the previous watches and is logged for retry",
+      "test": "test/contract/scenes.test.js: scenes watcher poll failure:",
+      "was": "ScenesWatcher.start"
+    },
+    {
+      "site": "src/scenes/scenes-watcher.js:156",
+      "id": "watch:watch#1",
+      "input": "native file hints, watcher errors, debounce and retry timers",
+      "metadata": "watch generation, current directory inode and per-file observed stamp",
+      "fence": "native events only schedule a debounced stamp read; onChange runs serially and checks the active generation; stop cancels queued callbacks",
+      "test": "test/contract/scenes.test.js: scenes watcher order:"
+    },
+    {
+      "site": "src/scenes/scenes-watcher.js:170",
+      "id": "listener:watcher.on(\"error\")#1",
+      "input": "native file hints, watcher errors, debounce and retry timers",
+      "metadata": "watch generation, current directory inode and per-file observed stamp",
+      "fence": "native events only schedule a debounced stamp read; onChange runs serially and checks the active generation; stop cancels queued callbacks",
+      "test": "test/contract/scenes.test.js: scenes watcher order:"
+    },
+    {
+      "site": "src/scenes/scenes-watcher.js:196",
+      "id": "timer:setTimeout#1",
+      "input": "native file hints, watcher errors, debounce and retry timers",
+      "metadata": "watch generation, current directory inode and per-file observed stamp",
+      "fence": "native events only schedule a debounced stamp read; onChange runs serially and checks the active generation; stop cancels queued callbacks",
+      "test": "test/contract/scenes.test.js: scenes watcher order:"
+    },
+    {
+      "site": "src/config/migrate-v1.js:256",
+      "id": "work:file.sync#1",
+      "input": "completion of syncing the migration temporary file",
+      "metadata": "exclusive temporary FileHandle; one CLI invocation",
+      "fence": "none",
+      "why": "no controller state; only the exclusively created temporary file is synced before an atomic no-replace link",
+      "test": "test/contract/scenes.test.js: migration file contract:"
+    },
+    {
+      "site": "src/scenes/v1-scene-adapter.js:262",
+      "id": "timer:setTimeout#1",
+      "input": "remaining frame-drain deadline during scene release",
+      "metadata": "InstanceRef token, inactive instance, admitted frames and remaining loop stop budget",
+      "fence": "release fences new frames and unsubscribes immediately; the first release owns one teardown promise; drain completion or deadline starts destroy once; the timer is cleared on either outcome",
+      "test": "test/contract/scenes.test.js: scene release deadline:"
+    },
+    {
+      "site": "src/scenes/scene-runtime.js:305",
+      "id": "then:this.load().catch#1",
+      "input": "replacement load rejection",
+      "metadata": "entry generation captured when invalidate scheduled it",
+      "fence": "drops superseded, closed and older-generation failures; only newest preparation logs",
+      "test": "test/contract/scenes.test.js: scene reload warnings:"
+    },
+    {
+      "site": "src/scenes/scene-runtime.js:423",
+      "id": "then:promise.then#1",
+      "input": "load success or rejection",
+      "metadata": "entry, pending promise and map key",
+      "fence": "pending set removes only this promise; entry.pending and map identity checked before clearing or retiring entry",
+      "test": "test/contract/scenes.test.js: scene last holder: a pending replacement"
+    },
+    {
+      "site": "src/scenes/scenes-watcher.js:203",
+      "id": "then:this.dispatch.then#1",
+      "input": "previous onChange callback completion",
+      "metadata": "watcher generation captured at debounce",
+      "fence": "dispatch FIFO; running and generation checked before callback, so stopped watchers cannot reload",
+      "test": "test/contract/scenes.test.js: scenes watcher order:"
+    },
+    {
+      "site": "src/scenes/v1-scene-adapter.js:253",
+      "id": "then:Promise.resolve().then#1",
+      "input": "scheduled release teardown",
+      "metadata": "InstanceRef and one shared releasing promise",
+      "fence": "active is revoked before scheduling; one release drains admitted frames before destroy and cleans callbacks once",
+      "test": "test/contract/scenes.test.js: scene release: release and shutdown unsubscribe immediately"
+    },
+    {
+      "site": "src/scenes/v1-scene-adapter.js:260",
+      "id": "then:Promise.allSettled().then#1",
+      "input": "all admitted frames settle",
+      "metadata": "snapshot of this instance frames at release",
+      "fence": "only resolves the release-local drain race; timeout and late completions cannot destroy twice",
+      "test": "test/contract/scenes.test.js: scene release deadline: a hung frame"
+    },
+    {
+      "site": "src/scenes/v1-scene-adapter.js:328",
+      "id": "then:Promise.resolve().then#2",
+      "input": "admitted render starts",
+      "metadata": "InstanceRef and frame promise registered before yielding",
+      "fence": "active checked at admission; release revokes new admissions and waits for already registered frames before destroy",
+      "test": "test/contract/scenes.test.js: scene release: release and shutdown unsubscribe immediately"
+    },
+    {
+      "site": "src/scenes/scene-registry.js:87",
+      "id": "work:this.refresh#1",
+      "input": "scene metadata import or delegated registry work completion",
+      "metadata": "main registry lane position, import URL token and lane AbortSignal",
+      "fence": "one registry lane; update stages all keys privately and checks signal after every await before one atomic commit or changed event",
+      "test": "test/contract/scenes.test.js: registry shutdown:",
+      "was": "SceneRegistry.load"
+    },
+    {
+      "site": "src/scenes/scene-registry.js:95",
+      "id": "work:this.sync#1",
+      "input": "scene metadata import or delegated registry work completion",
+      "metadata": "main registry lane position, import URL token and lane AbortSignal",
+      "fence": "one registry lane; update stages all keys privately and checks signal after every await before one atomic commit or changed event",
+      "test": "test/contract/scenes.test.js: registry shutdown:",
+      "was": "SceneRegistry.refresh"
+    },
+    {
+      "site": "src/scenes/scene-registry.js:239",
+      "id": "import:import#1",
+      "input": "scene metadata import or delegated registry work completion",
+      "metadata": "main registry lane position, import URL token and lane AbortSignal",
+      "fence": "one registry lane; update stages all keys privately and checks signal after every await before one atomic commit or changed event",
+      "test": "test/contract/scenes.test.js: registry shutdown:",
+      "was": "SceneRegistry.sync"
+    }
+  ],
+  "none": [],
+  "resolved": {
+    "SceneRuntime.release": "Exact-instance teardown: synchronously revokes holder/generation, then awaits only that instance release and removes its own identity/context in finally. Independent frame-drain completions are consumed and inventoried in v1-scene-adapter.js.",
+    "SceneRuntime.releaseAll": "Final synchronous closed/generation fence, followed only by joining captured pending and release promises. Their inputs are inventoried at scene-runtime load and adapter release; nothing is admitted after closed."
+  }
+}

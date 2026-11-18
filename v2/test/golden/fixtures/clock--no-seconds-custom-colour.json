@@ -1,0 +1,16 @@
+{
+  "name": "clock--no-seconds-custom-colour",
+  "scene": "clock",
+  "deviceType": "ulanzi",
+  "now": "2026-11-16T12:42:07+01:00",
+  "timeZone": "Europe/Vienna",
+  "settings": {
+    "show_seconds": false,
+    "text_color": "#FF8800",
+    "center": false
+  },
+  "mqtt": [],
+  "http": [],
+  "frames": 1,
+  "note": "Orange 12:42 sits at the left of the black display without seconds."
+}
