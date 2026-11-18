@@ -2047,7 +2047,7 @@ test("r3 sweep (device controls): a control's outcome belongs to its device; dev
     devicePage.mount(root, { name: "d2" });
     put.answer(500, {});
     await settle();
-    assert.doesNotMatch(root.querySelector(".mode-hint").textContent, /Not changed/, "d1's failure is not said on d2");
+    assert.doesNotMatch(root.querySelector(".mode-hint").textContent, /Not changed|Not confirmed|Nicht bestätigt/, "d1's failure is not said on d2");
     assert.equal(root.querySelector('[data-act="mode"][data-mode="pause"]').disabled, false);
   } finally {
     devicePage.unmount();
@@ -2072,7 +2072,7 @@ test("r3 sweep (Overlays, rule 5): opened again while Clear runs, the row shows 
     click(clear());
     await settle();
     assert.equal(calls.filter((c) => c.method === "DELETE" && c.url.includes("/api/v2/overlays/")).length, 1);
-    assert.doesNotMatch(root.querySelector(".ov-body").textContent, /Not cleared/);
+    assert.doesNotMatch(root.querySelector(".ov-body").textContent, /Not cleared|Not confirmed|Nicht bestätigt/);
     assert.match(clear().textContent, /Clearing…/);
   } finally {
     overlaysPage.unmount();
@@ -2795,8 +2795,10 @@ function r4Focus(root) {
  * @param {any} root
  */
 function r4PreviewFeedback(root) {
-  // The title says a failed preview as "Settings not previewed: …" (view/model.js previewFailureText); a failed end ("… not ended") belongs to the device's life, not to a draft.
-  const title = r4Text(root.querySelector(".dev-head .sub")).includes("Settings not previewed:");
+  // End failures own a Retry control; preview timeouts share the localized
+  // unconfirmed wording but still belong to the submitted draft.
+  const line = root.querySelector(".dev-head .sub");
+  const title = r4Text(line).includes("Settings not previewed:") || R4_TIMEOUT_TEXT.test(r4Text(line)) && !line.querySelector('[data-act="end-retry"]');
   const marker = root.querySelectorAll(".set-body .mk").some((/** @type {any} */ mk) => /^not previewed/.test(r4Text(mk)));
   return `title ${title ? "says it" : "-"} · marker ${marker ? "says it" : "-"}`;
 }
@@ -2846,6 +2848,7 @@ const r4Refusal = (root, key) => String(root.querySelector(`.set-body [data-row=
  * @param {string} said
  */
 const r4MarkerDeps = (said) => (/^not previewed, not saved/.test(said) ? R4_REJECTION : /^not previewed/.test(said) ? R4_FEEDBACK : R4_BOOKKEEPING);
+const R4_TIMEOUT_TEXT = /^(?:Not confirmed: pixdcon did not answer within \d+ s\.|Nicht bestätigt: pixdcon hat innerhalb von \d+ s nicht geantwortet\.)/;
 /**
  * What the settings status line depends on, by what it says: an outcome of
  * the action slot (Save, Revert, Clear) depends on the slot identities, and
@@ -2855,8 +2858,14 @@ const r4MarkerDeps = (said) => (/^not previewed, not saved/.test(said) ? R4_REJE
  * count of unsaved edits on the drafts and membership.
  *
  * @param {string} said
+ * @param {any} [action] the shown scope's action slot
  */
-function r4StatusDeps(said) {
+function r4StatusDeps(said, action) {
+  if (R4_TIMEOUT_TEXT.test(said)) {
+    if (action?.failure && !action.busy && R4_TIMEOUT_TEXT.test(action.failure))
+      return action.value === "save" ? ["epoch", "life", "scene", "membership", "token"] : ["epoch", "life", "scene", "token"];
+    return R4_FEEDBACK;
+  }
   if (/^(Not saved|Saved)/.test(said)) return ["epoch", "life", "scene", "membership", "token"];
   if (/^(Not reverted|Not cleared|\d+ could not be cleared)/.test(said)) return ["epoch", "life", "scene", "token"];
   if (/^Not previewed/.test(said)) return R4_FEEDBACK;
@@ -2990,6 +2999,9 @@ const R4_PAGES = {
     params: { name: "d1" },
     pieces: (root) => {
       const range = root.querySelector('input[type="range"]');
+      const shown = r4State().devices.get("d1");
+      const action = shown && r4State().ops.get(`settings:d1/${shown.desired.scene.scene}@${shown.epoch}/${shown.incarnation}`);
+      const previewTitle = r4PreviewFeedback(root).startsWith("title says it");
       return [
         ["preview feedback", R4_FEEDBACK, r4PreviewFeedback(root)],
         ["Display line", ["scene", "epoch", "life", "owner"], r4Text(root.querySelector(".why .v-disp"))],
@@ -3012,8 +3024,8 @@ const R4_PAGES = {
         ["recovery dialog", ["opening", "epoch", "life"], r4Dialog()],
         ["recovery Retry and outcome", ["epoch", "life", "token"], r4DialogRetry()],
         // Slot labels and outcomes (busy, failure, note) depend on the slot identities; preview feedback is the piece above.
-        ["title status line", (said) => said.includes("Settings not previewed:") ? [...R4_FEEDBACK, "owner", "token"] : ["epoch", "life", "token"], `${r4Text(root.querySelector(".dev-head .sub"))} | ${r4Button(root.querySelector('.dev-head [data-act="end-retry"]'))}`],
-        ["settings status line", r4StatusDeps, r4Text(root.querySelector(".set-status"))],
+        ["title status line", () => previewTitle ? [...R4_FEEDBACK, "owner", "token"] : ["epoch", "life", "token"], `${r4Text(root.querySelector(".dev-head .sub"))} | ${r4Button(root.querySelector('.dev-head [data-act="end-retry"]'))}`],
+        ["settings status line", (said) => r4StatusDeps(said, action), r4Text(root.querySelector(".set-status"))],
         ["settings Save and Revert", ["epoch", "life", "scene", "token"], `${r4Button(root.querySelector('.set-h [data-act="save"]'))} | ${r4Button(root.querySelector('.set-h [data-act="revert"]'))} | ${r4Button(root.querySelector('.set-h [data-act="clear"]'))}`],
         ["mode", ["epoch", "life", "token"], `${r4Text(root.querySelector(".mode-hint"))} | ${root.querySelectorAll('[data-act="mode"]').map((/** @type {any} */ b) => (b.disabled ? "x" : "o")).join("")}`],
         // The slider shows the level of its owner: the brightness slot of the device's life whose own request typed it (gate r5a E).
@@ -6372,7 +6384,7 @@ async function r6Overlays(module, overlap, end, t = /** @type {any} */ (null), i
       assert.equal(calls.filter((/** @type {any} */ c) => c.method === "DELETE").length, 2, "different overlay ids admit independent Clears");
     } else r4Live(world, "overlays", records.slice(1));
     await settle();
-    if (isolated && !overlap) assert.doesNotMatch(r4Text(row("o2")), /Not cleared|Clearing/, "o2 owns neither o1's pending state nor its failure before the old end");
+    if (isolated && !overlap) assert.doesNotMatch(r4Text(row("o2")), /Not cleared|Not confirmed|Nicht bestätigt|Clearing/, "o2 owns neither o1's pending state nor its failure before the old end");
     const measured = r8RecordStory(audit, beforeIdentity, r8Frame(audit), `${overlap ? "overlap" : "replacement"}/${end}/${isolated ? "equal-kind" : "different-kind"}`);
     const piece = R4_PAGES.overlays.pieces(root).find(([name]) => name === "row o2 Clear and outcome");
     assert.ok(piece, "the equal-id comparison reads its declared row piece");
@@ -6386,9 +6398,9 @@ async function r6Overlays(module, overlap, end, t = /** @type {any} */ (null), i
       assert.match(r4Text(row("o2")), /Clearing/, "o2 keeps its own pending operation");
       pending(calls, "DELETE", "/overlays/o2").ok();
       await settle();
-      assert.doesNotMatch(r4Text(row("o2")), /Not cleared/);
-      if (end !== "success") assert.match(r4Text(row("o1")), /Not cleared/, "o1 owns its failure");
-    } else assert.doesNotMatch(r4Text(row("o2")), /Not cleared|Clearing/, "o2 owns neither o1's pending state nor its failure");
+      assert.doesNotMatch(r4Text(row("o2")), /Not cleared|Not confirmed|Nicht bestätigt/);
+      if (end !== "success") assert.match(r4Text(row("o1").querySelector(".act .act-why")), end === "timeout" ? R4_TIMEOUT_TEXT : /^Not cleared/, "o1 owns its failure");
+    } else assert.doesNotMatch(r4Text(row("o2")), /Not cleared|Not confirmed|Nicht bestätigt|Clearing/, "o2 owns neither o1's pending state nor its failure");
     assert.equal(r4Text(row("o3")), third, "every unaffected row is observed too");
   } finally {
     module.page.unmount();
@@ -7094,7 +7106,7 @@ test("r4 harness self-test: a preview failure written to the scene the form show
     for (const piece of [
       /after the end, device: preview feedback \[opening, epoch, life, scene, draft, schema\]: "title says it · marker says it" — the story without the old operation reads "title - · marker -"/,
       /after the end, device: row marker of n \[opening, epoch, life, scene, draft, schema\]: "not previewed" — the story without the old operation reads "previewing"/,
-      /device: settings status line .*: "Not previewed: .*the old operation's end changed it/,
+      /device: settings status line .*: "(?:Not previewed|Not confirmed|Nicht bestätigt): .*the old operation's end changed it/,
     ])
       assert.ok(differences.some((d) => piece.test(d)), `× ${end}: the harness reports ${piece}:\n${differences.join("\n")}`);
     // The real form passes: Clock's failure stays with Clock's scope.
@@ -13178,7 +13190,7 @@ async function r5B3EndScene(t, name, end, device) {
     const title = got.points[1].get("device: title status line")?.value ?? "";
     if (end === "success") assert.doesNotMatch(title, /not ended/, "D1: successful End clears its title failure");
     else {
-      assert.match(title, /Settings preview of Clock not ended/, "D1: old-scene failure remains in the title after switching");
+      assert.match(title, end === "timeout" ? R4_TIMEOUT_TEXT : /Settings preview of Clock not ended/, "D1: old-scene failure remains in the title after switching");
       assert.match(title, /Retry/, "D1: old-scene Retry remains visible after switching");
       assert.doesNotMatch(title, /Retrying/, "D1: completed failed End leaves an enabled Retry");
       assert.match(title, end === "500" ? /500/ : /15 s/, "D1: title says the actual failure");
@@ -13339,7 +13351,7 @@ test("r4 harness self-test: B3 original page-local must-fail control: r5a A", as
     for (const piece of [
       /after the end, device: preview feedback \[opening, epoch, life, scene, draft, schema\]: "title says it · marker says it" — the story without the old operation reads "title - · marker -"/,
       /after the end, device: row marker of n \[opening, epoch, life, scene, draft, schema\]: "not previewed" — the story without the old operation reads "previewing"/,
-      /device: settings status line .*: "Not previewed: .*the old operation's end changed it/,
+      /device: settings status line .*: "(?:Not previewed|Not confirmed|Nicht bestätigt): .*the old operation's end changed it/,
     ])
       assert.ok(differences.some((d) => piece.test(d)), `× ${end}: the harness reports ${piece}:\n${differences.join("\n")}`);
     // The real form passes: Clock's failure stays with Clock's scope.
@@ -13442,7 +13454,7 @@ async function r5B3RetryAfterSwitch(t, end, change) {
         assert.equal(settings.epoch, r4State().epoch, "D1: title Retry remains epoch fenced");
         assert.equal(settings.incarnation, r4State().devices.get(settings.device)?.incarnation, "D1: title Retry remains life fenced");
       }
-      assert.doesNotMatch(r4Text(titleLine(ctx.root)), /Clock not ended/, "D1: old life Retry cannot report in the new life");
+      assert.doesNotMatch(r4Text(titleLine(ctx.root)), /Clock not ended|Not confirmed|Nicht bestätigt/, "D1: old life Retry cannot report in the new life");
     } else {
       assert.equal(r4State().settings.get("d1/third"), fresh, "D1: title Retry leaves the new scene store entry untouched");
       assert.deepEqual(controls(), before, "D1: title Retry leaves all new-scene controls untouched");
@@ -13451,7 +13463,7 @@ async function r5B3RetryAfterSwitch(t, end, change) {
         assert.doesNotMatch(r4Text(titleLine(ctx.root)), /not ended/, "D1: successful title Retry clears failure");
       } else {
         assert.equal(r4State().settings.get("d1/clock"), old, "D1: failed title Retry changes no SettingsState");
-        assert.match(r4Text(titleLine(ctx.root)), /Clock not ended/, "D1: failed title Retry stays visible");
+        assert.match(r4Text(titleLine(ctx.root)), end === "timeout" ? R4_TIMEOUT_TEXT : /Clock not ended/, "D1: failed title Retry stays visible");
         assert.ok(titleLine(ctx.root).querySelector('[data-act="end-retry"]'), "D1: failed title Retry can be retried again");
       }
     }
@@ -13658,9 +13670,9 @@ async function r5B3UnparsedFeedback(t, variant, end, device) {
     await settle();
     if (variant === "failure lost") {
       assert.match(marker(), /^not previewed/, "B3 r3: the failed valid edit must say not previewed");
-      assert.match(status(), end === "500" ? /Not previewed:.*500/ : /Not previewed:.*within 15 s/, "B3 r3: the held preview's failure must be visible despite the invalid keystroke");
+      assert.match(status(), end === "500" ? /Not previewed:.*500/ : /^(?:Not confirmed:.*within 15 s|Nicht bestätigt:.*15 s)/, "B3 r3: the held preview's failure must be visible despite the invalid keystroke");
     } else {
-      assert.doesNotMatch(status(), /Not previewed:/, "B3 r3: the successful preview must clear the stale failure despite the invalid keystroke");
+      assert.doesNotMatch(status(), /Not previewed:|Not confirmed:|Nicht bestätigt:/, "B3 r3: the successful preview must clear the stale failure despite the invalid keystroke");
       assert.match(marker(), /^previewing/, "B3 r3: the successfully previewed valid edit is said");
       assert.equal(r4State().settings.get("d1/clock").values.n.effective, 3);
     }
@@ -13728,8 +13740,8 @@ async function r5B3RetiredPreview(t, variant, end, device) {
       r4Pending(ctx, "DELETE", "/settings/clock/preview").ok();
       await settle();
     }
-    assert.doesNotMatch(status(), /Not previewed:/, "B3 r4: retired preview failure must leave the status");
-    assert.doesNotMatch(r4Text(titleLine(ctx.root)), /not previewed|Preview failed|could not preview/i, "B3 r4: retired preview failure must leave the device title");
+    assert.doesNotMatch(status(), /Not previewed:|Not confirmed:|Nicht bestätigt:/, "B3 r4: retired preview failure must leave the status");
+    assert.doesNotMatch(r4Text(titleLine(ctx.root)), /not previewed|Preview failed|could not preview|Not confirmed|Nicht bestätigt/i, "B3 r4: retired preview failure must leave the device title");
     assert.match(status(), /M is not valid/, "B3 r4: the remaining invalid edit explains the status");
     assert.match(r4Text(ctx.root.querySelector('[data-row="n"] .mk')), variant === "V3" ? /^saved/ : /^default/, "B3 r4: n is saved or reverted, never an unsaved failed preview");
     assert.equal(r4State().settings.get("d1/clock").preview, null, "B3 r4: no retired preview remains in the store");
@@ -13945,7 +13957,7 @@ async function r5B4K1(t, module, overlap, end) {
     const control = button("m");
     assert.ok(control, "B4 K1: m is present");
     assert.equal(control.disabled, false, "B4 K1: n cannot disable m");
-    assert.doesNotMatch(r4Text(control.closest(".ot-row")), /Clearing|Not cleared/, "B4 K1: m never reports n's pending state or failure");
+    assert.doesNotMatch(r4Text(control.closest(".ot-row")), /Clearing|Not cleared|Not confirmed|Nicht bestätigt/, "B4 K1: m never reports n's pending state or failure");
   };
   try {
     r4Click(button("n"));
@@ -13966,7 +13978,7 @@ async function r5B4K1(t, module, overlap, end) {
     await settle();
     untouched();
     assert.equal(calls.filter((/** @type {any} */ call) => call.method === "DELETE").length, 1, "B4 K1: m's Clear was never started");
-    if (overlap && end !== "success") assert.match(r4Text(button("n").closest(".ot-row")), /Not cleared/, "B4 K1: n retains its own failure");
+    if (overlap && end !== "success") assert.match(r4Text(button("n").closest(".ot-row").querySelector(".act .act-why")), end === "timeout" ? R4_TIMEOUT_TEXT : /^Not cleared/, "B4 K1: n retains its own failure");
   } finally {
     module.page.unmount(); root.remove(); await r4AnswerAll({ calls });
   }
@@ -14310,7 +14322,7 @@ async function r5B4SaveMemberReturn(t, end, module) {
     else { old.abandon(); t.mock.timers.tick(15_000); }
     await settle();
     assert.equal(form.hasEdits(), true, "B4 Save membership return: the old outcome acknowledges none of the retained edits");
-    assert.doesNotMatch(r4Text(root.querySelector(".set-status")), /Not saved|Saved to config/, "B4 Save membership return: no old-member failure or success returns");
+    assert.doesNotMatch(r4Text(root.querySelector(".set-status")), /Not saved|Not confirmed|Nicht bestätigt|Saved to config/, "B4 Save membership return: no old-member failure or success returns");
     assert.equal(saveButton(root).disabled, false, "B4 Save membership return: the returned member can Save again");
     const before = calls.length;
     r4Click(saveButton(root));
@@ -14368,7 +14380,7 @@ async function r5B4ConfigMemberReturn(t, name, end, module) {
     await settle();
     assert.ok(control(), "B4 Config membership return: the old success cannot close its revised-membership editor");
     assert.equal(control().disabled, false, "B4 Config membership return: the action stays free after the old end");
-    assert.doesNotMatch(r4Text(root.querySelector(".ct-body")), /Not saved|Not added/, "B4 Config membership return: no failure from the old member returns");
+    assert.doesNotMatch(r4Text(root.querySelector(".ct-body")), /Not saved|Not added|Not confirmed|Nicht bestätigt/, "B4 Config membership return: no failure from the old member returns");
     if (name === "config patch") assert.equal(root.querySelector('.ct-edit [name="displayName"]').value, "Kitchen", "B4 Config membership return: the row's edit survives");
     const before = calls.length;
     await kind.begin?.(ctx);
