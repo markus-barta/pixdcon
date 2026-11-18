@@ -3111,6 +3111,16 @@ const R4_KINDS = [
     ends: ["refused"],
   },
   { name: "raw reload", site: "web/js/pages/config-raw.js:274", page: "raw", world: r4d1(), request: ["POST", "/api/v2/config/reload"], begin: (ctx) => r4Click(ctx.root.querySelector('[data-act="reload"]')) },
+  // B1a's captured continuation can no longer send this GET after the
+  // source prepass unmounts Raw. Execute the second request explicitly.
+  {
+    name: "raw reload load", site: "web/js/pages/config-raw.js:reloadFromDisk", page: "raw", world: r4d1(), request: ["GET", "/api/v2/config/raw"], early: true,
+    begin: async (ctx) => {
+      r4Click(ctx.root.querySelector('[data-act="reload"]'));
+      r4Pending(ctx, "POST", "/config/reload").ok();
+      await settle();
+    },
+  },
   {
     name: "config patch", site: "web/js/pages/config.js:165", page: "config", world: r4d1(), request: ["PATCH", "/api/v2/devices/d1"],
     setup: async (ctx) => {
@@ -5869,6 +5879,21 @@ R5_STORIES.push(
     },
   },
 );
+
+test("r4 harness self-test: b1a r4 Reload's follow-up GET cannot finish a replacement epoch", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const kind = r4KindOf("raw reload load");
+  const raw = (await r5Module("pages/config-raw.js", [[
+    'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      if (!current(["epoch", "opening"])) return;',
+    'const answer = await request("GET", "/api/v2/config/raw", { resource: "config" });\n      if (false) return;',
+  ]])).page;
+  for (const change of ["epoch"]) {
+    assert.deepEqual(await r4Case(t, kind, change, "success"), [], `the real follow-up GET preserves the replacement ${change}`);
+    const differences = await r4Case(t, kind, change, "success", { modules: { raw } });
+    assert.ok(differences.some((piece) => piece.includes("load and validity state")), `the old follow-up GET ended the replacement ${change}'s loading state: ${differences.join("\n")}`);
+    t_log(`B1a r4 Reload GET/${change}: ${differences.join("\n")}`);
+  }
+});
 
 // B1a: new guard boundaries; existing harness stories and self-tests stay frozen.
 R5_STORIES.push(
