@@ -28,15 +28,31 @@ function toDate(at) {
 const two = (/** @type {number} */ n) => String(n).padStart(2, "0");
 
 /** A missing acknowledgement says nothing about whether a write took effect.
+ * Keep the action/scene subject when replacing a refusal claim, including
+ * failures already formatted by api.js or stored in an operation slot.
  * @param {string} message @param {string} [prefix] ordinary refusal label
  */
 export function failureMessage(message, prefix = "") {
   const timeout = /pixdcon did not answer within (\d+) s\.|pixdcon hat innerhalb von (\d+) s nicht geantwortet\./.exec(message);
   if (timeout) {
     const seconds = timeout[1] ?? timeout[2];
-    return /** @type {any} */ (globalThis).document?.documentElement?.getAttribute("lang")?.toLowerCase().startsWith("de")
-      ? `Nicht bestätigt: pixdcon hat innerhalb von ${seconds} s nicht geantwortet.`
-      : `Not confirmed: pixdcon did not answer within ${seconds} s.`;
+    const label = prefix || message.slice(0, timeout.index)
+      .replace(/:\s*(?:(?:Not confirmed|Nicht bestätigt):\s*)?$/, "").trim();
+    const actions = /** @type {Record<string, string>} */ ({
+      "Not saved": "Save", "Not reverted": "Revert", "Not cleared": "Clear",
+      "Not previewed": "Preview", "Settings not previewed": "Settings preview",
+      "Not switched": "Switch", "Not restored": "Restore", "Not copied": "Copy",
+      "Not retried": "Retry", "Not reloaded": "Reload", "Not added": "Add",
+      "Not changed": "", "Not confirmed": "", "Nicht bestätigt": "",
+    });
+    const subject = Object.hasOwn(actions, label) ? actions[label]
+      : label.replace(/ (?:not ended|not confirmed|nicht bestätigt|could not be loaded)$/, "");
+    const german = /** @type {any} */ (globalThis).document?.documentElement?.getAttribute("lang")?.toLowerCase().startsWith("de");
+    const claim = german ? subject ? "nicht bestätigt" : "Nicht bestätigt" : subject ? "not confirmed" : "Not confirmed";
+    const reason = german
+      ? `pixdcon hat innerhalb von ${seconds} s nicht geantwortet.`
+      : `pixdcon did not answer within ${seconds} s.`;
+    return `${subject ? `${subject} ` : ""}${claim}: ${reason}`;
   }
   return prefix ? `${prefix}: ${message}` : message;
 }
