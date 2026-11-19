@@ -486,7 +486,10 @@ export function createSettingsForm(host, options) {
         done: (answer) => {
           effect(owner, ["epoch", "scene", "schema"], () => {
             of.book.rejected(plan.sent, answer.body?.rejected);
-            of.book.previewResult(plan.sent, answer.body?.applied !== false);
+            // W1 ignores already-seen drafts without rejecting any values.
+            // Keep the earlier verdict; an atomic refusal still marks it false.
+            if (answer.body?.applied !== false || Object.keys(answer.body?.rejected ?? {}).length > 0)
+              of.book.previewResult(plan.sent, answer.body?.applied !== false);
           });
           effect(owner, feedback, () => { of.previewFailure = null; });
           drop(endKey(of));
