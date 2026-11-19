@@ -237,12 +237,20 @@ input[type=range]:disabled{opacity:.5}
   .below{min-height:20px;margin-top:10px;font-size:12px;line-height:20px;color:var(--text-3);display:flex;gap:8px;align-items:center}
   .grp{margin-top:20px}
   .grp h3{padding:0 0 4px}
-  .set-h{display:grid;grid-template-columns:minmax(0,1fr) 340px;column-gap:24px;align-items:start;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  .set-h{display:grid;grid-template-columns:minmax(0,1fr) 384px;column-gap:24px;align-items:start;padding-bottom:8px;border-bottom:1px solid var(--line)}
   .set-desc{margin:4px 0 0;font-size:12px;line-height:18px;color:var(--text-3);max-width:520px}
   .set-acts{display:flex;align-items:center;justify-content:flex-end;gap:8px}
+  /* Reserve the longest label, icon, gap and padding in idle and busy states. */
+  .set-acts [data-act="save"]{min-width:104px;flex:none}
+  .set-acts [data-act="revert"]{min-width:116px;flex:none}
+  .set-acts [data-act="clear"]{min-width:148px;display:inline-grid;grid-template-columns:16px auto;flex:none}
+  .set-acts [data-act="clear"] .i{grid-area:1/1}
+  .set-acts [data-act="clear"]>span{grid-area:1/2}
+  /* Large overlay counts also reserve their idle text while Clearing… is shown. */
+  .set-acts [data-act="clear"]::after{content:attr(data-idle-label);grid-area:1/2;visibility:hidden}
   .slot-clear{flex:1;display:flex;justify-content:flex-end;min-width:0}
-  .slot-revert{width:88px;flex:none;display:flex;justify-content:flex-end}
-  .set-status{margin-top:6px;min-height:36px;font-size:12.5px;line-height:18px;color:var(--text-2);text-align:right}
+  .slot-revert{width:116px;flex:none;display:flex;justify-content:flex-end}
+  .set-status{margin-top:6px;min-height:36px;font-size:12.5px;line-height:18px;color:var(--text-2);text-align:right;text-wrap:pretty}
   .set-status.chg{color:var(--text);font-weight:500}
   .set-status.warn{color:var(--warn);font-weight:500}
   .fr{display:grid;grid-template-columns:minmax(170px,1fr) minmax(220px,1.4fr) 196px;column-gap:16px;align-items:center;min-height:48px;margin:0 -8px;padding:6px 8px;border-bottom:1px solid var(--line)}
@@ -279,6 +287,15 @@ input[type=range]:disabled{opacity:.5}
   .cmd span{flex:1;overflow-x:auto;white-space:nowrap}
   @media (max-width:1100px){.dev-grid{grid-template-columns:320px minmax(0,1fr);column-gap:32px}.opts{grid-template-columns:1fr}.set-h{grid-template-columns:1fr}.set-h > div:last-child{margin-top:8px}.fr{grid-template-columns:minmax(0,1fr) 196px;row-gap:6px}.fr label{grid-column:1 / -1}}
   @media (max-width:760px){.dev-grid{grid-template-columns:1fr}.side{position:static}.fr{grid-template-columns:1fr}.mk{justify-content:flex-start}}
+  @media (max-width:760px){
+    .set-acts{gap:4px}
+    .set-acts .btn{padding-inline:8px}
+    .set-acts [data-act="save"]{min-width:96px}
+    .set-acts [data-act="revert"]{min-width:108px}
+    .set-acts [data-act="clear"]{min-width:140px}
+    .slot-revert{width:108px}
+  }
+  @media (max-width:380px){.set-acts{flex-wrap:wrap}.slot-clear{flex-basis:100%;min-height:44px}}
 }
 
 /* ---- Overlays (pixd-overlays-*) ---- */

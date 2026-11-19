@@ -4,7 +4,7 @@
  * Approved mockups: pixd-device-{default,previewing,json-error,empty,error}.
  *
  * Heading band: title "Settings · <scene>", one description line, and a fixed
- * 340 px block with the slots [Clear N overlays] [Revert] [Save] and a
+ * 384 px block with the slots [Clear N overlays] [Revert] [Save] and a
  * two-line status. Empty slots keep their width, so Save never moves.
  * Rows from the schema in v1's group order: label with range, control by
  * type, and a marker: default · saved (+ "Reset to default") · violet "from
@@ -486,9 +486,17 @@ export function createSettingsForm(host, options) {
         done: (answer) => {
           effect(owner, ["epoch", "scene", "schema"], () => {
             of.book.rejected(plan.sent, answer.body?.rejected);
-            // W1 ignores already-seen drafts without rejecting any values.
-            // Keep the earlier verdict; an atomic refusal still marks it false.
-            if (answer.body?.applied !== false || Object.keys(answer.body?.rejected ?? {}).length > 0)
+            // W1 ignores seen drafts, even after Save removed their preview
+            // or an earlier refusal answer was lost. Read each sent value's
+            // actual preview from this answer, retaining edit identity guards.
+            if (answer.body?.applied === false && Object.keys(answer.body?.rejected ?? {}).length === 0) {
+              for (const [key, draft] of plan.sent) {
+                const layer = answer.body?.state?.values?.[key];
+                const previewing = layer && Object.hasOwn(layer, "preview") &&
+                  JSON.stringify(layer.preview) === JSON.stringify(plan.body.values[key]);
+                of.book.previewResult(new Map([[key, draft]]), Boolean(previewing));
+              }
+            } else
               of.book.previewResult(plan.sent, answer.body?.applied !== false);
           });
           effect(owner, feedback, () => { of.previewFailure = null; });
@@ -869,9 +877,10 @@ export function createSettingsForm(host, options) {
         : context.mqttConnected === false
           ? "Clearing an overlay needs MQTT"
           : `Clears the MQTT overlay values of ${sceneLabel} on this device`;
+      const clearLabel = `Clear ${overlays} ${overlays === 1 ? "overlay" : "overlays"}`;
       setHtml(
         clearSlot,
-        `<button class="btn" type="button" data-act="clear"${disabled || busy ? " disabled" : ""} title="${esc(reason)}">${busy === "clear" ? `${icon("spinner")}Clearing…` : `${icon("x")}Clear ${overlays} ${overlays === 1 ? "overlay" : "overlays"}`}</button>`,
+        `<button class="btn" type="button" data-act="clear" data-idle-label="${esc(clearLabel)}"${disabled || busy ? " disabled" : ""} title="${esc(reason)}">${busy === "clear" ? icon("spinner") : icon("x")}<span>${busy === "clear" ? "Clearing…" : esc(clearLabel)}</span></button>`,
       );
     } else setHtml(clearSlot, "");
     if ((edits.size > 0 || changes > 0 || serverPreview > 0 || busy === "revert") && phase === "ready")
