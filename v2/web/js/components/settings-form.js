@@ -486,9 +486,17 @@ export function createSettingsForm(host, options) {
         done: (answer) => {
           effect(owner, ["epoch", "scene", "schema"], () => {
             of.book.rejected(plan.sent, answer.body?.rejected);
-            // W1 ignores already-seen drafts without rejecting any values.
-            // Keep the earlier verdict; an atomic refusal still marks it false.
-            if (answer.body?.applied !== false || Object.keys(answer.body?.rejected ?? {}).length > 0)
+            // W1 ignores seen drafts, even after Save removed their preview
+            // or an earlier refusal answer was lost. Read each sent value's
+            // actual preview from this answer, retaining edit identity guards.
+            if (answer.body?.applied === false && Object.keys(answer.body?.rejected ?? {}).length === 0) {
+              for (const [key, draft] of plan.sent) {
+                const layer = answer.body?.state?.values?.[key];
+                const previewing = layer && Object.hasOwn(layer, "preview") &&
+                  JSON.stringify(layer.preview) === JSON.stringify(plan.body.values[key]);
+                of.book.previewResult(new Map([[key, draft]]), Boolean(previewing));
+              }
+            } else
               of.book.previewResult(plan.sent, answer.body?.applied !== false);
           });
           effect(owner, feedback, () => { of.previewFailure = null; });

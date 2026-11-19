@@ -3828,7 +3828,7 @@ async function r4Run(t, kind, change, end, mode, modules, last = false) {
   // Fault injection remains disabled unless r7Coverage selects an outcome.
   const measuredModules = await r8MeasurementModules();
   modules = { ...measuredModules, ...modules };
-  if (R3_REAL_SAVE_STORIES[kind.name]?.includes(change) && (change !== null || mode === "source" || r7Coverage))
+  if (R3_REAL_SAVE_STORIES[kind.name]?.includes(change))
     return r3RealSaveRun(t, kind, change, end, mode, modules);
   for (const key of [...r4State().ops.keys()]) r4SetOp(key, null);
   fakeDocument.activeElement = null;
@@ -14807,7 +14807,7 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
       const marker = r4Marker(ctx.root, key);
       if (!(previewing ? /^previewing/ : /^not previewed/).test(marker)) absolute.push(`real W1 state for ${key}: ${JSON.stringify(layer)}, row marker "${marker}" disagrees with the effective preview`);
     }
-    if (end === "success" && !errors) {
+    if (end === "success" && held?.status === 200 && !errors) {
       const count = Math.max(pendingEdits, Object.values(current.values).filter((layer) => Object.hasOwn(layer, "preview")).length);
       const expected = held && pendingEdits === 0 ? "Saved to config.json" : count
         ? `Previewing ${count} ${count === 1 ? "change" : "changes"} · not saved; leaving this page reverts them`
@@ -14843,6 +14843,22 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
     await stack.cleanup.run();
   }
 }
+
+for (const name of ["settings save", "settings reset save", "settings save rejected"])
+  for (const end of R4_ENDS)
+    test(`PIXD-109: real ${name} × no change × ${end}`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const result = await r4Run(t, r4KindOf(name), null, end, "case");
+      const save = result.calls?.find((call) => call.method === "PUT" && /\/settings\/[^/]+$/.test(call.path));
+      assert.ok(save, "PIXD-109: the UI sent Save to real W1/W4");
+      assert.equal(save.serverStatus, name === "settings save rejected" ? 400 : 200);
+      if (end !== "success" || name === "settings save rejected") {
+        const duplicate = result.calls?.findLast((call) => call.method === "PUT" && call.path === `${save.path}/preview` && call.body.draft === save.body.draft && call.status === 200 && call.answer?.applied === false);
+        assert.ok(duplicate, "PIXD-109: post-Save preview received W1's duplicate-draft answer");
+        assert.deepEqual(duplicate.answer.rejected, {});
+      }
+      assert.deepEqual(result.absolute, [], "PIXD-109: TRUE marker agrees with real W1, with the Save outcome retained");
+    });
 
 /** @param {any} t */
 async function intRealClient(t) {
@@ -14954,8 +14970,8 @@ test(`gate PIXD-104: real ${failed ? "failed" : "successful"} Save keeps a seen 
 
 test("gate PIXD-104: real Save observer rejects the false-refusal mutant", async (t) => {
   const mutant = await r5Module("components/settings-form.js", [[
-    'if (answer.body?.applied !== false || Object.keys(answer.body?.rejected ?? {}).length > 0)',
-    'if (true)',
+    'of.book.previewResult(new Map([[key, draft]]), Boolean(previewing));',
+    'of.book.previewResult(new Map([[key, draft]]), false);',
   ]]);
   await assert.rejects(intDuplicateAfterSave(t, false, mutant), /PIXD-104: marker agrees with W1/);
 });
