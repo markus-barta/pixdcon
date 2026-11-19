@@ -3828,7 +3828,7 @@ async function r4Run(t, kind, change, end, mode, modules, last = false) {
   // Fault injection remains disabled unless r7Coverage selects an outcome.
   const measuredModules = await r8MeasurementModules();
   modules = { ...measuredModules, ...modules };
-  if (R3_REAL_SAVE_STORIES[kind.name]?.includes(change))
+  if (R3_REAL_SAVE_STORIES[kind.name]?.includes(change) && (change !== null || mode === "source" || r7Coverage))
     return r3RealSaveRun(t, kind, change, end, mode, modules);
   for (const key of [...r4State().ops.keys()]) r4SetOp(key, null);
   fakeDocument.activeElement = null;
@@ -14848,7 +14848,9 @@ for (const name of ["settings save", "settings reset save", "settings save rejec
   for (const end of R4_ENDS)
     test(`PIXD-109: real ${name} × no change × ${end}`, async (t) => {
       t.mock.timers.enable({ apis: ["setTimeout"] });
-      const result = await r4Run(t, r4KindOf(name), null, end, "case");
+      // Call the ordinary real-server checks directly: the fake reconnect
+      // matrix must retain a reference from the same backend as its case.
+      const result = await r3RealSaveRun(t, r4KindOf(name), null, end, "case", await r8MeasurementModules());
       const save = result.calls?.find((call) => call.method === "PUT" && /\/settings\/[^/]+$/.test(call.path));
       assert.ok(save, "PIXD-109: the UI sent Save to real W1/W4");
       assert.equal(save.serverStatus, name === "settings save rejected" ? 400 : 200);
