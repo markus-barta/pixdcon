@@ -4,7 +4,7 @@
  * Approved mockups: pixd-device-{default,previewing,json-error,empty,error}.
  *
  * Heading band: title "Settings · <scene>", one description line, and a fixed
- * 340 px block with the slots [Clear N overlays] [Revert] [Save] and a
+ * 384 px block with the slots [Clear N overlays] [Revert] [Save] and a
  * two-line status. Empty slots keep their width, so Save never moves.
  * Rows from the schema in v1's group order: label with range, control by
  * type, and a marker: default · saved (+ "Reset to default") · violet "from
@@ -877,9 +877,10 @@ export function createSettingsForm(host, options) {
         : context.mqttConnected === false
           ? "Clearing an overlay needs MQTT"
           : `Clears the MQTT overlay values of ${sceneLabel} on this device`;
+      const clearLabel = `Clear ${overlays} ${overlays === 1 ? "overlay" : "overlays"}`;
       setHtml(
         clearSlot,
-        `<button class="btn" type="button" data-act="clear"${disabled || busy ? " disabled" : ""} title="${esc(reason)}">${busy === "clear" ? `${icon("spinner")}Clearing…` : `${icon("x")}Clear ${overlays} ${overlays === 1 ? "overlay" : "overlays"}`}</button>`,
+        `<button class="btn" type="button" data-act="clear" data-idle-label="${esc(clearLabel)}"${disabled || busy ? " disabled" : ""} title="${esc(reason)}">${busy === "clear" ? icon("spinner") : icon("x")}<span>${busy === "clear" ? "Clearing…" : esc(clearLabel)}</span></button>`,
       );
     } else setHtml(clearSlot, "");
     if ((edits.size > 0 || changes > 0 || serverPreview > 0 || busy === "revert") && phase === "ready")

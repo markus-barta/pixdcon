@@ -14851,16 +14851,30 @@ for (const name of ["settings save", "settings reset save", "settings save rejec
       // Call the ordinary real-server checks directly: the fake reconnect
       // matrix must retain a reference from the same backend as its case.
       const result = await r3RealSaveRun(t, r4KindOf(name), null, end, "case", await r8MeasurementModules());
-      const save = result.calls?.find((call) => call.method === "PUT" && /\/settings\/[^/]+$/.test(call.path));
+      const save = result.calls?.find((/** @type {any} */ call) => call.method === "PUT" && /\/settings\/[^/]+$/.test(call.path));
       assert.ok(save, "PIXD-109: the UI sent Save to real W1/W4");
       assert.equal(save.serverStatus, name === "settings save rejected" ? 400 : 200);
       if (end !== "success" || name === "settings save rejected") {
-        const duplicate = result.calls?.findLast((call) => call.method === "PUT" && call.path === `${save.path}/preview` && call.body.draft === save.body.draft && call.status === 200 && call.answer?.applied === false);
+        const duplicate = result.calls?.findLast((/** @type {any} */ call) => call.method === "PUT" && call.path === `${save.path}/preview` && call.body.draft === save.body.draft && call.status === 200 && call.answer?.applied === false);
         assert.ok(duplicate, "PIXD-109: post-Save preview received W1's duplicate-draft answer");
         assert.deepEqual(duplicate.answer.rejected, {});
       }
       assert.deepEqual(result.absolute, [], "PIXD-109: TRUE marker agrees with real W1, with the Save outcome retained");
     });
+
+test("PIXD-109: settings action widths reserve busy labels in CSS", () => {
+  const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
+  for (const [action, width] of [["save", 104], ["revert", 116], ["clear", 148]]) {
+    const rule = css.match(new RegExp(`\\.set-acts \\[data-act="${action}"\\]\\s*\\{([^}]+)\\}`))?.[1] ?? "";
+    assert.match(rule, new RegExp(`min-width:\\s*${width}px`), `PIXD-109: ${action} reserves its longest label and icon`);
+    assert.doesNotMatch(rule, /\.busy|:disabled/, "PIXD-109: reservation applies in every state");
+  }
+});
+
+test("PIXD-109: pending settings status avoids a last-word widow in CSS", () => {
+  const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
+  assert.match(css.match(/\.set-status\s*\{([^}]+)\}/)?.[1] ?? "", /text-wrap:\s*pretty/, "PIXD-109: preserve the status text and improve its wrapping");
+});
 
 /** @param {any} t */
 async function intRealClient(t) {

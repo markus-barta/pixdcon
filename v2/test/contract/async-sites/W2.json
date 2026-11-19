@@ -89,7 +89,7 @@
       "test": "test/contract/client.test.js: r3 sweep (Overlays, rule 5):"
     },
     {
-      "site": "web/js/components/settings-form.js:1005",
+      "site": "web/js/components/settings-form.js:1006",
       "id": "listener:host.addEventListener(\"input\")#1",
       "input": "a setting value typed",
       "metadata": "a command of the user (a click, a key, a form); every edit takes the next number of the page's draft counter (view/drafts.js), its identity",
@@ -98,7 +98,7 @@
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:1006",
+      "site": "web/js/components/settings-form.js:1007",
       "id": "listener:host.addEventListener(\"change\")#1",
       "input": "a checkbox, choice or colour changed",
       "metadata": "a command of the user (a click, a key, a form); every edit takes the next number of the page's draft counter",
@@ -107,7 +107,7 @@
       "was": "components/settings-form.createSettingsForm"
     },
     {
-      "site": "web/js/components/settings-form.js:1007",
+      "site": "web/js/components/settings-form.js:1008",
       "id": "listener:host.addEventListener(\"click\")#1",
       "input": "Save, Revert, Clear N overlays, Reset to default, Retry",
       "metadata": "a command of the user (a click, a key, a form)",
