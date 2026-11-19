@@ -1936,7 +1936,7 @@ test("r3 gate Q5 (time bound): an end that gets no answer fails after 15 s with 
     const next = previewOf(calls)[1];
     assert.ok(next, "after the time bound the waiting preview leaves");
     assert.deepEqual(next.body.values, { n: 6 });
-    assert.match(titleLine(root).textContent, /Not confirmed: pixdcon did not answer within 15 s\./);
+    assert.match(titleLine(root).textContent, /^Settings preview of Clock not confirmed: pixdcon did not answer within 15 s\./);
     assert.ok(titleLine(root).querySelector('[data-act="end-retry"]'), "with Retry");
     next.answer(200, { state: sceneSettings("d1", "clock", { epoch, rev: 4, effective: { n: 6 }, preview: { session: "s1", draft: next.body.draft } }), rejected: {}, applied: true }, `${epoch}-14`);
     await settle();
@@ -2072,7 +2072,7 @@ test("r3 sweep (Overlays, rule 5): opened again while Clear runs, the row shows 
     click(clear());
     await settle();
     assert.equal(calls.filter((c) => c.method === "DELETE" && c.url.includes("/api/v2/overlays/")).length, 1);
-    assert.doesNotMatch(root.querySelector(".ov-body").textContent, /Not cleared|Not confirmed|Nicht bestätigt/);
+    assert.doesNotMatch(root.querySelector(".ov-body").textContent, /Not cleared|[Nn]ot confirmed|[Nn]icht bestätigt/);
     assert.match(clear().textContent, /Clearing…/);
   } finally {
     overlaysPage.unmount();
@@ -2795,10 +2795,10 @@ function r4Focus(root) {
  * @param {any} root
  */
 function r4PreviewFeedback(root) {
-  // End failures own a Retry control; preview timeouts share the localized
-  // unconfirmed wording but still belong to the submitted draft.
+  // End failures own a Retry control; a preview timeout names its subject
+  // in both the title and Display line and belongs to the submitted draft.
   const line = root.querySelector(".dev-head .sub");
-  const title = r4Text(line).includes("Settings not previewed:") || R4_TIMEOUT_TEXT.test(r4Text(line)) && R4_TIMEOUT_TEXT.test(r4Text(root.querySelector(".why .v-disp"))) && !line.querySelector('[data-act="end-retry"]');
+  const title = r4Text(line).includes("Settings not previewed:") || R4_PREVIEW_TIMEOUT_TEXT.test(r4Text(line)) && R4_PREVIEW_TIMEOUT_TEXT.test(r4Text(root.querySelector(".why .v-disp"))) && !line.querySelector('[data-act="end-retry"]');
   const marker = root.querySelectorAll(".set-body .mk").some((/** @type {any} */ mk) => /^not previewed/.test(r4Text(mk)));
   return `title ${title ? "says it" : "-"} · marker ${marker ? "says it" : "-"}`;
 }
@@ -2848,7 +2848,9 @@ const r4Refusal = (root, key) => String(root.querySelector(`.set-body [data-row=
  * @param {string} said
  */
 const r4MarkerDeps = (said) => (/^not previewed, not saved/.test(said) ? R4_REJECTION : /^not previewed/.test(said) ? R4_FEEDBACK : R4_BOOKKEEPING);
-const R4_TIMEOUT_TEXT = /^(?:Not confirmed: pixdcon did not answer within \d+ s\.|Nicht bestätigt: pixdcon hat innerhalb von \d+ s nicht geantwortet\.)/;
+const R4_TIMEOUT_TEXT = /^(?:Save|Revert|Clear|Preview|Settings preview) (?:not confirmed: pixdcon did not answer within \d+ s\.|nicht bestätigt: pixdcon hat innerhalb von \d+ s nicht geantwortet\.)/;
+const R4_PREVIEW_TIMEOUT_TEXT = /^Settings preview not confirmed: pixdcon did not answer within \d+ s\./;
+const R4_END_TIMEOUT_TEXT = /^Settings preview of Clock not confirmed: pixdcon did not answer within \d+ s\./;
 /**
  * What the settings status line depends on, by what it says: an outcome of
  * the action slot (Save, Revert, Clear) depends on the slot identities, and
@@ -6399,7 +6401,7 @@ async function r6Overlays(module, overlap, end, t = /** @type {any} */ (null), i
       assert.equal(calls.filter((/** @type {any} */ c) => c.method === "DELETE").length, 2, "different overlay ids admit independent Clears");
     } else r4Live(world, "overlays", records.slice(1));
     await settle();
-    if (isolated && !overlap) assert.doesNotMatch(r4Text(row("o2")), /Not cleared|Not confirmed|Nicht bestätigt|Clearing/, "o2 owns neither o1's pending state nor its failure before the old end");
+    if (isolated && !overlap) assert.doesNotMatch(r4Text(row("o2")), /Not cleared|[Nn]ot confirmed|[Nn]icht bestätigt|Clearing/, "o2 owns neither o1's pending state nor its failure before the old end");
     const measured = r8RecordStory(audit, beforeIdentity, r8Frame(audit), `${overlap ? "overlap" : "replacement"}/${end}/${isolated ? "equal-kind" : "different-kind"}`);
     const piece = R4_PAGES.overlays.pieces(root).find(([name]) => name === "row o2 Clear and outcome");
     assert.ok(piece, "the equal-id comparison reads its declared row piece");
@@ -6413,9 +6415,9 @@ async function r6Overlays(module, overlap, end, t = /** @type {any} */ (null), i
       assert.match(r4Text(row("o2")), /Clearing/, "o2 keeps its own pending operation");
       pending(calls, "DELETE", "/overlays/o2").ok();
       await settle();
-      assert.doesNotMatch(r4Text(row("o2")), /Not cleared|Not confirmed|Nicht bestätigt/);
-      if (end !== "success") assert.match(r4Text(row("o1").querySelector(".act .act-why")), end === "timeout" ? R4_TIMEOUT_TEXT : /^Not cleared/, "o1 owns its failure");
-    } else assert.doesNotMatch(r4Text(row("o2")), /Not cleared|Not confirmed|Nicht bestätigt|Clearing/, "o2 owns neither o1's pending state nor its failure");
+      assert.doesNotMatch(r4Text(row("o2")), /Not cleared|[Nn]ot confirmed|[Nn]icht bestätigt/);
+      if (end !== "success") assert.match(r4Text(row("o1").querySelector(".act .act-why")), end === "timeout" ? /^Clear not confirmed: pixdcon did not answer within \d+ s\./ : /^Not cleared/, "o1 owns its failure");
+    } else assert.doesNotMatch(r4Text(row("o2")), /Not cleared|[Nn]ot confirmed|[Nn]icht bestätigt|Clearing/, "o2 owns neither o1's pending state nor its failure");
     assert.equal(r4Text(row("o3")), third, "every unaffected row is observed too");
   } finally {
     module.page.unmount();
@@ -7121,7 +7123,7 @@ test("r4 harness self-test: a preview failure written to the scene the form show
     for (const piece of [
       /after the end, device: preview feedback \[opening, epoch, life, scene, draft, schema\]: "title says it · marker says it" — the story without the old operation reads "title - · marker -"/,
       /after the end, device: row marker of n \[opening, epoch, life, scene, draft, schema\]: "not previewed" — the story without the old operation reads "previewing"/,
-      /device: settings status line .*: "(?:Not previewed|Not confirmed|Nicht bestätigt): .*the old operation's end changed it/,
+      /device: settings status line .*: "(?:Not previewed|Preview not confirmed): .*the old operation's end changed it/,
     ])
       assert.ok(differences.some((d) => piece.test(d)), `× ${end}: the harness reports ${piece}:\n${differences.join("\n")}`);
     // The real form passes: Clock's failure stays with Clock's scope.
@@ -13238,7 +13240,7 @@ async function r5B3EndScene(t, name, end, device) {
     const title = got.points[1].get("device: title status line")?.value ?? "";
     if (end === "success") assert.doesNotMatch(title, /not ended/, "D1: successful End clears its title failure");
     else {
-      assert.match(title, end === "timeout" ? R4_TIMEOUT_TEXT : /Settings preview of Clock not ended/, "D1: old-scene failure remains in the title after switching");
+      assert.match(title, end === "timeout" ? R4_END_TIMEOUT_TEXT : /Settings preview of Clock not ended/, "D1: old-scene failure remains in the title after switching");
       assert.match(title, /Retry/, "D1: old-scene Retry remains visible after switching");
       assert.doesNotMatch(title, /Retrying/, "D1: completed failed End leaves an enabled Retry");
       assert.match(title, end === "500" ? /500/ : /15 s/, "D1: title says the actual failure");
@@ -13399,7 +13401,7 @@ test("r4 harness self-test: B3 original page-local must-fail control: r5a A", as
     for (const piece of [
       /after the end, device: preview feedback \[opening, epoch, life, scene, draft, schema\]: "title says it · marker says it" — the story without the old operation reads "title - · marker -"/,
       /after the end, device: row marker of n \[opening, epoch, life, scene, draft, schema\]: "not previewed" — the story without the old operation reads "previewing"/,
-      /device: settings status line .*: "(?:Not previewed|Not confirmed|Nicht bestätigt): .*the old operation's end changed it/,
+      /device: settings status line .*: "(?:Not previewed|Preview not confirmed): .*the old operation's end changed it/,
     ])
       assert.ok(differences.some((d) => piece.test(d)), `× ${end}: the harness reports ${piece}:\n${differences.join("\n")}`);
     // The real form passes: Clock's failure stays with Clock's scope.
@@ -13502,7 +13504,7 @@ async function r5B3RetryAfterSwitch(t, end, change) {
         assert.equal(settings.epoch, r4State().epoch, "D1: title Retry remains epoch fenced");
         assert.equal(settings.incarnation, r4State().devices.get(settings.device)?.incarnation, "D1: title Retry remains life fenced");
       }
-      assert.doesNotMatch(r4Text(titleLine(ctx.root)), /Clock not ended|Not confirmed|Nicht bestätigt/, "D1: old life Retry cannot report in the new life");
+      assert.doesNotMatch(r4Text(titleLine(ctx.root)), /Clock not ended|[Nn]ot confirmed|[Nn]icht bestätigt/, "D1: old life Retry cannot report in the new life");
     } else {
       assert.equal(r4State().settings.get("d1/third"), fresh, "D1: title Retry leaves the new scene store entry untouched");
       assert.deepEqual(controls(), before, "D1: title Retry leaves all new-scene controls untouched");
@@ -13511,7 +13513,7 @@ async function r5B3RetryAfterSwitch(t, end, change) {
         assert.doesNotMatch(r4Text(titleLine(ctx.root)), /not ended/, "D1: successful title Retry clears failure");
       } else {
         assert.equal(r4State().settings.get("d1/clock"), old, "D1: failed title Retry changes no SettingsState");
-        assert.match(r4Text(titleLine(ctx.root)), end === "timeout" ? R4_TIMEOUT_TEXT : /Clock not ended/, "D1: failed title Retry stays visible");
+        assert.match(r4Text(titleLine(ctx.root)), end === "timeout" ? R4_END_TIMEOUT_TEXT : /Clock not ended/, "D1: failed title Retry stays visible");
         assert.ok(titleLine(ctx.root).querySelector('[data-act="end-retry"]'), "D1: failed title Retry can be retried again");
       }
     }
@@ -13718,9 +13720,9 @@ async function r5B3UnparsedFeedback(t, variant, end, device) {
     await settle();
     if (variant === "failure lost") {
       assert.match(marker(), /^not previewed/, "B3 r3: the failed valid edit must say not previewed");
-      assert.match(status(), end === "500" ? /Not previewed:.*500/ : /^(?:Not confirmed:.*within 15 s|Nicht bestätigt:.*15 s)/, "B3 r3: the held preview's failure must be visible despite the invalid keystroke");
+      assert.match(status(), end === "500" ? /Not previewed:.*500/ : /^Preview not confirmed:.*within 15 s/, "B3 r3: the held preview's failure must be visible despite the invalid keystroke");
     } else {
-      assert.doesNotMatch(status(), /Not previewed:|Not confirmed:|Nicht bestätigt:/, "B3 r3: the successful preview must clear the stale failure despite the invalid keystroke");
+      assert.doesNotMatch(status(), /Not previewed:|[Nn]ot confirmed:|[Nn]icht bestätigt:/, "B3 r3: the successful preview must clear the stale failure despite the invalid keystroke");
       assert.match(marker(), /^previewing/, "B3 r3: the successfully previewed valid edit is said");
       assert.equal(r4State().settings.get("d1/clock").values.n.effective, 3);
     }
@@ -13788,7 +13790,7 @@ async function r5B3RetiredPreview(t, variant, end, device) {
       r4Pending(ctx, "DELETE", "/settings/clock/preview").ok();
       await settle();
     }
-    assert.doesNotMatch(status(), /Not previewed:|Not confirmed:|Nicht bestätigt:/, "B3 r4: retired preview failure must leave the status");
+    assert.doesNotMatch(status(), /Not previewed:|[Nn]ot confirmed:|[Nn]icht bestätigt:/, "B3 r4: retired preview failure must leave the status");
     assert.doesNotMatch(r4Text(titleLine(ctx.root)), /not previewed|Preview failed|could not preview|Not confirmed|Nicht bestätigt/i, "B3 r4: retired preview failure must leave the device title");
     assert.match(status(), /M is not valid/, "B3 r4: the remaining invalid edit explains the status");
     assert.match(r4Text(ctx.root.querySelector('[data-row="n"] .mk')), variant === "V3" ? /^saved/ : /^default/, "B3 r4: n is saved or reverted, never an unsaved failed preview");
@@ -14005,7 +14007,7 @@ async function r5B4K1(t, module, overlap, end) {
     const control = button("m");
     assert.ok(control, "B4 K1: m is present");
     assert.equal(control.disabled, false, "B4 K1: n cannot disable m");
-    assert.doesNotMatch(r4Text(control.closest(".ot-row")), /Clearing|Not cleared|Not confirmed|Nicht bestätigt/, "B4 K1: m never reports n's pending state or failure");
+    assert.doesNotMatch(r4Text(control.closest(".ot-row")), /Clearing|Not cleared|[Nn]ot confirmed|[Nn]icht bestätigt/, "B4 K1: m never reports n's pending state or failure");
   };
   try {
     r4Click(button("n"));
@@ -14026,7 +14028,7 @@ async function r5B4K1(t, module, overlap, end) {
     await settle();
     untouched();
     assert.equal(calls.filter((/** @type {any} */ call) => call.method === "DELETE").length, 1, "B4 K1: m's Clear was never started");
-    if (overlap && end !== "success") assert.match(r4Text(button("n").closest(".ot-row").querySelector(".act .act-why")), end === "timeout" ? R4_TIMEOUT_TEXT : /^Not cleared/, "B4 K1: n retains its own failure");
+    if (overlap && end !== "success") assert.match(r4Text(button("n").closest(".ot-row").querySelector(".act .act-why")), end === "timeout" ? /^Clear not confirmed: pixdcon did not answer within \d+ s\./ : /^Not cleared/, "B4 K1: n retains its own failure");
   } finally {
     module.page.unmount(); root.remove(); await r4AnswerAll({ calls });
   }
@@ -14370,7 +14372,7 @@ async function r5B4SaveMemberReturn(t, end, module) {
     else { old.abandon(); t.mock.timers.tick(15_000); }
     await settle();
     assert.equal(form.hasEdits(), true, "B4 Save membership return: the old outcome acknowledges none of the retained edits");
-    assert.doesNotMatch(r4Text(root.querySelector(".set-status")), /Not saved|Not confirmed|Nicht bestätigt|Saved to config/, "B4 Save membership return: no old-member failure or success returns");
+    assert.doesNotMatch(r4Text(root.querySelector(".set-status")), /Not saved|[Nn]ot confirmed|[Nn]icht bestätigt|Saved to config/, "B4 Save membership return: no old-member failure or success returns");
     assert.equal(saveButton(root).disabled, false, "B4 Save membership return: the returned member can Save again");
     const before = calls.length;
     r4Click(saveButton(root));
@@ -14428,7 +14430,7 @@ async function r5B4ConfigMemberReturn(t, name, end, module) {
     await settle();
     assert.ok(control(), "B4 Config membership return: the old success cannot close its revised-membership editor");
     assert.equal(control().disabled, false, "B4 Config membership return: the action stays free after the old end");
-    assert.doesNotMatch(r4Text(root.querySelector(".ct-body")), /Not saved|Not added|Not confirmed|Nicht bestätigt/, "B4 Config membership return: no failure from the old member returns");
+    assert.doesNotMatch(r4Text(root.querySelector(".ct-body")), /Not saved|Not added|[Nn]ot confirmed|[Nn]icht bestätigt/, "B4 Config membership return: no failure from the old member returns");
     if (name === "config patch") assert.equal(root.querySelector('.ct-edit [name="displayName"]').value, "Kitchen", "B4 Config membership return: the row's edit survives");
     const before = calls.length;
     await kind.begin?.(ctx);
@@ -14786,7 +14788,7 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
     const pendingEdits = Object.keys(survival.pending).length + survival.resets.length;
     if (saveButton(ctx.root).disabled !== (!pendingEdits || Boolean(errors))) absolute.push("edits the next Save sends: its availability disagrees with the retained edits and real field verdicts");
     const status = statusText(ctx.root);
-    if (held && mode !== "early" && end === "timeout" && !R4_TIMEOUT_TEXT.test(status)) absolute.push(`the timed-out Save lost its unconfirmed feedback: ${status}`);
+    if (held && mode !== "early" && end === "timeout" && !/^Save not confirmed: pixdcon did not answer within \d+ s\./.test(status)) absolute.push(`the timed-out Save lost its unconfirmed feedback: ${status}`);
     if (held && mode !== "early" && end === "500" && !/^Not saved:.*500/.test(status)) absolute.push(`the failed Save lost its 500 feedback: ${status}`);
     const current = r4State().settings.get(`d1/${scene}`);
     const serverPreview = Object.values(current?.values ?? {}).some((/** @type {any} */ layer) => Object.hasOwn(layer, "preview"));
@@ -15101,6 +15103,113 @@ test(`gate r3 A6: real Restore ${fail ? "failure preserves the choice and button
   } else assert.doesNotMatch(root.textContent, /Not restored/);
 });
 
+/** Withhold delivery only after real W1/W4 handled the UI's request.
+ * @param {(path: string, method: string) => boolean} matches
+ */
+function pixd105HoldBody(matches) {
+  const bridge = globalThis.fetch;
+  /** @type {Array<{path: string, status: number, release: () => void}>} */
+  const held = [];
+  globalThis.fetch = async (input, init) => {
+    const response = await bridge(input, init);
+    const path = String(input);
+    if (matches(path, init?.method ?? "GET")) {
+      const body = await response.text();
+      Object.defineProperty(response, "text", {value: () => new Promise((resolve) => {
+        held.push({path, status: response.status, release: () => resolve(body)});
+      })});
+    }
+    return response;
+  };
+  return {held, restore() { globalThis.fetch = bridge; for (const response of held) response.release(); }};
+}
+
+for (const action of ["save", "revert", "clear", "preview"])
+test(`PIXD-105: real ${action} timeout keeps its subject through api/store/ops and late delivery`, async (t) => r6Browser(async ({document}) => {
+  document.documentElement.setAttribute("lang", "en");
+  const ctx = await intRealForm(t);
+  const {root, calls, s, app} = ctx;
+  if (action === "clear") {
+    await intInject(ctx, app.topics.setting("ulanzi-t", "contract", "n"), "9");
+    applyDefaultAnswer(await request("GET", s, {resource:"settings:ulanzi-t/contract"}));
+    assert.equal(app.modules.settings.state("ulanzi-t", "contract").values.n.overlay, 9);
+  } else if (action !== "preview") {
+    typeInto(root.querySelector('[data-key="n"]'), "2");
+    await intWaitFor(() => calls.some((call) => call.path === `${s}/preview`));
+    await settle();
+  }
+  const path = action === "save" ? s : `${s}/${action === "clear" ? "overlays" : "preview"}`;
+  const method = action === "save" || action === "preview" ? "PUT" : "DELETE";
+  const transport = pixd105HoldBody((url, verb) => url.split("?")[0] === path && verb === method);
+  try {
+    t.mock.timers.enable({apis:["setTimeout"]});
+    if (action === "preview") typeInto(root.querySelector('[data-key="n"]'), "2");
+    else r4Click(root.querySelector(`[data-act="${action}"]`));
+    await intWaitFor(() => transport.held.length === 1);
+    assert.equal(transport.held[0].status, 200, "PIXD-105: real server accepted the action before its body was withheld");
+    const measured = () => app.modules.settings.state("ulanzi-t", "contract");
+    if (action === "save") assert.equal(measured().values.n.saved, 2);
+    if (action === "revert") assert.equal(measured().preview, null);
+    if (action === "clear") assert.equal(Object.hasOwn(measured().values.n, "overlay"), false);
+    if (action === "preview") assert.equal(measured().values.n.preview, 2);
+    t.mock.timers.tick(15000);
+    await settle();
+    const subject = action[0].toUpperCase() + action.slice(1);
+    const expected = `${subject} not confirmed: pixdcon did not answer within 15 s.`;
+    assert.equal(statusText(root), expected, "PIXD-105: timeout names the action without claiming it failed to apply");
+    if (action !== "preview") {
+      const slot = [...ctx.store.getState().ops.values()].find((slot) => slot.value === action);
+      assert.equal(slot?.failure, expected, "PIXD-105: the operation slot retains the action subject too");
+      assert.equal(slot?.busy, false);
+    }
+    transport.held[0].release();
+    await settle();
+    assert.equal(statusText(root), expected, "PIXD-105: a late real response cannot rewrite the timeout subject");
+  } finally { transport.restore(); t.mock.timers.reset(); }
+}));
+
+test("PIXD-105: real old-scene End and title Retry keep the preview subject after a scene switch", async (t) => r6Browser(async ({document}) => {
+  document.documentElement.setAttribute("lang", "en");
+  const ctx = await intRealClient(t);
+  setSession("pixd105-end");
+  applyDefaultAnswer(await request("PUT", `${ctx.d}/scene`, {resource:"device:ulanzi-t",body:{scene:"contract"}}));
+  const page = (await r5Module("pages/device.js")).page;
+  const root = pageRoot();
+  page.mount(root, {name:"ulanzi-t"});
+  let restoreTransport = () => {};
+  try {
+    await intWaitFor(() => root.querySelector('[data-key="n"]'));
+    typeInto(root.querySelector('[data-key="n"]'), "2");
+    await intWaitFor(() => ctx.calls.some((call) => call.path === `${ctx.s}/preview`));
+    await settle();
+    const transport = pixd105HoldBody((path, method) => path.split("?")[0] === `${ctx.s}/preview` && method === "DELETE");
+    restoreTransport = transport.restore;
+    t.mock.timers.enable({apis:["setTimeout"]});
+    r4Click(root.querySelector('[data-act="scene"][data-scene="clock"]'));
+    await intWaitFor(() => transport.held.length === 1 && ctx.store.getState().devices.get("ulanzi-t").desired.scene.scene === "clock");
+    const expected = "Settings preview of contract not confirmed: pixdcon did not answer within 15 s.";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      assert.equal(transport.held[attempt].status, 200);
+      assert.equal(ctx.app.modules.settings.state("ulanzi-t", "contract").preview, null, "PIXD-105: real End already applied");
+      t.mock.timers.tick(15000);
+      await settle();
+      const title = titleLine(root);
+      assert.equal(title.getAttribute("title"), expected, "PIXD-105: End/Retry title keeps the old scene subject");
+      assert.equal(r4Text(title.querySelector(".sub-text")), expected);
+      const retry = title.querySelector('[data-act="end-retry"]');
+      assert.equal(retry.dataset.scene, "contract");
+      assert.equal(retry.disabled, false);
+      transport.held[attempt].release();
+      await settle();
+      assert.equal(titleLine(root).getAttribute("title"), expected, "PIXD-105: late End body keeps the title subject");
+      if (attempt === 0) {
+        r4Click(retry);
+        await intWaitFor(() => transport.held.length === 2);
+      }
+    }
+  } finally { restoreTransport(); t.mock.timers.reset(); page.unmount(); root.remove(); }
+}));
+
 for (const lang of ["en", "de"])
 for (const control of ["mode", "brightness"])
 test(`gate r3 A7: real ${control} applies before withheld HTTP body; ${lang} timeout stays unconfirmed at 15 s`, async (t) => r6Browser(async ({ document }) => {
@@ -15155,7 +15264,7 @@ test(`gate r3 A7: real ${control} applies before withheld HTTP body; ${lang} tim
   }
 }));
 
-test("gate r3 A7: real refusals retain their action label; every timeout label normalizes in EN and DE", async (t) => r6Browser(async ({ document }) => {
+test("gate r3 A7: real refusals retain their action label; timeout subjects survive repeated formatting in EN and DE", async (t) => r6Browser(async ({ document }) => {
   const ctx = await intRealClient(t);
   const { failureMessage } = await import("../../web/js/format.js");
   let refusal;
@@ -15165,9 +15274,12 @@ test("gate r3 A7: real refusals retain their action label; every timeout label n
   for (const lang of ["en", "de"]) {
     document.documentElement.setAttribute("lang", lang);
     assert.match(failureMessage(refusal.message, "Not changed"), /^Not changed:/);
-    for (const label of ["Not changed", "Not switched", "Not saved", "Not restored", "Not copied", "Not cleared", "Not retried", "Not reverted", "Not reloaded", "Not previewed", "The log could not be loaded", "config.json could not be loaded"]) {
+    for (const [label, subject] of [["Not changed", ""], ["Not switched", "Switch"], ["Not saved", "Save"], ["Not restored", "Restore"], ["Not copied", "Copy"], ["Not cleared", "Clear"], ["Not retried", "Retry"], ["Not reverted", "Revert"], ["Not reloaded", "Reload"], ["Not previewed", "Preview"], ["Settings not previewed", "Settings preview"], ["Settings preview of Clock not ended", "Settings preview of Clock"], ["The log could not be loaded", "The log"], ["config.json could not be loaded", "config.json"]]) {
       const text = failureMessage(`${label}: pixdcon did not answer within 15 s.`, label);
-      assert.match(text, lang === "de" ? /^Nicht bestätigt:/ : /^Not confirmed:/);
+      const claim = lang === "de" ? subject ? "nicht bestätigt" : "Nicht bestätigt" : subject ? "not confirmed" : "Not confirmed";
+      const reason = lang === "de" ? "pixdcon hat innerhalb von 15 s nicht geantwortet." : "pixdcon did not answer within 15 s.";
+      assert.equal(text, `${subject ? `${subject} ` : ""}${claim}: ${reason}`);
+      assert.equal(failureMessage(text), text, "PIXD-105: formatting a stored failure again preserves its subject");
       assert.doesNotMatch(text, /Not changed|Nicht geändert/);
     }
   }
