@@ -6325,7 +6325,7 @@ const R3_REAL_SAVE_STORIES = {
 };
 // These fake-era pixel equalities are replaced only in the histories above:
 // real duplicate/atomic verdicts and retained server previews can differ
-// across commuted histories. r3RealSaveRun asserts each actual verdict,
+// across commuted histories. r3RealSaveRun checks W1's effective preview,
 // action outcome, button, edit identity and the next HTTP Save instead.
 const R3_REAL_SAVE_PIECES = ["preview feedback", "row marker of n", "row marker of m", "settings status line", "edits the next Save sends", "settings Save and Revert"];
 const R8_EQUAL_OVERLAY_RECORDS = ["o1", "o2", "o3"].map((id) => ({ ...record("same-topic", "setting", { device: "d1", scene: "clock", key: "n", value: 8 }), id }));
@@ -14788,22 +14788,29 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
     const status = statusText(ctx.root);
     if (held && mode !== "early" && end === "timeout" && !R4_TIMEOUT_TEXT.test(status)) absolute.push(`the timed-out Save lost its unconfirmed feedback: ${status}`);
     if (held && mode !== "early" && end === "500" && !/^Not saved:.*500/.test(status)) absolute.push(`the failed Save lost its 500 feedback: ${status}`);
-    const current = r4State().settings.get(`d1/${scene}`);
+    const current = stack.app.modules.settings.state("d1", scene);
     const serverPreview = Object.values(current?.values ?? {}).some((/** @type {any} */ layer) => Object.hasOwn(layer, "preview"));
     const revert = ctx.root.querySelector('.set-h [data-act="revert"]');
     if (Boolean(revert) !== Boolean(pendingEdits || serverPreview)) absolute.push("Revert availability disagrees with the real preview and retained edits");
-    // A repeated real preview of an already accepted draft returns false.
-    // Its explicit A3 verdict changes feedback pixels relative to a history
-    // with no Save. Judge those pixels against the actual response, while
-    // retaining the original field/edit-survival and next-Save comparisons.
+    // W1's applied:false with no rejections is a duplicate-draft no-op.
+    // Judge each retained edit against W1's actual layers, independently
+    // of that transport verdict and of the UI store's copy of the state.
     for (const [key, edit] of ctx.edits) {
       const saved = ctx.calls.some((/** @type {any} */ call) => call.path === path && call.method === "PUT" && call.status === 200 && call.submitted.get(key) === edit);
       if (saved) continue;
       const preview = ctx.calls.findLast((/** @type {any} */ call) => call.path === `${path}/preview` && call.submitted.get(key) === edit && call.delivered);
       if (!preview) continue;
-      const notApplied = preview.status !== 200 || preview.answer?.applied === false || preview.answer?.rejected?.[key];
+      const layer = current.values[key];
+      const previewing = layer && Object.hasOwn(layer, "preview") && JSON.stringify(layer.effective) === JSON.stringify(preview.body.values[key]);
       const marker = r4Marker(ctx.root, key);
-      if (!(notApplied ? /^not previewed/ : /^previewing/).test(marker)) absolute.push(`real preview verdict for ${key}: applied=${preview.answer?.applied}, row marker "${marker}" disagrees with its own response`);
+      if (!(previewing ? /^previewing/ : /^not previewed/).test(marker)) absolute.push(`real W1 state for ${key}: ${JSON.stringify(layer)}, row marker "${marker}" disagrees with the effective preview`);
+    }
+    if (end === "success" && !errors) {
+      const count = Math.max(pendingEdits, Object.values(current.values).filter((layer) => Object.hasOwn(layer, "preview")).length);
+      const expected = held && pendingEdits === 0 ? "Saved to config.json" : count
+        ? `Previewing ${count} ${count === 1 ? "change" : "changes"} · not saved; leaving this page reverts them`
+        : "No unsaved changes";
+      if (status !== expected) absolute.push(`successful Save status: expected "${expected}" from real W1 state and retained edits, got "${status}"`);
     }
     absolute.push(...definition, ...survival.found);
     let nextSave = null;
@@ -14879,6 +14886,77 @@ async function intRealForm(t, module) {
   await intWaitFor(() => root.querySelector('[data-key="n"]'));
   return { ...ctx, root, form };
 }
+
+/** A real Save response is held while the form remains editable.
+ * @param {any} t @param {boolean} failed @param {any} [module]
+ */
+async function intDuplicateAfterSave(t, failed, module) {
+  const ctx = await intRealForm(t, module);
+  const { root, calls, s, app } = ctx;
+  const previews = () => calls.filter((call) => call.path === `${s}/preview`);
+  typeInto(field(root, "n"), "2");
+  await intWaitFor(() => previews().length === 1);
+  await settle();
+  const fetchBeforeHold = globalThis.fetch;
+  /** @type {(() => void)|undefined} */ let release;
+  let saveStatus;
+  globalThis.fetch = async (input, init) => {
+    const response = await fetchBeforeHold(input, init);
+    if (String(input) !== s || init?.method !== "PUT") return response;
+    saveStatus = response.status;
+    await new Promise((resolve) => { release = () => resolve(undefined); });
+    return response;
+  };
+  try {
+    if (failed) {
+      const { writeFile } = await import("node:fs/promises");
+      const { resolve } = await import("node:path");
+      await writeFile(resolve(ctx.dataDir, "config.json"), "{invalid");
+    }
+    click(saveButton(root));
+    await intWaitFor(() => release !== undefined, "PIXD-104: real Save response is held");
+    assert.equal(saveStatus, failed ? 409 : 200, "PIXD-104: actual W1/W4 Save outcome");
+    const key = failed ? "n" : "m";
+    if (!failed) {
+      typeInto(field(root, key), "3");
+      await intWaitFor(() => previews().length === 2);
+      await settle();
+    }
+    const before = previews().at(-1);
+    assert.ok(before);
+    release?.();
+    await intWaitFor(() => previews().length === (failed ? 2 : 3));
+    await settle();
+    const duplicate = previews().at(-1);
+    assert.ok(duplicate);
+    assert.equal(duplicate.body.draft, before.body.draft, "PIXD-104: post-Save preview reuses the seen draft");
+    assert.equal(duplicate.answer.applied, false);
+    assert.deepEqual(duplicate.answer.rejected, {});
+    const layer = app.modules.settings.state("ulanzi-t", "contract").values[key];
+    assert.equal(layer.source, "preview");
+    assert.equal(layer.effective, failed ? 2 : 3);
+    assert.match(root.querySelector(`[data-row="${key}"] .mk`).textContent, /^previewing/, "PIXD-104: marker agrees with W1's effective preview");
+    assert.equal(statusText(root), failed
+      ? "Not saved: Repair config.json before saving."
+      : "Previewing 2 changes · not saved; leaving this page reverts them", "PIXD-104: Save status agrees with W1 and the retained edit");
+  } finally {
+    release?.();
+    globalThis.fetch = fetchBeforeHold;
+  }
+}
+
+for (const failed of [false, true])
+test(`gate PIXD-104: real ${failed ? "failed" : "successful"} Save keeps a seen draft previewing`, async (t) => {
+  await intDuplicateAfterSave(t, failed);
+});
+
+test("gate PIXD-104: real Save observer rejects the false-refusal mutant", async (t) => {
+  const mutant = await r5Module("components/settings-form.js", [[
+    'if (answer.body?.applied !== false || Object.keys(answer.body?.rejected ?? {}).length > 0)',
+    'if (true)',
+  ]]);
+  await assert.rejects(intDuplicateAfterSave(t, false, mutant), /PIXD-104: marker agrees with W1/);
+});
 
 for (const key of ["__proto__", "n"])
 test(`gate r3 A2: own ${key} setting is previewed, submitted and saved by real W1/W4`, async (t) => {
