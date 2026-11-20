@@ -26,13 +26,12 @@
  * failure stays beside its control, which stays for a retry (B-175, C3):
  * "Not switched: …" in the select's line, "Not paused: …" under the mode
  * buttons, "Not changed: …" under the slider, "Not restored: …" before its
- * button. After a switch in the select, its line offers "Switched from X ·
- * Undo" for 15 s from the moment pixdcon made the switch (C1), bound to the
+ * button. After a switch in the select, its line says "Switched from X"
+ * for 15 s from the moment pixdcon made the switch (C1), bound to the
  * choice it made: pixdcon's stamp of it (`choice.chosenAt`) in the switch's
  * own answer. A newer choice from any page or tab, also of the same scene,
- * drops the offer. A click checks the 15 s again on the browser's clock,
- * then reads the device again and sends the switch back only while that
- * choice still stands; otherwise it sends nothing and the offer goes.
+ * ends it. The row offers no Undo until PIXD-118: without a precondition on
+ * the scene PUT, an Undo could overwrite a newer choice still on its way.
  *
  * Owner: UI worker.
  */
@@ -99,13 +98,13 @@ let sliding = new Map();
  * The last switch made in a row's select (C1): the operation that switched
  * (`token`), the scene it switched from and to, the choice pixdcon made
  * (`chosenAt`, its stamp in the switch's answer) and when the switch
- * succeeded (`at`, the browser's clock), both null while the switch runs;
- * `undo`: the operation of an Undo of it, 0 while there is none.
- * @typedef {{token: number, from: string, to: string, chosenAt: string|null, at: number|null, undo: number}} UndoRecord
+ * succeeded (`at`, the browser's clock), both null while the switch runs.
+ * Its line says "Switched from X"; PIXD-118 brings back its Undo.
+ * @typedef {{token: number, from: string, to: string, chosenAt: string|null, at: number|null}} UndoRecord
  */
 /** The switch each row remembers, by the scene slot of the device's life. @type {Map<string, UndoRecord>} */
 let undos = new Map();
-/** How long a row offers Undo after a switch succeeded (C1). */
+/** How long a row says "Switched from X" after a switch succeeded (C1). */
 const UNDO_MS = 15_000;
 
 /** Play, Pause, Stop: the value, the name and the tooltip of each button. */
@@ -198,7 +197,7 @@ function writeLine(line, cls, html, title = null) {
  * as your choice. A newer choice has a newer stamp, also when it is of the
  * same scene (another tab chose it again).
  *
- * @param {any} view DeviceView, as the page holds it or as pixdcon answered it
+ * @param {any} view DeviceView, as the page holds it
  * @param {UndoRecord} record
  * @returns {boolean}
  */
@@ -215,15 +214,15 @@ function sameChoice(view, record) {
 }
 
 /**
- * The last switch made in a row's select while it can still be undone
- * (C1): for 15 s from the moment it succeeded, and while the device's
- * choice is still the one it made (sameChoice). A newer state drops it, for
- * good: another choice from any page or tab, an overlay, a new life of the
- * device (another slot); so does a switch that ended without succeeding.
- * Called only while no operation of the scene slot runs.
+ * The last switch made in a row's select while its line says so (C1): for
+ * 15 s from the moment it succeeded, and while the device's choice is still
+ * the one it made (sameChoice). A newer state drops it, for good: another
+ * choice from any page or tab, an overlay, a new life of the device
+ * (another slot); so does a switch that ended without succeeding. Called
+ * only while no operation of the scene slot runs.
  *
  * @param {any} view
- * @param {number} now the clock the 15 s are read on: the page's (its last tick) to draw the offer, the browser's for a click
+ * @param {number} now the page's clock (its last tick), which the 15 s are read on
  * @returns {UndoRecord|null}
  */
 function undoRecord(view, now) {
@@ -236,22 +235,19 @@ function undoRecord(view, now) {
 }
 
 /**
- * The Undo a row offers: the switch it remembers, while that switch is the
- * scene slot's current operation and succeeded; or, with `retry`, an Undo
- * of it that failed, so Undo stays beside its failure (B-175).
+ * The scene a row switched from, while its line says "Switched from X"
+ * (C1): the switch it remembers, while that switch is the scene slot's
+ * current operation and succeeded.
  *
  * @param {import("../store.js").ClientState} state
  * @param {any} view
  * @param {import("../store.js").OpSlot} switching the scene slot
- * @returns {{from: string, name: string, retry: boolean}|null}
+ * @returns {string|null} the name of that scene
  */
-function undoOffer(state, view, switching) {
+function switchedFrom(state, view, switching) {
   const record = switching.busy ? null : undoRecord(view, state.now);
-  if (!record) return null;
-  const switched = !switching.failure && switching.token === record.token;
-  const retry = Boolean(switching.failure) && switching.token === record.undo;
-  if (!switched && !retry) return null;
-  return { from: record.from, name: sceneName(state, record.from, view.type), retry };
+  if (!record || switching.failure || switching.token !== record.token) return null;
+  return sceneName(state, record.from, view.type);
 }
 
 /**
@@ -364,8 +360,8 @@ function updateRow(row, view, state) {
 const failHtml = (text) => `<span class="fail">${icon("alert")}<span class="ell">${esc(text)}</span></span>`;
 
 /**
- * The line under the select: what runs, the Undo of the last switch, or
- * where the scene comes from, with its action (Undo, or "Back to <your
+ * The line under the select: what runs, the last switch ("Switched from
+ * X"), or where the scene comes from, with its action ("Back to <your
  * choice>" while an overlay replaced it). A failure follows the action that
  * stays for a retry (Tick, B4: "Not restored" after its button), in place of
  * the source, which the select above still shows.
@@ -379,7 +375,7 @@ const failHtml = (text) => `<span class="fail">${icon("alert")}<span class="ell"
 function sceneCell(row, view, state, switching, frozen) {
   const base = sceneLine(state, view);
   const restoring = op(deviceSlot("restore", view));
-  const offer = undoOffer(state, view, switching);
+  const from = switchedFrom(state, view, switching);
   /** @type {string|null} */
   let failure = null;
   if (switching.busy) {
@@ -389,8 +385,7 @@ function sceneCell(row, view, state, switching, frozen) {
   if (switching.failure) failure = failureMessage(switching.failure, "Not switched");
   else if (restoring.failure && !restoring.busy && base.restore) failure = failureMessage(restoring.failure, "Not restored");
   let action = "";
-  if (offer) action = `<button class="link" type="button" data-act="undo"${frozen ? " disabled" : ""}>${icon("undo")}Undo</button>`;
-  else if (base.restore) {
+  if (base.restore) {
     const busy = restoring.busy;
     // Both labels stand in the button, one of them unseen, so it keeps the
     // width of the wider one and nothing beside it moves (B-176).
@@ -403,9 +398,10 @@ function sceneCell(row, view, state, switching, frozen) {
     return;
   }
   const sep = `<span class="sep">·</span>`;
-  if (offer) {
-    const text = `Switched from ${offer.name}`;
-    writeLine(row.sceneLine, "", `${icon("check")}<span class="ell">${esc(text)}</span>${sep}${action}`, `${text}. Undo switches back.`);
+  if (from) {
+    // PIXD-118: its Undo comes back here once the scene PUT has a precondition.
+    const text = `Switched from ${from}`;
+    writeLine(row.sceneLine, "", `${icon("check")}<span class="ell">${esc(text)}</span>`, text);
     return;
   }
   const extra = base.extra
@@ -528,12 +524,12 @@ async function sendScene(name, key, scene) {
 const switchLabel = (state, view, scene) => `Switching to ${sceneName(state, scene, view.type)}…`;
 
 /**
- * A switch from the row's select succeeded: its Undo is offered from now
- * on, for 15 s of the browser's clock, bound to the choice pixdcon made,
- * by the stamp in the switch's own answer (C1). Only the record this
- * switch left in this opening of the page is armed. An answer without that
- * stamp, or of another scene, arms nothing: a newer choice could not be
- * told from it. The armed record replaces the pending one.
+ * A switch from the row's select succeeded: its line says "Switched from
+ * X" from now on, for 15 s of the browser's clock, bound to the choice
+ * pixdcon made, by the stamp in the switch's own answer (C1). Only the
+ * record this switch left in this opening of the page is armed. An answer
+ * without that stamp, or of another scene, arms nothing: a newer choice
+ * could not be told from it. The armed record replaces the pending one.
  *
  * @param {string} key the scene slot
  * @param {UndoRecord} record the pending record this switch left
@@ -550,8 +546,8 @@ function arm(key, record, answer) {
  * A scene was chosen in a row's select: a switch in the slot of the
  * device's life, shared with the Device page. While one runs, from either
  * page, a choice sends nothing and says nothing. The switch is remembered
- * for Undo (C1) unless it replaced an overlay, which Undo would make your
- * choice; its Undo is offered once it succeeded (arm).
+ * (C1) unless it replaced an overlay, which an Undo would make your choice
+ * (PIXD-118); its line says "Switched from X" once it succeeded (arm).
  *
  * @param {string} name
  * @param {string} scene "" for none
@@ -564,7 +560,7 @@ function chooseScene(name, scene) {
   const from = view.desired?.scene?.scene ?? "";
   const source = view.desired?.scene?.source;
   /** @type {UndoRecord} */
-  const record = { token: 0, from, to: scene, chosenAt: null, at: null, undo: 0 };
+  const record = { token: 0, from, to: scene, chosenAt: null, at: null };
   const started = start(key, () => sendScene(name, key, scene), {
     device: name,
     label: switchLabel(state, view, scene),
@@ -572,50 +568,12 @@ function chooseScene(name, scene) {
     done: (answer) => arm(key, record, answer),
   });
   if (started) {
-    // A new switch replaces the offer of the one before.
+    // A new switch replaces the line of the one before.
     if (from !== scene && source !== "overlay" && source !== "blob") {
       record.token = op(key).token;
       undos.set(key, record);
     } else undos.delete(key);
   }
-  render(getState());
-}
-
-/**
- * Undo: the scene the row switched from, through the same switch (C1).
- * The 15 s are checked again on the browser's clock, not the page's last
- * tick (a tab that slept past them sends nothing), and the page's own copy
- * of the device must still hold the choice the switch made. Then the
- * device is read again, as another tab or page may have chosen since the
- * page last heard: the switch back is sent only while that choice still
- * stands. Otherwise nothing is sent, and the offer goes. A failed Undo
- * keeps its button beside the failure, to try again; the button is there
- * only while the row offers it.
- *
- * @param {string} name
- */
-function undo(name) {
-  const state = getState();
-  const view = state.devices.get(name);
-  if (!view) return;
-  const key = deviceSlot("scene", view);
-  const record = op(key).busy ? null : undoRecord(view, Date.now());
-  if (!record) {
-    render(getState());
-    return;
-  }
-  const started = start(
-    key,
-    async (current) => {
-      const read = await request("GET", `/api/v2/devices/${encodeURIComponent(name)}`, { resource: `device:${name}`, key });
-      applyAnswer(read);
-      // Changed since the switch: in pixdcon's answer, or in a newer copy the page holds.
-      if (!current() || !sameChoice(read.body?.device ?? read.body, record) || !sameChoice(getState().devices.get(name), record)) return read;
-      return sendScene(name, key, record.from);
-    },
-    { device: name, label: switchLabel(state, view, record.from), value: record.from },
-  );
-  if (started) record.undo = op(key).token;
   render(getState());
 }
 
@@ -766,9 +724,6 @@ function onClick(event) {
   switch (button.dataset.act) {
     case "restore":
       restore(name);
-      break;
-    case "undo":
-      undo(name);
       break;
     case "mode":
       setMode(name, String(button.dataset.mode));
