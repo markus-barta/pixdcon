@@ -14823,7 +14823,7 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules, variant = {}) 
       const marker = r4Marker(ctx.root, key);
       if (!(previewing ? /^previewing/ : /^not previewed/).test(marker)) absolute.push(`real W1 state for ${key}: ${JSON.stringify(layer)} under the preview stamp ${JSON.stringify(stamp)}, first sent in draft ${first?.body.draft ?? "none"}: row marker "${marker}" disagrees with the held preview`);
     }
-    if (end === "success" && held?.status === 200 && !errors) {
+    if (end === "success" && (!held || held.status === 200) && !errors) {
       const count = Math.max(pendingEdits, Object.values(current.values).filter((layer) => Object.hasOwn(layer, "preview")).length);
       const expected = held && pendingEdits === 0 ? "Saved to config.json" : count
         ? `Previewing ${count} ${count === 1 ? "change" : "changes"} · not saved; leaving this page reverts them`
@@ -14929,6 +14929,22 @@ for (const story of PIXD111_NORMALIZED)
     const wrong = JSON.stringify({ marker: `not previewed · showing ${story.held}`, status: "Changes not previewed · not saved; pixdcon kept its previous settings" });
     await assert.rejects(pixd111Normalized(t, story, "success", { ...await r8MeasurementModules(), device }), (error) => error instanceof Error && error.message.includes("PIXD-111: TRUE marker and status") && error.message.endsWith(`got ${wrong}`));
   });
+
+// LOW-8: a real story without a Save (the r7 references) still has its
+// pending status checked against real W1; PIXD-109's guard skipped it.
+for (const name of ["settings save", "settings reset save"])
+  test(`PIXD-111: real ${name} story without a Save checks its pending status`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const result = await r3RealSaveRun(t, r4KindOf(name), null, "success", "without", await r8MeasurementModules());
+    assert.equal(result.status, "Previewing 1 change · not saved; leaving this page reverts them");
+    assert.deepEqual(result.absolute, [], "PIXD-111: status, marker and next Save agree with real W1 without a Save");
+  });
+test("PIXD-111 self-test: a wrong pending status in a real story without a Save is caught", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = await r4DeviceWithForm([["const n = Math.max(changes, serverPreview);", "const n = Math.max(changes, serverPreview) + 1;"]]);
+  const result = await r3RealSaveRun(t, r4KindOf("settings save"), null, "success", "without", { ...await r8MeasurementModules(), device });
+  assert.ok(result.absolute.some((found) => found.startsWith('successful Save status: expected "Previewing 1 change · not saved; leaving this page reverts them" from real W1 state and retained edits, got "Previewing 2 changes')), `LOW-8: caught: ${JSON.stringify(result.absolute)}`);
+});
 
 test("PIXD-109: settings action widths reserve busy labels in CSS", () => {
   const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
