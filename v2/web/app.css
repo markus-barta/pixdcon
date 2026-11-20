@@ -37,8 +37,6 @@ button,input,select,textarea{font:inherit;color:inherit}
 .top-in{max-width:1376px;margin:0 auto;padding:0 32px;height:52px;display:flex;align-items:center;gap:28px}
 .brand{display:flex;align-items:baseline;gap:10px;white-space:nowrap}
 .brand b{font-size:15px;font-weight:650;letter-spacing:-.01em}
-.ver{border:0;background:none;padding:0;color:var(--text-3);font:12px var(--mono);cursor:copy}
-.ver:hover{color:var(--text-2)}
 .nav{display:flex;gap:2px}
 .nav a{height:32px;display:inline-flex;align-items:center;gap:6px;padding:0 12px;border-radius:6px;color:var(--text-2);text-decoration:none;font-weight:500;white-space:nowrap}
 .nav a:hover{color:var(--text);background:var(--tint)}
@@ -135,10 +133,20 @@ input[type=range]:disabled{opacity:.5}
 @media (prefers-reduced-motion: reduce){.spin{animation:none}}
 
 @media (max-width:760px){
-  .top-in{padding:0 16px;gap:12px;overflow-x:auto}
-  .brand .ver{display:none}
+  /* The top bar on a phone (PIXD-114 A8): four equal tabs and the MQTT dot;
+     what the dot means stays readable to a screen reader and in its tooltip. */
+  .top-in{padding:0 16px;gap:8px}
+  .brand{display:none}
+  .nav{flex:1;gap:0;min-width:0}
+  .nav a{flex:1;justify-content:center;padding:0 6px;height:40px}
+  .conn{margin-left:4px;gap:6px}
+  #mqtt-text,.conn .restart-text{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+  .conn .restart{margin-right:4px}
   main{padding:16px}
   .btn,.ibtn,.seg,.select select,.input{min-height:44px}
+}
+@media (max-width:380px){
+  .nav a{padding:0 2px;gap:4px}
 }
 
 /* ---- Devices (pixd-devices-*) ---- */

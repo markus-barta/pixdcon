@@ -7800,7 +7800,7 @@ test("r4 harness: guard probe r6: format boundaries, scenes-answer envelope and 
   finally { overlays.page.unmount(); root.remove(); }
 }));
 
-test("r4 harness: guard probe r6: bootstrap API and network errors, top-bar version modes and canonical copy", async (t) => r6Browser(async ({ copies }) => {
+test("r4 harness: guard probe r6: bootstrap API and network errors, and a top bar without a build stamp (PIXD-114 B6)", async (t) => r6Browser(async ({ copies }) => {
   const global = /** @type {any} */ (globalThis);
   const document = /** @type {any} */ (fakeDocument);
   const saved = Object.getOwnPropertyDescriptor(document, "getElementById");
@@ -7809,8 +7809,10 @@ test("r4 harness: guard probe r6: bootstrap API and network errors, top-bar vers
     for (const kind of ["api", "network"])
       for (const display of ["pretty", "semver"]) {
         /** @type {Map<string, any>} */
-        const nodes = new Map(["app", "version", "overlay-count", "restart", "mqtt-dot", "mqtt-text"].map((id) => [id, makeElement("div")]));
-        document.getElementById = (/** @type {string} */ id) => nodes.get(id);
+        const nodes = new Map(["app", "overlay-count", "restart", "mqtt-dot", "mqtt-text"].map((id) => [id, makeElement("div")]));
+        /** @type {string[]} */
+        const asked = [];
+        document.getElementById = (/** @type {string} */ id) => { asked.push(id); return nodes.get(id); };
         const errors = /** @type {any[]} */ ([]);
         const paints = /** @type {Array<(state: any) => void>} */ ([]);
         const top = { overlayCount: 2, restart: { shown: true, title: "Own restart reason" }, mqtt: { dot: "bad", text: "Own MQTT status", cls: "bad" } };
@@ -7826,9 +7828,10 @@ test("r4 harness: guard probe r6: bootstrap API and network errors, top-bar vers
           "./session.js": stub('export const setSession=()=>{};'),
         });
         assert.deepEqual(errors.map((error) => error.message), [kind === "api" ? "Own API reason" : "No answer from pixdcon."]);
-        assert.equal(nodes.get("version").textContent, display === "pretty" ? "26·10·09 06:53" : "261009065314.0.0");
-        click(nodes.get("version")); assert.equal(copies.at(-1), "261009065314.0.0");
-        nodes.get("version").removeAttribute("data-canonical"); const count = copies.length; click(nodes.get("version")); assert.equal(copies.length, count);
+        // B6: the build stamp left the top bar, whatever the version display; Health shows the version, with Copy.
+        assert.equal(asked.includes("version"), false, "B6: the top bar writes no version");
+        assert.deepEqual(copies, [], "B6: nothing in the top bar copies a version");
+        assert.equal(nodes.get("mqtt-dot").title, "Own MQTT status", "A8: the dot alone says what it means");
         assert.equal(nodes.get("overlay-count").textContent, "2"); assert.equal(nodes.get("restart").hidden, false);
         assert.equal(nodes.get("overlay-count").hidden, false);
         assert.equal(nodes.get("restart").title, "Own restart reason");
@@ -9103,7 +9106,12 @@ test("r4 inventory: persistent UI state writers across imported helpers all decl
   // is previewed, submitted and saved by real W1/W4" (plus ordinary n).
   // Old: bd3d7684503107b8519edf9143cb4fcb5082035c9659e1c7d87b21f68252615d
   // The request's b07a38… was intermediate; 339b41c already extracts 31de6c….
-  assert.equal(digest, "31de6c11bf4e0b958bb1c6148d26fadd53835d5302c3f77db8c304c5c9b3716c", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+  // PIXD-114 P1 top bar: 404 -> 398 writers; extractor and owner tags
+  // unchanged. main.js: the build stamp's 7 versionButton writes are gone
+  // (B6); the MQTT dot's title is new (A8), synchronous in the top bar's
+  // store subscriber; the top-bar guard probe above reads it.
+  // Old: 31de6c11bf4e0b958bb1c6148d26fadd53835d5302c3f77db8c304c5c9b3716c
+  assert.equal(digest, "d7a05262a52e4d5c75d5fcaae783e64a096edcc6f4ece279fdb6d2ef5351aa8e", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
 });
 test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
   for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {

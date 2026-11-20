@@ -170,24 +170,15 @@
       "was": "live.connectLive"
     },
     {
-      "site": "web/js/main.js:63",
+      "site": "web/js/main.js:62",
       "id": "subscribe:subscribe#1",
-      "input": "the store's state, for the top bar (version, overlay count, MQTT state, Restart needed)",
+      "input": "the store's state, for the top bar (overlay count, MQTT state and its dot, Restart needed)",
       "metadata": "none: the store calls it after a change it applied",
       "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/main.js:91",
-      "id": "listener:versionButton.addEventListener(\"click\")#1",
-      "input": "a click on the version in the top bar",
-      "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "none",
-      "why": "it copies the canonical version to the clipboard; nothing arrives and nothing is applied",
-      "test": "test/contract/client.test.js: client store:"
-    },
-    {
-      "site": "web/js/main.js:117",
+      "site": "web/js/main.js:100",
       "id": "timer:setInterval#1",
       "input": "the 1 s clock of the page",
       "metadata": "none: a hint (rule 3.0)",
@@ -195,7 +186,7 @@
       "test": "test/contract/client.test.js: client timers:"
     },
     {
-      "site": "web/js/main.js:125",
+      "site": "web/js/main.js:108",
       "id": "subscribe:subscribe#2",
       "input": "the devices the store holds, to ask once per device life for its last frame",
       "metadata": "epoch, device name and incarnation",
@@ -203,7 +194,7 @@
       "test": "test/contract/client.test.js: client previews:"
     },
     {
-      "site": "web/js/main.js:157",
+      "site": "web/js/main.js:140",
       "id": "listener:window.addEventListener(\"pagehide\")#1",
       "input": "the page is left",
       "metadata": "the page's session id",
