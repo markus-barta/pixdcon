@@ -15957,6 +15957,10 @@ test("PIXD-114 B1: one status line per display: 'Online · frame 1 s ago', 'Stal
   assert.equal(line(shadow), "shadow Shadow · not driving the display");
   assert.equal(model.rowStatus(state, shadow).title, "Shadow · not driving the display · still driven by pixdcon v1");
   assert.equal(line(view("d1", { enabled: false })), "idle Off · disabled in config.json");
+  const held = view("d1", { enabled: false });
+  held.desired.held = true;
+  assert.equal(line(held), "idle On hold · address not confirmed by the broker");
+  assert.equal(model.rowStatus(state, held).title, "On hold · address not confirmed by the broker", "said once, also in the tooltip");
   assert.equal(line(view("d1", { health: "idle", scene: null })), "idle Idle · no scene");
   assert.equal(line(view("d1", { health: "starting" })), "idle Starting · waiting for the first frame");
   // The row renders it: the dot, the label in the body colour, the rest after it, and Recovery steps as a link.

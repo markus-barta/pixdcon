@@ -518,7 +518,7 @@ export function rowStatus(state, view) {
       line = { label: "Shadow", detail: "not driving the display", title: shadowReason(view) };
       break;
     case "held":
-      line = { label: "On hold", detail: "address not confirmed", title: meta };
+      line = { label: "On hold", detail: meta };
       break;
     case "off":
       line = { label: "Off", detail: meta };
