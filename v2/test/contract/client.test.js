@@ -14946,14 +14946,145 @@ test("PIXD-111 self-test: a wrong pending status in a real story without a Save 
   assert.ok(result.absolute.some((found) => found.startsWith('successful Save status: expected "Previewing 1 change · not saved; leaving this page reverts them" from real W1 state and retained edits, got "Previewing 2 changes')), `LOW-8: caught: ${JSON.stringify(result.absolute)}`);
 });
 
-test("PIXD-109: settings action widths reserve busy labels in CSS", () => {
-  const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
-  for (const [action, width] of [["save", 104], ["revert", 116], ["clear", 148]]) {
-    const rule = css.match(new RegExp(`\\.set-acts \\[data-act="${action}"\\]\\s*\\{([^}]+)\\}`))?.[1] ?? "";
-    assert.match(rule, new RegExp(`min-width:\\s*${width}px`), `PIXD-109: ${action} reserves its longest label and icon`);
-    assert.doesNotMatch(rule, /\.busy|:disabled/, "PIXD-109: reservation applies in every state");
+/**
+ * A style sheet's rules, nested blocks flattened, each with the at-rules
+ * around it (`.p-device { @media … { … } }`) and its declarations.
+ * @param {string} css
+ * @returns {Array<{at: string, selectors: string[], decls: Array<[string, string]>}>}
+ */
+function pixd111CssRules(css) {
+  /** @type {Array<{at: string, selectors: string[], decls: Array<[string, string]>}>} */
+  const rules = [];
+  /** @type {string[]} */ const open = [];
+  let text = "";
+  for (const char of css.replace(/\/\*[\s\S]*?\*\//g, "")) {
+    if (char === "{") {
+      open.push(text.slice(text.lastIndexOf(";") + 1).trim());
+      text = "";
+    } else if (char === "}") {
+      const head = open.pop() ?? "";
+      const decls = /** @type {Array<[string, string]>} */ (text.split(";").filter((part) => part.includes(":")).map((part) => [part.slice(0, part.indexOf(":")).trim(), part.slice(part.indexOf(":") + 1).trim()]));
+      if (!head.startsWith("@") && decls.length) rules.push({ at: open.filter((h) => h.startsWith("@")).join(" "), selectors: head.split(",").map((s) => s.trim()), decls });
+      text = "";
+    } else text += char;
   }
+  return rules;
+}
+
+/**
+ * PIXD-111 (LOW-6, LOW-7): each settings action keeps one width idle and
+ * busy in any font. The label it shows and a hidden copy of the label of
+ * its other state share one grid cell (Save and Revert: the busy label,
+ * Clear: the idle label); the approved minimum widths stay as the layout;
+ * and no disabled or busy rule changes an action's box. Throws on the
+ * first rule that breaks it.
+ * @param {string} css
+ */
+function pixd111ActionCss(css) {
+  const rules = pixd111CssRules(css);
+  /** @param {string} selector @param {string} [at] */
+  const decls = (selector, at = "") => new Map(rules.filter((rule) => rule.selectors.includes(selector) && rule.at === at).flatMap((rule) => rule.decls));
+  const narrow = "@media (max-width:760px)";
+  for (const [action, other, wide, small] of /** @type {const} */ ([["save", "busy", 104, 96], ["revert", "busy", 116, 108], ["clear", "idle", 148, 140]])) {
+    const button = `.set-acts [data-act="${action}"]`;
+    const shown = decls(`${button}>span`), hidden = decls(`${button}::after`);
+    assert.equal(decls(button).get("display"), "inline-grid", `PIXD-111: ${action} lays its label out in a grid`);
+    assert.equal(hidden.get("content"), `attr(data-${other}-label)`, `PIXD-111: ${action} holds its ${other} label`);
+    assert.equal(hidden.get("visibility"), "hidden", `PIXD-111: ${action}'s ${other} label is not seen`);
+    assert.ok(shown.get("grid-area") !== undefined && hidden.get("grid-area") === shown.get("grid-area"), `PIXD-111: ${action} reserves its ${other} label in the grid cell of the label it shows`);
+    assert.equal(decls(button).get("min-width"), `${wide}px`, `PIXD-111: ${action} keeps the approved layout above 760 px`);
+    assert.equal(decls(button, narrow).get("min-width"), `${small}px`, `PIXD-111: ${action} keeps the approved layout at 760 px and below`);
+  }
+  for (const [at, width] of [["", "116px"], [narrow, "108px"]]) {
+    assert.equal(decls(".slot-revert", at).get("min-width"), width, "PIXD-111: Revert's slot keeps its width while empty and grows with the reserved button");
+    assert.equal(decls(".slot-revert", at).get("width"), undefined, "PIXD-111: no fixed slot width that a wider font overflows");
+  }
+  const state = /:disabled|\[disabled|\[aria-disabled|\[aria-busy|\.busy\b/;
+  const action = /\.btn\b|\bbutton\b|\[data-act|\.set-acts|\.primary\b/;
+  const box = /^(?:(?:min-|max-)?(?:width|height|inline-size|block-size)|padding(?:-[a-z]+)*|margin(?:-[a-z]+)*|border(?:-(?:top|right|bottom|left|inline|block)(?:-(?:start|end))?)?(?:-width)?|font(?:-[a-z]+)?|letter-spacing|word-spacing|line-height|gap|column-gap|display|grid(?:-[a-z]+)*|flex(?:-[a-z]+)?|content|box-sizing)$/;
+  for (const rule of rules)
+    for (const selector of rule.selectors.filter((s) => state.test(s) && action.test(s)))
+      for (const [property] of rule.decls)
+        assert.ok(!box.test(property), `PIXD-111: "${selector}" sets ${property}: a disabled or busy action would change its box`);
+}
+
+test("PIXD-111: settings actions reserve the label of their other state in their label's grid cell, in CSS", () => {
+  pixd111ActionCss(r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8"));
 });
+
+test("PIXD-111 self-test: the action CSS check fails when a reservation, a layout width or a state rule is wrong", () => {
+  const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
+  /** @param {string} from @param {string} to @param {RegExp} message */
+  const rejects = (from, to, message) => {
+    assert.ok(css.includes(from), `self-test anchor: ${from}`);
+    assert.throws(() => pixd111ActionCss(css.replace(from, to)), message);
+  };
+  // LOW-7: a disabled state that changes the box is caught (the old assertion searched declarations for selectors).
+  rejects('.btn:disabled,.btn[aria-disabled="true"]{opacity:.45;', '.btn:disabled,.btn[aria-disabled="true"]{padding-inline:8px;opacity:.45;', /"\.btn:disabled" sets padding-inline/);
+  rejects(".btn.primary:disabled{background:var(--accent);", ".btn.primary:disabled{background:var(--accent);min-width:0;", /"\.btn\.primary:disabled" sets min-width/);
+  // LOW-6: Save or Revert without the hidden busy label, or with it outside the label's cell.
+  rejects('.set-acts [data-act="save"]::after,', "", /save holds its busy label/);
+  rejects("content:attr(data-busy-label);grid-area:1/1;", "content:attr(data-busy-label);grid-area:1/2;", /save reserves its busy label in the grid cell/);
+  rejects('.set-acts [data-act="clear"]::after{content:attr(data-idle-label);', '.set-acts [data-act="clear"]::after{content:"";', /clear holds its idle label/);
+  // The approved layout widths, also at 760 px and below.
+  rejects('.set-acts [data-act="revert"]{min-width:108px}', '.set-acts [data-act="revert"]{min-width:100px}', /revert keeps the approved layout at 760 px and below/);
+  rejects(".slot-revert{min-width:116px;", ".slot-revert{width:116px;", /Revert's slot keeps its width/);
+});
+
+/**
+ * PIXD-111 (LOW-6): through the real server, api, store and ops, an action
+ * shows its label in its span and carries the label of its other state for
+ * app.css's hidden copy, the same idle, pending and after a timeout.
+ * @param {any} t @param {"save"|"revert"|"clear"} action @param {any} [module]
+ */
+async function pixd111ActionLabels(t, action, module) {
+  const ctx = await intRealForm(t, module);
+  const { root, calls, s, app } = ctx;
+  if (action === "clear") {
+    await intInject(ctx, app.topics.setting("ulanzi-t", "contract", "n"), "9");
+    applyDefaultAnswer(await request("GET", s, { resource: "settings:ulanzi-t/contract" }));
+  } else {
+    typeInto(root.querySelector('[data-key="n"]'), "2");
+    await intWaitFor(() => calls.some((call) => call.path === `${s}/preview`));
+    await settle();
+  }
+  const attribute = action === "clear" ? "data-idle-label" : "data-busy-label";
+  const observe = () => {
+    const button = root.querySelector(`.set-h [data-act="${action}"]`);
+    return { text: r4Text(button), span: r4Text(button?.querySelector("span")), reserved: button?.getAttribute(attribute) ?? null };
+  };
+  const idle = observe();
+  const path = action === "save" ? s : `${s}/${action === "clear" ? "overlays" : "preview"}`;
+  const transport = pixd105HoldBody((url, verb) => url.split("?")[0] === path && verb === (action === "save" ? "PUT" : "DELETE"));
+  try {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    r4Click(root.querySelector(`.set-h [data-act="${action}"]`));
+    await intWaitFor(() => transport.held.length === 1);
+    const pending = observe();
+    t.mock.timers.tick(15000);
+    await settle();
+    const timedOut = observe();
+    assert.match(statusText(root), /not confirmed: pixdcon did not answer within 15 s\./, "PIXD-111: the action timed out");
+    for (const [name, seen] of Object.entries({ idle, pending, timedOut }))
+      assert.equal(seen.span, seen.text, `PIXD-111: ${action} ${name}: the label it shows is in its span`);
+    assert.ok(idle.reserved, `PIXD-111: ${action} carries ${attribute}`);
+    assert.deepEqual([pending.reserved, timedOut.reserved], [idle.reserved, idle.reserved], `PIXD-111: ${action}'s reserved label is the same in every state`);
+    if (action === "clear") assert.deepEqual([idle.text, pending.text === idle.reserved, timedOut.text], [idle.reserved, false, idle.reserved], "PIXD-111: Clear reserves the idle label it shows when not busy");
+    else assert.deepEqual([pending.text, idle.text === idle.reserved, timedOut.text], [idle.reserved, false, idle.text], `PIXD-111: ${action} reserves the busy label it shows while pending`);
+  } finally { transport.restore(); t.mock.timers.reset(); }
+}
+
+for (const action of /** @type {const} */ (["save", "revert", "clear"]))
+  test(`PIXD-111: real ${action} reserves the label of its other state, idle, pending and timed out`, async (t) => r6Browser(async ({ document }) => {
+    document.documentElement.setAttribute("lang", "en");
+    await pixd111ActionLabels(t, action);
+  }));
+
+test("PIXD-111 self-test: the action label check rejects a reserved label that is not the busy label shown", async (t) => r6Browser(async ({ document }) => {
+  document.documentElement.setAttribute("lang", "en");
+  const mutant = await r5Module("components/settings-form.js", [['data-act="revert" data-busy-label="${REVERTING}"', 'data-act="revert" data-busy-label="Revert"']]);
+  await assert.rejects(pixd111ActionLabels(t, "revert", mutant), /revert reserves the busy label it shows while pending/);
+}));
 
 test("PIXD-109: pending settings status avoids a last-word widow in CSS", () => {
   const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");

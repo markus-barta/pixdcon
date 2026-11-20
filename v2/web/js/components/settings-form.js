@@ -73,6 +73,23 @@ let ids = 0;
 
 /** What a Save that worked says. */
 const SAVED = "Saved to config.json";
+/** The busy labels of Save and Revert. */
+const SAVING = "Saving…";
+const REVERTING = "Reverting…";
+
+/**
+ * What Save and Revert show: icon and label in one span. The button carries
+ * its busy label in data-busy-label; app.css stacks a hidden copy of it in
+ * the span's grid cell, so the button has one width idle and busy in any
+ * font, and the idle label stays centred (PIXD-111).
+ *
+ * @param {boolean} busy
+ * @param {string} name icon of the idle label
+ * @param {string} label
+ * @param {string} busyLabel
+ */
+const actionLabel = (busy, name, label, busyLabel) =>
+  `<span>${busy ? `${icon("spinner")}${busyLabel}` : `${icon(name)}${label}`}</span>`;
 
 /**
  * Parse what was typed into a field, by its type.
@@ -341,7 +358,7 @@ export function createSettingsForm(host, options) {
     <div class="set-h">
       <div><h2 id="h-settings">Settings</h2><p class="set-desc"></p></div>
       <div>
-        <div class="set-acts"><span class="slot-clear"></span><span class="slot-revert"></span><button class="btn primary" type="button" data-act="save" disabled title="Writes config.json and clears the MQTT overlay of each saved setting">${icon("save")}Save</button></div>
+        <div class="set-acts"><span class="slot-clear"></span><span class="slot-revert"></span><button class="btn primary" type="button" data-act="save" data-busy-label="${SAVING}" disabled title="Writes config.json and clears the MQTT overlay of each saved setting">${actionLabel(false, "save", "Save", SAVING)}</button></div>
         <div class="set-status" role="status"></div>
       </div>
     </div>
@@ -549,7 +566,7 @@ export function createSettingsForm(host, options) {
         effects: { ...sceneEffects, slot: ["epoch", "membership"] },
         retireOnChange: true,
         value: "save",
-        label: "Saving…",
+        label: SAVING,
         // eslint-disable-next-line no-unused-vars -- Preserve the frozen Save mutant's callback anchor.
         done: (answer) => {
           // What was saved leaves the form; what was typed after the click stays.
@@ -608,7 +625,7 @@ export function createSettingsForm(host, options) {
         owner: owns(mine),
         effects: { ...sceneEffects, done: feedback },
         value: "revert",
-        label: "Reverting…",
+        label: REVERTING,
         done: () => {
           mine.previewFailure = null;
           if (shown(mine)) report();
@@ -891,7 +908,7 @@ export function createSettingsForm(host, options) {
     if ((edits.size > 0 || changes > 0 || serverPreview > 0 || busy === "revert") && phase === "ready")
       setHtml(
         revertSlot,
-        `<button class="btn" type="button" data-act="revert"${busy || frozen ? " disabled" : ""} title="Puts the display back to the saved values">${busy === "revert" ? `${icon("spinner")}Reverting…` : `${icon("undo")}Revert`}</button>`,
+        `<button class="btn" type="button" data-act="revert" data-busy-label="${REVERTING}"${busy || frozen ? " disabled" : ""} title="Puts the display back to the saved values">${actionLabel(busy === "revert", "undo", "Revert", REVERTING)}</button>`,
       );
     else setHtml(revertSlot, "");
     const blocked = Boolean(context.configInvalid);
@@ -908,7 +925,7 @@ export function createSettingsForm(host, options) {
       : context.overlayOnly
         ? "This device is not in config.json: add it to config.json to save its settings"
         : "Writes config.json and clears the MQTT overlay of each saved setting";
-    setHtml(saveButton, busy === "save" ? `${icon("spinner")}Saving…` : `${icon("save")}Save`);
+    setHtml(saveButton, actionLabel(busy === "save", "save", "Save", SAVING));
 
     /** @type {{text: string, cls: string}} */
     let line;
