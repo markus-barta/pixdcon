@@ -3203,7 +3203,7 @@ const R4_KINDS = [
       r4Pending(ctx, "PUT", "/devices/d1/scene").ok();
       await settle();
       assert.match(r4Text(ctx.root.querySelector('.dt-row [data-line="scene"]')), /^Switched from /, "the row says where it switched from");
-      assert.equal(ctx.root.querySelector('.dt-row [data-act="undo"]'), null, "and offers no Undo");
+      assert.equal(ctx.root.querySelectorAll('.dt-row [data-act="undo"]').length, 0, "and offers no Undo");
     },
     // The switch was made before the operation began: there is nothing to do again.
     again: null,
@@ -15941,7 +15941,7 @@ test("PIXD-114 fix 2: real switch in a Devices row: 'Switched from X' for 15 s f
     // What an Undo sent (fix 1): a read of the device, then the switch's own request.
     const sceneRequests = () => ctx.calls.filter((call) => call.path === ctx.d || call.path === `${ctx.d}/scene`).length;
     // Fix 2: the row offers no Undo until PIXD-118, at no time and beside nothing.
-    const noUndo = (/** @type {string} */ when) => assert.equal(row().querySelector('[data-act="undo"]'), null, `no Undo ${when}`);
+    const noUndo = (/** @type {string} */ when) => assert.equal(row().querySelectorAll('[data-act="undo"]').length, 0, `no Undo ${when}`);
     assert.equal(r4Value(select()), "clock");
     noUndo("before a switch");
     // C1: a switch in the select says where it came from, in the select's line.
@@ -16028,7 +16028,7 @@ test("PIXD-114 fix 2: real switch, then a second client chooses the same scene a
     assert.equal(typeof mine, "string");
     assert.equal(sent("scene")[0].answer.device.desired.choice.chosenAt, mine);
     assert.equal(cells().sceneLine, `Switched from ${model.sceneName(store.getState(), "clock", "ulanzi")}`);
-    assert.equal(row().querySelector('[data-act="undo"]'), null, "no Undo: nothing can send Clock over a newer choice");
+    assert.equal(row().querySelectorAll('[data-act="undo"]').length, 0, "no Undo: nothing can send Clock over a newer choice");
     // A second client (another tab) chooses Test pattern again, a second later: a newer choice of the same scene.
     // It talks to real W1/W4 directly; this page hears nothing of it.
     await ctx.clock.advance(1000);
@@ -16039,7 +16039,7 @@ test("PIXD-114 fix 2: real switch, then a second client chooses the same scene a
     // The row's 15 s run out with nothing read and nothing sent; then its source line.
     later(14_999);
     await settle();
-    assert.equal(row().querySelector('[data-act="undo"]'), null, "no Undo at 14.999 s");
+    assert.equal(row().querySelectorAll('[data-act="undo"]').length, 0, "no Undo at 14.999 s");
     later(1);
     await settle();
     assert.equal(cells().sceneLine, "Your choice");
@@ -16138,7 +16138,7 @@ test("PIXD-114 C1: a switch's line says 'Switched from X' with no Undo control (
     let seq = 10;
     const line = (/** @type {string} */ name) => r4Text(root.querySelector(`.dt-row[data-name="${name}"] [data-line="scene"]`));
     /** Fix 2: no row offers Undo until PIXD-118. @param {string} when */
-    const noUndo = (when) => assert.equal(root.querySelector('[data-act="undo"]'), null, `no Undo in any row ${when}`);
+    const noUndo = (when) => assert.equal(root.querySelectorAll('[data-act="undo"]').length, 0, `no Undo in any row ${when}`);
     /** Your choice of `scene` on the device, as pixdcon stamped it (null: no stamp). @param {string} name @param {string} scene @param {number} rev @param {string|null} stamp @param {any} [o] */
     const chosen = (name, scene, rev, stamp, o = {}) => {
       const v = view(name, { epoch: boot.epoch, rev, scene, source: "ui", ...o });
@@ -16220,7 +16220,7 @@ test("PIXD-114 fix 4: 'Switched from X' runs 15 s from the moment its switch suc
   try {
     let seq = 10;
     const line = () => r4Text(root.querySelector('.dt-row [data-line="scene"]'));
-    const undoControl = () => root.querySelector('.dt-row [data-act="undo"]');
+    const undoControls = () => root.querySelectorAll('.dt-row [data-act="undo"]').length;
     const select = () => root.querySelector(".dt-row select");
     /** @param {string} scene @param {number} rev @param {string} stamp */
     const chosen = (scene, rev, stamp) => {
@@ -16239,11 +16239,11 @@ test("PIXD-114 fix 4: 'Switched from X' runs 15 s from the moment its switch suc
     await settle();
     const count = calls.length;
     assert.equal(line(), "Switched from Clock", "said once the switch succeeded");
-    assert.equal(undoControl(), null, "with no Undo");
+    assert.equal(undoControls(), 0, "with no Undo");
     later(14_999);
     await settle();
     assert.equal(line(), "Switched from Clock", "for 15 s from then: still at 14.999 s");
-    assert.equal(undoControl(), null);
+    assert.equal(undoControls(), 0);
     later(1);
     await settle();
     assert.equal(line(), "Your choice", "the source line at 15 s");
