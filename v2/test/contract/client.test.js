@@ -2552,7 +2552,7 @@ function r4View(world, name, epoch, life, rev, devices = world.spec.devices ?? [
   v.effective.lastBrightness = level;
   v.effective.appliedBrightness = level;
   if (entry?.o?.override !== undefined) v.desired.brightness = { override: entry.o.override + level - 30, source: "web", since: v.desired.brightness.since };
-  // PIXD-114: a choice made in this run carries pixdcon's stamp of it (the Undo of a row is bound to it).
+  // PIXD-114: a choice made in this run carries pixdcon's stamp of it (a row's "Switched from X" is bound to it).
   if (entry?.o?.chosenAt !== undefined) v.desired.choice.chosenAt = entry.o.chosenAt;
   return v;
 }
@@ -2995,10 +2995,11 @@ const R4_PAGES = {
       const auto = row?.querySelector('[data-act="auto"]');
       return [
         // PIXD-114: each control of the row with its one reserved line; their slots are the Device page's.
-        ["row d1", ["epoch", "life", "token"], row ? `${r4Value(row.querySelector("select"))}${row.querySelector("select")?.disabled ? " [disabled]" : ""} | ${r4Text(row.querySelector('[data-line="scene"]'))} | ${r4Button(row.querySelector('[data-act="restore"]'))} | ${r4Button(row.querySelector('[data-act="undo"]'))}` : "∅"],
-        // PIXD-114 fix 1: the Undo offer is this opening's (its record is armed in the opening the switch began in)
-        // while the line is idle; while an operation of the scene slot runs or failed, the line is the slot's (rule 5).
-        ["row d1 Undo offer", (said) => (/Switching to|Restoring…|Not switched|Not restored|not confirmed/.test(said) ? ["epoch", "life", "token"] : ["opening", "epoch", "life", "token"]), row ? `${r4Text(row.querySelector('[data-line="scene"]'))} | ${r4Button(row.querySelector('[data-line="scene"] [data-act="undo"]'))}` : "∅"],
+        ["row d1", ["epoch", "life", "token"], row ? `${r4Value(row.querySelector("select"))}${row.querySelector("select")?.disabled ? " [disabled]" : ""} | ${r4Text(row.querySelector('[data-line="scene"]'))} | ${r4Button(row.querySelector('[data-act="restore"]'))}` : "∅"],
+        // PIXD-114 fix 1: while idle the line is drawn per opening ("Switched from X" is armed only in the opening the
+        // switch began in; "devices mode after a switch", and "PIXD-114 C1" for a switch answered in a new opening);
+        // while an operation of the scene slot runs or failed, the line is the slot's (rule 5). Fix 2: no Undo (PIXD-118).
+        ["row d1 scene line", (said) => (/Switching to|Restoring…|Not switched|Not restored|not confirmed/.test(said) ? ["epoch", "life", "token"] : ["opening", "epoch", "life", "token"]), row ? r4Text(row.querySelector('[data-line="scene"]')) : "∅"],
         ["row d1 mode", ["epoch", "life", "token"], row ? `${r4Text(row.querySelector('[data-line="mode"]'))} | ${row.querySelectorAll('[data-act="mode"]').map((/** @type {any} */ b) => `${b.getAttribute("aria-pressed") === "true" ? "*" : ""}${b.disabled ? "x" : "o"}`).join("")}` : "∅"],
         ["row d1 brightness", ["epoch", "life", "token"], row ? `${r4Value(range)}${range?.disabled ? " [disabled]" : ""} | ${r4Text(row.querySelector(".val"))} | ${r4Button(auto)}${auto?.getAttribute("aria-pressed") === "true" ? " [pressed]" : ""} | ${r4Text(row.querySelector('[data-line="brightness"]'))}` : "∅"],
         ["Add device fields", ["opening", "revision"], `${r4Value(empty?.querySelector('form.addf [name="name"]'))} | ${r4Value(empty?.querySelector('form.addf [name="ip"]'))} | ${r4Value(empty?.querySelector('form.addf [name="type"]'))}`],
@@ -3186,10 +3187,14 @@ const R4_KINDS = [
   },
   { name: "devices scene", site: "web/js/pages/devices.js (chooseScene, sendScene)", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/scene"], begin: (ctx) => typeInto(ctx.root.querySelector(".dt-row select"), "weather", "change") },
   { name: "devices restore", site: "web/js/pages/devices.js (restore)", page: "devices", world: r4d1({ source: "overlay" }), request: ["DELETE", "/api/v2/devices/d1/scene-overlay"], begin: (ctx) => r4Click(restoreIn(ctx.root)) },
-  // PIXD-114 fix 1: Undo reads the device again before it switches back (its PUT is the switch's, "devices scene").
+  // PIXD-114: the row's Play/Pause/Stop and its slider, in the Device page's mode and brightness slots.
+  { name: "devices mode", site: "web/js/pages/devices.js (setMode)", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/mode"], begin: (ctx) => r4Click(ctx.root.querySelector('.dt-row [data-act="mode"][data-mode="pause"]')) },
+  // PIXD-114 fix 2: no "devices undo" kind, as the row offers no Undo until PIXD-118. Its setup stays, before the row's
+  // Pause: a switch pixdcon made and stamped, so the select's line says "Switched from Clock" while Pause runs and the
+  // changes come; the line's record (undos) is read and observed in these stories ("row d1 scene line").
   {
-    name: "devices undo", site: "web/js/pages/devices.js (undo, the read before the switch back)", page: "devices", world: r4d1(), request: ["GET", "/api/v2/devices/d1"],
-    // The switch to Weather that pixdcon made, with its stamp: the row offers its Undo. The page's clock is the browser's, as main.js ticks it.
+    name: "devices mode after a switch", site: "web/js/pages/devices.js (setMode; chooseScene's line)", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/mode"],
+    // The switch to Weather that pixdcon made, with its stamp. The page's clock is the browser's, as main.js ticks it.
     setup: async (ctx) => {
       Object.assign(ctx.world.spec.devices[0].o, { scene: "weather", source: "ui", chosenAt: at("18:00:00") });
       r4Tick(Date.now());
@@ -3197,14 +3202,13 @@ const R4_KINDS = [
       await settle();
       r4Pending(ctx, "PUT", "/devices/d1/scene").ok();
       await settle();
-      assert.ok(ctx.root.querySelector('.dt-row [data-act="undo"]'), "the row offers Undo");
+      assert.match(r4Text(ctx.root.querySelector('.dt-row [data-line="scene"]')), /^Switched from /, "the row says where it switched from");
+      assert.equal(ctx.root.querySelectorAll('.dt-row [data-act="undo"]').length, 0, "and offers no Undo");
     },
-    // The scene slot stays the Undo's while it runs, also in a new opening: there is nothing to do again.
+    // The switch was made before the operation began: there is nothing to do again.
     again: null,
-    begin: (ctx) => r4Click(ctx.root.querySelector('.dt-row [data-act="undo"]')),
+    begin: (ctx) => r4Click(ctx.root.querySelector('.dt-row [data-act="mode"][data-mode="pause"]')),
   },
-  // PIXD-114: the row's Play/Pause/Stop and its slider, in the Device page's mode and brightness slots.
-  { name: "devices mode", site: "web/js/pages/devices.js (setMode)", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/mode"], begin: (ctx) => r4Click(ctx.root.querySelector('.dt-row [data-act="mode"][data-mode="pause"]')) },
   {
     name: "devices brightness", site: "web/js/pages/devices.js (setBrightness, the row's slider)", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/brightness"],
     begin: (ctx) => {
@@ -9044,18 +9048,16 @@ const R4_INVENTORY = [
   "web/js/pages/device.js · copyScene · ops note · slot note",
   "web/js/pages/device.js · act · await · store",
   "web/js/pages/devices.js · addDevice · ops done · slot note",
-  // PIXD-114: the row's switch (its select and Undo), Play/Pause/Stop and
-  // slider: the Device page's slots and requests; only the store's fence
-  // takes their answers, and the slots say busy and failure.
-  // Fix 1: the switch arms its Undo once it succeeded (its done, arm: the
-  // record this switch left in this opening, under the slot token; the
-  // map writes are r6 rows, "page state" here is the conservative match of
-  // arm's and sameChoice's local `choice`), and Undo reads the device
-  // before it sends the switch back ("request start" under the captured
-  // epoch and life, checked by current(); "page state": the same locals).
+  // PIXD-114: the row's switch (its select), Play/Pause/Stop and slider:
+  // the Device page's slots and requests; only the store's fence takes
+  // their answers, and the slots say busy and failure.
+  // Fix 1: the switch arms its "Switched from X" once it succeeded (its
+  // done, arm: the record this switch left in this opening, under the slot
+  // token; the map writes are r6 rows, "page state" here is the
+  // conservative match of arm's local `choice`).
+  // Fix 2: Undo and its read before the switch back are gone (PIXD-118).
   "web/js/pages/devices.js · chooseScene · ops done · page state",
   "web/js/pages/devices.js · sendScene · await · store",
-  "web/js/pages/devices.js · undo · await · page state, request start, store",
   "web/js/pages/devices.js · setMode · await · store",
   "web/js/pages/devices.js · setBrightness · await · store",
   "web/js/pages/devices.js · restore · await · store",
@@ -9204,7 +9206,14 @@ test("r4 inventory: persistent UI state writers across imported helpers all decl
   //    offer" piece (opening) and "PIXD-114 C1", "PIXD-114 fix 1/fix 4"
   //    witness them.
   // Old: 14994e09d789f445671e694e5e3f23aca0999f05f627293419d56ac97a404bdf
-  assert.equal(digest, "f6f5dffe178e5fded4f23295e8982e0d1dc9ef89bcba4b4a3d24a32c81affdf8", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+  // PIXD-114 P1 fix 2: 415 -> 414 writers; extractor and owner tags
+  // unchanged. The row offers no Undo until PIXD-118: undo's record.undo (=)
+  // is gone with it. The switch's record stays for its "Switched from X"
+  // line (chooseScene, arm, undoRecord, mount/unmount as above); the R4 kind
+  // "devices mode after a switch", the "row d1 scene line" piece, "PIXD-114
+  // C1" and "PIXD-114 fix 4" witness them.
+  // Old: f6f5dffe178e5fded4f23295e8982e0d1dc9ef89bcba4b4a3d24a32c81affdf8
+  assert.equal(digest, "1277acb9bd6770201c51667da5faad7d04567eb2aad5ec7ac3a664c263d4d78e", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
 });
 test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
   for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {
@@ -12936,7 +12945,8 @@ test("r4 harness self-test: B3 scene family has controls and must-fail central s
 /** The callback source is a minimum, not a frozen source-count waiver.
  * PIXD-114: 34 -> 36, the Devices row's mode and brightness slot reads.
  * PIXD-114 fix 1: 36 -> 38, a row's Undo record (undos, undos.get(key)),
- * armed by its switch's done once pixdcon answered.
+ * armed by its switch's done once pixdcon answered. Fix 2: still 38; the
+ * record now draws only "Switched from X" (no Undo until PIXD-118).
  * @param {any[]} sites */
 function r5B3RequirePreviewSource(sites) {
   assert.ok(sites.length >= 38, `B3 callback observation: ${sites.length} sources; 37 sources fails`);
@@ -15918,7 +15928,7 @@ test("PIXD-114: real brightness change from a Devices row: the slider sets the l
   assert.equal(range().disabled, false, "the slider stays for a retry");
 });
 
-test("PIXD-114: real Undo after a switch in a Devices row: 'Switched from X · Undo' for 15 s from the switch's success, also of a slow switch; Undo reads the device, then sends the previous scene through the switch; a click after the 15 s sends nothing; a refused Undo is said after its button and nothing else changes", async (t) => {
+test("PIXD-114 fix 2: real switch in a Devices row: 'Switched from X' for 15 s from the switch's success, also of a slow switch, then the source line; no Undo control and no further scene request in them (PIXD-118); a refused switch is said in the select's line and nothing else changes", async (t) => {
   const ctx = await pixd114Devices(t);
   const { row, cells, sent, measured, store, model } = ctx;
   // The browser's clock, held still by the test; the page's clock follows it, as main.js ticks it every second.
@@ -15928,25 +15938,30 @@ test("PIXD-114: real Undo after a switch in a Devices row: 'Switched from X · U
     store.tick(Date.now());
     const select = () => row().querySelector("select");
     const name = (/** @type {string} */ key) => model.sceneName(store.getState(), key, "ulanzi");
-    const undoButton = () => row().querySelector('[data-line="scene"] [data-act="undo"]');
-    const reads = () => ctx.calls.filter((call) => call.method === "GET" && call.path === ctx.d);
+    // What an Undo sent (fix 1): a read of the device, then the switch's own request.
+    const sceneRequests = () => ctx.calls.filter((call) => call.path === ctx.d || call.path === `${ctx.d}/scene`).length;
+    // Fix 2: the row offers no Undo until PIXD-118, at no time and beside nothing.
+    const noUndo = (/** @type {string} */ when) => assert.equal(row().querySelectorAll('[data-act="undo"]').length, 0, `no Undo ${when}`);
     assert.equal(r4Value(select()), "clock");
-    assert.equal(undoButton(), null, "no Undo before a switch");
-    // C1: a switch in the select offers Undo in the select's line.
+    noUndo("before a switch");
+    // C1: a switch in the select says where it came from, in the select's line.
     typeInto(select(), "test-pattern", "change");
     await intWaitFor(() => sent("scene").length === 1 && sent("scene")[0].status !== 0);
     await settle();
     assert.deepEqual([sent("scene")[0].body, sent("scene")[0].status], [{ scene: "test-pattern" }, 200]);
-    assert.equal(cells().sceneLine, `Switched from ${name("clock")}·Undo`);
-    assert.equal(row().querySelector('[data-line="scene"]').getAttribute("title"), `Switched from ${name("clock")}. Undo switches back.`);
-    // The offer lasts 15 s from the switch's success.
+    const switched = sceneRequests();
+    assert.equal(cells().sceneLine, `Switched from ${name("clock")}`);
+    assert.equal(row().querySelector('[data-line="scene"]').getAttribute("title"), `Switched from ${name("clock")}`);
+    noUndo("after the switch");
+    // The line lasts 15 s from the switch's success, then the source line; nothing is sent in them.
     later(14_999);
     await settle();
-    assert.ok(undoButton(), "still offered at 14.999 s");
+    assert.equal(cells().sceneLine, `Switched from ${name("clock")}`, "still said at 14.999 s");
+    noUndo("at 14.999 s");
     later(1);
     await settle();
-    assert.equal(undoButton(), null, "gone after 15 s");
-    assert.equal(cells().sceneLine, "Your choice");
+    assert.equal(cells().sceneLine, "Your choice", "the source line at 15 s");
+    assert.equal(sceneRequests(), switched, "no scene request in the 15 s");
     // Fix 4: a slow switch. Its 15 s start when real W1/W4's answer arrives, not when the scene was chosen.
     const transport = pixd105HoldBody((path, method) => path === `${ctx.d}/scene` && method === "PUT");
     try {
@@ -15958,62 +15973,34 @@ test("PIXD-114: real Undo after a switch in a Devices row: 'Switched from X · U
       transport.held[0].release();
       await settle();
     } finally { transport.restore(); }
-    assert.equal(cells().sceneLine, `Switched from ${name("test-pattern")}·Undo`, "the offer comes with the answer");
-    later(14_000);
+    const slow = sceneRequests();
+    assert.equal(cells().sceneLine, `Switched from ${name("test-pattern")}`, "the line comes with the answer");
+    later(14_999);
     await settle();
-    assert.ok(undoButton(), "and stands 14 s later: 34 s after the choice");
-    // Fix 1: Undo reads the device first, then sends the scene it switched from, through the same request.
-    r4Click(undoButton());
-    await intWaitFor(() => sent("scene").length === 3 && sent("scene")[2].status !== 0);
+    assert.equal(cells().sceneLine, `Switched from ${name("test-pattern")}`, "and stands 14.999 s later: 34.999 s after the choice");
+    noUndo("after the slow switch");
+    later(1);
     await settle();
-    assert.equal(reads().length, 1, "Undo read the device");
-    assert.ok(ctx.calls.indexOf(reads()[0]) < ctx.calls.indexOf(sent("scene")[2]), "before it switched back");
-    assert.deepEqual([sent("scene")[2].body, sent("scene")[2].status], [{ scene: "test-pattern" }, 200], "Undo is the normal switch to the previous scene");
-    assert.equal(measured().desired.scene.scene, "test-pattern");
-    assert.equal(r4Value(select()), "test-pattern");
-    assert.equal(undoButton(), null, "an Undo is not offered again");
     assert.equal(cells().sceneLine, "Your choice");
-    // Fix 4: a tab that slept past the 15 s. Its page's clock did not move, so the offer is still drawn; the click
-    // reads the browser's clock: it sends nothing, not even the read, and the offer goes.
-    typeInto(select(), "clock", "change");
-    await intWaitFor(() => sent("scene").length === 4 && sent("scene")[3].status !== 0);
-    await settle();
-    assert.ok(undoButton(), "the switch to Clock offers Undo");
-    t.mock.timers.tick(15_000);
-    assert.ok(undoButton(), "the page's clock still draws the offer");
-    r4Click(undoButton());
-    await settle();
-    assert.deepEqual([reads().length, sent("scene").length], [1, 4], "nothing is read and nothing is sent");
-    assert.equal(undoButton(), null, "the offer is gone");
-    assert.equal(cells().sceneLine, "Your choice");
-    assert.equal(measured().desired.scene.scene, "clock", "real W1/W4 still shows Clock");
-    store.tick(Date.now());
-    // A refused Undo: the scene it would return to was removed from config.json meanwhile.
-    typeInto(select(), "test-pattern", "change");
-    await intWaitFor(() => sent("scene").length === 5 && sent("scene")[4].status !== 0);
-    await settle();
-    typeInto(select(), "clock", "change");
-    await intWaitFor(() => sent("scene").length === 6 && sent("scene")[5].status !== 0);
-    await settle();
-    assert.ok(undoButton(), "the switch to Clock offers Undo");
+    assert.equal(sceneRequests(), slow, "no scene request in its 15 s");
+    assert.equal(measured().desired.scene.scene, "clock", "real W1/W4 shows Clock");
+    // A refused switch: test-pattern left config.json, and this page has not heard of it yet.
     const raw = await request("GET", "/api/v2/config/raw", { resource: "config" });
     const config = JSON.parse(raw.body.text);
     delete config.scenes["test-pattern"];
     await request("PUT", "/api/v2/config/raw", { resource: "config", body: { text: JSON.stringify(config) } });
     await intWaitFor(() => !ctx.app.modules.scenes.get("test-pattern"), "test-pattern left the registry");
     const before = cells();
-    r4Click(undoButton());
-    await intWaitFor(() => sent("scene").length === 7 && sent("scene")[6].status !== 0);
+    typeInto(select(), "test-pattern", "change");
+    await intWaitFor(() => sent("scene").length === 3 && sent("scene")[2].status !== 0);
     await settle();
-    assert.equal(reads().length, 2, "the choice still stands: Undo read the device, then switched");
-    assert.deepEqual([sent("scene")[6].body, sent("scene")[6].status], [{ scene: "test-pattern" }, 400]);
+    assert.deepEqual([sent("scene")[2].body, sent("scene")[2].status], [{ scene: "test-pattern" }, 400]);
     const after = cells();
-    const line = row().querySelector('[data-line="scene"]');
-    assert.equal(after.sceneLine, "Undo·Not switched: Scene cannot run: test-pattern.", "the failure follows Undo, which stays (Tick, B4; B-175)");
-    assert.equal(line.getAttribute("title"), "Not switched: Scene cannot run: test-pattern.");
-    assert.ok(line.children.indexOf(undoButton()) < line.children.indexOf(line.querySelector(".fail")));
-    assert.equal(undoButton().disabled, false, "Undo stays for a retry");
-    pixd114OnlyLine(before, after, "sceneLine", "refused Undo");
+    assert.equal(after.sceneLine, "Not switched: Scene cannot run: test-pattern.", "C3: the failure is said in the select's line (Tick, B4)");
+    assert.equal(row().querySelector('[data-line="scene"]').getAttribute("title"), "Not switched: Scene cannot run: test-pattern.");
+    noUndo("beside the failure");
+    pixd114OnlyLine(before, after, "sceneLine", "refused switch");
+    assert.equal(select().disabled, false, "the select stays for a retry");
     assert.equal(measured().desired.scene.scene, "clock", "real W1/W4 still shows Clock");
   } finally {
     // The browser's clock again, before real W1/W4 stops; the page's clock follows it.
@@ -16022,41 +16009,47 @@ test("PIXD-114: real Undo after a switch in a Devices row: 'Switched from X · U
   }
 });
 
-test("PIXD-114 fix 1: real Undo is bound to the choice its switch made: a second client chooses the same scene again; Undo reads the device, sends nothing over the newer choice, and the offer goes", async (t) => {
+test("PIXD-114 fix 2: real switch, then a second client chooses the same scene again: the row offers no Undo, reads and sends nothing in its 15 s, and real W1/W4 keeps the newer choice (gate r2, PIXD-118)", async (t) => {
   const ctx = await pixd114Devices(t);
   const { row, cells, sent, measured, store, model } = ctx;
-  store.tick(Date.now());
-  const select = () => row().querySelector("select");
-  const undoButton = () => row().querySelector('[data-line="scene"] [data-act="undo"]');
-  const reads = () => ctx.calls.filter((call) => call.method === "GET" && call.path === ctx.d);
-  // The row switches A → B: Clock → Test pattern. Its answer carries real W1/W4's stamp of the choice.
-  typeInto(select(), "test-pattern", "change");
-  await intWaitFor(() => sent("scene").length === 1 && sent("scene")[0].status !== 0);
-  await settle();
-  const mine = measured().desired.choice.chosenAt;
-  assert.equal(typeof mine, "string");
-  assert.equal(sent("scene")[0].answer.device.desired.choice.chosenAt, mine);
-  assert.equal(cells().sceneLine, `Switched from ${model.sceneName(store.getState(), "clock", "ulanzi")}·Undo`);
-  // A second client (another tab) chooses Test pattern again, a second later: a newer choice of the same scene.
-  // It talks to real W1/W4 directly; this page hears nothing of it.
-  await ctx.clock.advance(1000);
-  const other = await intHttpFetch(`${ctx.base}${ctx.d}/scene`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scene: "test-pattern" }) });
-  assert.equal(other.status, 200);
-  const theirs = measured().desired.choice.chosenAt;
-  assert.ok(Date.parse(String(theirs)) > Date.parse(String(mine)), "real W1/W4 stamps the newer choice");
-  assert.equal(measured().desired.scene.scene, "test-pattern");
-  assert.ok(undoButton(), "the page has not heard of it: the offer is still drawn");
-  // Undo reads the device, finds the newer choice, and sends no switch back to Clock.
-  r4Click(undoButton());
-  await intWaitFor(() => reads().length === 1 && reads()[0].status !== 0);
-  await settle();
-  assert.equal(reads()[0].status, 200);
-  assert.equal(sent("scene").length, 1, "Undo did not send Clock over the newer choice");
-  assert.equal(undoButton(), null, "the offer is gone");
-  assert.equal(cells().sceneLine, "Your choice");
-  assert.equal(r4Value(select()), "test-pattern");
-  assert.equal(store.getState().devices.get("ulanzi-t").desired.choice.chosenAt, theirs, "the page holds the newer choice now");
-  assert.deepEqual([measured().desired.scene.scene, measured().desired.choice.chosenAt], ["test-pattern", theirs], "real W1/W4 keeps the second client's choice");
+  // The browser's clock, held still by the test; the page's clock follows it, as main.js ticks it every second.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  try {
+    const later = (/** @type {number} */ ms) => { t.mock.timers.tick(ms); store.tick(Date.now()); };
+    store.tick(Date.now());
+    const select = () => row().querySelector("select");
+    // What an Undo sent (fix 1): a read of the device, then the switch's own request.
+    const sceneRequests = () => ctx.calls.filter((call) => call.path === ctx.d || call.path === `${ctx.d}/scene`).map((call) => `${call.method} ${call.path}`);
+    // The row switches A → B: Clock → Test pattern. Its answer carries real W1/W4's stamp of the choice.
+    typeInto(select(), "test-pattern", "change");
+    await intWaitFor(() => sent("scene").length === 1 && sent("scene")[0].status !== 0);
+    await settle();
+    const mine = measured().desired.choice.chosenAt;
+    assert.equal(typeof mine, "string");
+    assert.equal(sent("scene")[0].answer.device.desired.choice.chosenAt, mine);
+    assert.equal(cells().sceneLine, `Switched from ${model.sceneName(store.getState(), "clock", "ulanzi")}`);
+    assert.equal(row().querySelectorAll('[data-act="undo"]').length, 0, "no Undo: nothing can send Clock over a newer choice");
+    // A second client (another tab) chooses Test pattern again, a second later: a newer choice of the same scene.
+    // It talks to real W1/W4 directly; this page hears nothing of it.
+    await ctx.clock.advance(1000);
+    const other = await intHttpFetch(`${ctx.base}${ctx.d}/scene`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scene: "test-pattern" }) });
+    assert.equal(other.status, 200);
+    const theirs = measured().desired.choice.chosenAt;
+    assert.ok(Date.parse(String(theirs)) > Date.parse(String(mine)), "real W1/W4 stamps the newer choice");
+    // The row's 15 s run out with nothing read and nothing sent; then its source line.
+    later(14_999);
+    await settle();
+    assert.equal(row().querySelectorAll('[data-act="undo"]').length, 0, "no Undo at 14.999 s");
+    later(1);
+    await settle();
+    assert.equal(cells().sceneLine, "Your choice");
+    assert.deepEqual(sceneRequests(), [`PUT ${ctx.d}/scene`], "the row's switch, and no other scene request or read");
+    assert.equal(r4Value(select()), "test-pattern");
+    assert.deepEqual([measured().desired.scene.scene, measured().desired.choice.chosenAt], ["test-pattern", theirs], "real W1/W4 keeps the second client's choice");
+  } finally {
+    t.mock.timers.reset();
+    store.tick(Date.now());
+  }
 });
 
 test("PIXD-114 B1: one status line per display: 'Online · frame 1 s ago', 'Stale · last frame 45 s ago', 'Offline since 12:40 · Recovery steps'; the dot as today, the rest in its tooltip", async () => {
@@ -16135,7 +16128,7 @@ test("PIXD-114 B2: a built-in mode gets its tile with the clock and 'Drawn by th
   } finally { devicesPage.unmount(); root.remove(); await drain(calls); }
 });
 
-test("PIXD-114 C1: Undo is bound to its device, its switch and the choice that switch made: a newer choice, also of the same scene, or any newer state drops it for good, at once and with nothing sent; a new life, another row, a switch that replaced an overlay and an answer without pixdcon's stamp offer none", async () => {
+test("PIXD-114 C1: a switch's line says 'Switched from X' with no Undo control (fix 2, PIXD-118), bound to its device, its switch and the choice that switch made: a newer choice, also of the same scene, or any newer state ends it for good, at once and with nothing sent; a new life, another row, a switch that replaced an overlay, an answer without pixdcon's stamp and an answer that comes in another opening of the page say nothing", async () => {
   const calls = heldFetch();
   const boot = bootPages((e) => [view("d1", { epoch: e }), view("d2", { epoch: e }), view("d3", { epoch: e, source: "overlay" })]);
   r4Tick(Date.now());
@@ -16144,19 +16137,25 @@ test("PIXD-114 C1: Undo is bound to its device, its switch and the choice that s
   try {
     let seq = 10;
     const line = (/** @type {string} */ name) => r4Text(root.querySelector(`.dt-row[data-name="${name}"] [data-line="scene"]`));
+    /** Fix 2: no row offers Undo until PIXD-118. @param {string} when */
+    const noUndo = (when) => assert.equal(root.querySelectorAll('[data-act="undo"]').length, 0, `no Undo in any row ${when}`);
     /** Your choice of `scene` on the device, as pixdcon stamped it (null: no stamp). @param {string} name @param {string} scene @param {number} rev @param {string|null} stamp @param {any} [o] */
     const chosen = (name, scene, rev, stamp, o = {}) => {
       const v = view(name, { epoch: boot.epoch, rev, scene, source: "ui", ...o });
       v.desired.choice.chosenAt = stamp;
       return v;
     };
+    /** pixdcon's answer to the row's switch that is out. @param {string} name @param {string} scene @param {number} rev @param {string|null} stamp @param {any} [o] */
+    const answer = async (name, scene, rev, stamp, o = {}) => {
+      seq += 1;
+      pending(calls, "PUT", `/devices/${name}/scene`).answer(200, { device: chosen(name, scene, rev, stamp, o), persisted: true, notSavedReason: null }, `${boot.epoch}-${seq}`);
+      await settle();
+    };
     /** A choice in the row's select, and pixdcon's answer to its switch. @param {string} name @param {string} scene @param {number} rev @param {string|null} stamp @param {any} [o] */
     const choose = async (name, scene, rev, stamp, o = {}) => {
       typeInto(root.querySelector(`.dt-row[data-name="${name}"] select`), scene, "change");
       await settle();
-      seq += 1;
-      pending(calls, "PUT", `/devices/${name}/scene`).answer(200, { device: chosen(name, scene, rev, stamp, o), persisted: true, notSavedReason: null }, `${boot.epoch}-${seq}`);
-      await settle();
+      await answer(name, scene, rev, stamp, o);
     };
     /** @param {string} type @param {any} data */
     const event = async (type, data) => {
@@ -16165,40 +16164,51 @@ test("PIXD-114 C1: Undo is bound to its device, its switch and the choice that s
       await settle();
     };
     await choose("d1", "weather", 2, at("18:00:00"));
-    assert.equal(line("d1"), "Switched from Clock·Undo");
-    assert.equal(line("d2"), "Your choice", "another row offers nothing");
-    // Another tab chooses Weather again: the same scene, a newer stamp. The offer goes at once; nothing is sent.
+    assert.equal(line("d1"), "Switched from Clock");
+    noUndo("after a switch");
+    assert.equal(line("d2"), "Your choice", "another row says nothing");
+    // Another tab chooses Weather again: the same scene, a newer stamp. The line goes at once; nothing is sent.
     const sent = calls.length;
     await event("device", chosen("d1", "weather", 3, at("18:00:04")));
-    assert.equal(line("d1"), "Your choice", "a newer choice of the same scene drops the offer");
+    assert.equal(line("d1"), "Your choice", "a newer choice of the same scene ends the line");
     assert.equal(calls.length, sent, "nothing was sent");
-    // A newer state: an MQTT overlay covers your choice of Clock with Weather; once it is gone the offer does not come back.
+    // A newer state: an MQTT overlay covers your choice of Clock with Weather; once it is gone the line does not come back.
     await choose("d1", "clock", 4, at("18:00:08"));
-    assert.equal(line("d1"), "Switched from Weather·Undo");
+    assert.equal(line("d1"), "Switched from Weather");
+    noUndo("after the second switch");
     const covered = chosen("d1", "clock", 5, at("18:00:08"));
     covered.desired.scene = { ...covered.desired.scene, scene: "weather", source: "overlay" };
     covered.desired.choice.overridden = true;
     await event("device", covered);
-    assert.doesNotMatch(line("d1"), /Undo/);
+    assert.doesNotMatch(line("d1"), /Switched from/);
     await event("device", chosen("d1", "clock", 6, at("18:00:08")));
-    assert.equal(line("d1"), "Your choice", "dropped for good");
-    // A new life of the device is another slot: no offer survives it.
+    assert.equal(line("d1"), "Your choice", "ended for good");
+    // A new life of the device is another slot: no line survives it.
     await choose("d2", "weather", 2, at("18:00:12"));
-    assert.equal(line("d2"), "Switched from Clock·Undo");
+    assert.equal(line("d2"), "Switched from Clock");
     await event("device-removed", { name: "d2", incarnation: 1 });
     await event("device", chosen("d2", "weather", 1, at("18:00:12"), { incarnation: 2 }));
     assert.equal(line("d2"), "Your choice");
-    // An answer without pixdcon's stamp of the choice offers nothing: no newer choice could be told from it.
+    // An answer without pixdcon's stamp of the choice says nothing: no newer choice could be told from it.
     await choose("d2", "clock", 2, null, { incarnation: 2 });
     assert.equal(line("d2"), "Your choice");
-    // A switch that replaced an overlay is not undone into your choice.
+    // A switch that replaced an overlay says nothing: an Undo of it (PIXD-118) would make the overlay's scene your choice.
     await choose("d3", "weather", 2, at("18:00:16"));
     assert.equal(line("d3"), "Your choice");
-    assert.deepEqual([calls.filter((c) => c.method === "PUT").length, calls.filter((c) => c.method === "GET").length], [5, 0], "nothing else was sent");
+    // Fix 2: a switch whose answer comes after the page was opened again. The line was the old opening's: the new one says nothing.
+    typeInto(root.querySelector('.dt-row[data-name="d1"] select'), "weather", "change");
+    await settle();
+    devicesPage.unmount();
+    devicesPage.mount(root, {});
+    assert.equal(line("d1"), "Switching to Weather…", "the switch runs on in the new opening");
+    await answer("d1", "weather", 7, at("18:00:20"));
+    assert.equal(line("d1"), "Your choice");
+    noUndo("in the new opening");
+    assert.deepEqual([calls.filter((c) => c.method === "PUT").length, calls.filter((c) => c.method === "GET").length], [6, 0], "nothing else was sent");
   } finally { devicesPage.unmount(); root.remove(); await drain(calls); }
 });
 
-test("PIXD-114 fix 4: Undo's 15 s start when its switch succeeded, on the browser's clock: a slow switch keeps its whole offer; a click checks the 15 s again, and a tab that slept past them sends nothing", async (t) => {
+test("PIXD-114 fix 4: 'Switched from X' runs 15 s from the moment its switch succeeded: a slow switch keeps its whole 15 s, then the source line; no Undo control and no request in them (fix 2, PIXD-118)", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(at("18:00:00")) });
   const calls = heldFetch();
   const boot = bootPages((e) => [view("d1", { epoch: e })]);
@@ -16210,7 +16220,7 @@ test("PIXD-114 fix 4: Undo's 15 s start when its switch succeeded, on the browse
   try {
     let seq = 10;
     const line = () => r4Text(root.querySelector('.dt-row [data-line="scene"]'));
-    const undoButton = () => root.querySelector('.dt-row [data-act="undo"]');
+    const undoControls = () => root.querySelectorAll('.dt-row [data-act="undo"]').length;
     const select = () => root.querySelector(".dt-row select");
     /** @param {string} scene @param {number} rev @param {string} stamp */
     const chosen = (scene, rev, stamp) => {
@@ -16218,52 +16228,26 @@ test("PIXD-114 fix 4: Undo's 15 s start when its switch succeeded, on the browse
       v.desired.choice.chosenAt = stamp;
       return v;
     };
-    /** @param {any} call @param {any} body */
-    const answer = async (call, body) => {
-      seq += 1;
-      call.answer(200, body, `${boot.epoch}-${seq}`);
-      await settle();
-    };
     // A slow switch: pixdcon answers 20 s after the choice.
     typeInto(select(), "weather", "change");
     await settle();
     later(20_000);
     await settle();
     assert.equal(line(), "Switching to Weather…");
-    await answer(pending(calls, "PUT", "/devices/d1/scene"), { device: chosen("weather", 2, at("18:00:20")) });
-    assert.equal(line(), "Switched from Clock·Undo", "offered once the switch succeeded");
+    seq += 1;
+    pending(calls, "PUT", "/devices/d1/scene").answer(200, { device: chosen("weather", 2, at("18:00:20")) }, `${boot.epoch}-${seq}`);
+    await settle();
+    const count = calls.length;
+    assert.equal(line(), "Switched from Clock", "said once the switch succeeded");
+    assert.equal(undoControls(), 0, "with no Undo");
     later(14_999);
     await settle();
-    assert.ok(undoButton(), "for 15 s from then: still at 14.999 s");
+    assert.equal(line(), "Switched from Clock", "for 15 s from then: still at 14.999 s");
+    assert.equal(undoControls(), 0);
     later(1);
     await settle();
-    assert.equal(undoButton(), null, "gone at 15 s");
-    // A click at 14.999 s on the browser's clock reads the device, then switches back.
-    typeInto(select(), "clock", "change");
-    await settle();
-    await answer(pending(calls, "PUT", "/devices/d1/scene"), { device: chosen("clock", 3, at("18:00:36")) });
-    t.mock.timers.tick(14_999);
-    r4Click(undoButton());
-    await settle();
-    assert.equal(line(), "Switching to Weather…");
-    await answer(pending(calls, "GET", "/devices/d1"), chosen("clock", 3, at("18:00:36")));
-    assert.deepEqual(pending(calls, "PUT", "/devices/d1/scene").body, { scene: "weather" }, "the choice still stands: Undo switches back");
-    await answer(pending(calls, "PUT", "/devices/d1/scene"), { device: chosen("weather", 4, at("18:00:51")) });
-    assert.equal(line(), "Your choice");
-    // A tab that slept: the browser's clock passed the 15 s, the page's did not tick since. The offer is still
-    // drawn; the click sends nothing, not even the read, and the offer goes.
-    r4Tick(Date.now());
-    typeInto(select(), "clock", "change");
-    await settle();
-    await answer(pending(calls, "PUT", "/devices/d1/scene"), { device: chosen("clock", 5, at("18:00:52")) });
-    assert.ok(undoButton(), "the switch to Clock offers Undo");
-    t.mock.timers.tick(15_000);
-    const count = calls.length;
-    r4Click(undoButton());
-    await settle();
-    assert.equal(calls.length, count, "nothing is sent");
-    assert.equal(undoButton(), null, "the offer is gone");
-    assert.equal(line(), "Your choice");
+    assert.equal(line(), "Your choice", "the source line at 15 s");
+    assert.equal(calls.length, count, "nothing was sent in the 15 s");
   } finally {
     devicesPage.unmount(); root.remove(); await drain(calls);
     t.mock.timers.reset();
@@ -16289,9 +16273,10 @@ test("PIXD-114 A1/B7: rows of 120 px whose every control has one reserved line o
   for (const rule of rules)
     for (const selector of rule.selectors.filter((s) => /\.(?:row-line|seg|bri|auto|c-[a-z]+)\b/.test(s) && /:disabled|\[aria-pressed|\[aria-busy|\.fail\b/.test(s)))
       for (const [property] of rule.decls) assert.ok(!box.test(property) || selector === ".row-line .fail", `PIXD-114: "${selector}" sets ${property}`);
-  // Markup: one control and one reserved line per cell, idle, busy and failed alike.
+  // Markup: one control and one reserved line per cell, idle, busy, failed and switched alike.
   const calls = heldFetch();
-  bootPages((e) => [view("d1", { epoch: e })]);
+  const boot = bootPages((e) => [view("d1", { epoch: e })]);
+  r4Tick(Date.now());
   const root = pageRoot();
   devicesPage.mount(root, {});
   try {
@@ -16320,6 +16305,16 @@ test("PIXD-114 A1/B7: rows of 120 px whose every control has one reserved line o
     await settle();
     assert.deepEqual(shape(), idle, "failed: the same cells and lines");
     assert.deepEqual(root.querySelectorAll(".dt-row .fail").map((/** @type {any} */ f) => `${f.closest("[data-line]").getAttribute("data-line")}: ${r4Text(f)}`), ["scene: Not switched: pixdcon failed to answer (500).", "mode: Not stopped: pixdcon failed to answer (500).", "brightness: Not changed: pixdcon failed to answer (500)."]);
+    // Fix 2: switched, the select's line says where from, with no Undo beside it (PIXD-118).
+    typeInto(root.querySelector(".dt-row select"), "weather", "change");
+    await settle();
+    const switched = view("d1", { epoch: boot.epoch, rev: 2, scene: "weather", source: "ui" });
+    switched.desired.choice.chosenAt = at("18:00:00");
+    pending(calls, "PUT", "/devices/d1/scene").answer(200, { device: switched, persisted: true, notSavedReason: null }, `${boot.epoch}-11`);
+    await settle();
+    assert.equal(r4Text(root.querySelector('[data-line="scene"]')), "Switched from Clock");
+    assert.deepEqual(shape(), idle, "switched: the same cells and lines");
+    assert.deepEqual([root.querySelectorAll('.dt-row [data-act="undo"]').length, root.querySelectorAll('.dt-row [data-cell="scene"] button').length], [0, 0], "no Undo, and no other action in the select's cell");
   } finally { devicesPage.unmount(); root.remove(); await drain(calls); }
 });
 
