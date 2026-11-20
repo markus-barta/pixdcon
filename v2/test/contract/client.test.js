@@ -16099,3 +16099,71 @@ test("PIXD-114 A1/B7: rows of 120 px whose every control has one reserved line o
     assert.deepEqual(root.querySelectorAll(".dt-row .fail").map((/** @type {any} */ f) => `${f.closest("[data-line]").getAttribute("data-line")}: ${r4Text(f)}`), ["scene: Not switched: pixdcon failed to answer (500).", "mode: Not stopped: pixdcon failed to answer (500).", "brightness: Not changed: pixdcon failed to answer (500)."]);
   } finally { devicesPage.unmount(); root.remove(); await drain(calls); }
 });
+
+/**
+ * PIXD-114 fix 2 and 3, from the stylesheet: the least width a grid of the
+ * Devices table needs (its fixed tracks, the minimum of each minmax and fr
+ * track, its gaps), and which rule applies at a width.
+ * @param {string|undefined} columns grid-template-columns @param {string|undefined} gap column-gap or gap
+ */
+function pixd114GridMin(columns, gap) {
+  assert.ok(columns && gap, `a grid with its columns (${columns}) and its gap (${gap})`);
+  const tracks = columns.match(/minmax\([^)]*\)|[^\s]+/g) ?? [];
+  const least = tracks.map((track) => {
+    const min = /^minmax\(([^,]+),/.exec(track)?.[1] ?? track;
+    return /^\d+(\.\d+)?px$/.test(min) ? Number.parseFloat(min) : 0;
+  });
+  return least.reduce((sum, px) => sum + px, 0) + Number.parseFloat(gap) * (tracks.length - 1);
+}
+
+test("PIXD-114 fix 2 and 3: the table's own width picks its grid, so no Devices grid runs past the right edge from 320 to 1920 px; on a phone brightness has a line of its own with 160 px of slider or more", () => {
+  const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
+  const rules = pixd111CssRules(css);
+  const decls = (/** @type {string} */ selector, at = "") => new Map(rules.filter((rule) => rule.selectors.includes(selector) && rule.at === at).flatMap((rule) => rule.decls));
+  /** A declaration the test needs, which must be there. @param {string} selector @param {string} property @param {string} [at] @returns {string} */
+  const prop = (selector, property, at = "") => {
+    const value = decls(selector, at).get(property);
+    assert.ok(value !== undefined, `${at} ${selector} sets ${property}`);
+    return value;
+  };
+  const wideAt = "@container (width < 1274px)";
+  const blockAt = "@container (width < 980px)";
+  assert.equal(decls(".dt").get("container-type"), "inline-size", "fix 3: the table is the container its grid is chosen by");
+  const wide = pixd114GridMin(decls(".dt-row").get("grid-template-columns"), decls(".dt-row").get("column-gap"));
+  const compact = pixd114GridMin(decls(".dt-row", wideAt).get("grid-template-columns"), decls(".dt-row", wideAt).get("column-gap"));
+  assert.deepEqual([wide, compact], [1274, 980], "the least widths of the wide and the compact grid");
+  assert.equal(decls(".dt-head", wideAt).get("grid-template-columns"), decls(".dt-row", wideAt).get("grid-template-columns"), "head and rows share the compact grid");
+  assert.equal(decls(".dt-row", blockAt).get("grid-template-areas"), '"pv dev open" "show show show" "mode bri bri"', "narrower than the compact grid: one block per display");
+  assert.equal(decls(".dt-head", blockAt).get("display"), "none");
+  // No rule of the window's width chooses a grid of the table any more (1180 and 1060 px did, whatever the table had).
+  assert.deepEqual(rules.filter((rule) => rule.at.startsWith("@media") && rule.selectors.some((s) => /\.dt-(row|head)\b/.test(s)) && rule.decls.some(([p]) => p === "grid-template-columns")).map((rule) => rule.at), []);
+  // Every width from 320 to 1920 px, with and without a 17 px scrollbar: main's padding (32, 16 at 760 px and below) and max-width 1376.
+  for (let width = 320; width <= 1920; width += 1)
+    for (const bar of [0, 17]) {
+      const table = Math.min(width - bar, 1376) - (width <= 760 ? 32 : 64);
+      if (table < 980) {
+        const block = pixd114GridMin(decls(".dt-row", blockAt).get("grid-template-columns"), decls(".dt-row", blockAt).get("column-gap"));
+        assert.ok(block <= table, `${width} px: the block needs ${block} px of ${table}`);
+      } else assert.ok((table < 1274 ? compact : wide) <= table, `${width} px (scrollbar ${bar}): the ${table < 1274 ? "compact" : "wide"} grid fits in ${table} px`);
+    }
+  // Fix 2: a phone. Brightness gets the row's width: Auto, the slider, the level, and its reserved line under it.
+  const phone = "@media (max-width:480px)";
+  assert.equal(decls(".dt-row", phone).get("grid-template-areas"), '"pv dev open" "show show show" "mode mode mode" "bri bri bri"', "brightness on a line of its own");
+  const narrow = "@media (max-width:760px)";
+  const gap = Number.parseFloat(prop(".bri", "gap", narrow));
+  const slider = (/** @type {string} */ columns, /** @type {number} */ room) => room - pixd114GridMin(columns, String(gap));
+  const own = prop(".bri", "grid-template-columns", phone);
+  assert.equal(own, "48px minmax(0,1fr) 54px");
+  for (const width of [320, 360, 375, 390, 393, 402, 412, 414, 430, 440, 480])
+    assert.ok(slider(own, width - 32) >= 160, `${width} px: ${slider(own, width - 32)} px of slider on its own line`);
+  assert.equal(slider(own, 320 - 32), 170, "170 px of slider at 320 px");
+  // Wider than 480 px, beside the mode buttons (132 px and the 12 px gap): never less than at 481 px.
+  const shared = prop(".bri", "grid-template-columns", narrow);
+  const mode = Number.parseFloat(prop(".seg.icons", "width"));
+  const rowGap = Number.parseFloat(prop(".dt-row", "column-gap", blockAt));
+  for (const width of [481, 540, 600, 700, 760]) assert.ok(slider(shared, width - 32 - mode - rowGap) >= 160, `${width} px: the slider beside the mode buttons keeps 160 px or more`);
+  assert.equal(slider(shared, 481 - 32 - mode - rowGap), 179);
+  // Its reserved line stays: 18 px under every control, whatever it says (A1); nothing in the phone rules changes a line.
+  assert.deepEqual(["height", "margin-top", "overflow"].map((p) => decls(".row-line").get(p)), ["18px", "6px", "hidden"]);
+  assert.equal(rules.some((rule) => rule.at.includes("max-width:480px") && rule.selectors.some((s) => /row-line|\.val\b|\.auto\b/.test(s))), false);
+});

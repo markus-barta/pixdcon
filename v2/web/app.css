@@ -154,8 +154,14 @@ input[type=range]:disabled{opacity:.5}
    leave 80 px, the box of the tallest preview. Every cell is one control of
    32 px with one reserved line of 18 px under it (A1), so nothing moves when a
    status, a busy label or a failure appears: the lines clip, the tooltip says
-   all. Pixoo previews are 80 px, Ulanzi 176 × 44 (128 × 32 when narrower). */
+   all. Pixoo previews are 80 px, Ulanzi 176 × 44 (128 × 32 when narrower).
+   The table's own width picks its grid, not the window's (a scrollbar or the
+   page padding cannot push a column past the edge): the wide grid needs
+   1274 px (176 + 190 + 260 + 132 + 300 + 76 and five gaps of 28), the
+   compact one 980 px (128 + 150 + 200 + 132 + 240 + 40 and five of 18);
+   narrower than that, one block per display. */
 .p-devices {
+  .dt{container-type:inline-size}
   .dt-head,.dt-row{display:grid;grid-template-columns:176px minmax(190px,1fr) minmax(260px,1.25fr) 132px 300px 76px;column-gap:28px}
   .dt-head{font-size:12px;line-height:18px;color:var(--text-3);padding:0 0 8px;border-bottom:1px solid var(--line)}
   .dt-row{height:120px;padding:20px 0 19px;border-bottom:1px solid var(--line);align-items:start}
@@ -197,13 +203,13 @@ input[type=range]:disabled{opacity:.5}
   .bri .auto[aria-pressed="true"]:disabled{background:var(--accent-tint)}
   .bri .val{padding:0 8px;white-space:nowrap}
   .c-open{display:flex;align-items:center;justify-content:flex-end;height:32px}
-  @media (max-width:1180px){
+  @container (width < 1274px){
     .dt-head,.dt-row{grid-template-columns:128px minmax(150px,1fr) minmax(200px,1.2fr) 132px 240px 40px;column-gap:18px}
     .c-pv[data-type="ulanzi"] .pv{width:128px;height:32px}
   }
   /* Narrower than the table: one block per display (A8), the preview, name
      and Open on top, the select under them, then mode and brightness. */
-  @media (max-width:1060px){
+  @container (width < 980px){
     .dt-head{display:none}
     .dt-row{height:auto;padding:16px 0;grid-template-columns:132px minmax(0,1fr) 44px;grid-template-areas:"pv dev open" "show show show" "mode bri bri";column-gap:12px;row-gap:12px}
     .c-pv{grid-area:pv;height:auto}
@@ -222,6 +228,15 @@ input[type=range]:disabled{opacity:.5}
     .bri{grid-template-columns:52px minmax(0,1fr) 58px;gap:8px;height:44px}
     .bri .auto,.bri .val{height:44px}
     .bri .val{font-size:12px;padding:0 6px}
+  }
+  /* A phone (PIXD-114 A6, A8): beside the mode buttons the slider would keep
+     a few pixels of track (18 px at 320 px). Brightness gets a line of its
+     own, the row's width, with its reserved line under it: Auto, the slider
+     and the level, the slider 170 px or more (288 - 48 - 54 - 2 × 8 at
+     320 px). Wider, beside the mode buttons it keeps 179 px or more. */
+  @media (max-width:480px){
+    .dt-row{grid-template-areas:"pv dev open" "show show show" "mode mode mode" "bri bri bri"}
+    .bri{grid-template-columns:48px minmax(0,1fr) 54px}
   }
   .loading-row{height:64px;display:flex;align-items:center;border-bottom:1px solid var(--line);color:var(--text-2)}.loading-row span{display:flex;align-items:center;gap:8px}
   .dt.frozen .dt-row{opacity:.55}.dt.frozen .pv{filter:grayscale(1)}
