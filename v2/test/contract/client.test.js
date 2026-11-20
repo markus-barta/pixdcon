@@ -712,7 +712,8 @@ test("client pages, Tick's four states: shadow (neutral filled dot, 'Shadow · n
   assert.equal(condition?.icon, "layers");
   assert.equal(condition?.cls, "ovr");
   assert.deepEqual(condition?.action, { label: "Add to config.json", kind: "adopt" });
-  assert.equal(deviceCell(overlayOnly).lines[0].text, "from the MQTT config overlay · not saved");
+  assert.equal(deviceCell(overlayOnly).note?.text, "from the MQTT config overlay · not saved");
+  assert.equal(deviceCell(view("a")).note, null, "PIXD-114: a device of config.json has no second line under its name");
 
   // Item 9: restart required.
   store.applyEvent({ type: "controller", epoch: A, seq: 20, stream, data: { ...state.controller, restartRequired: { reason: "mqtt changed", since: at("18:36:40") } } });
@@ -1675,7 +1676,7 @@ test("r2 finding 8, B-176: Restore shows its busy label in reserved width and ig
   devicesPage.mount(root, {});
   try {
     const restore = () => root.querySelector('.dt-row [data-act="restore"]');
-    const second = () => root.querySelector(".dt-row .src2").textContent;
+    const second = () => root.querySelector('.dt-row [data-line="scene"]').textContent;
     assert.ok(restore(), "the row offers Restore");
     const button = restore();
     assert.equal(click(button), true);
@@ -1688,7 +1689,7 @@ test("r2 finding 8, B-176: Restore shows its busy label in reserved width and ig
     assert.equal(restore()?.disabled, true, "while it runs the button takes no click");
     assert.equal(restore()?.getAttribute("aria-busy"), "true");
     assert.equal(restore()?.children[0]?.textContent, "Restoring…", "its busy label shows");
-    assert.equal(restore()?.children[1]?.textContent, "Restore", "the other label keeps its width, unseen");
+    assert.equal(restore()?.children[1]?.textContent, "Back to Clock", "the other label keeps its width, unseen");
     assert.equal(restore()?.children[1]?.getAttribute("aria-hidden"), "true");
     pending(calls, "DELETE", "/scene-overlay").answer(200, view("d1", { epoch, rev: 2 }), `${epoch}-12`);
     await settle();
@@ -1843,7 +1844,7 @@ test("r3 gate 2.3 (finding 8, Restore across lives): a new incarnation of the sa
     old.answer(500, {});
     await settle();
     assert.ok(restoreIn(root), "the old failure did not take the button");
-    assert.doesNotMatch(rowLine(root, ".src2"), /Not restored/);
+    assert.doesNotMatch(rowLine(root, '[data-line="scene"]'), /Not restored/);
   } finally {
     devicesPage.unmount();
     await drain(calls);
@@ -1860,7 +1861,7 @@ test("r3 gate Q3 (B-175): a failed Restore keeps its button, with the error besi
     await settle();
     pending(calls, "DELETE", "/scene-overlay").answer(500, {});
     await settle();
-    assert.match(rowLine(root, ".src2"), /Not restored: pixdcon failed to answer \(500\)\./);
+    assert.match(rowLine(root, '[data-line="scene"]'), /Not restored: pixdcon failed to answer \(500\)\./);
     assert.ok(restoreIn(root), "the button stays");
     assert.equal(restoreIn(root).disabled, false);
     assert.equal(click(restoreIn(root)), true);
@@ -1971,7 +1972,7 @@ test("r3 gate Q6 (one busy owner across pages): a switch started on the Device p
     await settle();
     assert.equal(calls.filter((c) => c.method === "PUT" && c.url.endsWith("/devices/d1/scene")).length, 1, "only one switch leaves");
     assert.doesNotMatch(root.querySelector(".dt-row .c-show").textContent, /Not switched/);
-    assert.match(rowLine(root, ".src"), /Switching to Weather…/, "the row shows the switch that runs");
+    assert.match(rowLine(root, '[data-line="scene"]'), /Switching to Weather…/, "the row shows the switch that runs");
     put.answer(200, view("d1", { epoch, rev: 3, scene: "weather" }), `${epoch}-13`);
     await settle();
     assert.doesNotMatch(root.querySelector(".dt-row .c-show").textContent, /Not switched|Switching/);
@@ -2262,7 +2263,7 @@ let r8EditIdentity = 0;
 
 
 const configPage = await loadPage("config");
-const { getState: r4State, setOp: r4SetOp } = await import(new URL("../../web/js/store.js", import.meta.url).href);
+const { getState: r4State, setOp: r4SetOp, tick: r4Tick } = await import(new URL("../../web/js/store.js", import.meta.url).href);
 
 // The stand-in DOM, completed for the pages the earlier tests did not reach
 // (Config's edit row, Create copy, Add device, the recovery dialog):
@@ -2551,6 +2552,8 @@ function r4View(world, name, epoch, life, rev, devices = world.spec.devices ?? [
   v.effective.lastBrightness = level;
   v.effective.appliedBrightness = level;
   if (entry?.o?.override !== undefined) v.desired.brightness = { override: entry.o.override + level - 30, source: "web", since: v.desired.brightness.since };
+  // PIXD-114: a choice made in this run carries pixdcon's stamp of it (the Undo of a row is bound to it).
+  if (entry?.o?.chosenAt !== undefined) v.desired.choice.chosenAt = entry.o.chosenAt;
   return v;
 }
 
@@ -2988,8 +2991,16 @@ const R4_PAGES = {
       // The Add device form of the empty page is on screen only while no device is listed (r4): hidden, it says nothing.
       const slot = root.querySelector(".empty-slot");
       const empty = slot && !slot.hidden ? slot : null;
+      const range = row?.querySelector('input[type="range"]');
+      const auto = row?.querySelector('[data-act="auto"]');
       return [
-        ["row d1", ["epoch", "life", "token"], row ? `${r4Value(row.querySelector("select"))}${row.querySelector("select")?.disabled ? " [disabled]" : ""} | ${r4Text(row.querySelector(".c-show"))} | ${r4Text(row.querySelector(".src2"))} | ${r4Button(row.querySelector('[data-act="restore"]'))}` : "∅"],
+        // PIXD-114: each control of the row with its one reserved line; their slots are the Device page's.
+        ["row d1", ["epoch", "life", "token"], row ? `${r4Value(row.querySelector("select"))}${row.querySelector("select")?.disabled ? " [disabled]" : ""} | ${r4Text(row.querySelector('[data-line="scene"]'))} | ${r4Button(row.querySelector('[data-act="restore"]'))} | ${r4Button(row.querySelector('[data-act="undo"]'))}` : "∅"],
+        // PIXD-114 fix 1: the Undo offer is this opening's (its record is armed in the opening the switch began in)
+        // while the line is idle; while an operation of the scene slot runs or failed, the line is the slot's (rule 5).
+        ["row d1 Undo offer", (said) => (/Switching to|Restoring…|Not switched|Not restored|not confirmed/.test(said) ? ["epoch", "life", "token"] : ["opening", "epoch", "life", "token"]), row ? `${r4Text(row.querySelector('[data-line="scene"]'))} | ${r4Button(row.querySelector('[data-line="scene"] [data-act="undo"]'))}` : "∅"],
+        ["row d1 mode", ["epoch", "life", "token"], row ? `${r4Text(row.querySelector('[data-line="mode"]'))} | ${row.querySelectorAll('[data-act="mode"]').map((/** @type {any} */ b) => `${b.getAttribute("aria-pressed") === "true" ? "*" : ""}${b.disabled ? "x" : "o"}`).join("")}` : "∅"],
+        ["row d1 brightness", ["epoch", "life", "token"], row ? `${r4Value(range)}${range?.disabled ? " [disabled]" : ""} | ${r4Text(row.querySelector(".val"))} | ${r4Button(auto)}${auto?.getAttribute("aria-pressed") === "true" ? " [pressed]" : ""} | ${r4Text(row.querySelector('[data-line="brightness"]'))}` : "∅"],
         ["Add device fields", ["opening", "revision"], `${r4Value(empty?.querySelector('form.addf [name="name"]'))} | ${r4Value(empty?.querySelector('form.addf [name="ip"]'))} | ${r4Value(empty?.querySelector('form.addf [name="type"]'))}`],
         ["focus", ["opening", "revision"], r4Focus(root)],
         ["Add device button and outcome", ["epoch", "token"], `${r4Button(empty?.querySelector("form.addf button"))} | ${r4Text(empty?.querySelector(".slot"))}`],
@@ -3173,8 +3184,37 @@ const R4_KINDS = [
     world: { devices: [{ name: "d1", o: { source: "overlay" } }], overlays: (/** @type {string} */ epoch, run = epoch.endsWith("1") ? 0 : 1) => [record("o1", "scene", { device: "d1", value: run === 0 ? "weather" : "clock" })] },
     begin: (ctx) => r4Click(ctx.root.querySelector('[data-act="clear"][data-id="o1"]')),
   },
-  { name: "devices scene", site: "web/js/pages/devices.js:330", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/scene"], begin: (ctx) => typeInto(ctx.root.querySelector(".dt-row select"), "weather", "change") },
-  { name: "devices restore", site: "web/js/pages/devices.js:357", page: "devices", world: r4d1({ source: "overlay" }), request: ["DELETE", "/api/v2/devices/d1/scene-overlay"], begin: (ctx) => r4Click(restoreIn(ctx.root)) },
+  { name: "devices scene", site: "web/js/pages/devices.js (chooseScene, sendScene)", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/scene"], begin: (ctx) => typeInto(ctx.root.querySelector(".dt-row select"), "weather", "change") },
+  { name: "devices restore", site: "web/js/pages/devices.js (restore)", page: "devices", world: r4d1({ source: "overlay" }), request: ["DELETE", "/api/v2/devices/d1/scene-overlay"], begin: (ctx) => r4Click(restoreIn(ctx.root)) },
+  // PIXD-114 fix 1: Undo reads the device again before it switches back (its PUT is the switch's, "devices scene").
+  {
+    name: "devices undo", site: "web/js/pages/devices.js (undo, the read before the switch back)", page: "devices", world: r4d1(), request: ["GET", "/api/v2/devices/d1"],
+    // The switch to Weather that pixdcon made, with its stamp: the row offers its Undo. The page's clock is the browser's, as main.js ticks it.
+    setup: async (ctx) => {
+      Object.assign(ctx.world.spec.devices[0].o, { scene: "weather", source: "ui", chosenAt: at("18:00:00") });
+      r4Tick(Date.now());
+      typeInto(ctx.root.querySelector(".dt-row select"), "weather", "change");
+      await settle();
+      r4Pending(ctx, "PUT", "/devices/d1/scene").ok();
+      await settle();
+      assert.ok(ctx.root.querySelector('.dt-row [data-act="undo"]'), "the row offers Undo");
+    },
+    // The scene slot stays the Undo's while it runs, also in a new opening: there is nothing to do again.
+    again: null,
+    begin: (ctx) => r4Click(ctx.root.querySelector('.dt-row [data-act="undo"]')),
+  },
+  // PIXD-114: the row's Play/Pause/Stop and its slider, in the Device page's mode and brightness slots.
+  { name: "devices mode", site: "web/js/pages/devices.js (setMode)", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/mode"], begin: (ctx) => r4Click(ctx.root.querySelector('.dt-row [data-act="mode"][data-mode="pause"]')) },
+  {
+    name: "devices brightness", site: "web/js/pages/devices.js (setBrightness, the row's slider)", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/brightness"],
+    begin: (ctx) => {
+      const range = ctx.root.querySelector('.dt-row input[type="range"]');
+      assert.equal(range.disabled, false, "the row's slider takes a level while no brightness request runs");
+      typeInto(range, "40", "input");
+      typeInto(range, "40", "change");
+    },
+    invariant: r4RangeHeld,
+  },
   {
     name: "devices add device", site: "web/js/pages/devices.js:375", page: "devices", world: { devices: [] }, request: ["POST", "/api/v2/devices"],
     setup: (ctx) => {
@@ -7594,11 +7634,22 @@ test("r4 harness: guard probe r6: view helpers select the exact scene, type, dev
   state.overlays = [record("ob", "device-scene", { device: "d2", value: "weather" }), record("oa", "device-scene", { device: "d1", value: "clock" })];
   assert.equal(model.showingNow(state, d1).source.topic, state.overlays[1].topic);
   assert.equal(model.showingNow(state, d2).source.topic, state.overlays[0].topic);
-  for (const [mode, label] of [["play", "Playing"], ["pause", "Paused"], ["stop", "Stopped"]]) { d1.desired.mode.value = mode; assert.equal(model.modeCell(d1).label, label); }
-  for (const level of [0, 37, 100]) { d1.desired.brightness.override = level; assert.equal(model.brightnessCell(d1).big, `${level} %`); assert.equal(model.brightnessCell(d1).meta.text, "Override"); }
+  for (const [mode, label] of [["play", "Playing"], ["pause", "Paused"], ["stop", "Stopped"]]) { d1.desired.mode.value = mode; assert.equal(model.modeCell(d1).label, label); assert.equal(model.modeCell(d1).value, mode); }
+  d1.desired.mode.value = "play";
+  for (const level of [1, 37, 100]) {
+    d1.desired.brightness.override = level;
+    assert.deepEqual([model.brightnessCell(d1).value, model.brightnessCell(d1).level, model.brightnessCell(d1).auto], [`${level} %`, level, false]);
+    // pixdcon carries the page's own level over MQTT too: an override reads the same from any source (concept B3).
+    for (const source of ["none", "mqtt", "ui"]) {
+      d1.desired.brightness.source = source;
+      assert.deepEqual([model.brightnessCell(d1).text, model.brightnessCell(d1).cls], ["Override · Auto gives it back to the scene", ""]);
+    }
+  }
   d1.desired.brightness.override = null; d1.effective.lastBrightness = null;
-  assert.equal(model.brightnessCell(d1).big, "—");
-  d1.effective.lastBrightness = 42; assert.equal(model.brightnessCell(d1).big, "42 %");
+  assert.deepEqual([model.brightnessCell(d1).value, model.brightnessCell(d1).muted, model.brightnessCell(d1).auto, model.brightnessCell(d1).text], ["—", true, true, "Auto · the display keeps its level"]);
+  d1.effective.lastBrightness = 42;
+  assert.deepEqual([model.brightnessCell(d1).value, model.brightnessCell(d1).level, model.brightnessCell(d1).text], ["42 %", 42, "Auto · set by the scene"]);
+  d1.desired.scene.scene = null; assert.equal(model.brightnessCell(d1).text, "Auto · no scene");
 });
 
 test("r4 harness: guard probe r6: overlay kind, confirmation, clear authority and replaced-row projection", async () => {
@@ -7691,7 +7742,7 @@ function r6ViewOwners(model) {
           const base = /** @type {any} */ (loadedStore([own, decoy]).store.getState());
           const state = { ...base, now: Date.parse(at("18:42:10")), scenes: SCENES, overlays: [...ownRecords, record("decoy", "device-scene", { device: "d2", value: "weather", confirmed: false })], previews: new Map([["d1", frame], ["d2", { ...frame, rgb: new Uint8Array([99, 88, 77]), receivedAt: at("17:00:00") }]]), settings: new Map([["d1/clock", { preview: { draft: 4 }, values: { n: { default: 1, saved: 2, preview: 42 }, m: { default: 3, preview: 4 } } }], ["d2/clock", { preview: { draft: 9 }, values: { n: { default: 91, saved: 92 } } }]]) };
           const other = { ...state, devices: new Map([["d2", { ...decoy, displayName: "Changed decoy" }], ["d1", own]]), overlays: [record("new-decoy", "device-scene", { device: "d2", value: "only the decoy changed", confirmed: false }), ...ownRecords.toReversed()], previews: new Map([["d2", { ...frame, receivedAt: at("16:00:00"), rgb: null }], ["d1", frame]]), settings: new Map([["d2/clock", { values: { n: { preview: 99 } } }], ["d1/clock", state.settings.get("d1/clock")]]) };
-          for (const name of ["deviceStatus", "deviceCondition", "showingNow", "sourceLines", "previewCount", "waitingSceneOverlay", "facts", "previewCaption", "previewState", "healthRow"])
+          for (const name of ["deviceStatus", "deviceCondition", "showingNow", "sceneLine", "rowStatus", "previewCount", "waitingSceneOverlay", "facts", "previewCaption", "previewState", "healthRow"])
             assert.deepEqual(model[name](state, own), model[name](other, own), `${name}: unrelated device, overlay, preview and settings state cannot change d1's projection (${type}/${health}/${source}/${variant})`);
           assert.equal(model.waitingSettingsLine(state, "d1", "clock"), model.waitingSettingsLine(other, "d1", "clock"));
           assert.equal(model.previewCount(state, own), variant === 2 ? 0 : 2, "the current scene's own preview data is retained");
@@ -7800,7 +7851,7 @@ test("r4 harness: guard probe r6: format boundaries, scenes-answer envelope and 
   finally { overlays.page.unmount(); root.remove(); }
 }));
 
-test("r4 harness: guard probe r6: bootstrap API and network errors, top-bar version modes and canonical copy", async (t) => r6Browser(async ({ copies }) => {
+test("r4 harness: guard probe r6: bootstrap API and network errors, and a top bar without a build stamp (PIXD-114 B6)", async (t) => r6Browser(async ({ copies }) => {
   const global = /** @type {any} */ (globalThis);
   const document = /** @type {any} */ (fakeDocument);
   const saved = Object.getOwnPropertyDescriptor(document, "getElementById");
@@ -7809,8 +7860,10 @@ test("r4 harness: guard probe r6: bootstrap API and network errors, top-bar vers
     for (const kind of ["api", "network"])
       for (const display of ["pretty", "semver"]) {
         /** @type {Map<string, any>} */
-        const nodes = new Map(["app", "version", "overlay-count", "restart", "mqtt-dot", "mqtt-text"].map((id) => [id, makeElement("div")]));
-        document.getElementById = (/** @type {string} */ id) => nodes.get(id);
+        const nodes = new Map(["app", "overlay-count", "restart", "mqtt-dot", "mqtt-text"].map((id) => [id, makeElement("div")]));
+        /** @type {string[]} */
+        const asked = [];
+        document.getElementById = (/** @type {string} */ id) => { asked.push(id); return nodes.get(id); };
         const errors = /** @type {any[]} */ ([]);
         const paints = /** @type {Array<(state: any) => void>} */ ([]);
         const top = { overlayCount: 2, restart: { shown: true, title: "Own restart reason" }, mqtt: { dot: "bad", text: "Own MQTT status", cls: "bad" } };
@@ -7826,9 +7879,10 @@ test("r4 harness: guard probe r6: bootstrap API and network errors, top-bar vers
           "./session.js": stub('export const setSession=()=>{};'),
         });
         assert.deepEqual(errors.map((error) => error.message), [kind === "api" ? "Own API reason" : "No answer from pixdcon."]);
-        assert.equal(nodes.get("version").textContent, display === "pretty" ? "26·10·09 06:53" : "261009065314.0.0");
-        click(nodes.get("version")); assert.equal(copies.at(-1), "261009065314.0.0");
-        nodes.get("version").removeAttribute("data-canonical"); const count = copies.length; click(nodes.get("version")); assert.equal(copies.length, count);
+        // B6: the build stamp left the top bar, whatever the version display; Health shows the version, with Copy.
+        assert.equal(asked.includes("version"), false, "B6: the top bar writes no version");
+        assert.deepEqual(copies, [], "B6: nothing in the top bar copies a version");
+        assert.equal(nodes.get("mqtt-dot").title, "Own MQTT status", "A8: the dot alone says what it means");
         assert.equal(nodes.get("overlay-count").textContent, "2"); assert.equal(nodes.get("restart").hidden, false);
         assert.equal(nodes.get("overlay-count").hidden, false);
         assert.equal(nodes.get("restart").title, "Own restart reason");
@@ -8990,7 +9044,20 @@ const R4_INVENTORY = [
   "web/js/pages/device.js · copyScene · ops note · slot note",
   "web/js/pages/device.js · act · await · store",
   "web/js/pages/devices.js · addDevice · ops done · slot note",
-  "web/js/pages/devices.js · chooseScene · await · store",
+  // PIXD-114: the row's switch (its select and Undo), Play/Pause/Stop and
+  // slider: the Device page's slots and requests; only the store's fence
+  // takes their answers, and the slots say busy and failure.
+  // Fix 1: the switch arms its Undo once it succeeded (its done, arm: the
+  // record this switch left in this opening, under the slot token; the
+  // map writes are r6 rows, "page state" here is the conservative match of
+  // arm's and sameChoice's local `choice`), and Undo reads the device
+  // before it sends the switch back ("request start" under the captured
+  // epoch and life, checked by current(); "page state": the same locals).
+  "web/js/pages/devices.js · chooseScene · ops done · page state",
+  "web/js/pages/devices.js · sendScene · await · store",
+  "web/js/pages/devices.js · undo · await · page state, request start, store",
+  "web/js/pages/devices.js · setMode · await · store",
+  "web/js/pages/devices.js · setBrightness · await · store",
   "web/js/pages/devices.js · restore · await · store",
   "web/js/pages/devices.js · addDevice · await · store",
   "web/js/pages/health.js · loadLog · ops failed · render",
@@ -9103,7 +9170,41 @@ test("r4 inventory: persistent UI state writers across imported helpers all decl
   // is previewed, submitted and saved by real W1/W4" (plus ordinary n).
   // Old: bd3d7684503107b8519edf9143cb4fcb5082035c9659e1c7d87b21f68252615d
   // The request's b07a38… was intermediate; 339b41c already extracts 31de6c….
-  assert.equal(digest, "31de6c11bf4e0b958bb1c6148d26fadd53835d5302c3f77db8c304c5c9b3716c", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+  // PIXD-114 P1 top bar: 404 -> 398 writers; extractor and owner tags
+  // unchanged. main.js: the build stamp's 7 versionButton writes are gone
+  // (B6); the MQTT dot's title is new (A8), synchronous in the top bar's
+  // store subscriber; the top-bar guard probe above reads it.
+  // Old: 31de6c11bf4e0b958bb1c6148d26fadd53835d5302c3f77db8c304c5c9b3716c
+  // PIXD-114 P1 Devices rows: 398 -> 411 writers; extractor and owner tags
+  // unchanged. All are synchronous (render or a person's input), none in a
+  // continuation:
+  //  - devices.js updateRow: mode buttons, Auto and slider `.disabled`, the
+  //    slider's `.value` (render of the slots the Device page shares); the
+  //    "devices mode"/"devices brightness" R4 kinds and the real-server
+  //    stories "PIXD-114: real … from a Devices row" witness them.
+  //  - devices.js sliding (.set on input, .delete on change, reset at mount
+  //    and unmount) and undos (.set on a switch, record.undo on Undo, .delete
+  //    once a newer state dropped it, reset): keyed by the slot of one life of
+  //    the device; "PIXD-114: real Undo …" and "PIXD-114 C1: …".
+  //  - pixel-preview draw: the built-in tile's className/innerHTML (B2);
+  //    "PIXD-114 B2: a built-in mode gets its tile …".
+  //  - model.js sceneLine: local line.restore/line.extra builders; deviceCell
+  //    no longer pushes type, address and note lines (-4).
+  // Old: d7a05262a52e4d5c75d5fcaae783e64a096edcc6f4ece279fdb6d2ef5351aa8e
+  // PIXD-114 P1 fix 1: 411 -> 415 writers; extractor and owner tags
+  // unchanged. A row's Undo is armed when its switch succeeded, bound to
+  // pixdcon's stamp of the choice, in the opening the switch began in:
+  //  - chooseScene: record.token (=) and undos (.delete), synchronous at
+  //    the start of a switch: its pending record, or no offer for a switch
+  //    that replaced an overlay;
+  //  - arm, the switch's done (runs only while the switch is the slot's
+  //    current operation): undos (.set) replaces the pending record with the
+  //    armed one only while it is still this opening's, undos (.delete) when
+  //    the answer has no stamp. "devices undo" (R4 kind), the "row d1 Undo
+  //    offer" piece (opening) and "PIXD-114 C1", "PIXD-114 fix 1/fix 4"
+  //    witness them.
+  // Old: 14994e09d789f445671e694e5e3f23aca0999f05f627293419d56ac97a404bdf
+  assert.equal(digest, "f6f5dffe178e5fded4f23295e8982e0d1dc9ef89bcba4b4a3d24a32c81affdf8", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
 });
 test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
   for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {
@@ -12833,13 +12934,16 @@ test("r4 harness self-test: B3 scene family has controls and must-fail central s
 });
 
 /** The callback source is a minimum, not a frozen source-count waiver.
+ * PIXD-114: 34 -> 36, the Devices row's mode and brightness slot reads.
+ * PIXD-114 fix 1: 36 -> 38, a row's Undo record (undos, undos.get(key)),
+ * armed by its switch's done once pixdcon answered.
  * @param {any[]} sites */
 function r5B3RequirePreviewSource(sites) {
-  assert.ok(sites.length >= 34, `B3 callback observation: ${sites.length} sources; 33 sources fails`);
+  assert.ok(sites.length >= 38, `B3 callback observation: ${sites.length} sources; 37 sources fails`);
   assert.ok(sites.some((site) => site.id.startsWith("web/js/pages/device.js · state · previewFailure · ")), "B3 callback observation still lists pages/device.js · state · previewFailure");
 }
 
-test("r4 harness: B3 callback observation log retains pages/device.js · state · previewFailure, 33 sources fails", async (t) => {
+test("r4 harness: B3 callback observation log retains pages/device.js · state · previewFailure, 37 sources fails", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const evidence = await r7RunAudits(t);
   r5B3RequirePreviewSource(evidence.sites);
@@ -12850,7 +12954,7 @@ test("r4 harness self-test: B3 missing callback source must fail beside its obse
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { sites } = await r7RunAudits(t);
   r5B3RequirePreviewSource(sites);
-  assert.throws(() => r5B3RequirePreviewSource(sites.filter((/** @type {any} */ site) => !site.id.startsWith("web/js/pages/device.js · state · previewFailure · "))), /33 sources fails/);
+  assert.throws(() => r5B3RequirePreviewSource(sites.filter((/** @type {any} */ site) => !site.id.startsWith("web/js/pages/device.js · state · previewFailure · "))), /37 sources fails/);
   const files = r4WebFiles();
   for (const shape of ["spread", "late assignment"]) {
     const changed = files.map((file) => {
@@ -12872,8 +12976,8 @@ test("r4 harness self-test: B3 missing callback source must fail beside its obse
       return { ...file, src: file.src.slice(0, call.start) + replacement + file.src.slice(call.end) };
     });
     const extracted = r7OutcomeSites(changed);
-    assert.equal(extracted.length, 33, shape + ": the historical extraction gap is reproduced");
-    assert.throws(() => r5B3RequirePreviewSource(extracted), /33 sources fails/);
+    assert.equal(extracted.length, 37, shape + ": the historical extraction gap is reproduced");
+    assert.throws(() => r5B3RequirePreviewSource(extracted), /37 sources fails/);
   }
 });
 
@@ -14062,10 +14166,12 @@ async function r5B4RestoreLayout(module) {
     await settle();
     pending(calls, "DELETE", "/scene-overlay").answer(500, {});
     await settle();
-    const line = root.querySelector(".src2");
+    // PIXD-114: the row's one reserved line under the select; its tooltip says the error whole.
+    const line = root.querySelector('.dt-row [data-line="scene"]');
     const button = line.querySelector('[data-act="restore"]');
     const failure = line.querySelector(".fail");
     assert.ok(button && failure, "B4 Restore: retry button and full error remain visible");
+    assert.equal(line.getAttribute("title"), r4Text(failure), "B4 Restore: the line's tooltip says the full error");
     assert.ok(line.children.indexOf(button) < line.children.indexOf(failure), "B4 Restore: error appears after the Restore button");
     assert.equal(button.disabled, false, "B4 Restore: retry remains available");
   } finally { module.page.unmount(); root.remove(); await r4AnswerAll({ calls }); }
@@ -14073,9 +14179,9 @@ async function r5B4RestoreLayout(module) {
 test("r4 harness: B4 Tick Restore error follows its button", async () => r5B4RestoreLayout(await r5Module("pages/devices.js")));
 test("r4 harness self-test: B4 Tick Restore rejects b7f7daf error-before-button layout", async () => {
   await r5B4RestoreLayout(await r5Module("pages/devices.js"));
+  // b7f7daf's layout, re-anchored to the PIXD-114 line: the error before its button.
   const mutant = await r5Module("pages/devices.js", [
-    ['second = `${esc(lines.second.text)} <button', 'second = `${failure || esc(lines.second.text)} <button'],
-    ['</span></button>${failure ? ` ${failure}` : ""}`;', '</span></button>`;'],
+    ['`${action ? `${action}<span class="sep">·</span>` : ""}${failHtml(failure)}`', '`${failHtml(failure)}${action ? `<span class="sep">·</span>${action}` : ""}`'],
   ]);
   await assert.rejects(r5B4RestoreLayout(mutant), /B4 Restore: error appears after/);
 });
@@ -15408,9 +15514,11 @@ test(`gate r3 A6: real Restore ${fail ? "failure preserves the choice and button
   t.after(() => { page.unmount(); root.remove(); });
   const button = root.querySelector('[data-name="ulanzi-t"] [data-act="restore"]') ?? root.querySelector('[data-act="restore"]');
   assert.ok(button);
-  const second = button.closest(".src2");
-  const prefix = second.childNodes[0].textContent;
-  assert.match(prefix, /^Your choice: /);
+  // PIXD-114: Restore names your choice ("Back to …") in the select's one reserved line.
+  const second = button.closest('[data-line="scene"]');
+  const choice = button.children[0].textContent;
+  assert.match(choice, /^Back to /);
+  assert.match(second.textContent, /^MQTT overlay·Back to /);
   if (fail) await ctx.mqtt.stop();
   click(button);
   await intWaitFor(() => ctx.calls.some((call) => call.method === "DELETE" && call.path === `${ctx.d}/scene-overlay`));
@@ -15419,10 +15527,9 @@ test(`gate r3 A6: real Restore ${fail ? "failure preserves the choice and button
   assert.ok(response);
   assert.equal(response.status, fail ? 503 : 200);
   if (fail) {
-    assert.equal(second.childNodes[0].textContent, prefix, "A6: the choice prefix is unchanged on failure");
-    assert.match(second.textContent, /Your choice: .*Restore.*Not restored: MQTT is offline/);
     const restore = second.querySelector('[data-act="restore"]');
-    assert.equal(restore.children[0].textContent, "Restore");
+    assert.equal(restore.children[0].textContent, choice, "A6: the choice is unchanged on failure");
+    assert.match(second.textContent, /Back to .*Not restored: MQTT is offline/);
     assert.equal(restore.disabled, false);
     assert.equal(second.childNodes.indexOf(restore) < second.childNodes.indexOf(second.querySelector(".fail")), true);
   } else assert.doesNotMatch(root.textContent, /Not restored/);
@@ -15661,4 +15768,625 @@ test(`gate r3 A8: terminal old-life ${refused ? "refusal" : "success"} retires o
   assert.equal(ops.op(nextKey).busy, false);
   assert.deepEqual(effects, ["next"]);
   ops.drop(nextKey);
+});
+
+// ---------------------------------------------------------------------------
+// PIXD-114, package 1: the start page is the remote control. Stories of the
+// Devices row's new controls against real W1/W4: each control sends the
+// Device page's request in the Device page's slot; a refused request is said
+// in that control's own reserved line, and nothing else in the row changes.
+// ---------------------------------------------------------------------------
+
+/**
+ * What a Devices row shows, cell by cell: each control and its reserved line.
+ * @param {any} row
+ * @returns {Record<string, string>}
+ */
+function pixd114Cells(row) {
+  const select = row.querySelector("select");
+  const range = row.querySelector('input[type="range"]');
+  const auto = row.querySelector('[data-act="auto"]');
+  const pressed = (/** @type {any} */ el) => (el.getAttribute("aria-pressed") === "true" ? "*" : "");
+  return {
+    status: r4Text(row.querySelector('[data-line="status"]')),
+    sceneControl: `${r4Value(select)}${select.disabled ? " [disabled]" : ""}`,
+    sceneLine: r4Text(row.querySelector('[data-line="scene"]')),
+    modeControl: row.querySelectorAll('[data-act="mode"]').map((/** @type {any} */ b) => `${b.getAttribute("data-mode")}${pressed(b)}${b.disabled ? " [disabled]" : ""}`).join(" "),
+    modeLine: r4Text(row.querySelector('[data-line="mode"]')),
+    brightnessControl: `auto${pressed(auto)}${auto.disabled ? " [disabled]" : ""} | ${r4Value(range)}${range.disabled ? " [disabled]" : ""} | ${r4Text(row.querySelector(".val"))}`,
+    brightnessLine: r4Text(row.querySelector('[data-line="brightness"]')),
+  };
+}
+
+/**
+ * Between two readings of a row only the named reserved line changed.
+ * @param {Record<string, string>} before @param {Record<string, string>} after @param {string} line @param {string} what
+ */
+function pixd114OnlyLine(before, after, line, what) {
+  assert.notEqual(after[line], before[line], `${what}: the failure is said in its control's own line`);
+  assert.deepEqual({ ...after, [line]: before[line] }, before, `${what}: nothing else in the row changes`);
+}
+
+/**
+ * The Devices page on real W1/W4 (intRealClient: ulanzi-t, disabled, MQTT
+ * connected), with the row of ulanzi-t.
+ * @param {any} t
+ */
+async function pixd114Devices(t) {
+  const ctx = await intRealClient(t);
+  const ops = await import("../../web/js/ops.js");
+  const model = await import("../../web/js/view/model.js");
+  const page = (await r5Module("pages/devices.js")).page;
+  const root = pageRoot();
+  page.mount(root, {});
+  t.after(() => { page.unmount(); root.remove(); });
+  const row = () => root.querySelector('.dt-row[data-name="ulanzi-t"]');
+  assert.ok(row(), "PIXD-114: the Devices page has the row of ulanzi-t");
+  const view = () => ctx.store.getState().devices.get("ulanzi-t");
+  return {
+    ...ctx, ops, model, root, row, view,
+    cells: () => pixd114Cells(row()),
+    /** @param {string} tail */
+    sent: (tail) => ctx.calls.filter((/** @type {any} */ call) => call.method === "PUT" && call.path === `${ctx.d}/${tail}`),
+    measured: () => ctx.app.modules.state.view("ulanzi-t"),
+  };
+}
+
+test("PIXD-114: real mode change from a Devices row: the Device page's request and slot, busy on both pages; a refused Stop is said under the buttons and nothing else changes", async (t) => {
+  const ctx = await pixd114Devices(t);
+  const { row, cells, sent, measured, ops } = ctx;
+  assert.match(cells().modeControl, /^play\* pause stop$/, "Play is pressed: the display plays");
+  assert.equal(cells().modeLine, "Playing");
+  // Pause, with its answer held: the row and the Device page show the same busy slot.
+  const transport = pixd105HoldBody((path, method) => path === `${ctx.d}/mode` && method === "PUT");
+  let device;
+  try {
+    r4Click(row().querySelector('[data-act="mode"][data-mode="pause"]'));
+    await intWaitFor(() => transport.held.length === 1);
+    assert.deepEqual(sent("mode").map((call) => [call.body, call.status]), [[{ mode: "pause" }, 200]], "the row sends the Device page's request, and real W1/W4 takes it");
+    assert.equal(measured().desired.mode.value, "pause");
+    const key = ops.deviceSlot("mode", ctx.view());
+    assert.equal(ops.op(key).busy, true, "the operation runs in the Device page's mode slot");
+    assert.equal(cells().modeLine, "Pausing…");
+    assert.match(cells().modeControl, /^play\* \[disabled\] pause \[disabled\] stop \[disabled\]$/, "while it runs the buttons take no click");
+    device = (await r5Module("pages/device.js")).page;
+    const other = pageRoot();
+    device.mount(other, { name: "ulanzi-t" });
+    try {
+      assert.equal(r4Text(other.querySelector(".mode-hint")), "Pausing…", "the Device page shows the row's Pause busy");
+      assert.ok(other.querySelectorAll('[data-act="mode"]').every((/** @type {any} */ b) => b.disabled), "and takes no mode click meanwhile");
+    } finally { device.unmount(); other.remove(); }
+    transport.held[0].release();
+    await settle();
+  } finally { transport.restore(); }
+  assert.match(cells().modeControl, /^play pause\* stop$/, "Pause is pressed once real W1/W4 answered");
+  assert.equal(cells().modeLine, "Paused");
+  // A refused request: the broker is gone, real W1/W4 answers 503 mqtt_offline.
+  await ctx.mqtt.stop();
+  const before = cells();
+  r4Click(row().querySelector('[data-act="mode"][data-mode="stop"]'));
+  await intWaitFor(() => sent("mode").length === 2 && sent("mode")[1].status !== 0);
+  await settle();
+  assert.deepEqual([sent("mode")[1].body, sent("mode")[1].status], [{ mode: "stop" }, 503]);
+  const after = cells();
+  assert.equal(after.modeLine, "Not stopped: MQTT is offline.", "C3: the failure names what was asked, under the buttons");
+  assert.equal(row().querySelector('[data-line="mode"]').getAttribute("title"), "Not stopped: MQTT is offline.", "its tooltip says it whole");
+  pixd114OnlyLine(before, after, "modeLine", "refused Stop");
+  assert.equal(measured().desired.mode.value, "pause", "real W1/W4 still pauses");
+  assert.equal(row().querySelector('[data-act="mode"][data-mode="stop"]').disabled, false, "the button stays for a retry");
+});
+
+test("PIXD-114: real brightness change from a Devices row: the slider sets the level, Auto gives it back; a refused level is said under the slider and nothing else changes", async (t) => {
+  const ctx = await pixd114Devices(t);
+  const { row, cells, sent, measured, ops } = ctx;
+  const range = () => row().querySelector('input[type="range"]');
+  assert.match(cells().brightnessControl, /^auto\* \| /, "Auto is pressed: the scene decides");
+  // A6: the slider is live without a second step; dragging shows its level, letting go sends it.
+  typeInto(range(), "40", "input");
+  assert.match(cells().brightnessControl, /\| 40 \| 40 %$/, "the level being dragged shows beside the slider");
+  assert.equal(sent("brightness").length, 0, "dragging sends nothing");
+  typeInto(range(), "40", "change");
+  assert.equal(range().disabled, true, "the slider is held while its request runs (gate r4 §5)");
+  assert.equal(ops.op(ops.deviceSlot("brightness", ctx.view())).busy, true, "in the Device page's brightness slot");
+  await intWaitFor(() => sent("brightness").length === 1 && sent("brightness")[0].status !== 0);
+  await settle();
+  assert.deepEqual([sent("brightness")[0].body, sent("brightness")[0].status], [{ override: 40 }, 200]);
+  assert.equal(measured().desired.brightness.override, 40);
+  assert.equal(cells().brightnessControl, "auto | 40 | 40 %");
+  assert.equal(cells().brightnessLine, "Override · Auto gives it back to the scene", "real W1/W4 carries the level over MQTT; the line reads as any override");
+  r4Click(row().querySelector('[data-act="auto"]'));
+  await intWaitFor(() => sent("brightness").length === 2 && sent("brightness")[1].status !== 0);
+  await settle();
+  assert.deepEqual([sent("brightness")[1].body, sent("brightness")[1].status], [{ override: null }, 200], "Auto sends null through the same request");
+  assert.equal(measured().desired.brightness.override, null);
+  assert.match(cells().brightnessControl, /^auto\* \| /, "Auto is pressed again");
+  r4Click(row().querySelector('[data-act="auto"]'));
+  await settle();
+  assert.equal(sent("brightness").length, 2, "a pressed Auto sends nothing");
+  // A refused request: the broker is gone, real W1/W4 answers 503 mqtt_offline.
+  await ctx.mqtt.stop();
+  const before = cells();
+  typeInto(range(), "70", "input");
+  typeInto(range(), "70", "change");
+  await intWaitFor(() => sent("brightness").length === 3 && sent("brightness")[2].status !== 0);
+  await settle();
+  assert.deepEqual([sent("brightness")[2].body, sent("brightness")[2].status], [{ override: 70 }, 503]);
+  const after = cells();
+  assert.equal(after.brightnessLine, "Not changed: MQTT is offline.", "C3: the failure is said under the slider");
+  pixd114OnlyLine(before, after, "brightnessLine", "refused level");
+  assert.equal(measured().desired.brightness.override, null, "real W1/W4 kept Auto");
+  assert.equal(range().disabled, false, "the slider stays for a retry");
+});
+
+test("PIXD-114: real Undo after a switch in a Devices row: 'Switched from X · Undo' for 15 s from the switch's success, also of a slow switch; Undo reads the device, then sends the previous scene through the switch; a click after the 15 s sends nothing; a refused Undo is said after its button and nothing else changes", async (t) => {
+  const ctx = await pixd114Devices(t);
+  const { row, cells, sent, measured, store, model } = ctx;
+  // The browser's clock, held still by the test; the page's clock follows it, as main.js ticks it every second.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  try {
+    const later = (/** @type {number} */ ms) => { t.mock.timers.tick(ms); store.tick(Date.now()); };
+    store.tick(Date.now());
+    const select = () => row().querySelector("select");
+    const name = (/** @type {string} */ key) => model.sceneName(store.getState(), key, "ulanzi");
+    const undoButton = () => row().querySelector('[data-line="scene"] [data-act="undo"]');
+    const reads = () => ctx.calls.filter((call) => call.method === "GET" && call.path === ctx.d);
+    assert.equal(r4Value(select()), "clock");
+    assert.equal(undoButton(), null, "no Undo before a switch");
+    // C1: a switch in the select offers Undo in the select's line.
+    typeInto(select(), "test-pattern", "change");
+    await intWaitFor(() => sent("scene").length === 1 && sent("scene")[0].status !== 0);
+    await settle();
+    assert.deepEqual([sent("scene")[0].body, sent("scene")[0].status], [{ scene: "test-pattern" }, 200]);
+    assert.equal(cells().sceneLine, `Switched from ${name("clock")}·Undo`);
+    assert.equal(row().querySelector('[data-line="scene"]').getAttribute("title"), `Switched from ${name("clock")}. Undo switches back.`);
+    // The offer lasts 15 s from the switch's success.
+    later(14_999);
+    await settle();
+    assert.ok(undoButton(), "still offered at 14.999 s");
+    later(1);
+    await settle();
+    assert.equal(undoButton(), null, "gone after 15 s");
+    assert.equal(cells().sceneLine, "Your choice");
+    // Fix 4: a slow switch. Its 15 s start when real W1/W4's answer arrives, not when the scene was chosen.
+    const transport = pixd105HoldBody((path, method) => path === `${ctx.d}/scene` && method === "PUT");
+    try {
+      typeInto(select(), "clock", "change");
+      await intWaitFor(() => transport.held.length === 1);
+      later(20_000);
+      await settle();
+      assert.equal(cells().sceneLine, `Switching to ${name("clock")}…`, "20 s after the choice the switch still runs");
+      transport.held[0].release();
+      await settle();
+    } finally { transport.restore(); }
+    assert.equal(cells().sceneLine, `Switched from ${name("test-pattern")}·Undo`, "the offer comes with the answer");
+    later(14_000);
+    await settle();
+    assert.ok(undoButton(), "and stands 14 s later: 34 s after the choice");
+    // Fix 1: Undo reads the device first, then sends the scene it switched from, through the same request.
+    r4Click(undoButton());
+    await intWaitFor(() => sent("scene").length === 3 && sent("scene")[2].status !== 0);
+    await settle();
+    assert.equal(reads().length, 1, "Undo read the device");
+    assert.ok(ctx.calls.indexOf(reads()[0]) < ctx.calls.indexOf(sent("scene")[2]), "before it switched back");
+    assert.deepEqual([sent("scene")[2].body, sent("scene")[2].status], [{ scene: "test-pattern" }, 200], "Undo is the normal switch to the previous scene");
+    assert.equal(measured().desired.scene.scene, "test-pattern");
+    assert.equal(r4Value(select()), "test-pattern");
+    assert.equal(undoButton(), null, "an Undo is not offered again");
+    assert.equal(cells().sceneLine, "Your choice");
+    // Fix 4: a tab that slept past the 15 s. Its page's clock did not move, so the offer is still drawn; the click
+    // reads the browser's clock: it sends nothing, not even the read, and the offer goes.
+    typeInto(select(), "clock", "change");
+    await intWaitFor(() => sent("scene").length === 4 && sent("scene")[3].status !== 0);
+    await settle();
+    assert.ok(undoButton(), "the switch to Clock offers Undo");
+    t.mock.timers.tick(15_000);
+    assert.ok(undoButton(), "the page's clock still draws the offer");
+    r4Click(undoButton());
+    await settle();
+    assert.deepEqual([reads().length, sent("scene").length], [1, 4], "nothing is read and nothing is sent");
+    assert.equal(undoButton(), null, "the offer is gone");
+    assert.equal(cells().sceneLine, "Your choice");
+    assert.equal(measured().desired.scene.scene, "clock", "real W1/W4 still shows Clock");
+    store.tick(Date.now());
+    // A refused Undo: the scene it would return to was removed from config.json meanwhile.
+    typeInto(select(), "test-pattern", "change");
+    await intWaitFor(() => sent("scene").length === 5 && sent("scene")[4].status !== 0);
+    await settle();
+    typeInto(select(), "clock", "change");
+    await intWaitFor(() => sent("scene").length === 6 && sent("scene")[5].status !== 0);
+    await settle();
+    assert.ok(undoButton(), "the switch to Clock offers Undo");
+    const raw = await request("GET", "/api/v2/config/raw", { resource: "config" });
+    const config = JSON.parse(raw.body.text);
+    delete config.scenes["test-pattern"];
+    await request("PUT", "/api/v2/config/raw", { resource: "config", body: { text: JSON.stringify(config) } });
+    await intWaitFor(() => !ctx.app.modules.scenes.get("test-pattern"), "test-pattern left the registry");
+    const before = cells();
+    r4Click(undoButton());
+    await intWaitFor(() => sent("scene").length === 7 && sent("scene")[6].status !== 0);
+    await settle();
+    assert.equal(reads().length, 2, "the choice still stands: Undo read the device, then switched");
+    assert.deepEqual([sent("scene")[6].body, sent("scene")[6].status], [{ scene: "test-pattern" }, 400]);
+    const after = cells();
+    const line = row().querySelector('[data-line="scene"]');
+    assert.equal(after.sceneLine, "Undo·Not switched: Scene cannot run: test-pattern.", "the failure follows Undo, which stays (Tick, B4; B-175)");
+    assert.equal(line.getAttribute("title"), "Not switched: Scene cannot run: test-pattern.");
+    assert.ok(line.children.indexOf(undoButton()) < line.children.indexOf(line.querySelector(".fail")));
+    assert.equal(undoButton().disabled, false, "Undo stays for a retry");
+    pixd114OnlyLine(before, after, "sceneLine", "refused Undo");
+    assert.equal(measured().desired.scene.scene, "clock", "real W1/W4 still shows Clock");
+  } finally {
+    // The browser's clock again, before real W1/W4 stops; the page's clock follows it.
+    t.mock.timers.reset();
+    store.tick(Date.now());
+  }
+});
+
+test("PIXD-114 fix 1: real Undo is bound to the choice its switch made: a second client chooses the same scene again; Undo reads the device, sends nothing over the newer choice, and the offer goes", async (t) => {
+  const ctx = await pixd114Devices(t);
+  const { row, cells, sent, measured, store, model } = ctx;
+  store.tick(Date.now());
+  const select = () => row().querySelector("select");
+  const undoButton = () => row().querySelector('[data-line="scene"] [data-act="undo"]');
+  const reads = () => ctx.calls.filter((call) => call.method === "GET" && call.path === ctx.d);
+  // The row switches A → B: Clock → Test pattern. Its answer carries real W1/W4's stamp of the choice.
+  typeInto(select(), "test-pattern", "change");
+  await intWaitFor(() => sent("scene").length === 1 && sent("scene")[0].status !== 0);
+  await settle();
+  const mine = measured().desired.choice.chosenAt;
+  assert.equal(typeof mine, "string");
+  assert.equal(sent("scene")[0].answer.device.desired.choice.chosenAt, mine);
+  assert.equal(cells().sceneLine, `Switched from ${model.sceneName(store.getState(), "clock", "ulanzi")}·Undo`);
+  // A second client (another tab) chooses Test pattern again, a second later: a newer choice of the same scene.
+  // It talks to real W1/W4 directly; this page hears nothing of it.
+  await ctx.clock.advance(1000);
+  const other = await intHttpFetch(`${ctx.base}${ctx.d}/scene`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scene: "test-pattern" }) });
+  assert.equal(other.status, 200);
+  const theirs = measured().desired.choice.chosenAt;
+  assert.ok(Date.parse(String(theirs)) > Date.parse(String(mine)), "real W1/W4 stamps the newer choice");
+  assert.equal(measured().desired.scene.scene, "test-pattern");
+  assert.ok(undoButton(), "the page has not heard of it: the offer is still drawn");
+  // Undo reads the device, finds the newer choice, and sends no switch back to Clock.
+  r4Click(undoButton());
+  await intWaitFor(() => reads().length === 1 && reads()[0].status !== 0);
+  await settle();
+  assert.equal(reads()[0].status, 200);
+  assert.equal(sent("scene").length, 1, "Undo did not send Clock over the newer choice");
+  assert.equal(undoButton(), null, "the offer is gone");
+  assert.equal(cells().sceneLine, "Your choice");
+  assert.equal(r4Value(select()), "test-pattern");
+  assert.equal(store.getState().devices.get("ulanzi-t").desired.choice.chosenAt, theirs, "the page holds the newer choice now");
+  assert.deepEqual([measured().desired.scene.scene, measured().desired.choice.chosenAt], ["test-pattern", theirs], "real W1/W4 keeps the second client's choice");
+});
+
+test("PIXD-114 B1: one status line per display: 'Online · frame 1 s ago', 'Stale · last frame 45 s ago', 'Offline since 12:40 · Recovery steps'; the dot as today, the rest in its tooltip", async () => {
+  const model = await import("../../web/js/view/model.js");
+  const { store } = loadedStore([view("d1")]);
+  const state = { ...store.getState(), now: Date.parse(at("18:42:06")) };
+  const line = (/** @type {any} */ v) => {
+    const status = model.rowStatus(state, v);
+    return `${status.dot} ${[status.label, status.detail].filter(Boolean).join(" · ")}${status.recovery ? " · Recovery steps" : ""}`;
+  };
+  assert.equal(line(view("d1")), "ok Online · frame 1 s ago");
+  assert.equal(line(view("d1", { scene: "builtin:clock" })), "ok Online · built-in mode", "a built-in mode has no frames to count");
+  const stale = view("d1", { health: "stale" });
+  stale.health.lastFrameAt = at("18:41:21");
+  stale.health.consecutiveErrors = 3;
+  assert.equal(line(stale), "warn Stale · last frame 45 s ago");
+  assert.equal(model.rowStatus(state, stale).title, "Stale · last frame 45 s ago · 3 render errors in a row", "what does not fit the line is in its tooltip");
+  const offline = view("d1", { health: "offline" });
+  offline.health.since = at("12:40:00");
+  assert.equal(line(offline), `bad Offline since ${clockShort(offline.health.since)} · Recovery steps`);
+  const shadow = view("d1", { output: "shadow", outputProblem: "still driven by pixdcon v1" });
+  assert.equal(line(shadow), "shadow Shadow · not driving the display");
+  assert.equal(model.rowStatus(state, shadow).title, "Shadow · not driving the display · still driven by pixdcon v1");
+  assert.equal(line(view("d1", { enabled: false })), "idle Off · disabled in config.json");
+  const held = view("d1", { enabled: false });
+  held.desired.held = true;
+  assert.equal(line(held), "idle On hold · address not confirmed by the broker");
+  assert.equal(model.rowStatus(state, held).title, "On hold · address not confirmed by the broker", "said once, also in the tooltip");
+  assert.equal(line(view("d1", { health: "idle", scene: null })), "idle Idle · no scene");
+  assert.equal(line(view("d1", { health: "starting" })), "idle Starting · waiting for the first frame");
+  // The row renders it: the dot, the label in the body colour, the rest after it, and Recovery steps as a link.
+  const calls = heldFetch();
+  bootPages((e) => [{ ...offline, epoch: e }]);
+  const root = pageRoot();
+  devicesPage.mount(root, {});
+  try {
+    const status = root.querySelector('.dt-row[data-name="d1"] [data-line="status"]');
+    assert.equal(status.querySelector(".dot").className, "dot bad");
+    assert.equal(r4Text(status.querySelector("b")), `Offline since ${clockShort(offline.health.since)}`);
+    assert.equal(status.querySelector("a.link").getAttribute("href"), "#/devices/d1/recovery");
+    assert.match(status.getAttribute("title"), /^Offline since \d\d:\d\d · last contact .+ ago$/, "the tooltip adds the last contact");
+    assert.equal(status.getAttribute("title"), model.rowStatus(r4State(), r4State().devices.get("d1")).title);
+  } finally { devicesPage.unmount(); root.remove(); await drain(calls); }
+});
+
+test("PIXD-114 B2: a built-in mode gets its tile with the clock and 'Drawn by the display itself', never 'Waiting for the first frame'; a real scene still waits for its first frame", async () => {
+  const model = await import("../../web/js/view/model.js");
+  const builtin = view("d1", { scene: "builtin:clock" });
+  const frame = /** @type {any} */ ({ width: 32, height: 8, rgb: new Uint8Array(32 * 8 * 3), receivedAt: at("18:00:00") });
+  const { store } = loadedStore([builtin]);
+  const state = { ...store.getState(), previews: new Map([["d1", frame]]) };
+  assert.deepEqual(model.previewState(state, builtin), { frame: null, veil: false, reason: "Drawn by the display itself", spinner: false, builtin: true }, "the frame pixdcon still holds is of the scene before");
+  builtin.desired.mode.value = "stop";
+  assert.equal(model.previewState(state, builtin).frame, frame, "stopped, the display is blank: the frame is pixdcon's blank");
+  builtin.desired.mode.value = "play";
+  assert.equal(model.previewState({ ...state, previews: new Map() }, view("d1", { health: "starting" })).reason, "Waiting for the first frame");
+  const calls = heldFetch();
+  bootPages((e) => [view("d1", { epoch: e, scene: "builtin:clock" }), view("d2", { epoch: e, health: "starting", type: "pixoo" })]);
+  const root = pageRoot();
+  devicesPage.mount(root, {});
+  try {
+    const cell = (/** @type {string} */ name) => root.querySelector(`.dt-row[data-name="${name}"] [data-cell="preview"]`);
+    const tile = cell("d1").querySelector(".pv-built");
+    assert.ok(tile, "the built-in mode's own tile");
+    assert.equal(tile.hidden, false);
+    assert.equal(tile.getAttribute("title"), "Drawn by the display itself");
+    assert.equal(tile.getAttribute("aria-label"), "Drawn by the display itself");
+    assert.ok(tile.querySelector('use[href="#i-clock"]'), "with the clock");
+    assert.equal(cell("d1").querySelector("canvas").hidden, true);
+    assert.doesNotMatch(r4Text(cell("d1")), /Waiting/);
+    assert.equal(r4Text(root.querySelector('.dt-row[data-name="d1"] [data-line="status"]')), "Online · built-in mode");
+    assert.equal(cell("d2").querySelector(".pv-built"), null);
+    assert.equal(r4Text(cell("d2").querySelector(".pv-empty")), "Waiting for the first frame", "a real scene that started waits for its frame");
+    assert.equal(cell("d2").getAttribute("data-type"), "pixoo", "the stylesheet sizes the box by type (B7)");
+    assert.equal(cell("d1").getAttribute("data-type"), "ulanzi");
+  } finally { devicesPage.unmount(); root.remove(); await drain(calls); }
+});
+
+test("PIXD-114 C1: Undo is bound to its device, its switch and the choice that switch made: a newer choice, also of the same scene, or any newer state drops it for good, at once and with nothing sent; a new life, another row, a switch that replaced an overlay and an answer without pixdcon's stamp offer none", async () => {
+  const calls = heldFetch();
+  const boot = bootPages((e) => [view("d1", { epoch: e }), view("d2", { epoch: e }), view("d3", { epoch: e, source: "overlay" })]);
+  r4Tick(Date.now());
+  const root = pageRoot();
+  devicesPage.mount(root, {});
+  try {
+    let seq = 10;
+    const line = (/** @type {string} */ name) => r4Text(root.querySelector(`.dt-row[data-name="${name}"] [data-line="scene"]`));
+    /** Your choice of `scene` on the device, as pixdcon stamped it (null: no stamp). @param {string} name @param {string} scene @param {number} rev @param {string|null} stamp @param {any} [o] */
+    const chosen = (name, scene, rev, stamp, o = {}) => {
+      const v = view(name, { epoch: boot.epoch, rev, scene, source: "ui", ...o });
+      v.desired.choice.chosenAt = stamp;
+      return v;
+    };
+    /** A choice in the row's select, and pixdcon's answer to its switch. @param {string} name @param {string} scene @param {number} rev @param {string|null} stamp @param {any} [o] */
+    const choose = async (name, scene, rev, stamp, o = {}) => {
+      typeInto(root.querySelector(`.dt-row[data-name="${name}"] select`), scene, "change");
+      await settle();
+      seq += 1;
+      pending(calls, "PUT", `/devices/${name}/scene`).answer(200, { device: chosen(name, scene, rev, stamp, o), persisted: true, notSavedReason: null }, `${boot.epoch}-${seq}`);
+      await settle();
+    };
+    /** @param {string} type @param {any} data */
+    const event = async (type, data) => {
+      seq += 1;
+      live(boot, type, seq, data);
+      await settle();
+    };
+    await choose("d1", "weather", 2, at("18:00:00"));
+    assert.equal(line("d1"), "Switched from Clock·Undo");
+    assert.equal(line("d2"), "Your choice", "another row offers nothing");
+    // Another tab chooses Weather again: the same scene, a newer stamp. The offer goes at once; nothing is sent.
+    const sent = calls.length;
+    await event("device", chosen("d1", "weather", 3, at("18:00:04")));
+    assert.equal(line("d1"), "Your choice", "a newer choice of the same scene drops the offer");
+    assert.equal(calls.length, sent, "nothing was sent");
+    // A newer state: an MQTT overlay covers your choice of Clock with Weather; once it is gone the offer does not come back.
+    await choose("d1", "clock", 4, at("18:00:08"));
+    assert.equal(line("d1"), "Switched from Weather·Undo");
+    const covered = chosen("d1", "clock", 5, at("18:00:08"));
+    covered.desired.scene = { ...covered.desired.scene, scene: "weather", source: "overlay" };
+    covered.desired.choice.overridden = true;
+    await event("device", covered);
+    assert.doesNotMatch(line("d1"), /Undo/);
+    await event("device", chosen("d1", "clock", 6, at("18:00:08")));
+    assert.equal(line("d1"), "Your choice", "dropped for good");
+    // A new life of the device is another slot: no offer survives it.
+    await choose("d2", "weather", 2, at("18:00:12"));
+    assert.equal(line("d2"), "Switched from Clock·Undo");
+    await event("device-removed", { name: "d2", incarnation: 1 });
+    await event("device", chosen("d2", "weather", 1, at("18:00:12"), { incarnation: 2 }));
+    assert.equal(line("d2"), "Your choice");
+    // An answer without pixdcon's stamp of the choice offers nothing: no newer choice could be told from it.
+    await choose("d2", "clock", 2, null, { incarnation: 2 });
+    assert.equal(line("d2"), "Your choice");
+    // A switch that replaced an overlay is not undone into your choice.
+    await choose("d3", "weather", 2, at("18:00:16"));
+    assert.equal(line("d3"), "Your choice");
+    assert.deepEqual([calls.filter((c) => c.method === "PUT").length, calls.filter((c) => c.method === "GET").length], [5, 0], "nothing else was sent");
+  } finally { devicesPage.unmount(); root.remove(); await drain(calls); }
+});
+
+test("PIXD-114 fix 4: Undo's 15 s start when its switch succeeded, on the browser's clock: a slow switch keeps its whole offer; a click checks the 15 s again, and a tab that slept past them sends nothing", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(at("18:00:00")) });
+  const calls = heldFetch();
+  const boot = bootPages((e) => [view("d1", { epoch: e })]);
+  /** The page's clock follows the browser's, as main.js ticks it. @param {number} ms */
+  const later = (ms) => { t.mock.timers.tick(ms); r4Tick(Date.now()); };
+  r4Tick(Date.now());
+  const root = pageRoot();
+  devicesPage.mount(root, {});
+  try {
+    let seq = 10;
+    const line = () => r4Text(root.querySelector('.dt-row [data-line="scene"]'));
+    const undoButton = () => root.querySelector('.dt-row [data-act="undo"]');
+    const select = () => root.querySelector(".dt-row select");
+    /** @param {string} scene @param {number} rev @param {string} stamp */
+    const chosen = (scene, rev, stamp) => {
+      const v = view("d1", { epoch: boot.epoch, rev, scene, source: "ui" });
+      v.desired.choice.chosenAt = stamp;
+      return v;
+    };
+    /** @param {any} call @param {any} body */
+    const answer = async (call, body) => {
+      seq += 1;
+      call.answer(200, body, `${boot.epoch}-${seq}`);
+      await settle();
+    };
+    // A slow switch: pixdcon answers 20 s after the choice.
+    typeInto(select(), "weather", "change");
+    await settle();
+    later(20_000);
+    await settle();
+    assert.equal(line(), "Switching to Weather…");
+    await answer(pending(calls, "PUT", "/devices/d1/scene"), { device: chosen("weather", 2, at("18:00:20")) });
+    assert.equal(line(), "Switched from Clock·Undo", "offered once the switch succeeded");
+    later(14_999);
+    await settle();
+    assert.ok(undoButton(), "for 15 s from then: still at 14.999 s");
+    later(1);
+    await settle();
+    assert.equal(undoButton(), null, "gone at 15 s");
+    // A click at 14.999 s on the browser's clock reads the device, then switches back.
+    typeInto(select(), "clock", "change");
+    await settle();
+    await answer(pending(calls, "PUT", "/devices/d1/scene"), { device: chosen("clock", 3, at("18:00:36")) });
+    t.mock.timers.tick(14_999);
+    r4Click(undoButton());
+    await settle();
+    assert.equal(line(), "Switching to Weather…");
+    await answer(pending(calls, "GET", "/devices/d1"), chosen("clock", 3, at("18:00:36")));
+    assert.deepEqual(pending(calls, "PUT", "/devices/d1/scene").body, { scene: "weather" }, "the choice still stands: Undo switches back");
+    await answer(pending(calls, "PUT", "/devices/d1/scene"), { device: chosen("weather", 4, at("18:00:51")) });
+    assert.equal(line(), "Your choice");
+    // A tab that slept: the browser's clock passed the 15 s, the page's did not tick since. The offer is still
+    // drawn; the click sends nothing, not even the read, and the offer goes.
+    r4Tick(Date.now());
+    typeInto(select(), "clock", "change");
+    await settle();
+    await answer(pending(calls, "PUT", "/devices/d1/scene"), { device: chosen("clock", 5, at("18:00:52")) });
+    assert.ok(undoButton(), "the switch to Clock offers Undo");
+    t.mock.timers.tick(15_000);
+    const count = calls.length;
+    r4Click(undoButton());
+    await settle();
+    assert.equal(calls.length, count, "nothing is sent");
+    assert.equal(undoButton(), null, "the offer is gone");
+    assert.equal(line(), "Your choice");
+  } finally {
+    devicesPage.unmount(); root.remove(); await drain(calls);
+    t.mock.timers.reset();
+    r4Tick(Date.now());
+  }
+});
+
+test("PIXD-114 A1/B7: rows of 120 px whose every control has one reserved line of 18 px, in CSS and in the markup of every state; stable data attributes for the bounding-box check", async () => {
+  const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
+  const rules = pixd111CssRules(css);
+  const decls = (/** @type {string} */ selector, at = "") => new Map(rules.filter((rule) => rule.selectors.includes(selector) && rule.at === at).flatMap((rule) => rule.decls));
+  assert.deepEqual([decls(".dt-row").get("height"), decls(".dt-row").get("padding"), decls(".dt-row").get("border-bottom")], ["120px", "20px 0 19px", "1px solid var(--line)"], "120 px in every state: 80 px of content, the preview's box");
+  assert.deepEqual(["height", "margin-top", "white-space", "overflow"].map((p) => decls(".row-line").get(p)), ["18px", "6px", "nowrap", "hidden"], "one reserved line of 18 px that never wraps");
+  assert.deepEqual([decls('.c-pv[data-type="pixoo"] .pv').get("width"), decls('.c-pv[data-type="pixoo"] .pv').get("height")], ["80px", "80px"]);
+  assert.deepEqual([decls('.c-pv[data-type="ulanzi"] .pv').get("width"), decls('.c-pv[data-type="ulanzi"] .pv').get("height")], ["176px", "44px"]);
+  assert.equal(decls(".seg.icons").get("width"), "132px");
+  assert.equal(decls(".bri").get("grid-template-columns"), "56px minmax(0,1fr) 56px", "Auto and the value keep their width beside the slider");
+  assert.equal(rules.some((rule) => rule.selectors.some((s) => /\.ver\b/.test(s))), false, "B6: no build stamp in the bar");
+  assert.equal(decls(".nav a", "@media (max-width:760px)").get("flex"), "1", "A8: four equal tabs on a phone");
+  assert.equal(decls(".brand", "@media (max-width:760px)").get("display"), "none");
+  // No state rule of a row changes a box: busy, failed and disabled controls keep theirs.
+  const box = /^(?:(?:min-|max-)?(?:width|height)|padding(?:-[a-z]+)*|margin(?:-[a-z]+)*|font-size|line-height|display|grid(?:-[a-z]+)*)$/;
+  for (const rule of rules)
+    for (const selector of rule.selectors.filter((s) => /\.(?:row-line|seg|bri|auto|c-[a-z]+)\b/.test(s) && /:disabled|\[aria-pressed|\[aria-busy|\.fail\b/.test(s)))
+      for (const [property] of rule.decls) assert.ok(!box.test(property) || selector === ".row-line .fail", `PIXD-114: "${selector}" sets ${property}`);
+  // Markup: one control and one reserved line per cell, idle, busy and failed alike.
+  const calls = heldFetch();
+  bootPages((e) => [view("d1", { epoch: e })]);
+  const root = pageRoot();
+  devicesPage.mount(root, {});
+  try {
+    const shape = () => {
+      const row = root.querySelector('.dt-row[data-name="d1"]');
+      return {
+        cells: row.children.map((/** @type {any} */ cell) => cell.getAttribute("data-cell")),
+        lines: row.querySelectorAll("[data-line]").map((/** @type {any} */ line) => `${line.closest("[data-cell]").getAttribute("data-cell")}:${line.getAttribute("data-line")}${line.hidden ? " hidden" : ""}`),
+        controls: [row.querySelectorAll('[data-cell="scene"] select').length, row.querySelectorAll('[data-cell="mode"] [data-act="mode"]').length, row.querySelectorAll('[data-cell="brightness"] [data-act="auto"]').length, row.querySelectorAll('[data-cell="brightness"] input[type="range"]').length, row.querySelectorAll('[data-cell="open"] a.ibtn').length],
+      };
+    };
+    const idle = shape();
+    assert.deepEqual(idle, {
+      cells: ["preview", "device", "scene", "mode", "brightness", "open"],
+      lines: ["device:status", "scene:scene", "mode:mode", "brightness:brightness"],
+      controls: [1, 3, 1, 1, 1],
+    });
+    r4Click(root.querySelector('.dt-row [data-act="mode"][data-mode="stop"]'));
+    typeInto(root.querySelector('.dt-row input[type="range"]'), "20", "input");
+    typeInto(root.querySelector('.dt-row input[type="range"]'), "20", "change");
+    typeInto(root.querySelector(".dt-row select"), "weather", "change");
+    await settle();
+    assert.deepEqual(shape(), idle, "busy: the same cells and lines");
+    assert.deepEqual([r4Text(root.querySelector('[data-line="mode"]')), r4Text(root.querySelector('[data-line="brightness"]')), r4Text(root.querySelector('[data-line="scene"]'))], ["Stopping…", "Setting 20 %…", "Switching to Weather…"]);
+    for (const tail of ["/mode", "/brightness", "/scene"]) pending(calls, "PUT", `/devices/d1${tail}`).answer(500, {});
+    await settle();
+    assert.deepEqual(shape(), idle, "failed: the same cells and lines");
+    assert.deepEqual(root.querySelectorAll(".dt-row .fail").map((/** @type {any} */ f) => `${f.closest("[data-line]").getAttribute("data-line")}: ${r4Text(f)}`), ["scene: Not switched: pixdcon failed to answer (500).", "mode: Not stopped: pixdcon failed to answer (500).", "brightness: Not changed: pixdcon failed to answer (500)."]);
+  } finally { devicesPage.unmount(); root.remove(); await drain(calls); }
+});
+
+/**
+ * PIXD-114 fix 2 and 3, from the stylesheet: the least width a grid of the
+ * Devices table needs (its fixed tracks, the minimum of each minmax and fr
+ * track, its gaps), and which rule applies at a width.
+ * @param {string|undefined} columns grid-template-columns @param {string|undefined} gap column-gap or gap
+ */
+function pixd114GridMin(columns, gap) {
+  assert.ok(columns && gap, `a grid with its columns (${columns}) and its gap (${gap})`);
+  const tracks = columns.match(/minmax\([^)]*\)|[^\s]+/g) ?? [];
+  const least = tracks.map((track) => {
+    const min = /^minmax\(([^,]+),/.exec(track)?.[1] ?? track;
+    return /^\d+(\.\d+)?px$/.test(min) ? Number.parseFloat(min) : 0;
+  });
+  return least.reduce((sum, px) => sum + px, 0) + Number.parseFloat(gap) * (tracks.length - 1);
+}
+
+test("PIXD-114 fix 2 and 3: the table's own width picks its grid, so no Devices grid runs past the right edge from 320 to 1920 px; on a phone brightness has a line of its own with 160 px of slider or more", () => {
+  const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
+  const rules = pixd111CssRules(css);
+  const decls = (/** @type {string} */ selector, at = "") => new Map(rules.filter((rule) => rule.selectors.includes(selector) && rule.at === at).flatMap((rule) => rule.decls));
+  /** A declaration the test needs, which must be there. @param {string} selector @param {string} property @param {string} [at] @returns {string} */
+  const prop = (selector, property, at = "") => {
+    const value = decls(selector, at).get(property);
+    assert.ok(value !== undefined, `${at} ${selector} sets ${property}`);
+    return value;
+  };
+  const wideAt = "@container (width < 1274px)";
+  const blockAt = "@container (width < 980px)";
+  assert.equal(decls(".dt").get("container-type"), "inline-size", "fix 3: the table is the container its grid is chosen by");
+  const wide = pixd114GridMin(decls(".dt-row").get("grid-template-columns"), decls(".dt-row").get("column-gap"));
+  const compact = pixd114GridMin(decls(".dt-row", wideAt).get("grid-template-columns"), decls(".dt-row", wideAt).get("column-gap"));
+  assert.deepEqual([wide, compact], [1274, 980], "the least widths of the wide and the compact grid");
+  assert.equal(decls(".dt-head", wideAt).get("grid-template-columns"), decls(".dt-row", wideAt).get("grid-template-columns"), "head and rows share the compact grid");
+  assert.equal(decls(".dt-row", blockAt).get("grid-template-areas"), '"pv dev open" "show show show" "mode bri bri"', "narrower than the compact grid: one block per display");
+  assert.equal(decls(".dt-head", blockAt).get("display"), "none");
+  // No rule of the window's width chooses a grid of the table any more (1180 and 1060 px did, whatever the table had).
+  assert.deepEqual(rules.filter((rule) => rule.at.startsWith("@media") && rule.selectors.some((s) => /\.dt-(row|head)\b/.test(s)) && rule.decls.some(([p]) => p === "grid-template-columns")).map((rule) => rule.at), []);
+  // Every width from 320 to 1920 px, with and without a 17 px scrollbar: main's padding (32, 16 at 760 px and below) and max-width 1376.
+  for (let width = 320; width <= 1920; width += 1)
+    for (const bar of [0, 17]) {
+      const table = Math.min(width - bar, 1376) - (width <= 760 ? 32 : 64);
+      if (table < 980) {
+        const block = pixd114GridMin(decls(".dt-row", blockAt).get("grid-template-columns"), decls(".dt-row", blockAt).get("column-gap"));
+        assert.ok(block <= table, `${width} px: the block needs ${block} px of ${table}`);
+      } else assert.ok((table < 1274 ? compact : wide) <= table, `${width} px (scrollbar ${bar}): the ${table < 1274 ? "compact" : "wide"} grid fits in ${table} px`);
+    }
+  // Fix 2: a phone. Brightness gets the row's width: Auto, the slider, the level, and its reserved line under it.
+  const phone = "@media (max-width:480px)";
+  assert.equal(decls(".dt-row", phone).get("grid-template-areas"), '"pv dev open" "show show show" "mode mode mode" "bri bri bri"', "brightness on a line of its own");
+  const narrow = "@media (max-width:760px)";
+  const gap = Number.parseFloat(prop(".bri", "gap", narrow));
+  const slider = (/** @type {string} */ columns, /** @type {number} */ room) => room - pixd114GridMin(columns, String(gap));
+  const own = prop(".bri", "grid-template-columns", phone);
+  assert.equal(own, "48px minmax(0,1fr) 54px");
+  for (const width of [320, 360, 375, 390, 393, 402, 412, 414, 430, 440, 480])
+    assert.ok(slider(own, width - 32) >= 160, `${width} px: ${slider(own, width - 32)} px of slider on its own line`);
+  assert.equal(slider(own, 320 - 32), 170, "170 px of slider at 320 px");
+  // Wider than 480 px, beside the mode buttons (132 px and the 12 px gap): never less than at 481 px.
+  const shared = prop(".bri", "grid-template-columns", narrow);
+  const mode = Number.parseFloat(prop(".seg.icons", "width"));
+  const rowGap = Number.parseFloat(prop(".dt-row", "column-gap", blockAt));
+  for (const width of [481, 540, 600, 700, 760]) assert.ok(slider(shared, width - 32 - mode - rowGap) >= 160, `${width} px: the slider beside the mode buttons keeps 160 px or more`);
+  assert.equal(slider(shared, 481 - 32 - mode - rowGap), 179);
+  // Its reserved line stays: 18 px under every control, whatever it says (A1); nothing in the phone rules changes a line.
+  assert.deepEqual(["height", "margin-top", "overflow"].map((p) => decls(".row-line").get(p)), ["18px", "6px", "hidden"]);
+  assert.equal(rules.some((rule) => rule.at.includes("max-width:480px") && rule.selectors.some((s) => /row-line|\.val\b|\.auto\b/.test(s))), false);
 });

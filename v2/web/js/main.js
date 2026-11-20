@@ -15,10 +15,11 @@
  * snapshot can arrive in either order, also across a restart of pixdcon,
  * and the page ends on the newer one.
  *
- * Also here: the top bar (version, overlay count, MQTT state, "Restart
- * needed"), the one 1 s clock the ages on screen are computed against, the
- * first frame of every display, and the end of this page's settings
- * previews when the page is left.
+ * Also here: the top bar (overlay count, MQTT state, "Restart needed"; no
+ * build stamp since PIXD-114 B6, Health shows the version with Copy), the
+ * one 1 s clock the ages on screen are computed against, the first frame of
+ * every display, and the end of this page's settings previews when the page
+ * is left.
  *
  * Owner: UI worker.
  */
@@ -38,8 +39,7 @@ import {
   tick,
   toPreview,
 } from "./store.js";
-import { applyTheme, versionDisplay } from "./theme.js";
-import { prettyVersion } from "./format.js";
+import { applyTheme } from "./theme.js";
 import { header } from "./view/model.js";
 import { setSession } from "./session.js";
 
@@ -54,7 +54,6 @@ const bootstrap = request("GET", "/api/v2/bootstrap", { resource: "bootstrap" })
 startRouter(app);
 
 // 3. The top bar follows the store.
-const versionButton = /** @type {HTMLButtonElement} */ (document.getElementById("version"));
 const overlayCount = /** @type {HTMLElement} */ (document.getElementById("overlay-count"));
 const restartLink = /** @type {HTMLElement} */ (document.getElementById("restart"));
 const mqttDot = /** @type {HTMLElement} */ (document.getElementById("mqtt-dot"));
@@ -64,34 +63,18 @@ subscribe(
   (state) => state,
   (state) => {
     const top = header(state);
-    const version = prettyVersion(state.controller?.version);
-    if (version) {
-      versionButton.hidden = false;
-      versionButton.textContent =
-        versionDisplay() === "semver" ? version.canonical : version.pretty;
-      versionButton.title = `${version.canonical} · ${version.utc} · click to copy`;
-      versionButton.setAttribute("aria-label", `Version ${version.canonical}, click to copy`);
-      versionButton.dataset.canonical = version.canonical;
-    } else if (state.controller?.version) {
-      versionButton.hidden = false;
-      versionButton.textContent = state.controller.version;
-      versionButton.dataset.canonical = state.controller.version;
-    }
     overlayCount.hidden = top.overlayCount === 0;
     overlayCount.textContent = top.overlayCount ? String(top.overlayCount) : "";
     overlayCount.setAttribute("aria-label", `${top.overlayCount} active`);
     restartLink.hidden = !top.restart.shown;
     restartLink.title = top.restart.title;
     mqttDot.className = `dot ${top.mqtt.dot}`;
+    // On a phone the dot stands alone (A8): its tooltip says what it means.
+    mqttDot.title = top.mqtt.text;
     mqttText.textContent = top.mqtt.text;
     mqttText.style.color = top.mqtt.cls ? `var(--${top.mqtt.cls})` : "";
   },
 );
-
-versionButton.addEventListener("click", () => {
-  const canonical = versionButton.dataset.canonical;
-  if (canonical) void navigator.clipboard?.writeText(canonical);
-});
 
 // 4. The live channel opens with its own generation, which is newer than the
 // bootstrap request's: whichever of the two snapshots arrives last, the page

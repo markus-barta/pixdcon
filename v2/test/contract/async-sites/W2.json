@@ -28,7 +28,7 @@
       "test": "test/contract/client.test.js: client previews:"
     },
     {
-      "site": "web/js/components/enlarged-preview.js:166",
+      "site": "web/js/components/enlarged-preview.js:167",
       "id": "listener:document.addEventListener(\"keydown\")#1",
       "input": "Esc and the arrow keys in the enlarged view",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -37,7 +37,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/components/enlarged-preview.js:167",
+      "site": "web/js/components/enlarged-preview.js:168",
       "id": "listener:zoom.addEventListener(\"click\")#1",
       "input": "Previous, Next, Close, a click beside the image",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -46,7 +46,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/components/enlarged-preview.js:168",
+      "site": "web/js/components/enlarged-preview.js:169",
       "id": "listener:zoom.addEventListener(\"dblclick\")#1",
       "input": "a double click on the image",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -55,7 +55,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/components/enlarged-preview.js:169",
+      "site": "web/js/components/enlarged-preview.js:170",
       "id": "listener:window.addEventListener(\"resize\")#1",
       "input": "the window resized",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -64,7 +64,7 @@
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/components/enlarged-preview.js:170",
+      "site": "web/js/components/enlarged-preview.js:171",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the enlarged view",
       "metadata": "none: the store calls it after a change it applied",
@@ -170,24 +170,15 @@
       "was": "live.connectLive"
     },
     {
-      "site": "web/js/main.js:63",
+      "site": "web/js/main.js:62",
       "id": "subscribe:subscribe#1",
-      "input": "the store's state, for the top bar (version, overlay count, MQTT state, Restart needed)",
+      "input": "the store's state, for the top bar (overlay count, MQTT state and its dot, Restart needed)",
       "metadata": "none: the store calls it after a change it applied",
       "fence": "store.js: a subscriber is called only after the store applied a change, and the store applies nothing unless the fence (ordering.js) answered apply",
       "test": "test/contract/client.test.js: client store:"
     },
     {
-      "site": "web/js/main.js:91",
-      "id": "listener:versionButton.addEventListener(\"click\")#1",
-      "input": "a click on the version in the top bar",
-      "metadata": "a command of the user (a click, a key, a form)",
-      "fence": "none",
-      "why": "it copies the canonical version to the clipboard; nothing arrives and nothing is applied",
-      "test": "test/contract/client.test.js: client store:"
-    },
-    {
-      "site": "web/js/main.js:117",
+      "site": "web/js/main.js:100",
       "id": "timer:setInterval#1",
       "input": "the 1 s clock of the page",
       "metadata": "none: a hint (rule 3.0)",
@@ -195,7 +186,7 @@
       "test": "test/contract/client.test.js: client timers:"
     },
     {
-      "site": "web/js/main.js:125",
+      "site": "web/js/main.js:108",
       "id": "subscribe:subscribe#2",
       "input": "the devices the store holds, to ask once per device life for its last frame",
       "metadata": "epoch, device name and incarnation",
@@ -203,7 +194,7 @@
       "test": "test/contract/client.test.js: client previews:"
     },
     {
-      "site": "web/js/main.js:157",
+      "site": "web/js/main.js:140",
       "id": "listener:window.addEventListener(\"pagehide\")#1",
       "input": "the page is left",
       "metadata": "the page's session id",
@@ -336,7 +327,7 @@
       "test": "test/contract/client.test.js: r3 gate 2.2 (finding 6, failed cleanup):"
     },
     {
-      "site": "web/js/pages/devices.js:464",
+      "site": "web/js/pages/devices.js:828",
       "id": "listener:root.addEventListener(\"change\")#1",
       "input": "a scene chosen in a row's select",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -344,7 +335,7 @@
       "test": "test/contract/client.test.js: r3 gate Q6 (one busy owner across pages):"
     },
     {
-      "site": "web/js/pages/devices.js:465",
+      "site": "web/js/pages/devices.js:829",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "Restore in a row",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -352,7 +343,7 @@
       "test": "test/contract/client.test.js: r3 gate 2.3 (finding 8, Restore across lives):"
     },
     {
-      "site": "web/js/pages/devices.js:466",
+      "site": "web/js/pages/devices.js:830",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "typing in the empty state's Add device form",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -361,7 +352,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/devices.js:467",
+      "site": "web/js/pages/devices.js:831",
       "id": "listener:root.addEventListener(\"submit\")#1",
       "input": "Add device in the empty state",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -369,7 +360,7 @@
       "test": "test/contract/client.test.js: r3 ops (the operation rule):"
     },
     {
-      "site": "web/js/pages/devices.js:468",
+      "site": "web/js/pages/devices.js:832",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Devices page",
       "metadata": "none: the store calls it after a change it applied",

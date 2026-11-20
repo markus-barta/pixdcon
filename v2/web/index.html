@@ -53,10 +53,8 @@
       </defs></svg>
     <header class="top">
       <div class="top-in">
-        <div class="brand">
-          <b>pixdcon</b
-          ><button class="ver num" id="version" type="button" hidden></button>
-        </div>
+        <!-- No build stamp in the bar (PIXD-114 B6): Health shows the version, with Copy. -->
+        <div class="brand"><b>pixdcon</b></div>
         <nav class="nav" aria-label="Main">
           <a href="#/devices" data-nav="devices">Devices</a
           ><a href="#/overlays" data-nav="overlays"
@@ -66,7 +64,7 @@
         </nav>
         <div class="conn" id="conn" role="status">
           <a class="restart" id="restart" href="#/health" hidden
-            ><span class="dot warn" aria-hidden="true"></span>Restart needed</a
+            ><span class="dot warn" aria-hidden="true"></span><span class="restart-text">Restart needed</span></a
           ><span class="dot idle" id="mqtt-dot" aria-hidden="true"></span
           ><span id="mqtt-text">MQTT status unknown</span>
         </div>
