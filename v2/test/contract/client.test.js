@@ -14660,8 +14660,10 @@ test("r4 harness self-test: intw2 L4 corrected-field observer rejects a stale ti
  * over the mounted Device page, including instrumented audit modules.
  * @param {any} t @param {R4Kind} kind @param {string|null} change
  * @param {R4End} end @param {string} mode @param {Record<string, any>} modules
+ * @param {{definition?: Record<string, any>, meanwhile?: [string, string]}} [variant] PIXD-111, with no change: the
+ * scene's own definition, and an edit (key, text) typed while the real Save is out
  */
-async function r3RealSaveRun(t, kind, change, end, mode, modules) {
+async function r3RealSaveRun(t, kind, change, end, mode, modules, variant = {}) {
   const { resolve } = await import("node:path");
   const { writeFile } = await import("node:fs/promises");
   const world = r4World(kind.world), clock = intClock();
@@ -14673,6 +14675,9 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
     const definitions = [{ ...R4_SCHEMA, n: { type: "json", default: {} } }, { ...R4_SCHEMA, n: { type: "string", default: "" } }];
     world.definitions = { ...world.definitions, [scene]: definitions };
     world.schemas.set(scene, definitions[0]);
+  } else if (variant.definition) {
+    world.definitions = { ...world.definitions, [scene]: [variant.definition, variant.definition] };
+    world.schemas.set(scene, variant.definition);
   }
   const files = new Map();
   const source = (/** @type {any} */ schema) => `export default {deviceType:"ulanzi",settingsSchema:${JSON.stringify(schema)},render(){return 1000;}};`;
@@ -14729,8 +14734,9 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
       await stack.app.modules.scenes.refresh([scene]);
       applyDefaultAnswer(await request("GET", path, { resource }));
     } else if (change) await (R4_CHANGE[/** @type {R4Change} */ (change)] ?? R4_STEP[change])(ctx);
+    else if (variant.meanwhile) r4Edit(ctx, ...variant.meanwhile);
     await drain();
-    const receipt = /** @type {any} */ (r8RecordStory(ctx, before, r8Frame(ctx), `real W1/${change ?? "no change"}/${end}/${mode}`));
+    const receipt = /** @type {any} */ (r8RecordStory(ctx, before, r8Frame(ctx), `real W1/${change ?? (variant.meanwhile ? `${variant.meanwhile[0]} typed during Save` : "no change")}/${end}/${mode}`));
     receipt.completed = true; receipt.backend = "real W1/W4";
   };
   /** @type {string[]} */ const absolute = [];
@@ -14784,10 +14790,14 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
     ctx.points.push(observe()); checkDefinition();
     const survival = r4Survival(ctx);
     if (rejectedSave && Object.hasOwn(survival.pending, "n")) /** @type {any} */ (survival.pending).n = "not-json";
+    // A text field sends what was typed; r4Survival reads numbers.
+    for (const key of Object.keys(survival.pending))
+      if (variant.definition?.[key]?.type === "string") /** @type {any} */ (survival.pending)[key] = ctx.edits.get(key).value;
     const errors = ctx.root.querySelectorAll(".ferr, .jerr").some((/** @type {any} */ el) => String(el.textContent ?? "").trim());
     const pendingEdits = Object.keys(survival.pending).length + survival.resets.length;
     if (saveButton(ctx.root).disabled !== (!pendingEdits || Boolean(errors))) absolute.push("edits the next Save sends: its availability disagrees with the retained edits and real field verdicts");
     const status = statusText(ctx.root);
+    const markers = Object.fromEntries([...ctx.edits.keys()].map((key) => [key, r4Text(ctx.root.querySelector(`.set-body [data-row="${key}"] .mk`))]));
     if (held && mode !== "early" && end === "timeout" && !/^Save not confirmed: pixdcon did not answer within \d+ s\./.test(status)) absolute.push(`the timed-out Save lost its unconfirmed feedback: ${status}`);
     if (held && mode !== "early" && end === "500" && !/^Not saved:.*500/.test(status)) absolute.push(`the failed Save lost its 500 feedback: ${status}`);
     const current = stack.app.modules.settings.state("d1", scene);
@@ -14795,19 +14805,25 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
     const revert = ctx.root.querySelector('.set-h [data-act="revert"]');
     if (Boolean(revert) !== Boolean(pendingEdits || serverPreview)) absolute.push("Revert availability disagrees with the real preview and retained edits");
     // W1's applied:false with no rejections is a duplicate-draft no-op.
-    // Judge each retained edit against W1's actual layers, independently
-    // of that transport verdict and of the UI store's copy of the state.
+    // Judge each retained edit against W1's actual state, independently
+    // of that transport verdict and of the UI store's copy of the state:
+    // W1 holds one preview per device and scene, stamped {session, draft}
+    // (PIXD-111). An edit takes the page's next draft when it is typed, so
+    // the first request that carried it names it; a held preview of that
+    // session at or after it carries the edit, whatever value W1 made of it
+    // (clamped, trimmed). Values are never compared.
     for (const [key, edit] of ctx.edits) {
       const saved = ctx.calls.some((/** @type {any} */ call) => call.path === path && call.method === "PUT" && call.status === 200 && call.submitted.get(key) === edit);
       if (saved) continue;
       const preview = ctx.calls.findLast((/** @type {any} */ call) => call.path === `${path}/preview` && call.submitted.get(key) === edit && call.delivered);
       if (!preview) continue;
-      const layer = current.values[key];
-      const previewing = layer && Object.hasOwn(layer, "preview") && JSON.stringify(layer.effective) === JSON.stringify(preview.body.values[key]);
+      const first = ctx.calls.find((/** @type {any} */ call) => call.path === `${path}/preview` && call.method === "PUT" && call.submitted.get(key) === edit && Object.hasOwn(call.body?.values ?? {}, key));
+      const layer = current.values[key], stamp = current.preview;
+      const previewing = Boolean(first) && layer && Object.hasOwn(layer, "preview") && stamp !== null && stamp.session === first.body.session && stamp.draft >= first.body.draft;
       const marker = r4Marker(ctx.root, key);
-      if (!(previewing ? /^previewing/ : /^not previewed/).test(marker)) absolute.push(`real W1 state for ${key}: ${JSON.stringify(layer)}, row marker "${marker}" disagrees with the effective preview`);
+      if (!(previewing ? /^previewing/ : /^not previewed/).test(marker)) absolute.push(`real W1 state for ${key}: ${JSON.stringify(layer)} under the preview stamp ${JSON.stringify(stamp)}, first sent in draft ${first?.body.draft ?? "none"}: row marker "${marker}" disagrees with the held preview`);
     }
-    if (end === "success" && held?.status === 200 && !errors) {
+    if (end === "success" && (!held || held.status === 200) && !errors) {
       const count = Math.max(pendingEdits, Object.values(current.values).filter((layer) => Object.hasOwn(layer, "preview")).length);
       const expected = held && pendingEdits === 0 ? "Saved to config.json" : count
         ? `Previewing ${count} ${count === 1 ? "change" : "changes"} · not saved; leaving this page reverts them`
@@ -14834,7 +14850,7 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
     }
     for (const point of ctx.points)
       for (const piece of R3_REAL_SAVE_PIECES) point.delete(`device: ${piece}`);
-    return { points: ctx.points, changed: ctx.changed, absolute, definition, nextSave, origin: held?.origin, calls: ctx.calls, sent: ctx.calls.map(r4Request), op: held ? r4Request(held) : null };
+    return { points: ctx.points, changed: ctx.changed, absolute, definition, nextSave, origin: held?.origin, calls: ctx.calls, sent: ctx.calls.map(r4Request), op: held ? r4Request(held) : null, status, markers };
   } finally {
     held?.release?.();
     page.unmount(); ctx.root.remove(); world.story = null;
@@ -14862,14 +14878,213 @@ for (const name of ["settings save", "settings reset save", "settings save rejec
       assert.deepEqual(result.absolute, [], "PIXD-109: TRUE marker agrees with real W1, with the Save outcome retained");
     });
 
-test("PIXD-109: settings action widths reserve busy labels in CSS", () => {
-  const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
-  for (const [action, width] of [["save", 104], ["revert", 116], ["clear", 148]]) {
-    const rule = css.match(new RegExp(`\\.set-acts \\[data-act="${action}"\\]\\s*\\{([^}]+)\\}`))?.[1] ?? "";
-    assert.match(rule, new RegExp(`min-width:\\s*${width}px`), `PIXD-109: ${action} reserves its longest label and icon`);
-    assert.doesNotMatch(rule, /\.busy|:disabled/, "PIXD-109: reservation applies in every state");
-  }
+/**
+ * PIXD-111: W1 stores and previews what the scene definition makes of a
+ * value (precedence.js normalizeSettingValue: a number is clamped to its
+ * range, text is trimmed); the form sends what was typed. The edit typed
+ * while the real Save is out is previewed under a newer draft, so after
+ * the Save the page sends that draft again and W1 answers it as a seen
+ * draft, still holding its preview. Out of range: R4_SCHEMA's n is 0 to 50.
+ */
+const PIXD111_NORMALIZED = [
+  { name: "out-of-range n", typed: "99", sent: 99, held: 50 },
+  { name: "untrimmed text n", definition: { ...R4_SCHEMA, n: { type: "string", label: "N", group: "General", description: "", default: "", placeholder: "" } }, typed: "Europe/Berlin ", sent: "Europe/Berlin ", held: "Europe/Berlin" },
+];
+/**
+ * One normalized story through real W1/W4 and the UI's api, store and ops.
+ * @param {any} t @param {(typeof PIXD111_NORMALIZED)[number]} story @param {R4End} end @param {Record<string, any>} modules
+ */
+async function pixd111Normalized(t, story, end, modules) {
+  const result = await r3RealSaveRun(t, r4KindOf("settings save"), null, end, "case", modules, { definition: story.definition, meanwhile: ["n", story.typed] });
+  /** @param {(call: any) => boolean} match */
+  const find = (match) => result.calls?.find(match);
+  const save = find((call) => call.method === "PUT" && /\/settings\/[^/]+$/.test(call.path) && call.serverStatus === 200);
+  assert.ok(save, "PIXD-111: real W1/W4 saved the first edit");
+  const newer = find((call) => call.method === "PUT" && call.path === `${save.path}/preview` && call.body.values.n === story.sent && call.answer?.applied === true);
+  assert.ok(newer && newer.body.draft > save.body.draft, "PIXD-111: real W1 previewed the edit typed during Save under a newer draft");
+  const duplicate = find((call) => call.method === "PUT" && call.path === `${save.path}/preview` && call.body.draft === newer.body.draft && call.status === 200 && call.answer?.applied === false);
+  assert.ok(duplicate, "PIXD-111: after the Save, the page sent that draft again and got W1's seen-draft answer");
+  assert.deepEqual(duplicate.answer.rejected, {});
+  assert.deepEqual(duplicate.answer.state.preview, { session: newer.body.session, draft: newer.body.draft }, "PIXD-111: W1 still holds the edit's own preview");
+  assert.equal(duplicate.answer.state.values.n.preview, story.held, "PIXD-111: W1 holds the normalized value, not the one sent");
+  const seen = { marker: result.markers?.n ?? "", status: result.status ?? "" };
+  const status = end === "success" ? /^Previewing 1 change · not saved; leaving this page reverts them$/ : end === "500" ? /^Not saved:.*500/ : /^Save not confirmed: pixdcon did not answer within 15 s\./;
+  assert.ok(/^previewing · was 2$/.test(seen.marker) && status.test(seen.status), `PIXD-111: TRUE marker and status: the edit is on the display${end === "success" ? "" : " and the Save outcome stays"}; got ${JSON.stringify(seen)}`);
+  assert.deepEqual(result.absolute, [], "PIXD-111: marker, status and next Save agree with real W1");
+}
+for (const story of PIXD111_NORMALIZED)
+  for (const end of R4_ENDS)
+    test(`PIXD-111: real settings save × ${story.name} typed during Save × ${end}`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      await pixd111Normalized(t, story, end, await r8MeasurementModules());
+    });
+for (const story of PIXD111_NORMALIZED)
+  test(`PIXD-111 self-test: real ${story.name} story rejects the value-equality verdict`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const device = await r4DeviceWithForm([[
+      "held?.session === plan.body.session && held.draft >= draft;",
+      "JSON.stringify(layer.preview) === JSON.stringify(plan.body.values[key]);",
+    ]]);
+    // PIXD-109's rule judged W1's normalized value against the one sent: the edit on the display reads as not previewed.
+    const wrong = JSON.stringify({ marker: `not previewed · showing ${story.held}`, status: "Changes not previewed · not saved; pixdcon kept its previous settings" });
+    await assert.rejects(pixd111Normalized(t, story, "success", { ...await r8MeasurementModules(), device }), (error) => error instanceof Error && error.message.includes("PIXD-111: TRUE marker and status") && error.message.endsWith(`got ${wrong}`));
+  });
+
+// LOW-8: a real story without a Save (the r7 references) still has its
+// pending status checked against real W1; PIXD-109's guard skipped it.
+for (const name of ["settings save", "settings reset save"])
+  test(`PIXD-111: real ${name} story without a Save checks its pending status`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const result = await r3RealSaveRun(t, r4KindOf(name), null, "success", "without", await r8MeasurementModules());
+    assert.equal(result.status, "Previewing 1 change · not saved; leaving this page reverts them");
+    assert.deepEqual(result.absolute, [], "PIXD-111: status, marker and next Save agree with real W1 without a Save");
+  });
+test("PIXD-111 self-test: a wrong pending status in a real story without a Save is caught", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const device = await r4DeviceWithForm([["const n = Math.max(changes, serverPreview);", "const n = Math.max(changes, serverPreview) + 1;"]]);
+  const result = await r3RealSaveRun(t, r4KindOf("settings save"), null, "success", "without", { ...await r8MeasurementModules(), device });
+  assert.ok(result.absolute.some((found) => found.startsWith('successful Save status: expected "Previewing 1 change · not saved; leaving this page reverts them" from real W1 state and retained edits, got "Previewing 2 changes')), `LOW-8: caught: ${JSON.stringify(result.absolute)}`);
 });
+
+/**
+ * A style sheet's rules, nested blocks flattened, each with the at-rules
+ * around it (`.p-device { @media … { … } }`) and its declarations.
+ * @param {string} css
+ * @returns {Array<{at: string, selectors: string[], decls: Array<[string, string]>}>}
+ */
+function pixd111CssRules(css) {
+  /** @type {Array<{at: string, selectors: string[], decls: Array<[string, string]>}>} */
+  const rules = [];
+  /** @type {string[]} */ const open = [];
+  let text = "";
+  for (const char of css.replace(/\/\*[\s\S]*?\*\//g, "")) {
+    if (char === "{") {
+      open.push(text.slice(text.lastIndexOf(";") + 1).trim());
+      text = "";
+    } else if (char === "}") {
+      const head = open.pop() ?? "";
+      const decls = /** @type {Array<[string, string]>} */ (text.split(";").filter((part) => part.includes(":")).map((part) => [part.slice(0, part.indexOf(":")).trim(), part.slice(part.indexOf(":") + 1).trim()]));
+      if (!head.startsWith("@") && decls.length) rules.push({ at: open.filter((h) => h.startsWith("@")).join(" "), selectors: head.split(",").map((s) => s.trim()), decls });
+      text = "";
+    } else text += char;
+  }
+  return rules;
+}
+
+/**
+ * PIXD-111 (LOW-6, LOW-7): each settings action keeps one width idle and
+ * busy in any font. The label it shows and a hidden copy of the label of
+ * its other state share one grid cell (Save and Revert: the busy label,
+ * Clear: the idle label); the approved minimum widths stay as the layout;
+ * and no disabled or busy rule changes an action's box. Throws on the
+ * first rule that breaks it.
+ * @param {string} css
+ */
+function pixd111ActionCss(css) {
+  const rules = pixd111CssRules(css);
+  /** @param {string} selector @param {string} [at] */
+  const decls = (selector, at = "") => new Map(rules.filter((rule) => rule.selectors.includes(selector) && rule.at === at).flatMap((rule) => rule.decls));
+  const narrow = "@media (max-width:760px)";
+  for (const [action, other, wide, small] of /** @type {const} */ ([["save", "busy", 104, 96], ["revert", "busy", 116, 108], ["clear", "idle", 148, 140]])) {
+    const button = `.set-acts [data-act="${action}"]`;
+    const shown = decls(`${button}>span`), hidden = decls(`${button}::after`);
+    assert.equal(decls(button).get("display"), "inline-grid", `PIXD-111: ${action} lays its label out in a grid`);
+    assert.equal(hidden.get("content"), `attr(data-${other}-label)`, `PIXD-111: ${action} holds its ${other} label`);
+    assert.equal(hidden.get("visibility"), "hidden", `PIXD-111: ${action}'s ${other} label is not seen`);
+    assert.ok(shown.get("grid-area") !== undefined && hidden.get("grid-area") === shown.get("grid-area"), `PIXD-111: ${action} reserves its ${other} label in the grid cell of the label it shows`);
+    assert.equal(decls(button).get("min-width"), `${wide}px`, `PIXD-111: ${action} keeps the approved layout above 760 px`);
+    assert.equal(decls(button, narrow).get("min-width"), `${small}px`, `PIXD-111: ${action} keeps the approved layout at 760 px and below`);
+  }
+  for (const [at, width] of [["", "116px"], [narrow, "108px"]]) {
+    assert.equal(decls(".slot-revert", at).get("min-width"), width, "PIXD-111: Revert's slot keeps its width while empty and grows with the reserved button");
+    assert.equal(decls(".slot-revert", at).get("width"), undefined, "PIXD-111: no fixed slot width that a wider font overflows");
+  }
+  const state = /:disabled|\[disabled|\[aria-disabled|\[aria-busy|\.busy\b/;
+  const action = /\.btn\b|\bbutton\b|\[data-act|\.set-acts|\.primary\b/;
+  const box = /^(?:(?:min-|max-)?(?:width|height|inline-size|block-size)|padding(?:-[a-z]+)*|margin(?:-[a-z]+)*|border(?:-(?:top|right|bottom|left|inline|block)(?:-(?:start|end))?)?(?:-width)?|font(?:-[a-z]+)?|letter-spacing|word-spacing|line-height|gap|column-gap|display|grid(?:-[a-z]+)*|flex(?:-[a-z]+)?|content|box-sizing)$/;
+  for (const rule of rules)
+    for (const selector of rule.selectors.filter((s) => state.test(s) && action.test(s)))
+      for (const [property] of rule.decls)
+        assert.ok(!box.test(property), `PIXD-111: "${selector}" sets ${property}: a disabled or busy action would change its box`);
+}
+
+test("PIXD-111: settings actions reserve the label of their other state in their label's grid cell, in CSS", () => {
+  pixd111ActionCss(r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8"));
+});
+
+test("PIXD-111 self-test: the action CSS check fails when a reservation, a layout width or a state rule is wrong", () => {
+  const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");
+  /** @param {string} from @param {string} to @param {RegExp} message */
+  const rejects = (from, to, message) => {
+    assert.ok(css.includes(from), `self-test anchor: ${from}`);
+    assert.throws(() => pixd111ActionCss(css.replace(from, to)), message);
+  };
+  // LOW-7: a disabled state that changes the box is caught (the old assertion searched declarations for selectors).
+  rejects('.btn:disabled,.btn[aria-disabled="true"]{opacity:.45;', '.btn:disabled,.btn[aria-disabled="true"]{padding-inline:8px;opacity:.45;', /"\.btn:disabled" sets padding-inline/);
+  rejects(".btn.primary:disabled{background:var(--accent);", ".btn.primary:disabled{background:var(--accent);min-width:0;", /"\.btn\.primary:disabled" sets min-width/);
+  // LOW-6: Save or Revert without the hidden busy label, or with it outside the label's cell.
+  rejects('.set-acts [data-act="save"]::after,', "", /save holds its busy label/);
+  rejects("content:attr(data-busy-label);grid-area:1/1;", "content:attr(data-busy-label);grid-area:1/2;", /save reserves its busy label in the grid cell/);
+  rejects('.set-acts [data-act="clear"]::after{content:attr(data-idle-label);', '.set-acts [data-act="clear"]::after{content:"";', /clear holds its idle label/);
+  // The approved layout widths, also at 760 px and below.
+  rejects('.set-acts [data-act="revert"]{min-width:108px}', '.set-acts [data-act="revert"]{min-width:100px}', /revert keeps the approved layout at 760 px and below/);
+  rejects(".slot-revert{min-width:116px;", ".slot-revert{width:116px;", /Revert's slot keeps its width/);
+});
+
+/**
+ * PIXD-111 (LOW-6): through the real server, api, store and ops, an action
+ * shows its label in its span and carries the label of its other state for
+ * app.css's hidden copy, the same idle, pending and after a timeout.
+ * @param {any} t @param {"save"|"revert"|"clear"} action @param {any} [module]
+ */
+async function pixd111ActionLabels(t, action, module) {
+  const ctx = await intRealForm(t, module);
+  const { root, calls, s, app } = ctx;
+  if (action === "clear") {
+    await intInject(ctx, app.topics.setting("ulanzi-t", "contract", "n"), "9");
+    applyDefaultAnswer(await request("GET", s, { resource: "settings:ulanzi-t/contract" }));
+  } else {
+    typeInto(root.querySelector('[data-key="n"]'), "2");
+    await intWaitFor(() => calls.some((call) => call.path === `${s}/preview`));
+    await settle();
+  }
+  const attribute = action === "clear" ? "data-idle-label" : "data-busy-label";
+  const observe = () => {
+    const button = root.querySelector(`.set-h [data-act="${action}"]`);
+    return { text: r4Text(button), span: r4Text(button?.querySelector("span")), reserved: button?.getAttribute(attribute) ?? null };
+  };
+  const idle = observe();
+  const path = action === "save" ? s : `${s}/${action === "clear" ? "overlays" : "preview"}`;
+  const transport = pixd105HoldBody((url, verb) => url.split("?")[0] === path && verb === (action === "save" ? "PUT" : "DELETE"));
+  try {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    r4Click(root.querySelector(`.set-h [data-act="${action}"]`));
+    await intWaitFor(() => transport.held.length === 1);
+    const pending = observe();
+    t.mock.timers.tick(15000);
+    await settle();
+    const timedOut = observe();
+    assert.match(statusText(root), /not confirmed: pixdcon did not answer within 15 s\./, "PIXD-111: the action timed out");
+    for (const [name, seen] of Object.entries({ idle, pending, timedOut }))
+      assert.equal(seen.span, seen.text, `PIXD-111: ${action} ${name}: the label it shows is in its span`);
+    assert.ok(idle.reserved, `PIXD-111: ${action} carries ${attribute}`);
+    assert.deepEqual([pending.reserved, timedOut.reserved], [idle.reserved, idle.reserved], `PIXD-111: ${action}'s reserved label is the same in every state`);
+    if (action === "clear") assert.deepEqual([idle.text, pending.text === idle.reserved, timedOut.text], [idle.reserved, false, idle.reserved], "PIXD-111: Clear reserves the idle label it shows when not busy");
+    else assert.deepEqual([pending.text, idle.text === idle.reserved, timedOut.text], [idle.reserved, false, idle.text], `PIXD-111: ${action} reserves the busy label it shows while pending`);
+  } finally { transport.restore(); t.mock.timers.reset(); }
+}
+
+for (const action of /** @type {const} */ (["save", "revert", "clear"]))
+  test(`PIXD-111: real ${action} reserves the label of its other state, idle, pending and timed out`, async (t) => r6Browser(async ({ document }) => {
+    document.documentElement.setAttribute("lang", "en");
+    await pixd111ActionLabels(t, action);
+  }));
+
+test("PIXD-111 self-test: the action label check rejects a reserved label that is not the busy label shown", async (t) => r6Browser(async ({ document }) => {
+  document.documentElement.setAttribute("lang", "en");
+  const mutant = await r5Module("components/settings-form.js", [['data-act="revert" data-busy-label="${REVERTING}"', 'data-act="revert" data-busy-label="Revert"']]);
+  await assert.rejects(pixd111ActionLabels(t, "revert", mutant), /revert reserves the busy label it shows while pending/);
+}));
 
 test("PIXD-109: pending settings status avoids a last-word widow in CSS", () => {
   const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");

@@ -240,16 +240,21 @@ input[type=range]:disabled{opacity:.5}
   .set-h{display:grid;grid-template-columns:minmax(0,1fr) 384px;column-gap:24px;align-items:start;padding-bottom:8px;border-bottom:1px solid var(--line)}
   .set-desc{margin:4px 0 0;font-size:12px;line-height:18px;color:var(--text-3);max-width:520px}
   .set-acts{display:flex;align-items:center;justify-content:flex-end;gap:8px}
-  /* Reserve the longest label, icon, gap and padding in idle and busy states. */
-  .set-acts [data-act="save"]{min-width:104px;flex:none}
-  .set-acts [data-act="revert"]{min-width:116px;flex:none}
+  /* The minimum widths are the approved layout. What keeps idle and busy at
+     one width in any font is the other label, hidden in the label's grid cell. */
+  .set-acts [data-act="save"]{min-width:104px;display:inline-grid;flex:none}
+  .set-acts [data-act="revert"]{min-width:116px;display:inline-grid;flex:none}
+  /* Save and Revert: the icon and label span, centred, over a hidden copy of
+     the busy label padded by the 14 px icon and the 6 px gap. */
+  .set-acts [data-act="save"]>span,.set-acts [data-act="revert"]>span{grid-area:1/1;display:inline-flex;align-items:center;gap:6px;justify-self:center}
+  .set-acts [data-act="save"]::after,.set-acts [data-act="revert"]::after{content:attr(data-busy-label);grid-area:1/1;padding-inline-start:20px;visibility:hidden}
   .set-acts [data-act="clear"]{min-width:148px;display:inline-grid;grid-template-columns:16px auto;flex:none}
   .set-acts [data-act="clear"] .i{grid-area:1/1}
   .set-acts [data-act="clear"]>span{grid-area:1/2}
   /* Large overlay counts also reserve their idle text while Clearing… is shown. */
   .set-acts [data-act="clear"]::after{content:attr(data-idle-label);grid-area:1/2;visibility:hidden}
   .slot-clear{flex:1;display:flex;justify-content:flex-end;min-width:0}
-  .slot-revert{width:116px;flex:none;display:flex;justify-content:flex-end}
+  .slot-revert{min-width:116px;flex:none;display:flex;justify-content:flex-end}
   .set-status{margin-top:6px;min-height:36px;font-size:12.5px;line-height:18px;color:var(--text-2);text-align:right;text-wrap:pretty}
   .set-status.chg{color:var(--text);font-weight:500}
   .set-status.warn{color:var(--warn);font-weight:500}
@@ -293,7 +298,7 @@ input[type=range]:disabled{opacity:.5}
     .set-acts [data-act="save"]{min-width:96px}
     .set-acts [data-act="revert"]{min-width:108px}
     .set-acts [data-act="clear"]{min-width:140px}
-    .slot-revert{width:108px}
+    .slot-revert{min-width:108px}
   }
   @media (max-width:380px){.set-acts{flex-wrap:wrap}.slot-clear{flex-basis:100%;min-height:44px}}
 }
