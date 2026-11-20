@@ -31,7 +31,7 @@ import {
 } from "../../web/js/ordering.js";
 
 // Resolve the UI's relative URLs; every answer still comes from real W1/W4.
-test("gate r3 UI contract: all 23 request shapes through real HttpServer + registerV2Routes", async (t) => {
+test("gate r3 UI contract: all 25 request shapes through real HttpServer + registerV2Routes", async (t) => {
   const { request, requestFrame } = await import("../../web/js/api.js");
   const stack = await startStack(t, {
     config(config) { for (const device of config.devices) device.enabled = false; },
@@ -71,7 +71,11 @@ test("gate r3 UI contract: all 23 request shapes through real HttpServer + regis
     ["PUT", `${d}/scene`, {scene:"contract"}, 200],
     ["POST", "/api/v2/devices/adopt-me/adopt", {}, 200],
     ["PUT", `${d}/mode`, {mode:"pause"}, 200],
+    // PIXD-114: the Devices row's Play/Pause/Stop (web/js/pages/devices.js setMode), the Device page's route and body.
+    ["PUT", `${d}/mode`, {mode:"stop"}, 200],
     ["PUT", `${d}/brightness`, {override:30}, 200],
+    // PIXD-114: the Devices row's Auto, beside its slider (web/js/pages/devices.js setBrightness): null gives the level back to the scene.
+    ["PUT", `${d}/brightness`, {override:null}, 200],
     ["POST", `${d}/retry`, {}, 200],
     ["DELETE", `${d}/scene-overlay`, undefined, 200],
     ["GET", s, undefined, 200],
@@ -87,7 +91,7 @@ test("gate r3 UI contract: all 23 request shapes through real HttpServer + regis
     ["POST", "/api/v2/config/reload", {}, 200],
     ["GET", "/api/v2/log", undefined, 200],
   ];
-  assert.equal(shapes.length, 23);
+  assert.equal(shapes.length, 25);
   for (const [method, path, body, expected] of shapes) await t.test(`${method} ${path} → ${expected}`, async () => {
     const before = sent.length;
     let refusal;
