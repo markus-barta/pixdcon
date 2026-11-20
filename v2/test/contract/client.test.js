@@ -14660,8 +14660,10 @@ test("r4 harness self-test: intw2 L4 corrected-field observer rejects a stale ti
  * over the mounted Device page, including instrumented audit modules.
  * @param {any} t @param {R4Kind} kind @param {string|null} change
  * @param {R4End} end @param {string} mode @param {Record<string, any>} modules
+ * @param {{definition?: Record<string, any>, meanwhile?: [string, string]}} [variant] PIXD-111, with no change: the
+ * scene's own definition, and an edit (key, text) typed while the real Save is out
  */
-async function r3RealSaveRun(t, kind, change, end, mode, modules) {
+async function r3RealSaveRun(t, kind, change, end, mode, modules, variant = {}) {
   const { resolve } = await import("node:path");
   const { writeFile } = await import("node:fs/promises");
   const world = r4World(kind.world), clock = intClock();
@@ -14673,6 +14675,9 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
     const definitions = [{ ...R4_SCHEMA, n: { type: "json", default: {} } }, { ...R4_SCHEMA, n: { type: "string", default: "" } }];
     world.definitions = { ...world.definitions, [scene]: definitions };
     world.schemas.set(scene, definitions[0]);
+  } else if (variant.definition) {
+    world.definitions = { ...world.definitions, [scene]: [variant.definition, variant.definition] };
+    world.schemas.set(scene, variant.definition);
   }
   const files = new Map();
   const source = (/** @type {any} */ schema) => `export default {deviceType:"ulanzi",settingsSchema:${JSON.stringify(schema)},render(){return 1000;}};`;
@@ -14729,8 +14734,9 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
       await stack.app.modules.scenes.refresh([scene]);
       applyDefaultAnswer(await request("GET", path, { resource }));
     } else if (change) await (R4_CHANGE[/** @type {R4Change} */ (change)] ?? R4_STEP[change])(ctx);
+    else if (variant.meanwhile) r4Edit(ctx, ...variant.meanwhile);
     await drain();
-    const receipt = /** @type {any} */ (r8RecordStory(ctx, before, r8Frame(ctx), `real W1/${change ?? "no change"}/${end}/${mode}`));
+    const receipt = /** @type {any} */ (r8RecordStory(ctx, before, r8Frame(ctx), `real W1/${change ?? (variant.meanwhile ? `${variant.meanwhile[0]} typed during Save` : "no change")}/${end}/${mode}`));
     receipt.completed = true; receipt.backend = "real W1/W4";
   };
   /** @type {string[]} */ const absolute = [];
@@ -14784,10 +14790,14 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
     ctx.points.push(observe()); checkDefinition();
     const survival = r4Survival(ctx);
     if (rejectedSave && Object.hasOwn(survival.pending, "n")) /** @type {any} */ (survival.pending).n = "not-json";
+    // A text field sends what was typed; r4Survival reads numbers.
+    for (const key of Object.keys(survival.pending))
+      if (variant.definition?.[key]?.type === "string") /** @type {any} */ (survival.pending)[key] = ctx.edits.get(key).value;
     const errors = ctx.root.querySelectorAll(".ferr, .jerr").some((/** @type {any} */ el) => String(el.textContent ?? "").trim());
     const pendingEdits = Object.keys(survival.pending).length + survival.resets.length;
     if (saveButton(ctx.root).disabled !== (!pendingEdits || Boolean(errors))) absolute.push("edits the next Save sends: its availability disagrees with the retained edits and real field verdicts");
     const status = statusText(ctx.root);
+    const markers = Object.fromEntries([...ctx.edits.keys()].map((key) => [key, r4Text(ctx.root.querySelector(`.set-body [data-row="${key}"] .mk`))]));
     if (held && mode !== "early" && end === "timeout" && !/^Save not confirmed: pixdcon did not answer within \d+ s\./.test(status)) absolute.push(`the timed-out Save lost its unconfirmed feedback: ${status}`);
     if (held && mode !== "early" && end === "500" && !/^Not saved:.*500/.test(status)) absolute.push(`the failed Save lost its 500 feedback: ${status}`);
     const current = stack.app.modules.settings.state("d1", scene);
@@ -14795,17 +14805,23 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
     const revert = ctx.root.querySelector('.set-h [data-act="revert"]');
     if (Boolean(revert) !== Boolean(pendingEdits || serverPreview)) absolute.push("Revert availability disagrees with the real preview and retained edits");
     // W1's applied:false with no rejections is a duplicate-draft no-op.
-    // Judge each retained edit against W1's actual layers, independently
-    // of that transport verdict and of the UI store's copy of the state.
+    // Judge each retained edit against W1's actual state, independently
+    // of that transport verdict and of the UI store's copy of the state:
+    // W1 holds one preview per device and scene, stamped {session, draft}
+    // (PIXD-111). An edit takes the page's next draft when it is typed, so
+    // the first request that carried it names it; a held preview of that
+    // session at or after it carries the edit, whatever value W1 made of it
+    // (clamped, trimmed). Values are never compared.
     for (const [key, edit] of ctx.edits) {
       const saved = ctx.calls.some((/** @type {any} */ call) => call.path === path && call.method === "PUT" && call.status === 200 && call.submitted.get(key) === edit);
       if (saved) continue;
       const preview = ctx.calls.findLast((/** @type {any} */ call) => call.path === `${path}/preview` && call.submitted.get(key) === edit && call.delivered);
       if (!preview) continue;
-      const layer = current.values[key];
-      const previewing = layer && Object.hasOwn(layer, "preview") && JSON.stringify(layer.effective) === JSON.stringify(preview.body.values[key]);
+      const first = ctx.calls.find((/** @type {any} */ call) => call.path === `${path}/preview` && call.method === "PUT" && call.submitted.get(key) === edit && Object.hasOwn(call.body?.values ?? {}, key));
+      const layer = current.values[key], stamp = current.preview;
+      const previewing = Boolean(first) && layer && Object.hasOwn(layer, "preview") && stamp !== null && stamp.session === first.body.session && stamp.draft >= first.body.draft;
       const marker = r4Marker(ctx.root, key);
-      if (!(previewing ? /^previewing/ : /^not previewed/).test(marker)) absolute.push(`real W1 state for ${key}: ${JSON.stringify(layer)}, row marker "${marker}" disagrees with the effective preview`);
+      if (!(previewing ? /^previewing/ : /^not previewed/).test(marker)) absolute.push(`real W1 state for ${key}: ${JSON.stringify(layer)} under the preview stamp ${JSON.stringify(stamp)}, first sent in draft ${first?.body.draft ?? "none"}: row marker "${marker}" disagrees with the held preview`);
     }
     if (end === "success" && held?.status === 200 && !errors) {
       const count = Math.max(pendingEdits, Object.values(current.values).filter((layer) => Object.hasOwn(layer, "preview")).length);
@@ -14834,7 +14850,7 @@ async function r3RealSaveRun(t, kind, change, end, mode, modules) {
     }
     for (const point of ctx.points)
       for (const piece of R3_REAL_SAVE_PIECES) point.delete(`device: ${piece}`);
-    return { points: ctx.points, changed: ctx.changed, absolute, definition, nextSave, origin: held?.origin, calls: ctx.calls, sent: ctx.calls.map(r4Request), op: held ? r4Request(held) : null };
+    return { points: ctx.points, changed: ctx.changed, absolute, definition, nextSave, origin: held?.origin, calls: ctx.calls, sent: ctx.calls.map(r4Request), op: held ? r4Request(held) : null, status, markers };
   } finally {
     held?.release?.();
     page.unmount(); ctx.root.remove(); world.story = null;
@@ -14861,6 +14877,58 @@ for (const name of ["settings save", "settings reset save", "settings save rejec
       }
       assert.deepEqual(result.absolute, [], "PIXD-109: TRUE marker agrees with real W1, with the Save outcome retained");
     });
+
+/**
+ * PIXD-111: W1 stores and previews what the scene definition makes of a
+ * value (precedence.js normalizeSettingValue: a number is clamped to its
+ * range, text is trimmed); the form sends what was typed. The edit typed
+ * while the real Save is out is previewed under a newer draft, so after
+ * the Save the page sends that draft again and W1 answers it as a seen
+ * draft, still holding its preview. Out of range: R4_SCHEMA's n is 0 to 50.
+ */
+const PIXD111_NORMALIZED = [
+  { name: "out-of-range n", typed: "99", sent: 99, held: 50 },
+  { name: "untrimmed text n", definition: { ...R4_SCHEMA, n: { type: "string", label: "N", group: "General", description: "", default: "", placeholder: "" } }, typed: "Europe/Berlin ", sent: "Europe/Berlin ", held: "Europe/Berlin" },
+];
+/**
+ * One normalized story through real W1/W4 and the UI's api, store and ops.
+ * @param {any} t @param {(typeof PIXD111_NORMALIZED)[number]} story @param {R4End} end @param {Record<string, any>} modules
+ */
+async function pixd111Normalized(t, story, end, modules) {
+  const result = await r3RealSaveRun(t, r4KindOf("settings save"), null, end, "case", modules, { definition: story.definition, meanwhile: ["n", story.typed] });
+  /** @param {(call: any) => boolean} match */
+  const find = (match) => result.calls?.find(match);
+  const save = find((call) => call.method === "PUT" && /\/settings\/[^/]+$/.test(call.path) && call.serverStatus === 200);
+  assert.ok(save, "PIXD-111: real W1/W4 saved the first edit");
+  const newer = find((call) => call.method === "PUT" && call.path === `${save.path}/preview` && call.body.values.n === story.sent && call.answer?.applied === true);
+  assert.ok(newer && newer.body.draft > save.body.draft, "PIXD-111: real W1 previewed the edit typed during Save under a newer draft");
+  const duplicate = find((call) => call.method === "PUT" && call.path === `${save.path}/preview` && call.body.draft === newer.body.draft && call.status === 200 && call.answer?.applied === false);
+  assert.ok(duplicate, "PIXD-111: after the Save, the page sent that draft again and got W1's seen-draft answer");
+  assert.deepEqual(duplicate.answer.rejected, {});
+  assert.deepEqual(duplicate.answer.state.preview, { session: newer.body.session, draft: newer.body.draft }, "PIXD-111: W1 still holds the edit's own preview");
+  assert.equal(duplicate.answer.state.values.n.preview, story.held, "PIXD-111: W1 holds the normalized value, not the one sent");
+  const seen = { marker: result.markers?.n ?? "", status: result.status ?? "" };
+  const status = end === "success" ? /^Previewing 1 change · not saved; leaving this page reverts them$/ : end === "500" ? /^Not saved:.*500/ : /^Save not confirmed: pixdcon did not answer within 15 s\./;
+  assert.ok(/^previewing · was 2$/.test(seen.marker) && status.test(seen.status), `PIXD-111: TRUE marker and status: the edit is on the display${end === "success" ? "" : " and the Save outcome stays"}; got ${JSON.stringify(seen)}`);
+  assert.deepEqual(result.absolute, [], "PIXD-111: marker, status and next Save agree with real W1");
+}
+for (const story of PIXD111_NORMALIZED)
+  for (const end of R4_ENDS)
+    test(`PIXD-111: real settings save × ${story.name} typed during Save × ${end}`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      await pixd111Normalized(t, story, end, await r8MeasurementModules());
+    });
+for (const story of PIXD111_NORMALIZED)
+  test(`PIXD-111 self-test: real ${story.name} story rejects the value-equality verdict`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const device = await r4DeviceWithForm([[
+      "held?.session === plan.body.session && held.draft >= draft;",
+      "JSON.stringify(layer.preview) === JSON.stringify(plan.body.values[key]);",
+    ]]);
+    // PIXD-109's rule judged W1's normalized value against the one sent: the edit on the display reads as not previewed.
+    const wrong = JSON.stringify({ marker: `not previewed · showing ${story.held}`, status: "Changes not previewed · not saved; pixdcon kept its previous settings" });
+    await assert.rejects(pixd111Normalized(t, story, "success", { ...await r8MeasurementModules(), device }), (error) => error instanceof Error && error.message.includes("PIXD-111: TRUE marker and status") && error.message.endsWith(`got ${wrong}`));
+  });
 
 test("PIXD-109: settings action widths reserve busy labels in CSS", () => {
   const css = r4ReadFile(new URL("../../web/app.css", import.meta.url), "utf8");

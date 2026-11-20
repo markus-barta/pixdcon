@@ -487,13 +487,18 @@ export function createSettingsForm(host, options) {
           effect(owner, ["epoch", "scene", "schema"], () => {
             of.book.rejected(plan.sent, answer.body?.rejected);
             // W1 ignores seen drafts, even after Save removed their preview
-            // or an earlier refusal answer was lost. Read each sent value's
-            // actual preview from this answer, retaining edit identity guards.
+            // or an earlier refusal answer was lost. Its answer still says
+            // which preview it holds for this device and scene: one, stamped
+            // {session, draft}. Drafts only rise per page, so a held preview
+            // of this session at or after an edit's draft carries that edit,
+            // whatever W1 made of its value (clamped to the range, trimmed).
+            // Never compare values. previewResult keeps the edit identity guard.
             if (answer.body?.applied === false && Object.keys(answer.body?.rejected ?? {}).length === 0) {
+              const held = answer.body?.state?.preview;
               for (const [key, draft] of plan.sent) {
                 const layer = answer.body?.state?.values?.[key];
                 const previewing = layer && Object.hasOwn(layer, "preview") &&
-                  JSON.stringify(layer.preview) === JSON.stringify(plan.body.values[key]);
+                  held?.session === plan.body.session && held.draft >= draft;
                 of.book.previewResult(new Map([[key, draft]]), Boolean(previewing));
               }
             } else
