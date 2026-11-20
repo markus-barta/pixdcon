@@ -90,7 +90,8 @@ export function openEnlargedPreview(device, opener, options = {}) {
       });
     }
     const pv = previewState(state, view);
-    preview.draw(pv.frame, { veil: pv.veil, reason: pv.reason, spinner: pv.spinner });
+    // A built-in mode has its tile here too, as in its Devices row (PIXD-114 B2).
+    preview.draw(pv.frame, { veil: pv.veil, reason: pv.reason, spinner: pv.spinner, icon: pv.builtin ? "clock" : null });
     const scale = preview.scale();
     const status = deviceStatus(view, state);
     const frame = state.previews.get(view.name);

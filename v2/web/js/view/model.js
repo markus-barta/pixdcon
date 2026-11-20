@@ -446,144 +446,213 @@ export function sceneChoices(state, view) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Devices rows (PIXD-114, package 1): the start page is the remote control.
+// Every cell is one control with one reserved line of 18 px under it; these
+// are the texts of those lines. Busy labels and failures are not here: they
+// come from the operation slots (ops.js) the Device page shares, and the page
+// writes them into the same line.
+// ---------------------------------------------------------------------------
+
 /**
- * The two reserved source lines under the select.
+ * The display shows a built-in mode (PIXD-114 B2): it draws the picture
+ * itself, so pixdcon has no frame of it and waits for none. Stopped, the
+ * display is blank and pixdcon's last frame of it is that blank.
+ *
+ * @param {any} view
+ * @returns {boolean}
+ */
+export function showsBuiltin(view) {
+  return (
+    String(view?.desired?.scene?.scene ?? "").startsWith("builtin:") &&
+    view?.desired?.mode?.value !== "stop"
+  );
+}
+
+/**
+ * The one status line under a display's name (PIXD-114 B1): "Online ·
+ * frame 1 s ago", "Stale · last frame 45 s ago", "Offline since 12:40 ·
+ * Recovery steps". Kind and dot are deviceStatus's, so the title line counts
+ * what the rows say; what does not fit the line goes into its tooltip.
  *
  * @param {ClientState} state
  * @param {any} view
- * @returns {{first: Line, second: {text: string, cls?: string, icon?: string|null, restore?: {disabled: boolean, title: string}}}}
+ * @returns {{kind: string, dot: string, label: string, detail: string, title: string, recovery: boolean}}
  */
-export function sourceLines(state, view) {
+export function rowStatus(state, view) {
+  const status = deviceStatus(view, state);
+  const health = view.health ?? {};
+  const now = state.now;
+  const builtin = String(view.desired?.scene?.scene ?? "").startsWith("builtin:");
+  const seen = (/** @type {string} */ frame) =>
+    health.lastFrameAt
+      ? `${frame} ${ago(health.lastFrameAt, now)}`
+      : health.lastContactAt
+        ? `last contact ${ago(health.lastContactAt, now)}`
+        : "no contact yet";
+  const meta = status.meta.map((line) => line.text).join(" · ");
+  /** @type {{label: string, detail: string, title?: string, recovery?: boolean}} */
+  let line;
+  switch (status.kind) {
+    case "ok":
+      line = { label: "Online", detail: builtin ? "built-in mode" : seen("frame") };
+      break;
+    case "warn": {
+      const errors = Number(health.consecutiveErrors ?? 0);
+      line = {
+        label: "Stale",
+        detail: seen("last frame"),
+        title: errors > 0 ? `${errors} render ${errors === 1 ? "error" : "errors"} in a row` : HEALTH_RULE,
+      };
+      break;
+    }
+    case "bad":
+      line = {
+        label: health.since ? `Offline since ${clockShort(health.since)}` : "Offline",
+        detail: "",
+        title: meta,
+        recovery: true,
+      };
+      break;
+    case "shadow":
+      line = { label: "Shadow", detail: "not driving the display", title: shadowReason(view) };
+      break;
+    case "held":
+      line = { label: "On hold", detail: "address not confirmed", title: meta };
+      break;
+    case "off":
+      line = { label: "Off", detail: meta };
+      break;
+    default:
+      line =
+        health.state === "idle"
+          ? { label: "Idle", detail: "no scene" }
+          : { label: "Starting", detail: builtin ? "built-in mode" : "waiting for the first frame" };
+  }
+  const text = [line.label, line.detail].filter(Boolean).join(" · ");
+  return {
+    kind: status.kind,
+    dot: status.dot,
+    label: line.label,
+    detail: line.detail,
+    title: line.title ? `${text} · ${line.title}` : text,
+    recovery: Boolean(line.recovery),
+  };
+}
+
+/**
+ * The line under a row's scene select when nothing runs and nothing failed:
+ * where the scene comes from, in one line. An overlay that replaced your
+ * choice offers "Back to <your choice>" in the same line (the Restore of the
+ * Device page's "Return to your choice"); its time is in the tooltip.
+ *
+ * @param {ClientState} state
+ * @param {any} view
+ * @returns {Line & {extra?: Line, restore?: {label: string, disabled: boolean, title: string}}}
+ */
+export function sceneLine(state, view) {
   const scene = view.desired?.scene ?? {};
   const choice = view.desired?.choice ?? {};
   const type = view.type;
-  /** @type {Line} */
-  let first;
   if (view.pending?.op === "scene")
-    first = {
-      icon: "spinner",
-      text: `Switching to ${sceneName(state, view.pending.target, type)}…`,
-    };
-  else if (scene.source === "overlay")
-    first = {
-      cls: "ovr",
-      icon: "layers",
-      text: `MQTT overlay since ${clockShort(scene.since)}`,
-    };
-  else if (scene.source === "blob")
-    first = {
-      cls: "ovr",
-      icon: "layers",
-      text: `Config overlay since ${clockShort(scene.since)}`,
-    };
-  else if (scene.source === "ui" && choice.persisted === false)
-    first = { cls: "warn", icon: "alert", text: "Switched, not saved" };
-  else if (scene.source === "fallback")
-    first = { icon: "user", text: "No scene chosen" };
-  else first = { icon: "user", text: "Your choice" };
-
-  if (
-    (scene.source === "overlay" || scene.source === "blob") &&
-    view.desired?.output !== "shadow" &&
-    (choice.scene ?? null) !== null
-  ) {
-    const mqttOff = state.mqtt?.state !== "connected";
-    const notWriter =
-      scene.source === "blob" && state.controller?.blobWriter?.writer === false;
-    return {
-      first,
-      second: {
-        text: `Your choice: ${sceneName(state, choice.scene, type)}`,
-        restore: notWriter
-          ? undefined
-          : {
-              disabled: mqttOff || state.live.state === "lost",
-              title: mqttOff ? "Clearing an overlay needs MQTT" : "",
-            },
-      },
-    };
+    return { icon: "spinner", text: `Switching to ${sceneName(state, view.pending.target, type)}…` };
+  if (scene.source === "overlay" || scene.source === "blob") {
+    const what = scene.source === "overlay" ? "MQTT overlay" : "Config overlay";
+    /** @type {Line & {restore?: {label: string, disabled: boolean, title: string}}} */
+    const line = { cls: "ovr", icon: "layers", text: what, title: `${what} since ${clock(scene.since)}` };
+    const notWriter = scene.source === "blob" && state.controller?.blobWriter?.writer === false;
+    if (view.desired?.output !== "shadow" && (choice.scene ?? null) !== null && !notWriter) {
+      const mqttOff = state.mqtt?.state !== "connected";
+      const mine = sceneName(state, choice.scene, type);
+      line.restore = {
+        label: `Back to ${mine}`,
+        disabled: mqttOff || state.live.state === "lost",
+        title: mqttOff ? "Clearing an overlay needs MQTT" : `Clear the overlay: ${mine} shows again`,
+      };
+    }
+    return line;
   }
+  /** @type {Line & {extra?: Line}} */
+  const line =
+    scene.source === "ui" && choice.persisted === false
+      ? { cls: "warn", icon: "alert", text: "Switched, not saved" }
+      : scene.source === "fallback"
+        ? { icon: "user", text: "No scene chosen" }
+        : { icon: "user", text: "Your choice" };
   const count = Number(view.settingOverlayCount ?? 0);
   if (count > 0)
-    return {
-      first,
-      second: {
-        cls: "ovr",
-        icon: "layers",
-        text:
-          count === 1
-            ? "1 setting from an MQTT overlay"
-            : `${count} settings from MQTT overlays`,
-      },
+    line.extra = {
+      cls: "ovr",
+      icon: "layers",
+      text: count === 1 ? "1 setting from MQTT" : `${count} settings from MQTT`,
+      title: count === 1 ? "1 setting from an MQTT overlay" : `${count} settings from MQTT overlays`,
     };
-  return { first, second: { text: "" } };
+  return line;
 }
 
 /**
- * The Brightness column of the Devices table.
+ * The mode of a row: which of Play, Pause and Stop is pressed, and its line.
+ * pixdcon carries this page's own mode over MQTT too, so where it came from
+ * is no warning here (concept B3: violet only for a real override).
  *
  * @param {any} view
- * @returns {{big: string, muted: boolean, meta: Line}}
+ * @returns {{value: "play"|"pause"|"stop", label: string, title: string}}
+ */
+export function modeCell(view) {
+  const mode = view.desired?.mode ?? {};
+  const value = mode.value === "pause" || mode.value === "stop" ? mode.value : "play";
+  const label = value === "pause" ? "Paused" : value === "stop" ? "Stopped" : "Playing";
+  return { value, label, title: mode.source && mode.source !== "default" && mode.since ? `${label} since ${clock(mode.since)}` : "" };
+}
+
+/** What a row says when its mode request failed, by the mode it asked for (PIXD-114 C3: "Not paused: …"). */
+export const MODE_REFUSED = /** @type {const} */ ({ play: "Not started", pause: "Not paused", stop: "Not stopped" });
+
+/**
+ * The brightness of a row (PIXD-114 A6): Auto pressed while the scene
+ * decides, the slider at the level the display has, the value beside it and
+ * the line under them. Dragging sets the level yourself; Auto gives it back.
+ * An override reads the same whoever set it: pixdcon carries this page's
+ * own level over MQTT too (concept B3).
+ *
+ * @param {any} view
+ * @returns {{auto: boolean, level: number, value: string, muted: boolean, text: string, cls: string, title: string}}
  */
 export function brightnessCell(view) {
   const brightness = view.desired?.brightness ?? {};
+  const last = view.effective?.lastBrightness ?? null;
   if (brightness.override !== null && brightness.override !== undefined)
     return {
-      big: percent(brightness.override),
+      auto: false,
+      level: brightness.override,
+      value: percent(brightness.override),
       muted: false,
-      meta: { text: "Override", cls: "ovr" },
+      text: "Override · Auto gives it back to the scene",
+      cls: "",
+      title: brightness.since ? `Override since ${clock(brightness.since)}: the display stays at ${percent(brightness.override)} whatever the scene asks for` : "",
     };
-  const last = view.effective?.lastBrightness;
-  if (last === null || last === undefined)
-    return {
-      big: "—",
-      muted: true,
-      meta: {
-        text: view.desired?.scene?.scene
-          ? "Auto · not set by scene"
-          : "Auto · no scene",
-      },
-    };
-  return { big: percent(last), muted: false, meta: { text: "Auto · from scene" } };
-}
-
-/** @param {any} view @returns {{icon: string, label: string, cls: string}} */
-export function modeCell(view) {
-  switch (view.desired?.mode?.value) {
-    case "pause":
-      return { icon: "pause", label: "Paused", cls: "" };
-    case "stop":
-      return { icon: "stop", label: "Stopped", cls: "stop" };
-    default:
-      return { icon: "play", label: "Playing", cls: "" };
-  }
+  const text = !view.desired?.scene?.scene
+    ? "Auto · no scene"
+    : last !== null
+      ? "Auto · set by the scene"
+      : view.health?.state === "starting"
+        ? "Auto · set once the scene runs"
+        : "Auto · the display keeps its level";
+  return { auto: true, level: last ?? 50, value: percent(last), muted: last === null, text, cls: "", title: text };
 }
 
 /**
- * The Device column: name, and the lines under it.
+ * Under a display's name: only what Tick decided must stay visible there (item
+ * 8), the overlay-only device; type, address and note are on the Device page.
  *
  * @param {any} view
- * @returns {{title: string, lines: Array<{text: string, mono?: boolean, cls?: string, icon?: string, name?: string}>}}
+ * @returns {{title: string, note: Line|null}}
  */
 export function deviceCell(view) {
-  const size = sizeOf(view);
-  /** @type {Array<{text: string, mono?: boolean, cls?: string, icon?: string, name?: string}>} */
-  const lines = [];
-  // Tick, item 8: the second line under the name of an overlay-only device.
-  if (view.origin === "blob")
-    lines.push({
-      text: "from the MQTT config overlay · not saved",
-      cls: "ovr",
-      icon: "layers",
-    });
-  lines.push({
-    text: `${typeLabel(view.type)} · ${size.width}×${size.height}`,
-    name: view.displayName && view.displayName !== view.name ? view.name : undefined,
-  });
-  if (view.desired?.address?.value)
-    lines.push({ text: view.desired.address.value, mono: true });
-  if (view.comment) lines.push({ text: view.comment });
-  return { title: deviceTitle(view), lines };
+  return {
+    title: deviceTitle(view),
+    note: view.origin === "blob" ? { text: "from the MQTT config overlay · not saved", cls: "ovr", icon: "layers" } : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -994,26 +1063,33 @@ export function previewCaption(state, view) {
 /**
  * What the preview box draws: the frame, a veil, or the reason there is none.
  *
+ * A built-in mode is drawn by the display itself (PIXD-114 B2): no frame
+ * comes for it, so it gets its own tile instead of "Waiting for the first
+ * frame" forever; a frame pixdcon still holds is of the scene before it.
+ *
  * @param {ClientState} state
  * @param {any} view
- * @returns {{frame: import("../store.js").Preview|null, veil: boolean, reason: string|null, spinner: boolean}}
+ * @returns {{frame: import("../store.js").Preview|null, veil: boolean, reason: string|null, spinner: boolean, builtin: boolean}}
  */
 export function previewState(state, view) {
   const frame = state.previews.get(view.name) ?? null;
   const offline =
     view.health?.state === "offline" && view.desired?.output !== "shadow";
+  if (showsBuiltin(view))
+    return { frame: null, veil: false, reason: "Drawn by the display itself", spinner: false, builtin: true };
   if (frame && frame.rgb === null)
-    return { frame: null, veil: false, reason: "bad frame", spinner: false };
-  if (frame) return { frame, veil: offline, reason: null, spinner: false };
+    return { frame: null, veil: false, reason: "bad frame", spinner: false, builtin: false };
+  if (frame) return { frame, veil: offline, reason: null, spinner: false, builtin: false };
   if (!view.desired?.scene?.scene)
-    return { frame: null, veil: false, reason: "No scene chosen", spinner: false };
+    return { frame: null, veil: false, reason: "No scene chosen", spinner: false, builtin: false };
   if (offline)
-    return { frame: null, veil: false, reason: "No frame received", spinner: false };
+    return { frame: null, veil: false, reason: "No frame received", spinner: false, builtin: false };
   return {
     frame: null,
     veil: false,
     reason: "Waiting for the first frame",
     spinner: true,
+    builtin: false,
   };
 }
 

@@ -11,6 +11,12 @@
  * shows "bad frame" (matrix B-180). Each preview holds its own canvas
  * element, never an id derived from the device name (B-178).
  *
+ * The Devices rows (PIXD-114 B7) show every display in a box of their own
+ * (Pixoo 80 px, Ulanzi 176 × 44, smaller on a phone): with `box: "css"` the
+ * canvas keeps its whole-number scale and the page's stylesheet sizes it. A
+ * built-in mode draws without pixdcon (B2): `icon` puts a tile with that
+ * icon in place of a reason, the reason being its tooltip.
+ *
  * Owner: UI worker.
  */
 
@@ -19,8 +25,8 @@ const GRID = 0.85;
 
 /**
  * @param {HTMLElement} host
- * @param {{scale: number|"fit", grid: boolean, veil?: number, size?: {width: number, height: number}, label?: string}} options veil: opacity of the offline veil (0.55 table, 0.6 device page); size: the display's size, for the box before the first frame
- * @returns {{draw: (frame: {width: number, height: number, rgb: Uint8Array|null}|null, state: {veil: boolean, reason: string|null, spinner?: boolean}) => void, destroy: () => void, setGrid: (grid: boolean) => void, resize: () => void, scale: () => number}}
+ * @param {{scale: number|"fit", grid: boolean, veil?: number, size?: {width: number, height: number}, label?: string, box?: "css"}} options veil: opacity of the offline veil (0.55 table, 0.6 device page); size: the display's size, for the box before the first frame; box "css": the stylesheet sizes the box
+ * @returns {{draw: (frame: {width: number, height: number, rgb: Uint8Array|null}|null, state: {veil: boolean, reason: string|null, spinner?: boolean, icon?: string|null}) => void, destroy: () => void, setGrid: (grid: boolean) => void, resize: () => void, scale: () => number}}
  */
 export function createPixelPreview(host, options) {
   const canvas = document.createElement("canvas");
@@ -32,7 +38,8 @@ export function createPixelPreview(host, options) {
   empty.setAttribute("role", "img");
   host.append(canvas, empty);
   let grid = options.grid;
-  /** @type {{frame: any, veil: boolean, reason: string|null, spinner: boolean, scale: number}|null} */
+  const sized = options.box !== "css";
+  /** @type {{frame: any, veil: boolean, reason: string|null, spinner: boolean, icon: string|null, scale: number}|null} */
   let last = null;
 
   /** @param {number} width @param {number} height @returns {number} */
@@ -47,22 +54,24 @@ export function createPixelPreview(host, options) {
 
   /**
    * @param {{width: number, height: number, rgb: Uint8Array|null}|null} frame
-   * @param {{veil: boolean, reason: string|null, spinner?: boolean}} state
+   * @param {{veil: boolean, reason: string|null, spinner?: boolean, icon?: string|null}} state
    */
   function draw(frame, state) {
     const size = frame ?? options.size ?? { width: 64, height: 64 };
     const scale = scaleFor(size.width, size.height);
     const spinner = Boolean(state.spinner);
+    const tile = frame === null ? (state.icon ?? null) : null;
     if (
       last &&
       last.frame === frame &&
       last.veil === state.veil &&
       last.reason === state.reason &&
       last.spinner === spinner &&
+      last.icon === tile &&
       last.scale === scale
     )
       return;
-    last = { frame, veil: state.veil, reason: state.reason, spinner, scale };
+    last = { frame, veil: state.veil, reason: state.reason, spinner, icon: tile, scale };
     const usable =
       frame !== null &&
       frame.rgb instanceof Uint8Array &&
@@ -70,10 +79,21 @@ export function createPixelPreview(host, options) {
     if (!usable) {
       canvas.hidden = true;
       empty.hidden = false;
-      empty.style.width = `${size.width * scale}px`;
-      empty.style.height = `${size.height * scale}px`;
+      if (sized) {
+        empty.style.width = `${size.width * scale}px`;
+        empty.style.height = `${size.height * scale}px`;
+      }
       const reason = frame !== null && !usable ? "bad frame" : (state.reason ?? "");
       empty.replaceChildren();
+      empty.className = tile ? "pv pv-empty pv-built" : "pv pv-empty";
+      if (tile) {
+        empty.setAttribute("title", reason);
+        empty.setAttribute("aria-label", reason);
+        empty.innerHTML = `<svg class="i" aria-hidden="true"><use href="#i-${tile}"/></svg>`;
+        return;
+      }
+      empty.removeAttribute("title");
+      empty.removeAttribute("aria-label");
       if (spinner && size.height * scale >= 64) {
         const wrap = document.createElement("span");
         wrap.style.cssText =
@@ -91,8 +111,10 @@ export function createPixelPreview(host, options) {
     const h = height * scale;
     if (canvas.width !== w) canvas.width = w;
     if (canvas.height !== h) canvas.height = h;
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
+    if (sized) {
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+    }
     const context = canvas.getContext("2d");
     if (!context) return;
     const image = context.createImageData(w, h);

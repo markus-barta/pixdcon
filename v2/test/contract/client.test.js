@@ -712,7 +712,8 @@ test("client pages, Tick's four states: shadow (neutral filled dot, 'Shadow · n
   assert.equal(condition?.icon, "layers");
   assert.equal(condition?.cls, "ovr");
   assert.deepEqual(condition?.action, { label: "Add to config.json", kind: "adopt" });
-  assert.equal(deviceCell(overlayOnly).lines[0].text, "from the MQTT config overlay · not saved");
+  assert.equal(deviceCell(overlayOnly).note?.text, "from the MQTT config overlay · not saved");
+  assert.equal(deviceCell(view("a")).note, null, "PIXD-114: a device of config.json has no second line under its name");
 
   // Item 9: restart required.
   store.applyEvent({ type: "controller", epoch: A, seq: 20, stream, data: { ...state.controller, restartRequired: { reason: "mqtt changed", since: at("18:36:40") } } });
@@ -1675,7 +1676,7 @@ test("r2 finding 8, B-176: Restore shows its busy label in reserved width and ig
   devicesPage.mount(root, {});
   try {
     const restore = () => root.querySelector('.dt-row [data-act="restore"]');
-    const second = () => root.querySelector(".dt-row .src2").textContent;
+    const second = () => root.querySelector('.dt-row [data-line="scene"]').textContent;
     assert.ok(restore(), "the row offers Restore");
     const button = restore();
     assert.equal(click(button), true);
@@ -1688,7 +1689,7 @@ test("r2 finding 8, B-176: Restore shows its busy label in reserved width and ig
     assert.equal(restore()?.disabled, true, "while it runs the button takes no click");
     assert.equal(restore()?.getAttribute("aria-busy"), "true");
     assert.equal(restore()?.children[0]?.textContent, "Restoring…", "its busy label shows");
-    assert.equal(restore()?.children[1]?.textContent, "Restore", "the other label keeps its width, unseen");
+    assert.equal(restore()?.children[1]?.textContent, "Back to Clock", "the other label keeps its width, unseen");
     assert.equal(restore()?.children[1]?.getAttribute("aria-hidden"), "true");
     pending(calls, "DELETE", "/scene-overlay").answer(200, view("d1", { epoch, rev: 2 }), `${epoch}-12`);
     await settle();
@@ -1843,7 +1844,7 @@ test("r3 gate 2.3 (finding 8, Restore across lives): a new incarnation of the sa
     old.answer(500, {});
     await settle();
     assert.ok(restoreIn(root), "the old failure did not take the button");
-    assert.doesNotMatch(rowLine(root, ".src2"), /Not restored/);
+    assert.doesNotMatch(rowLine(root, '[data-line="scene"]'), /Not restored/);
   } finally {
     devicesPage.unmount();
     await drain(calls);
@@ -1860,7 +1861,7 @@ test("r3 gate Q3 (B-175): a failed Restore keeps its button, with the error besi
     await settle();
     pending(calls, "DELETE", "/scene-overlay").answer(500, {});
     await settle();
-    assert.match(rowLine(root, ".src2"), /Not restored: pixdcon failed to answer \(500\)\./);
+    assert.match(rowLine(root, '[data-line="scene"]'), /Not restored: pixdcon failed to answer \(500\)\./);
     assert.ok(restoreIn(root), "the button stays");
     assert.equal(restoreIn(root).disabled, false);
     assert.equal(click(restoreIn(root)), true);
@@ -1971,7 +1972,7 @@ test("r3 gate Q6 (one busy owner across pages): a switch started on the Device p
     await settle();
     assert.equal(calls.filter((c) => c.method === "PUT" && c.url.endsWith("/devices/d1/scene")).length, 1, "only one switch leaves");
     assert.doesNotMatch(root.querySelector(".dt-row .c-show").textContent, /Not switched/);
-    assert.match(rowLine(root, ".src"), /Switching to Weather…/, "the row shows the switch that runs");
+    assert.match(rowLine(root, '[data-line="scene"]'), /Switching to Weather…/, "the row shows the switch that runs");
     put.answer(200, view("d1", { epoch, rev: 3, scene: "weather" }), `${epoch}-13`);
     await settle();
     assert.doesNotMatch(root.querySelector(".dt-row .c-show").textContent, /Not switched|Switching/);
@@ -2988,8 +2989,13 @@ const R4_PAGES = {
       // The Add device form of the empty page is on screen only while no device is listed (r4): hidden, it says nothing.
       const slot = root.querySelector(".empty-slot");
       const empty = slot && !slot.hidden ? slot : null;
+      const range = row?.querySelector('input[type="range"]');
+      const auto = row?.querySelector('[data-act="auto"]');
       return [
-        ["row d1", ["epoch", "life", "token"], row ? `${r4Value(row.querySelector("select"))}${row.querySelector("select")?.disabled ? " [disabled]" : ""} | ${r4Text(row.querySelector(".c-show"))} | ${r4Text(row.querySelector(".src2"))} | ${r4Button(row.querySelector('[data-act="restore"]'))}` : "∅"],
+        // PIXD-114: each control of the row with its one reserved line; their slots are the Device page's.
+        ["row d1", ["epoch", "life", "token"], row ? `${r4Value(row.querySelector("select"))}${row.querySelector("select")?.disabled ? " [disabled]" : ""} | ${r4Text(row.querySelector('[data-line="scene"]'))} | ${r4Button(row.querySelector('[data-act="restore"]'))} | ${r4Button(row.querySelector('[data-act="undo"]'))}` : "∅"],
+        ["row d1 mode", ["epoch", "life", "token"], row ? `${r4Text(row.querySelector('[data-line="mode"]'))} | ${row.querySelectorAll('[data-act="mode"]').map((/** @type {any} */ b) => `${b.getAttribute("aria-pressed") === "true" ? "*" : ""}${b.disabled ? "x" : "o"}`).join("")}` : "∅"],
+        ["row d1 brightness", ["epoch", "life", "token"], row ? `${r4Value(range)}${range?.disabled ? " [disabled]" : ""} | ${r4Text(row.querySelector(".val"))} | ${r4Button(auto)}${auto?.getAttribute("aria-pressed") === "true" ? " [pressed]" : ""} | ${r4Text(row.querySelector('[data-line="brightness"]'))}` : "∅"],
         ["Add device fields", ["opening", "revision"], `${r4Value(empty?.querySelector('form.addf [name="name"]'))} | ${r4Value(empty?.querySelector('form.addf [name="ip"]'))} | ${r4Value(empty?.querySelector('form.addf [name="type"]'))}`],
         ["focus", ["opening", "revision"], r4Focus(root)],
         ["Add device button and outcome", ["epoch", "token"], `${r4Button(empty?.querySelector("form.addf button"))} | ${r4Text(empty?.querySelector(".slot"))}`],
@@ -3173,8 +3179,20 @@ const R4_KINDS = [
     world: { devices: [{ name: "d1", o: { source: "overlay" } }], overlays: (/** @type {string} */ epoch, run = epoch.endsWith("1") ? 0 : 1) => [record("o1", "scene", { device: "d1", value: run === 0 ? "weather" : "clock" })] },
     begin: (ctx) => r4Click(ctx.root.querySelector('[data-act="clear"][data-id="o1"]')),
   },
-  { name: "devices scene", site: "web/js/pages/devices.js:330", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/scene"], begin: (ctx) => typeInto(ctx.root.querySelector(".dt-row select"), "weather", "change") },
-  { name: "devices restore", site: "web/js/pages/devices.js:357", page: "devices", world: r4d1({ source: "overlay" }), request: ["DELETE", "/api/v2/devices/d1/scene-overlay"], begin: (ctx) => r4Click(restoreIn(ctx.root)) },
+  { name: "devices scene", site: "web/js/pages/devices.js (switchScene)", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/scene"], begin: (ctx) => typeInto(ctx.root.querySelector(".dt-row select"), "weather", "change") },
+  { name: "devices restore", site: "web/js/pages/devices.js (restore)", page: "devices", world: r4d1({ source: "overlay" }), request: ["DELETE", "/api/v2/devices/d1/scene-overlay"], begin: (ctx) => r4Click(restoreIn(ctx.root)) },
+  // PIXD-114: the row's Play/Pause/Stop and its slider, in the Device page's mode and brightness slots.
+  { name: "devices mode", site: "web/js/pages/devices.js (setMode)", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/mode"], begin: (ctx) => r4Click(ctx.root.querySelector('.dt-row [data-act="mode"][data-mode="pause"]')) },
+  {
+    name: "devices brightness", site: "web/js/pages/devices.js (setBrightness, the row's slider)", page: "devices", world: r4d1(), request: ["PUT", "/api/v2/devices/d1/brightness"],
+    begin: (ctx) => {
+      const range = ctx.root.querySelector('.dt-row input[type="range"]');
+      assert.equal(range.disabled, false, "the row's slider takes a level while no brightness request runs");
+      typeInto(range, "40", "input");
+      typeInto(range, "40", "change");
+    },
+    invariant: r4RangeHeld,
+  },
   {
     name: "devices add device", site: "web/js/pages/devices.js:375", page: "devices", world: { devices: [] }, request: ["POST", "/api/v2/devices"],
     setup: (ctx) => {
@@ -7594,11 +7612,22 @@ test("r4 harness: guard probe r6: view helpers select the exact scene, type, dev
   state.overlays = [record("ob", "device-scene", { device: "d2", value: "weather" }), record("oa", "device-scene", { device: "d1", value: "clock" })];
   assert.equal(model.showingNow(state, d1).source.topic, state.overlays[1].topic);
   assert.equal(model.showingNow(state, d2).source.topic, state.overlays[0].topic);
-  for (const [mode, label] of [["play", "Playing"], ["pause", "Paused"], ["stop", "Stopped"]]) { d1.desired.mode.value = mode; assert.equal(model.modeCell(d1).label, label); }
-  for (const level of [0, 37, 100]) { d1.desired.brightness.override = level; assert.equal(model.brightnessCell(d1).big, `${level} %`); assert.equal(model.brightnessCell(d1).meta.text, "Override"); }
+  for (const [mode, label] of [["play", "Playing"], ["pause", "Paused"], ["stop", "Stopped"]]) { d1.desired.mode.value = mode; assert.equal(model.modeCell(d1).label, label); assert.equal(model.modeCell(d1).value, mode); }
+  d1.desired.mode.value = "play";
+  for (const level of [1, 37, 100]) {
+    d1.desired.brightness.override = level;
+    assert.deepEqual([model.brightnessCell(d1).value, model.brightnessCell(d1).level, model.brightnessCell(d1).auto], [`${level} %`, level, false]);
+    // pixdcon carries the page's own level over MQTT too: an override reads the same from any source (concept B3).
+    for (const source of ["none", "mqtt", "ui"]) {
+      d1.desired.brightness.source = source;
+      assert.deepEqual([model.brightnessCell(d1).text, model.brightnessCell(d1).cls], ["Override · Auto gives it back to the scene", ""]);
+    }
+  }
   d1.desired.brightness.override = null; d1.effective.lastBrightness = null;
-  assert.equal(model.brightnessCell(d1).big, "—");
-  d1.effective.lastBrightness = 42; assert.equal(model.brightnessCell(d1).big, "42 %");
+  assert.deepEqual([model.brightnessCell(d1).value, model.brightnessCell(d1).muted, model.brightnessCell(d1).auto, model.brightnessCell(d1).text], ["—", true, true, "Auto · the display keeps its level"]);
+  d1.effective.lastBrightness = 42;
+  assert.deepEqual([model.brightnessCell(d1).value, model.brightnessCell(d1).level, model.brightnessCell(d1).text], ["42 %", 42, "Auto · set by the scene"]);
+  d1.desired.scene.scene = null; assert.equal(model.brightnessCell(d1).text, "Auto · no scene");
 });
 
 test("r4 harness: guard probe r6: overlay kind, confirmation, clear authority and replaced-row projection", async () => {
@@ -7691,7 +7720,7 @@ function r6ViewOwners(model) {
           const base = /** @type {any} */ (loadedStore([own, decoy]).store.getState());
           const state = { ...base, now: Date.parse(at("18:42:10")), scenes: SCENES, overlays: [...ownRecords, record("decoy", "device-scene", { device: "d2", value: "weather", confirmed: false })], previews: new Map([["d1", frame], ["d2", { ...frame, rgb: new Uint8Array([99, 88, 77]), receivedAt: at("17:00:00") }]]), settings: new Map([["d1/clock", { preview: { draft: 4 }, values: { n: { default: 1, saved: 2, preview: 42 }, m: { default: 3, preview: 4 } } }], ["d2/clock", { preview: { draft: 9 }, values: { n: { default: 91, saved: 92 } } }]]) };
           const other = { ...state, devices: new Map([["d2", { ...decoy, displayName: "Changed decoy" }], ["d1", own]]), overlays: [record("new-decoy", "device-scene", { device: "d2", value: "only the decoy changed", confirmed: false }), ...ownRecords.toReversed()], previews: new Map([["d2", { ...frame, receivedAt: at("16:00:00"), rgb: null }], ["d1", frame]]), settings: new Map([["d2/clock", { values: { n: { preview: 99 } } }], ["d1/clock", state.settings.get("d1/clock")]]) };
-          for (const name of ["deviceStatus", "deviceCondition", "showingNow", "sourceLines", "previewCount", "waitingSceneOverlay", "facts", "previewCaption", "previewState", "healthRow"])
+          for (const name of ["deviceStatus", "deviceCondition", "showingNow", "sceneLine", "rowStatus", "previewCount", "waitingSceneOverlay", "facts", "previewCaption", "previewState", "healthRow"])
             assert.deepEqual(model[name](state, own), model[name](other, own), `${name}: unrelated device, overlay, preview and settings state cannot change d1's projection (${type}/${health}/${source}/${variant})`);
           assert.equal(model.waitingSettingsLine(state, "d1", "clock"), model.waitingSettingsLine(other, "d1", "clock"));
           assert.equal(model.previewCount(state, own), variant === 2 ? 0 : 2, "the current scene's own preview data is retained");
@@ -8993,7 +9022,12 @@ const R4_INVENTORY = [
   "web/js/pages/device.js · copyScene · ops note · slot note",
   "web/js/pages/device.js · act · await · store",
   "web/js/pages/devices.js · addDevice · ops done · slot note",
-  "web/js/pages/devices.js · chooseScene · await · store",
+  // PIXD-114: the row's switch (its select and Undo), Play/Pause/Stop and
+  // slider: the Device page's slots and requests; only the store's fence
+  // takes their answers, and the slots say busy and failure.
+  "web/js/pages/devices.js · switchScene · await · store",
+  "web/js/pages/devices.js · setMode · await · store",
+  "web/js/pages/devices.js · setBrightness · await · store",
   "web/js/pages/devices.js · restore · await · store",
   "web/js/pages/devices.js · addDevice · await · store",
   "web/js/pages/health.js · loadLog · ops failed · render",
@@ -9111,7 +9145,23 @@ test("r4 inventory: persistent UI state writers across imported helpers all decl
   // (B6); the MQTT dot's title is new (A8), synchronous in the top bar's
   // store subscriber; the top-bar guard probe above reads it.
   // Old: 31de6c11bf4e0b958bb1c6148d26fadd53835d5302c3f77db8c304c5c9b3716c
-  assert.equal(digest, "d7a05262a52e4d5c75d5fcaae783e64a096edcc6f4ece279fdb6d2ef5351aa8e", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
+  // PIXD-114 P1 Devices rows: 398 -> 411 writers; extractor and owner tags
+  // unchanged. All are synchronous (render or a person's input), none in a
+  // continuation:
+  //  - devices.js updateRow: mode buttons, Auto and slider `.disabled`, the
+  //    slider's `.value` (render of the slots the Device page shares); the
+  //    "devices mode"/"devices brightness" R4 kinds and the real-server
+  //    stories "PIXD-114: real … from a Devices row" witness them.
+  //  - devices.js sliding (.set on input, .delete on change, reset at mount
+  //    and unmount) and undos (.set on a switch, record.undo on Undo, .delete
+  //    once a newer state dropped it, reset): keyed by the slot of one life of
+  //    the device; "PIXD-114: real Undo …" and "PIXD-114 C1: …".
+  //  - pixel-preview draw: the built-in tile's className/innerHTML (B2);
+  //    "PIXD-114 B2: a built-in mode gets its tile …".
+  //  - model.js sceneLine: local line.restore/line.extra builders; deviceCell
+  //    no longer pushes type, address and note lines (-4).
+  // Old: d7a05262a52e4d5c75d5fcaae783e64a096edcc6f4ece279fdb6d2ef5351aa8e
+  assert.equal(digest, "14994e09d789f445671e694e5e3f23aca0999f05f627293419d56ac97a404bdf", "a persistent binding/object/collection writer changed: inventory its ownership and name a runtime case before accepting it");
 });
 test("r4 inventory self-test: arbitrary new persistent caches are reported even outside local render readers (r6)", () => {
   for (const name of ["newAsyncCache", "unlistedState", "anotherFeedbackStore"]) {
@@ -12841,13 +12891,14 @@ test("r4 harness self-test: B3 scene family has controls and must-fail central s
 });
 
 /** The callback source is a minimum, not a frozen source-count waiver.
+ * PIXD-114: 34 -> 36, the Devices row's mode and brightness slot reads.
  * @param {any[]} sites */
 function r5B3RequirePreviewSource(sites) {
-  assert.ok(sites.length >= 34, `B3 callback observation: ${sites.length} sources; 33 sources fails`);
+  assert.ok(sites.length >= 36, `B3 callback observation: ${sites.length} sources; 35 sources fails`);
   assert.ok(sites.some((site) => site.id.startsWith("web/js/pages/device.js · state · previewFailure · ")), "B3 callback observation still lists pages/device.js · state · previewFailure");
 }
 
-test("r4 harness: B3 callback observation log retains pages/device.js · state · previewFailure, 33 sources fails", async (t) => {
+test("r4 harness: B3 callback observation log retains pages/device.js · state · previewFailure, 35 sources fails", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const evidence = await r7RunAudits(t);
   r5B3RequirePreviewSource(evidence.sites);
@@ -12858,7 +12909,7 @@ test("r4 harness self-test: B3 missing callback source must fail beside its obse
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { sites } = await r7RunAudits(t);
   r5B3RequirePreviewSource(sites);
-  assert.throws(() => r5B3RequirePreviewSource(sites.filter((/** @type {any} */ site) => !site.id.startsWith("web/js/pages/device.js · state · previewFailure · "))), /33 sources fails/);
+  assert.throws(() => r5B3RequirePreviewSource(sites.filter((/** @type {any} */ site) => !site.id.startsWith("web/js/pages/device.js · state · previewFailure · "))), /35 sources fails/);
   const files = r4WebFiles();
   for (const shape of ["spread", "late assignment"]) {
     const changed = files.map((file) => {
@@ -12880,8 +12931,8 @@ test("r4 harness self-test: B3 missing callback source must fail beside its obse
       return { ...file, src: file.src.slice(0, call.start) + replacement + file.src.slice(call.end) };
     });
     const extracted = r7OutcomeSites(changed);
-    assert.equal(extracted.length, 33, shape + ": the historical extraction gap is reproduced");
-    assert.throws(() => r5B3RequirePreviewSource(extracted), /33 sources fails/);
+    assert.equal(extracted.length, 35, shape + ": the historical extraction gap is reproduced");
+    assert.throws(() => r5B3RequirePreviewSource(extracted), /35 sources fails/);
   }
 });
 
@@ -14070,10 +14121,12 @@ async function r5B4RestoreLayout(module) {
     await settle();
     pending(calls, "DELETE", "/scene-overlay").answer(500, {});
     await settle();
-    const line = root.querySelector(".src2");
+    // PIXD-114: the row's one reserved line under the select; its tooltip says the error whole.
+    const line = root.querySelector('.dt-row [data-line="scene"]');
     const button = line.querySelector('[data-act="restore"]');
     const failure = line.querySelector(".fail");
     assert.ok(button && failure, "B4 Restore: retry button and full error remain visible");
+    assert.equal(line.getAttribute("title"), r4Text(failure), "B4 Restore: the line's tooltip says the full error");
     assert.ok(line.children.indexOf(button) < line.children.indexOf(failure), "B4 Restore: error appears after the Restore button");
     assert.equal(button.disabled, false, "B4 Restore: retry remains available");
   } finally { module.page.unmount(); root.remove(); await r4AnswerAll({ calls }); }
@@ -14081,9 +14134,9 @@ async function r5B4RestoreLayout(module) {
 test("r4 harness: B4 Tick Restore error follows its button", async () => r5B4RestoreLayout(await r5Module("pages/devices.js")));
 test("r4 harness self-test: B4 Tick Restore rejects b7f7daf error-before-button layout", async () => {
   await r5B4RestoreLayout(await r5Module("pages/devices.js"));
+  // b7f7daf's layout, re-anchored to the PIXD-114 line: the error before its button.
   const mutant = await r5Module("pages/devices.js", [
-    ['second = `${esc(lines.second.text)} <button', 'second = `${failure || esc(lines.second.text)} <button'],
-    ['</span></button>${failure ? ` ${failure}` : ""}`;', '</span></button>`;'],
+    ['`${action ? `${action}<span class="sep">·</span>` : ""}${failHtml(failure)}`', '`${failHtml(failure)}${action ? `<span class="sep">·</span>${action}` : ""}`'],
   ]);
   await assert.rejects(r5B4RestoreLayout(mutant), /B4 Restore: error appears after/);
 });
@@ -15416,9 +15469,11 @@ test(`gate r3 A6: real Restore ${fail ? "failure preserves the choice and button
   t.after(() => { page.unmount(); root.remove(); });
   const button = root.querySelector('[data-name="ulanzi-t"] [data-act="restore"]') ?? root.querySelector('[data-act="restore"]');
   assert.ok(button);
-  const second = button.closest(".src2");
-  const prefix = second.childNodes[0].textContent;
-  assert.match(prefix, /^Your choice: /);
+  // PIXD-114: Restore names your choice ("Back to …") in the select's one reserved line.
+  const second = button.closest('[data-line="scene"]');
+  const choice = button.children[0].textContent;
+  assert.match(choice, /^Back to /);
+  assert.match(second.textContent, /^MQTT overlay·Back to /);
   if (fail) await ctx.mqtt.stop();
   click(button);
   await intWaitFor(() => ctx.calls.some((call) => call.method === "DELETE" && call.path === `${ctx.d}/scene-overlay`));
@@ -15427,10 +15482,9 @@ test(`gate r3 A6: real Restore ${fail ? "failure preserves the choice and button
   assert.ok(response);
   assert.equal(response.status, fail ? 503 : 200);
   if (fail) {
-    assert.equal(second.childNodes[0].textContent, prefix, "A6: the choice prefix is unchanged on failure");
-    assert.match(second.textContent, /Your choice: .*Restore.*Not restored: MQTT is offline/);
     const restore = second.querySelector('[data-act="restore"]');
-    assert.equal(restore.children[0].textContent, "Restore");
+    assert.equal(restore.children[0].textContent, choice, "A6: the choice is unchanged on failure");
+    assert.match(second.textContent, /Back to .*Not restored: MQTT is offline/);
     assert.equal(restore.disabled, false);
     assert.equal(second.childNodes.indexOf(restore) < second.childNodes.indexOf(second.querySelector(".fail")), true);
   } else assert.doesNotMatch(root.textContent, /Not restored/);
@@ -15670,3 +15724,4 @@ test(`gate r3 A8: terminal old-life ${refused ? "refusal" : "success"} retires o
   assert.deepEqual(effects, ["next"]);
   ops.drop(nextKey);
 });
+

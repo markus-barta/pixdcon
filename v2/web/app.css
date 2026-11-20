@@ -149,29 +149,79 @@ input[type=range]:disabled{opacity:.5}
   .nav a{padding:0 2px;gap:4px}
 }
 
-/* ---- Devices (pixd-devices-*) ---- */
+/* ---- Devices (pixd-devices-*): the remote control (PIXD-114, package 1) ----
+   Rows of 120 px in every state (B7): 20 px above, 19 px below and the hairline
+   leave 80 px, the box of the tallest preview. Every cell is one control of
+   32 px with one reserved line of 18 px under it (A1), so nothing moves when a
+   status, a busy label or a failure appears: the lines clip, the tooltip says
+   all. Pixoo previews are 80 px, Ulanzi 176 × 44 (128 × 32 when narrower). */
 .p-devices {
-  .dt-head,.dt-row{display:grid;grid-template-columns:128px minmax(150px,1fr) minmax(230px,1.35fr) 150px 116px 96px;column-gap:24px;align-items:start}
+  .dt-head,.dt-row{display:grid;grid-template-columns:176px minmax(190px,1fr) minmax(260px,1.25fr) 132px 300px 76px;column-gap:28px}
   .dt-head{font-size:12px;line-height:18px;color:var(--text-3);padding:0 0 8px;border-bottom:1px solid var(--line)}
-  .dt-row{padding:16px 0;border-bottom:1px solid var(--line)}
-  .name{font-size:15px;line-height:22px;font-weight:600;color:var(--text);text-decoration:none;overflow-wrap:anywhere}
+  .dt-row{height:120px;padding:20px 0 19px;border-bottom:1px solid var(--line);align-items:start}
+  .c-pv{align-self:center;display:flex;align-items:center;height:80px;min-width:0}
+  .c-dev,.c-show,.c-mode,.c-bri{min-width:0}
+  .c-dev{padding-top:5px}
+  .name{display:block;font-size:15px;line-height:22px;font-weight:600;color:var(--text);text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   a.name:hover{text-decoration:underline}
-  .meta{font-size:12px;line-height:18px;color:var(--text-3);margin-top:2px}
-  .c-show .lines{margin-top:6px;height:36px}
-  .src2.wrap{display:block;white-space:normal;overflow-wrap:anywhere}
-  .src2.wrap .link{height:18px;vertical-align:top}
-  @media (max-width:1280px){.c-show .lines{height:54px}}
-  .c-st .meta,.c-bri .meta{margin-top:2px}
-  .big{font-size:14px;line-height:22px;font-weight:500}
-  .pvlink{display:inline-block;border-radius:2px;cursor:zoom-in}
-  .mode{display:inline-flex;align-items:center;gap:6px;color:var(--text-2);line-height:22px}
-  .mode.stop{color:var(--text)}
+  .pvlink{display:block;line-height:0;border-radius:2px;cursor:zoom-in}
+  .c-pv[data-type="pixoo"] .pv{width:80px;height:80px}
+  .c-pv[data-type="ulanzi"] .pv{width:176px;height:44px}
   .c-pv .pv-empty{font-size:11px;line-height:14px}
-  @media (max-width:1180px){.dt-head,.dt-row{grid-template-columns:128px minmax(130px,1fr) minmax(210px,1.3fr) 136px 100px 84px;column-gap:16px}}
-  @media (max-width:760px){
+  /* The reserved line under each control. */
+  .row-line{display:flex;align-items:center;gap:6px;height:18px;margin-top:6px;font-size:12px;line-height:18px;color:var(--text-2);white-space:nowrap;overflow:hidden}
+  .row-line.ovr{color:var(--ovr);font-weight:500}
+  .row-line.warn{color:var(--warn)}
+  .row-line .ell{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .row-line .sep,.row-line .x,.row-line .link,.row-line .dot{flex:none}
+  .row-line .sep{color:var(--text-3);font-weight:400}
+  .row-line .x{display:inline-flex;align-items:center;gap:4px}
+  .row-line .x.ovr{color:var(--ovr);font-weight:500}
+  .row-line .link{height:18px;padding:0}
+  /* A failure follows the action that stays for a retry (Tick, B4); it
+     clips before the action does, and the line's tooltip says it whole. */
+  .row-line .fail{display:flex;align-items:center;gap:6px;flex:0 1 auto;min-width:0;color:var(--bad);font-weight:500}
+  .st-line{gap:8px;font-size:12.5px}
+  .st-line b{font-weight:500;color:var(--text)}
+  .st-line.warn b{color:var(--warn)}
+  .st-line.bad b{color:var(--bad)}
+  .dev-note{margin-top:0}
+  .dev-note:empty{display:none}
+  .seg.icons{width:132px}
+  .seg.icons button{padding:0}
+  .bri{display:grid;grid-template-columns:56px minmax(0,1fr) 56px;gap:10px;align-items:center;height:32px}
+  .bri .auto{height:32px;border:1px solid var(--ctl-line);border-radius:6px;background:var(--surface);color:var(--text-2);font-weight:500;font-size:13px;cursor:pointer;padding:0}
+  .bri .auto:hover{background:var(--tint);color:var(--text)}
+  .bri .auto[aria-pressed="true"]{background:var(--accent-tint);color:var(--text);box-shadow:inset 0 0 0 1px var(--accent);border-color:var(--accent)}
+  .bri .auto:disabled{color:var(--text-3);cursor:not-allowed;background:transparent}
+  .bri .auto[aria-pressed="true"]:disabled{background:var(--accent-tint)}
+  .bri .val{padding:0 8px;white-space:nowrap}
+  .c-open{display:flex;align-items:center;justify-content:flex-end;height:32px}
+  @media (max-width:1180px){
+    .dt-head,.dt-row{grid-template-columns:128px minmax(150px,1fr) minmax(200px,1.2fr) 132px 240px 40px;column-gap:18px}
+    .c-pv[data-type="ulanzi"] .pv{width:128px;height:32px}
+  }
+  /* Narrower than the table: one block per display (A8), the preview, name
+     and Open on top, the select under them, then mode and brightness. */
+  @media (max-width:1060px){
     .dt-head{display:none}
-    .dt-row{grid-template-columns:128px minmax(0,1fr);row-gap:12px}
-    .c-show,.c-st,.c-bri,.c-mode{grid-column:2}
+    .dt-row{height:auto;padding:16px 0;grid-template-columns:132px minmax(0,1fr) 44px;grid-template-areas:"pv dev open" "show show show" "mode bri bri";column-gap:12px;row-gap:12px}
+    .c-pv{grid-area:pv;height:auto}
+    .c-dev{grid-area:dev;padding-top:0;align-self:center}
+    .name{white-space:normal;overflow-wrap:anywhere}
+    .c-show{grid-area:show}
+    .c-mode{grid-area:mode}
+    .c-bri{grid-area:bri}
+    .c-open{grid-area:open;height:44px;align-self:center}
+    .c-open .ibtn{width:44px;height:44px;border-color:transparent}
+    .c-pv[data-type="ulanzi"] .pv{width:132px;height:33px}
+  }
+  @media (max-width:760px){
+    .head{align-items:center}
+    .head .right .btn span{display:none}
+    .bri{grid-template-columns:52px minmax(0,1fr) 58px;gap:8px;height:44px}
+    .bri .auto,.bri .val{height:44px}
+    .bri .val{font-size:12px;padding:0 6px}
   }
   .loading-row{height:64px;display:flex;align-items:center;border-bottom:1px solid var(--line);color:var(--text-2)}.loading-row span{display:flex;align-items:center;gap:8px}
   .dt.frozen .dt-row{opacity:.55}.dt.frozen .pv{filter:grayscale(1)}
@@ -418,6 +468,16 @@ canvas.pv {
 .pv[hidden] {
   display: none;
 }
+/* A built-in mode draws without pixdcon (PIXD-114 B2): its own dark tile
+   with the clock, in a Devices row and enlarged. */
+.pv-built {
+  color: #77808a;
+}
+.pv-built .i {
+  width: 28px;
+  height: 28px;
+  stroke-width: 1.5;
+}
 /* Tick, item 7: a device in shadow. A filled dot (reachable) in neutral
    grey, not a health colour; the word beside it in the body colour. */
 .dot.shadow {
@@ -446,13 +506,6 @@ canvas.pv {
 }
 .conn .restart[hidden] {
   display: none;
-}
-/* Tick, item 8: the overlay-only line under a device name, in violet. */
-.p-devices .meta.ovr-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ovr);
 }
 /* The device page's title status line, on its own line under the title
    row (Tick L1, r3): left-aligned, the small type of the line under the
@@ -507,23 +560,6 @@ canvas.pv {
 .p-device .dh .sub .fail {
   flex: none;
   color: var(--bad);
-}
-/* A failure said beside its action, which stays (B-175, r3): the scene
-   select's own line, and the Restore button's line on the Devices page. */
-.src .ell {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-.src.bad {
-  overflow: hidden;
-}
-.src2 .fail {
-  color: var(--bad);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  vertical-align: top;
 }
 /* Why a settings value is not taken, beside its field (Tick, default 7 and
    Q2); and a row whose last preview failed (Tick Q1). */
