@@ -327,7 +327,7 @@
       "test": "test/contract/client.test.js: r3 gate 2.2 (finding 6, failed cleanup):"
     },
     {
-      "site": "web/js/pages/devices.js:743",
+      "site": "web/js/pages/devices.js:828",
       "id": "listener:root.addEventListener(\"change\")#1",
       "input": "a scene chosen in a row's select",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -335,7 +335,7 @@
       "test": "test/contract/client.test.js: r3 gate Q6 (one busy owner across pages):"
     },
     {
-      "site": "web/js/pages/devices.js:744",
+      "site": "web/js/pages/devices.js:829",
       "id": "listener:root.addEventListener(\"click\")#1",
       "input": "Restore in a row",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -343,7 +343,7 @@
       "test": "test/contract/client.test.js: r3 gate 2.3 (finding 8, Restore across lives):"
     },
     {
-      "site": "web/js/pages/devices.js:745",
+      "site": "web/js/pages/devices.js:830",
       "id": "listener:root.addEventListener(\"input\")#1",
       "input": "typing in the empty state's Add device form",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -352,7 +352,7 @@
       "test": "test/contract/client.test.js: client controls:"
     },
     {
-      "site": "web/js/pages/devices.js:746",
+      "site": "web/js/pages/devices.js:831",
       "id": "listener:root.addEventListener(\"submit\")#1",
       "input": "Add device in the empty state",
       "metadata": "a command of the user (a click, a key, a form)",
@@ -360,7 +360,7 @@
       "test": "test/contract/client.test.js: r3 ops (the operation rule):"
     },
     {
-      "site": "web/js/pages/devices.js:747",
+      "site": "web/js/pages/devices.js:832",
       "id": "subscribe:subscribe#1",
       "input": "the store's state, for the Devices page",
       "metadata": "none: the store calls it after a change it applied",

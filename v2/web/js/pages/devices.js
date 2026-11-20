@@ -27,7 +27,12 @@
  * "Not switched: …" in the select's line, "Not paused: …" under the mode
  * buttons, "Not changed: …" under the slider, "Not restored: …" before its
  * button. After a switch in the select, its line offers "Switched from X ·
- * Undo" for 15 s (C1), as long as the display shows what it switched to.
+ * Undo" for 15 s from the moment pixdcon made the switch (C1), bound to the
+ * choice it made: pixdcon's stamp of it (`choice.chosenAt`) in the switch's
+ * own answer. A newer choice from any page or tab, also of the same scene,
+ * drops the offer. A click checks the 15 s again on the browser's clock,
+ * then reads the device again and sends the switch back only while that
+ * choice still stands; otherwise it sends nothing and the offer goes.
  *
  * Owner: UI worker.
  */
@@ -91,14 +96,16 @@ let rows = new Map();
  */
 let sliding = new Map();
 /**
- * The last switch made in a row's select (C1), by the scene slot of the
- * device's life: the operation that switched (`token`), the scene it
- * switched from and to, when (the store's clock), and the operation of an
- * Undo of it (`undo`, 0 while there is none).
- * @type {Map<string, {token: number, from: string, to: string, at: number, undo: number}>}
+ * The last switch made in a row's select (C1): the operation that switched
+ * (`token`), the scene it switched from and to, the choice pixdcon made
+ * (`chosenAt`, its stamp in the switch's answer) and when the switch
+ * succeeded (`at`, the browser's clock), both null while the switch runs;
+ * `undo`: the operation of an Undo of it, 0 while there is none.
+ * @typedef {{token: number, from: string, to: string, chosenAt: string|null, at: number|null, undo: number}} UndoRecord
  */
+/** The switch each row remembers, by the scene slot of the device's life. @type {Map<string, UndoRecord>} */
 let undos = new Map();
-/** How long a row offers Undo after a switch (C1). */
+/** How long a row offers Undo after a switch succeeded (C1). */
 const UNDO_MS = 15_000;
 
 /** Play, Pause, Stop: the value, the name and the tooltip of each button. */
@@ -186,20 +193,44 @@ function writeLine(line, cls, html, title = null) {
 }
 
 /**
- * The last switch made in a row's select while it can still be undone
- * (C1): for 15 s, and while the display still shows what it switched to, as
- * your choice. A newer state drops it, for good: another switch, an
- * overlay, a new life of the device (another slot). Reads no operation slot.
+ * The device's choice is still the one a switch made: the same stamp of
+ * pixdcon's (`choice.chosenAt`), of the same scene, which the display shows
+ * as your choice. A newer choice has a newer stamp, also when it is of the
+ * same scene (another tab chose it again).
  *
- * @param {import("../store.js").ClientState} state
- * @param {any} view
+ * @param {any} view DeviceView, as the page holds it or as pixdcon answered it
+ * @param {UndoRecord} record
+ * @returns {boolean}
  */
-function undoRecord(state, view) {
+function sameChoice(view, record) {
+  const choice = view?.desired?.choice;
+  const scene = view?.desired?.scene;
+  return (
+    record.chosenAt !== null &&
+    choice?.chosenAt === record.chosenAt &&
+    (choice.scene ?? "") === record.to &&
+    (scene?.scene ?? "") === record.to &&
+    scene?.source === "ui"
+  );
+}
+
+/**
+ * The last switch made in a row's select while it can still be undone
+ * (C1): for 15 s from the moment it succeeded, and while the device's
+ * choice is still the one it made (sameChoice). A newer state drops it, for
+ * good: another choice from any page or tab, an overlay, a new life of the
+ * device (another slot); so does a switch that ended without succeeding.
+ * Called only while no operation of the scene slot runs.
+ *
+ * @param {any} view
+ * @param {number} now the clock the 15 s are read on: the page's (its last tick) to draw the offer, the browser's for a click
+ * @returns {UndoRecord|null}
+ */
+function undoRecord(view, now) {
   const key = deviceSlot("scene", view);
   const record = undos.get(key);
   if (!record) return null;
-  const scene = view.desired?.scene ?? {};
-  if (state.now < record.at + UNDO_MS && (scene.scene ?? "") === record.to && scene.source === "ui") return record;
+  if (record.at !== null && now - record.at < UNDO_MS && sameChoice(view, record)) return record;
   undos.delete(key);
   return null;
 }
@@ -215,7 +246,7 @@ function undoRecord(state, view) {
  * @returns {{from: string, name: string, retry: boolean}|null}
  */
 function undoOffer(state, view, switching) {
-  const record = switching.busy ? null : undoRecord(state, view);
+  const record = switching.busy ? null : undoRecord(view, state.now);
   if (!record) return null;
   const switched = !switching.failure && switching.token === record.token;
   const retry = Boolean(switching.failure) && switching.token === record.undo;
@@ -471,66 +502,120 @@ const EMPTY_HTML = `
   </section>`;
 
 /**
- * Switch a row's display to a scene: an operation in the slot of the
- * device's life, shared with the Device page. While one runs, from either
- * page, a start sends nothing and says nothing.
+ * The switch's request, the Device page's, in the scene slot of the
+ * device's life: what pixdcon answers goes to the store's fence, and is
+ * handed back to the operation.
  *
  * @param {string} name
+ * @param {string} key the scene slot
  * @param {string} scene "" for none
- * @returns {number} the token of the switch that started; 0: a switch already runs, and nothing was sent
+ * @returns {Promise<import("../api.js").Answer>}
  */
-function switchScene(name, scene) {
-  const state = getState();
-  const view = state.devices.get(name);
-  if (!view) return 0;
-  const key = deviceSlot("scene", view);
-  const started = start(
+async function sendScene(name, key, scene) {
+  const answer = await request("PUT", `/api/v2/devices/${encodeURIComponent(name)}/scene`, {
+    resource: `device:${name}`,
     key,
-    async () =>
-      applyAnswer(
-        await request("PUT", `/api/v2/devices/${encodeURIComponent(name)}/scene`, {
-          resource: `device:${name}`,
-          key,
-          body: { scene: scene === "" ? null : scene },
-        }),
-      ),
-    { device: name, label: `Switching to ${sceneName(state, scene, view.type)}…`, value: scene },
-  );
-  return started ? op(key).token : 0;
+    body: { scene: scene === "" ? null : scene },
+  });
+  applyAnswer(answer);
+  return answer;
 }
 
 /**
- * A scene was chosen in a row's select. The switch is remembered for Undo
- * (C1) unless it replaced an overlay, which Undo would make your choice.
+ * @param {import("../store.js").ClientState} state @param {any} view @param {string} scene
+ * @returns {string} the busy label of a switch, the Device page's
+ */
+const switchLabel = (state, view, scene) => `Switching to ${sceneName(state, scene, view.type)}…`;
+
+/**
+ * A switch from the row's select succeeded: its Undo is offered from now
+ * on, for 15 s of the browser's clock, bound to the choice pixdcon made,
+ * by the stamp in the switch's own answer (C1). Only the record this
+ * switch left in this opening of the page is armed. An answer without that
+ * stamp, or of another scene, arms nothing: a newer choice could not be
+ * told from it. The armed record replaces the pending one.
+ *
+ * @param {string} key the scene slot
+ * @param {UndoRecord} record the pending record this switch left
+ * @param {import("../api.js").Answer} answer
+ */
+function arm(key, record, answer) {
+  if (undos.get(key) !== record) return;
+  const choice = (answer.body?.device ?? answer.body)?.desired?.choice;
+  if (typeof choice?.chosenAt !== "string" || (choice.scene ?? "") !== record.to) undos.delete(key);
+  else undos.set(key, { ...record, chosenAt: choice.chosenAt, at: Date.now() });
+}
+
+/**
+ * A scene was chosen in a row's select: a switch in the slot of the
+ * device's life, shared with the Device page. While one runs, from either
+ * page, a choice sends nothing and says nothing. The switch is remembered
+ * for Undo (C1) unless it replaced an overlay, which Undo would make your
+ * choice; its Undo is offered once it succeeded (arm).
  *
  * @param {string} name
  * @param {string} scene "" for none
  */
 function chooseScene(name, scene) {
-  const view = getState().devices.get(name);
+  const state = getState();
+  const view = state.devices.get(name);
   if (!view) return;
+  const key = deviceSlot("scene", view);
   const from = view.desired?.scene?.scene ?? "";
   const source = view.desired?.scene?.source;
-  const token = switchScene(name, scene);
-  if (token && from !== scene && source !== "overlay" && source !== "blob")
-    undos.set(deviceSlot("scene", view), { token, from, to: scene, at: getState().now, undo: 0 });
+  /** @type {UndoRecord} */
+  const record = { token: 0, from, to: scene, chosenAt: null, at: null, undo: 0 };
+  const started = start(key, () => sendScene(name, key, scene), {
+    device: name,
+    label: switchLabel(state, view, scene),
+    value: scene,
+    done: (answer) => arm(key, record, answer),
+  });
+  if (started) {
+    // A new switch replaces the offer of the one before.
+    if (from !== scene && source !== "overlay" && source !== "blob") {
+      record.token = op(key).token;
+      undos.set(key, record);
+    } else undos.delete(key);
+  }
   render(getState());
 }
 
 /**
- * Undo: the scene the row switched from, through the same switch (C1). A
- * failed Undo keeps its button beside the failure, to try again; the
- * button is there only while the row offers it.
+ * Undo: the scene the row switched from, through the same switch (C1).
+ * The 15 s are checked again on the browser's clock, not the page's last
+ * tick (a tab that slept past them sends nothing), and the page's own copy
+ * of the device must still hold the choice the switch made. Then the
+ * device is read again, as another tab or page may have chosen since the
+ * page last heard: the switch back is sent only while that choice still
+ * stands. Otherwise nothing is sent, and the offer goes. A failed Undo
+ * keeps its button beside the failure, to try again; the button is there
+ * only while the row offers it.
  *
  * @param {string} name
  */
 function undo(name) {
   const state = getState();
   const view = state.devices.get(name);
-  const record = view ? undoRecord(state, view) : null;
-  if (!record) return;
-  const token = switchScene(name, record.from);
-  if (token) record.undo = token;
+  if (!view) return;
+  const key = deviceSlot("scene", view);
+  const record = op(key).busy ? null : undoRecord(view, Date.now());
+  if (!record) {
+    render(getState());
+    return;
+  }
+  const started = start(
+    key,
+    async (current) => {
+      const read = await request("GET", `/api/v2/devices/${encodeURIComponent(name)}`, { resource: `device:${name}`, key });
+      applyAnswer(read);
+      // Changed since the switch: in pixdcon's answer, or in a newer copy the page holds.
+      if (!current() || !sameChoice(read.body?.device ?? read.body, record) || !sameChoice(getState().devices.get(name), record)) return read;
+      return sendScene(name, key, record.from);
+    },
+    { device: name, label: switchLabel(state, view, record.from), value: record.from },
+  );
+  if (started) record.undo = op(key).token;
   render(getState());
 }
 
