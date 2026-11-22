@@ -11,7 +11,7 @@
       "was": "createAwtrixDriver"
     },
     {
-      "site": "src/drivers/http-transport.js:40",
+      "site": "src/drivers/http-transport.js:44",
       "id": "listener:cancellation.addEventListener(\"abort\")#1",
       "input": "request lifetime or poll AbortSignal",
       "metadata": "serialized HTTP operation, lifetime and per-poll cancellation signals",
@@ -19,7 +19,7 @@
       "test": "test/smoke/drivers-render.test.js: fake drivers close queued work"
     },
     {
-      "site": "src/drivers/http-transport.js:42",
+      "site": "src/drivers/http-transport.js:46",
       "id": "timer:options.clock.sleep#1",
       "input": "per-request deadline",
       "metadata": "serialized operation and request identity; lifetime and deadline AbortSignals",
@@ -27,7 +27,7 @@
       "test": "test/smoke/drivers-render.test.js: drivers in order:"
     },
     {
-      "site": "src/drivers/http-transport.js:52",
+      "site": "src/drivers/http-transport.js:56",
       "id": "fetch:fetch#1",
       "input": "HTTP headers and body, including an answer after its deadline",
       "metadata": "serialized operation and request identity; lifetime and deadline AbortSignals",
@@ -35,7 +35,7 @@
       "test": "test/smoke/drivers-render.test.js: drivers in order:"
     },
     {
-      "site": "src/drivers/http-transport.js:70",
+      "site": "src/drivers/http-transport.js:74",
       "id": "timer:options.clock.sleep#2",
       "input": "100 ms initialization pause",
       "metadata": "serialized HTTP operation, lifetime and per-poll cancellation signals",
@@ -231,7 +231,7 @@
       "test": "test/smoke/drivers-render.test.js: fake drivers keep compound frame writes serialized"
     },
     {
-      "site": "src/drivers/http-transport.js:42",
+      "site": "src/drivers/http-transport.js:46",
       "id": "then:options.clock.sleep().then#1",
       "input": "request deadline completion or cancellation",
       "metadata": "request-local deadline and abort controllers",

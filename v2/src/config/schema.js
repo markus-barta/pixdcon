@@ -293,6 +293,7 @@ export function validateDevice(raw) {
       false,
       "cleanupLegacyApps",
     ),
+    firmware: firmwareOf(raw.firmware),
     enabled: boolean(raw.enabled, true, "enabled"),
     output: outputMode(raw.output, "output"),
     supersedes,
@@ -364,6 +365,12 @@ export function diffConfig(previous, next) {
   };
 }
 
+/** Ulanzi firmware API: "awtrix3" (default) or "awtrix-ng". @param {unknown} raw @returns {"awtrix3"|"awtrix-ng"} */
+function firmwareOf(raw) {
+  if (raw === undefined || raw === null || raw === "") return "awtrix3";
+  if (raw === "awtrix3" || raw === "awtrix-ng") return raw;
+  return invalid("firmware", 'expected "awtrix3" or "awtrix-ng"');
+}
 /** @param {string} path @param {string} message @returns {never} */
 function invalid(path, message) {
   throw new ConfigError(`${path}: ${message}`, { path });
@@ -433,6 +440,7 @@ const DEVICE_KEYS = [
   "maxPowerCycles",
   "powerCyclePlugin",
   "cleanupLegacyApps",
+  "firmware",
   "enabled",
   "output",
   "supersedes",
@@ -456,6 +464,7 @@ const CHANGE_IMPACT = new Map(
     ["maxPowerCycles", "restart"],
     ["powerCyclePlugin", "restart"],
     ["cleanupLegacyApps", "restart"],
+    ["firmware", "restart"],
     ["sceneSettings", "apply"],
     ["displayName", "view"],
     ["comment", "view"],
