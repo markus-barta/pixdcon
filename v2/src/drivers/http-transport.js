@@ -27,8 +27,12 @@ export function createTransport(options, label) {
     return result;
   }
 
-  /** @param {string} path @param {unknown} [body] @param {AbortSignal} [signal] @returns {Promise<unknown>} */
-  async function request(path, body, signal) {
+  /**
+   * @param {string} path @param {unknown} [body] @param {AbortSignal} [signal]
+   * @param {"GET"|"POST"|"PUT"|"PATCH"|"DELETE"} [method] default GET without a body, POST with one (AWTRIX NG needs PUT, PATCH and DELETE)
+   * @returns {Promise<unknown>}
+   */
+  async function request(path, body, signal, method) {
     if (closed || signal?.aborted) throw new DeviceError(`${label} HTTP cancelled`, { device: options.name, op: path });
     const deadline = new AbortController();
     const abort = new AbortController();
@@ -50,7 +54,7 @@ export function createTransport(options, label) {
       // The race covers the body as well as the headers. A late answer has no side effects.
       return await Promise.race([expired, interrupted, (async () => {
         const response = await fetch(`http://${options.address}${path}`, {
-          method: body === undefined ? "GET" : "POST",
+          method: method ?? (body === undefined ? "GET" : "POST"),
           headers: { "Content-Type": "application/json" },
           body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
           signal: combined,

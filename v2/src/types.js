@@ -102,6 +102,7 @@
  * @property {number} maxPowerCycles default 10
  * @property {PowerCyclePlugin|null} powerCyclePlugin
  * @property {boolean} cleanupLegacyApps default false (Ulanzi only)
+ * @property {"awtrix3"|"awtrix-ng"} firmware default "awtrix3" (Ulanzi only): AWTRIX NG speaks its own /api/v1 API
  * @property {boolean} enabled default true; false keeps the entry in the file and does not start the device (A-075)
  * @property {OutputMode|null} output what the file asks for; null = not said, the default applies. The output in effect is `EffectiveDevice.output` (one resolved policy).
  * @property {{granular?: SceneSuppression, blob?: SceneSuppression}} supersedes bookkeeping written together with a UI choice, one entry per scene layer; only suppressions whose clear is not confirmed yet are in the file
@@ -241,6 +242,7 @@
  * @property {number} maxPowerCycles
  * @property {PowerCyclePlugin|null} powerCyclePlugin
  * @property {boolean} cleanupLegacyApps
+ * @property {"awtrix3"|"awtrix-ng"} [firmware] Ulanzi API; absent = "awtrix3"
  * @property {Record<string, Record<string, unknown>>} sceneSettings the saved layer as it runs; a blob entry replaces the whole object (A-071)
  * @property {string[]} blobKeys keys of this entry that the blob overlay sets, for the Overlays page; never written to config.json
  */

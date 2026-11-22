@@ -25,6 +25,7 @@
 
 import { createPixooDriver } from "./pixoo-driver.js";
 import { createAwtrixDriver } from "./awtrix-driver.js";
+import { createAwtrixNgDriver } from "./awtrix-ng-driver.js";
 import { createShadowDriver } from "./shadow-driver.js";
 
 /** @typedef {import("../types.js").Frame} Frame */
@@ -76,6 +77,7 @@ import { createShadowDriver } from "./shadow-driver.js";
  * @property {import("../types.js").Clock} clock
  * @property {number} [timeoutMs] per request, default 5000 (D-031)
  * @property {boolean} [cleanupLegacyApps] Ulanzi only (D-055)
+ * @property {"awtrix3"|"awtrix-ng"} [firmware] Ulanzi only: which AWTRIX API the display speaks, default "awtrix3"
  */
 
 /**
@@ -84,14 +86,15 @@ import { createShadowDriver } from "./shadow-driver.js";
  * `output` is the resolved policy (`EffectiveDevice.output.mode`); the
  * factory takes it as given and looks at nothing else.
  *
- * @param {{name: string, type: DeviceType, address: string, output: import("../types.js").OutputMode, cleanupLegacyApps?: boolean}} device
+ * @param {{name: string, type: DeviceType, address: string, output: import("../types.js").OutputMode, cleanupLegacyApps?: boolean, firmware?: "awtrix3"|"awtrix-ng"}} device
  * @param {{logger: import("../types.js").Logger, clock: import("../types.js").Clock, rasterizeAwtrixApp: import("../types.js").Factories["rasterizeAwtrixApp"]}} deps rasterizeAwtrixApp: for the shadow driver's simulated Ulanzi preview
  * @returns {DeviceDriver}
  */
 export function createDriver(device, deps) {
   const options = { ...device, ...deps };
   if (device.output === "shadow") return createShadowDriver(options);
-  return device.type === "pixoo" ? createPixooDriver(options) : createAwtrixDriver(options);
+  if (device.type === "pixoo") return createPixooDriver(options);
+  return device.firmware === "awtrix-ng" ? createAwtrixNgDriver(options) : createAwtrixDriver(options);
 }
 
 /**

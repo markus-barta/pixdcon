@@ -261,6 +261,7 @@ export function buildEffectiveConfig(
       maxPowerCycles: device.maxPowerCycles,
       powerCyclePlugin: device.powerCyclePlugin,
       cleanupLegacyApps: device.cleanupLegacyApps,
+      firmware: device.firmware,
       sceneSettings: device.sceneSettings,
       blobKeys,
     });
@@ -510,6 +511,7 @@ export class RuntimeConfig extends EventEmitter {
           maxPowerCycles: device.maxPowerCycles,
           powerCyclePlugin: device.powerCyclePlugin,
           cleanupLegacyApps: device.cleanupLegacyApps,
+          firmware: device.firmware,
           sceneSettings: device.sceneSettings,
         })),
       scenes: Object.fromEntries(

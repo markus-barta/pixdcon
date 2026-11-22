@@ -634,7 +634,7 @@
       "why": "failure logging only; subscriber invocation was fenced by current context and incarnation in its command lane"
     },
     {
-      "site": "src/state/runtime-config.js:417",
+      "site": "src/state/runtime-config.js:418",
       "id": "listener:source.on(\"changed\")#1",
       "input": "saved config, overlay, or ownership changed notice",
       "metadata": "current source values read at handling time, effective revision",
