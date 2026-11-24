@@ -623,7 +623,48 @@ All pixdcon topics are under `home/hsb1/pixdcon/`:
 | Topic | Scene | Description |
 |-------|-------|-------------|
 | `home/hsb1/funkeykid/display` | funkeykid | Letter + word + color from keyboard |
-| `home/hsb1/funkeykid/keyboard-info` | home | Keyboard connection status (retained) |
+| `home/hsb1/funkeykid/keyboard-info` | home, home2, funkeykid | Keyboard status and heartbeat (retained) |
+
+### Funkeykid start screen (PIXD-122, v1)
+
+`scenes/pixoo/funkeykid.js` draws the 64×64 keycap mascot, a 7px status bar
+(Bluetooth, 3×5 status text, optional battery), and three animated 5×7 title
+keycaps. It consumes funkeykid v3.2.0's retained `keyboard-info` JSON:
+`online`, `connected`, `exclusive`, `battery_level` (number 0–100 or null),
+`battery_low`, and `heartbeat_s` (default 10). Reception time drives expiry;
+the producer's timestamp is not compared with this machine's clock.
+
+| State | Trigger | Status word |
+| --- | --- | --- |
+| Offline | No status, `online: false`, or 3 missed heartbeats | `offline` |
+| Searching | Online, disconnected | `suche` |
+| Not exclusive | Connected, `exclusive` not true; takes priority over battery/waking | `achtung` |
+| Battery low | Connected and exclusive, `battery_low: true` | `akku!` |
+| Waking up | Disconnected → connected, once for 2600ms | `verbinde` → `hallo!` |
+| Ready | Connected and exclusive after waking | `bereit` |
+
+An initial retained connected snapshot goes straight to Ready; heartbeats do
+not restart waking. Recovery from expired status does play waking. Offline
+art stays still. Battery is hidden when unknown, disconnected, offline, or
+during the first 1600ms of waking; zero is a known level. Red/blinking uses
+the producer's `battery_low`, never a separate percentage threshold.
+
+Before the first key (or with no idle image), the start screen animates every
+60ms, subject to the device's `minFrameMs`. A known disconnect, offline state,
+or failed exclusive grab also shows it over the last letter/image. Volume
+keeps its existing 1500ms priority; otherwise the letter and idle-image paths
+are unchanged. Display messages still work before the first status snapshot.
+Status/subscriptions belong to each scene instance and are reset on reload;
+PIXD-75's config-save and reload queue is unchanged.
+
+Golden fixtures and PNGs: `v2/test/golden/{fixtures,frames}/funkeykid--status-*`.
+The shared harness freezes time and compares the real v1 driver with the v2
+adapter byte-for-byte. `v2/test/contract/funkeykid.test.js` uses v1's loader,
+settings, render loop and MQTT service against the existing loopback
+in-memory broker and fake Pixoo HTTP server.
+No production device or broker is needed. Scene-only deployment follows
+`docs/DEPLOY.md` (copy `funkeykid.js` to the v1 scenes mount; hot reload,
+no image release or v2 changes).
 
 ## Testing Strategy
 
