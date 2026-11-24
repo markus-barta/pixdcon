@@ -1,0 +1,25 @@
+{
+  "name": "funkeykid--status-ready-unknown-battery",
+  "scene": "funkeykid",
+  "deviceType": "pixoo",
+  "now": "2026-11-24T20:00:00Z",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "online": true,
+        "connected": true,
+        "exclusive": true,
+        "battery_level": null,
+        "battery_low": false,
+        "heartbeat_s": 10
+      }
+    }
+  ],
+  "http": [],
+  "elapsedMs": 600,
+  "frames": 1,
+  "note": "A smiling ready mascot and pressed cyan KID cap sit below BEREIT with the battery area completely empty."
+}

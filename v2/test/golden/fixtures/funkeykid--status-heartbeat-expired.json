@@ -1,0 +1,25 @@
+{
+  "name": "funkeykid--status-heartbeat-expired",
+  "scene": "funkeykid",
+  "deviceType": "pixoo",
+  "now": "2026-11-24T20:00:00Z",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "online": true,
+        "connected": true,
+        "exclusive": true,
+        "battery_level": 80,
+        "battery_low": false,
+        "heartbeat_s": 10
+      }
+    }
+  ],
+  "http": [],
+  "elapsedMs": 30000,
+  "frames": 1,
+  "note": "An expired keyboard heartbeat leaves the grey offline mascot and title caps with no battery icon or ready text."
+}

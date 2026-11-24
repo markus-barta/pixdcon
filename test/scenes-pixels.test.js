@@ -98,11 +98,11 @@ test("funkeykid renders its start screen without any MQTT input", async () => {
   const ctx = context();
   await scene.init(ctx);
   const device = driver();
-  const labels = [];
-  const drawText = device.drawTextRgbaAligned.bind(device);
-  device.drawTextRgbaAligned = async (text, ...args) => { labels.push(text); await drawText(text, ...args); };
-  assert.equal(await scene.render(device), 100);
-  assert.deepEqual(labels, ["fun", "key", "kid"]);
+  assert.equal(await scene.render(device), 60);
+  // No retained status yet: an offline mascot, never an invented Ready state.
+  const at = (x, y) => [...device.buf.slice((y * 64 + x) * 3, (y * 64 + x) * 3 + 3)];
+  assert.deepEqual(at(24, 16), [74, 74, 82]);
+  assert.deepEqual(at(2, 49), [70, 70, 78]);
   assert.ok(device.buf.some((v) => v > 0));
   assert.deepEqual(device.brightness, [100]);
   await scene.destroy(ctx);

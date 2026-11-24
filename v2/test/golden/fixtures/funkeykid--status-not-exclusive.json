@@ -1,0 +1,25 @@
+{
+  "name": "funkeykid--status-not-exclusive",
+  "scene": "funkeykid",
+  "deviceType": "pixoo",
+  "now": "2026-11-24T20:00:00Z",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "online": true,
+        "connected": true,
+        "exclusive": false,
+        "battery_level": 80,
+        "battery_low": true,
+        "heartbeat_s": 10
+      }
+    }
+  ],
+  "http": [],
+  "elapsedMs": 800,
+  "frames": 1,
+  "note": "A red startled keycap raises its arms inside a blinking red frame beneath ACHTUNG and a warning exclamation."
+}

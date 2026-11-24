@@ -1,0 +1,25 @@
+{
+  "name": "funkeykid--status-offline",
+  "scene": "funkeykid",
+  "deviceType": "pixoo",
+  "now": "2026-11-24T20:00:00Z",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "online": false,
+        "connected": false,
+        "exclusive": false,
+        "battery_level": null,
+        "battery_low": false,
+        "heartbeat_s": 10
+      }
+    }
+  ],
+  "http": [],
+  "elapsedMs": 900,
+  "frames": 1,
+  "note": "A still grey keycap with flat eyes sits below OFFLINE and grey Bluetooth above three grey title caps."
+}

@@ -1,0 +1,25 @@
+{
+  "name": "funkeykid--status-ready",
+  "scene": "funkeykid",
+  "deviceType": "pixoo",
+  "now": "2026-11-24T20:00:00Z",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "online": true,
+        "connected": true,
+        "exclusive": true,
+        "battery_level": 80,
+        "battery_low": false,
+        "heartbeat_s": 10
+      }
+    }
+  ],
+  "http": [],
+  "elapsedMs": 600,
+  "frames": 1,
+  "note": "A smiling colourful keycap waves among sparkles under BEREIT and a green battery, with its cyan KID cap pressed down."
+}
