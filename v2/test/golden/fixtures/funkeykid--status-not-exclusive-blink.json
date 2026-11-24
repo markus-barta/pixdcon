@@ -1,0 +1,25 @@
+{
+  "name": "funkeykid--status-not-exclusive-blink",
+  "scene": "funkeykid",
+  "deviceType": "pixoo",
+  "now": "2026-11-24T20:00:00Z",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "online": true,
+        "connected": true,
+        "exclusive": false,
+        "battery_level": 80,
+        "battery_low": false,
+        "heartbeat_s": 10
+      }
+    }
+  ],
+  "http": [],
+  "elapsedMs": 400,
+  "frames": 1,
+  "note": "A dark red startled keycap and dim ACHTUNG text remain visible during the warning frame blink-off phase."
+}

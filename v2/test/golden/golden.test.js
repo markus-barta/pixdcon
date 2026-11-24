@@ -174,6 +174,23 @@ test("clock_with_homestats--debug-battery-override", async (t) => {
 test("funkeykid--title-before-first-key", async (t) => {
   await goldenCase(t, "funkeykid--title-before-first-key");
 });
+for (const state of [
+  "searching",
+  "waking",
+  "waking-hello",
+  "ready",
+  "ready-unknown-battery",
+  "low-battery",
+  "low-battery-blink",
+  "not-exclusive",
+  "not-exclusive-blink",
+  "offline",
+  "heartbeat-expired",
+]) {
+  test(`funkeykid--status-${state}`, async (t) => {
+    await goldenCase(t, `funkeykid--status-${state}`);
+  });
+}
 test("funkeykid--letter-a-with-picture", async (t) => {
   await goldenCase(t, "funkeykid--letter-a-with-picture");
 });

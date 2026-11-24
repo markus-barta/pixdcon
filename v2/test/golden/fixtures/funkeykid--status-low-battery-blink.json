@@ -1,0 +1,25 @@
+{
+  "name": "funkeykid--status-low-battery-blink",
+  "scene": "funkeykid",
+  "deviceType": "pixoo",
+  "now": "2026-11-24T20:00:00Z",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "online": true,
+        "connected": true,
+        "exclusive": true,
+        "battery_level": 14,
+        "battery_low": true,
+        "heartbeat_s": 10
+      }
+    }
+  ],
+  "http": [],
+  "elapsedMs": 600,
+  "frames": 1,
+  "note": "A sweating keycap appears below AKKU while the red battery outline stays visible and its fill blinks off."
+}

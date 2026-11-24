@@ -1,0 +1,36 @@
+{
+  "name": "funkeykid--status-waking-hello",
+  "scene": "funkeykid",
+  "deviceType": "pixoo",
+  "now": "2026-11-24T20:00:00Z",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "online": true,
+        "connected": false,
+        "exclusive": false,
+        "battery_level": 80,
+        "battery_low": false,
+        "heartbeat_s": 10
+      }
+    },
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "online": true,
+        "connected": true,
+        "exclusive": true,
+        "battery_level": 80,
+        "battery_low": false,
+        "heartbeat_s": 10
+      }
+    }
+  ],
+  "http": [],
+  "elapsedMs": 1850,
+  "frames": 1,
+  "note": "A bright bouncing keycap greets HALLO with sparkles, a green battery and its yellow KEY cap pressed down."
+}

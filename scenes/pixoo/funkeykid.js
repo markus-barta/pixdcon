@@ -4,6 +4,9 @@
  * Subscribes to MQTT topic `home/hsb1/funkeykid/display` and renders:
  *   (a) letter + word + background image for keypress payloads, or
  *   (b) a vertical VU-meter overlay for volume-change payloads (FKID-2).
+ * Retained `home/hsb1/funkeykid/keyboard-info` drives the start screen:
+ * searching, waking (2.6s), ready, low battery, not exclusive, offline.
+ * Missing status starts offline; three missed heartbeats expire live status.
  *
  * Payload contract (published by the funkeykid Python server — display.py):
  *
@@ -18,8 +21,9 @@
  *
  * Render priorities (top → bottom in render()):
  *   1. Volume overlay   — active while _volumeBar && age < 1500 ms
- *   2. Idle             — no keypress within idle_timeout_ms (default 10s)
- *   3. Active           — bg image + big letter + word
+ *   2. Keyboard alert   — known disconnected, offline, or not exclusive
+ *   3. Idle             — last image, or animated start screen before a key
+ *   4. Active           — bg image + big letter + word
  *
  * Idle timeout, letter scale, color toggle are scene settings surfaced
  * via pixdcon's config.json → sceneSettings.funkeykid block.
@@ -31,12 +35,16 @@
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { loadPixooImage, drawPixooImage } from "../../lib/pixoo-image.js";
+import { BITMAP_FONT } from "../../lib/pixoo-font.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = resolve(__dirname, "../../assets/pixoo/funkeykid");
 
 const IDLE_TIMEOUT_MS = 10000; // 10s without keypress → show bg only
 const MQTT_TOPIC = "home/hsb1/funkeykid/display";
+const KEYBOARD_INFO_TOPIC = "home/hsb1/funkeykid/keyboard-info";
+const HEARTBEAT_S = 10;
+const WAKE_MS = 2600;
 
 // Letter → bg image filename mapping (QWERTZ: Y=Ziege, Z=Yak)
 const BG_IMAGES = {
@@ -392,6 +400,227 @@ function randomColor() {
   return COLORS[Math.floor(Math.random() * COLORS.length)];
 }
 
+// PIXD-122 reference pixel art: keycap mascot, 5×7 title keycaps, 7px status.
+// Clamped pixels preserve the reference canvas alpha rounding on the v1 driver.
+function drawStartScreen(B, state, st, t, battery, batteryLow) {
+  B.fill(0);
+  const put = (x, y, c, a) => {
+    x = Math.round(x); y = Math.round(y);
+    if (x < 0 || y < 0 || x > 63 || y > 63) return;
+    const i = (y * 64 + x) * 3;
+    if (a === undefined || a >= 1) { B[i] = c[0]; B[i + 1] = c[1]; B[i + 2] = c[2]; return; }
+    if (a <= 0) return;
+    B[i] = B[i] * (1 - a) + c[0] * a;
+    B[i + 1] = B[i + 1] * (1 - a) + c[1] * a;
+    B[i + 2] = B[i + 2] * (1 - a) + c[2] * a;
+  };
+  const rect = (x, y, w, h, c, a) => { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) put(x + i, y + j, c, a); };
+  const bmp = (x, y, rows, c, a) => { for (let j = 0; j < rows.length; j++) for (let i = 0; i < rows[j].length; i++) if (rows[j][i] === 'X') put(x + i, y + j, c, a); };
+  const hsl = (h, s, l) => {
+    h = (((h % 360) + 360) % 360) / 360; s /= 100; l /= 100;
+    const f = (n) => { const k = (n + h * 12) % 12; const q = s * Math.min(l, 1 - l); return Math.round(255 * (l - q * Math.max(-1, Math.min(k - 3, 9 - k, 1)))); };
+    return [f(0), f(8), f(4)];
+  };
+  const mix = (a, b, k) => [Math.round(a[0] + (b[0] - a[0]) * k), Math.round(a[1] + (b[1] - a[1]) * k), Math.round(a[2] + (b[2] - a[2]) * k)];
+  const dim = (c, k) => [Math.round(c[0] * k), Math.round(c[1] * k), Math.round(c[2] * k)];
+  const ease = (x) => x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x);
+  const BLACK = [0, 0, 0];
+
+  // pixdcon 3x5 font; lowercase glyphs leave the top row empty.
+  const text3 = (s, cx, y, c, a) => {
+    const w = s.length * 4 - 1;
+    let x = Math.round(cx - w / 2);
+    for (const ch of s) {
+      const g = BITMAP_FONT[ch];
+      if (g) for (let k = 0; k < 15; k++) if (g[k] === 1) put(x + (k % 3), y + Math.floor(k / 3), c, a);
+      x += 4;
+    }
+  };
+  const F5 = {
+    F: ['XXXXX', 'X....', 'X....', 'XXXX.', 'X....', 'X....', 'X....'],
+    U: ['X...X', 'X...X', 'X...X', 'X...X', 'X...X', 'X...X', '.XXX.'],
+    N: ['X...X', 'XX..X', 'XX..X', 'X.X.X', 'X..XX', 'X..XX', 'X...X'],
+    K: ['X...X', 'X..X.', 'X.X..', 'XX...', 'X.X..', 'X..X.', 'X...X'],
+    E: ['XXXXX', 'X....', 'X....', 'XXXX.', 'X....', 'X....', 'XXXXX'],
+    Y: ['X...X', 'X...X', '.X.X.', '..X..', '..X..', '..X..', '..X..'],
+    I: ['XXX', '.X.', '.X.', '.X.', '.X.', '.X.', 'XXX'],
+    D: ['XXXX.', 'X...X', 'X...X', 'X...X', 'X...X', 'X...X', 'XXXX.']
+  };
+
+  const asleep = state === 'searching';
+  const off = state === 'offline';
+  const unsafe = state === 'unsafe';
+  const low = state === 'lowbat';
+  const waking = state === 'waking';
+  const ready = state === 'ready';
+  const wake = waking ? ease((st - 300) / 1300) : (asleep || off) ? 0 : 1;
+
+  // background stars (night sky while asleep, fading out on wake)
+  const STARS = [[4, 12, 0.0, 1.3], [11, 20, 1.7, 0.9], [6, 31, 3.1, 1.1], [13, 41, 0.8, 1.5], [3, 44, 2.4, 0.8], [57, 14, 4.0, 1.2], [52, 25, 0.5, 1.0], [60, 32, 2.9, 1.4], [55, 42, 1.2, 0.9], [49, 9, 3.6, 1.1], [15, 9, 2.0, 1.3], [30, 9, 5.1, 0.7], [9, 37, 4.4, 1.0], [58, 22, 1.9, 1.6]];
+  const starA = off ? 0.25 : (1 - wake);
+  if (starA > 0.01) {
+    for (const s of STARS) {
+      const k = 0.2 + 0.8 * Math.max(0, Math.sin(t / 1000 * s[3] + s[2]));
+      put(s[0], s[1], [160, 175, 255], starA * k * 0.85);
+    }
+  }
+
+  // mascot body: a keycap with a face
+  let bob = 0;
+  if (ready || low) bob = Math.floor(t / 450) % 2 ? -1 : 0;
+  else if (asleep) bob = Math.sin(t / 900) > 0.55 ? -1 : 0;
+  else if (waking && st > 1600 && st < 2000) bob = -2;
+  const by = 14 + bob;
+
+  const hue = (t / 35) % 360;
+  let face, skirt;
+  if (off) { face = [74, 74, 82]; skirt = [40, 40, 46]; }
+  else if (unsafe) { const on = Math.floor(t / 400) % 2 === 0; face = on ? [235, 72, 60] : [165, 45, 40]; skirt = [92, 24, 22]; }
+  else {
+    face = mix([50, 60, 128], hsl(hue, 85, 62), wake);
+    skirt = mix([26, 30, 76], hsl(hue, 75, 32), wake);
+  }
+
+  rect(19, by, 26, 22, skirt);
+  put(19, by, BLACK); put(44, by, BLACK); put(19, by + 21, BLACK); put(44, by + 21, BLACK);
+  rect(20, by + 21, 24, 1, dim(skirt, 0.7));
+  rect(22, by + 1, 20, 16, face);
+  put(22, by + 1, skirt); put(41, by + 1, skirt); put(22, by + 16, skirt); put(41, by + 16, skirt);
+  rect(23, by + 1, 18, 1, mix(face, [255, 255, 255], 0.35));
+
+  // legs and feet
+  const legC = off ? [50, 50, 56] : mix([48, 52, 84], [205, 205, 220], wake);
+  for (let y = by + 22; y <= 38; y++) { rect(24, y, 2, 1, legC); rect(38, y, 2, 1, legC); }
+  rect(23, 39, 3, 1, legC); rect(38, 39, 3, 1, legC);
+
+  // arms
+  const armC = mix(skirt, [255, 255, 255], 0.25);
+  if (ready || low) {
+    const ph = Math.floor(t / 300) % 2;
+    put(18, by + 13, armC); put(17, by + 12 - ph, armC);
+    put(45, by + 13, armC); put(46, by + 11 + ph, armC);
+  } else if (unsafe) {
+    put(18, by + 11, armC); put(17, by + 10, armC); put(17, by + 9, armC);
+    put(45, by + 11, armC); put(46, by + 10, armC); put(46, by + 9, armC);
+  }
+
+  // eyes
+  const EYE = [16, 16, 26];
+  const WHITE = [255, 255, 255];
+  let eye = 'open';
+  if (off) eye = 'dash';
+  else if (asleep) eye = 'closed';
+  else if (waking) eye = st < 600 ? 'closed' : st < 1000 ? 'half' : 'open';
+  if (eye === 'open' && !unsafe && (t % 3200) < 130) eye = 'closed';
+  if (eye === 'dash') { rect(25, by + 7, 4, 1, EYE); rect(35, by + 7, 4, 1, EYE); }
+  else if (eye === 'closed') {
+    put(25, by + 7, EYE); put(26, by + 8, EYE); put(27, by + 8, EYE); put(28, by + 7, EYE);
+    put(35, by + 7, EYE); put(36, by + 8, EYE); put(37, by + 8, EYE); put(38, by + 7, EYE);
+  } else if (eye === 'half') { rect(26, by + 7, 2, 2, EYE); rect(36, by + 7, 2, 2, EYE); }
+  else if (unsafe) { rect(25, by + 5, 3, 4, EYE); rect(36, by + 5, 3, 4, EYE); put(25, by + 5, WHITE); put(36, by + 5, WHITE); }
+  else { rect(26, by + 6, 2, 3, EYE); rect(36, by + 6, 2, 3, EYE); put(26, by + 6, WHITE); put(36, by + 6, WHITE); }
+
+  // cheeks
+  if (!off && !unsafe) {
+    const ch = mix([90, 50, 110], [255, 120, 160], wake);
+    rect(23, by + 10, 2, 1, ch); rect(39, by + 10, 2, 1, ch);
+  }
+
+  // mouth
+  if (off) rect(30, by + 12, 4, 1, [50, 50, 56]);
+  else if (asleep) { put(31, by + 12, EYE); put(32, by + 12, EYE); }
+  else if (waking && st < 1300) rect(31, by + 11, 2, 2, EYE);
+  else if (unsafe) rect(31, by + 11, 2, 3, EYE);
+  else if (low) { put(29, by + 12, EYE); put(30, by + 11, EYE); put(31, by + 12, EYE); put(32, by + 11, EYE); put(33, by + 12, EYE); put(34, by + 11, EYE); }
+  else { put(29, by + 11, EYE); put(34, by + 11, EYE); rect(30, by + 12, 4, 1, EYE); }
+
+  // effects around the mascot
+  if (asleep) {
+    for (let i = 0; i < 3; i++) {
+      const p = ((t + i * 800) % 2400) / 2400;
+      bmp(Math.round(45 + p * 9), Math.round(17 - p * 9), ['XXXX', '..X.', '.X..', 'XXXX'], [175, 185, 255], Math.sin(p * Math.PI) * 0.9);
+    }
+  }
+  if (waking && st > 450 && st < 1700) bmp(31, 8, ['XX', 'XX', 'XX', '..', 'XX'], [255, 220, 60]);
+  const SPARK = [[9, 14, 0], [53, 11, 600], [11, 33, 1200], [54, 31, 300], [7, 24, 900], [48, 41, 1500]];
+  if (ready || low || (waking && st > 1600)) {
+    const cols = [[255, 240, 150], [255, 150, 220], [150, 230, 255]];
+    SPARK.forEach((s, i) => {
+      const p = ((t + s[2]) % 1800) / 1800;
+      const k = waking ? 1 - (st - 1600) / 1000 : Math.max(0, Math.sin(p * Math.PI * 2));
+      if (k <= 0.05) return;
+      const c = cols[i % 3];
+      put(s[0], s[1], c, k);
+      if (k > 0.55) { put(s[0] - 1, s[1], c, k * 0.6); put(s[0] + 1, s[1], c, k * 0.6); put(s[0], s[1] - 1, c, k * 0.6); put(s[0], s[1] + 1, c, k * 0.6); }
+    });
+  }
+  if (low) {
+    const d = Math.floor(t / 250) % 3;
+    bmp(46, by + 3 + d, ['.X.', 'XXX', '.X.'], [120, 200, 255]);
+  }
+  if (unsafe) {
+    const on = Math.floor(t / 400) % 2 === 0;
+    if (on) {
+      const R = [255, 50, 40];
+      rect(0, 8, 64, 1, R); rect(0, 63, 64, 1, R); rect(0, 8, 1, 56, R); rect(63, 8, 1, 56, R);
+      rect(48, 10, 7, 7, R);
+      put(48, 10, BLACK); put(54, 10, BLACK); put(48, 16, BLACK); put(54, 16, BLACK);
+      bmp(51, 11, ['X', 'X', 'X', '.', 'X'], [255, 255, 255]);
+    }
+  }
+
+  // title keycaps
+  const CAPS = [['FUN', hsl(330, 85, 60), 1], ['KEY', hsl(45, 95, 55), 22], ['KID', hsl(190, 85, 55), 43]];
+  const titleK = off ? 1 : asleep ? 0.32 : waking ? 0.32 + 0.68 * ease((st - 600) / 900) : unsafe ? 0.45 : 1;
+  let pressIdx = -1;
+  if (ready || low) { const c = t % 4200; if (c < 900) pressIdx = Math.floor(c / 300); }
+  if (waking && st > 1500 && st < 2400) pressIdx = Math.floor((st - 1500) / 300);
+  CAPS.forEach((cap, i) => {
+    const word = cap[0], x0 = cap[2];
+    const col = off ? [70, 70, 78] : dim(cap[1], titleK);
+    const press = i === pressIdx ? 2 : 0;
+    const fy = 48 + press;
+    rect(x0, fy + 10, 20, 3 - press, dim(col, 0.45));
+    rect(x0, fy, 20, 10, col);
+    put(x0, fy, BLACK); put(x0 + 19, fy, BLACK);
+    rect(x0 + 1, fy, 18, 1, mix(col, [255, 255, 255], off ? 0 : 0.3));
+    let w = 0;
+    for (const ch of word) w += F5[ch][0].length + 1;
+    w -= 1;
+    let tx = x0 + Math.round((20 - w) / 2);
+    const tc = off ? [40, 40, 46] : [22, 18, 32];
+    for (const ch of word) { bmp(tx, fy + 2, F5[ch], tc); tx += F5[ch][0].length + 1; }
+  });
+
+  // status bar: bluetooth, status word, battery
+  const BT = ['..X..', '..XX.', 'X.X.X', '.XXX.', 'X.X.X', '..XX.', '..X..'];
+  if (off) bmp(1, 0, BT, [55, 55, 62]);
+  else if (asleep) { if ((t % 1400) < 900) bmp(1, 0, BT, [120, 120, 145]); }
+  else if (waking && st < 1600) {
+    bmp(1, 0, BT, [80, 155, 255]);
+    const w1 = (st % 600) < 400, w2 = ((st + 300) % 600) < 400;
+    if (w1) { put(7, 2, [80, 155, 255]); put(8, 3, [80, 155, 255]); put(7, 4, [80, 155, 255]); }
+    if (w2) { put(9, 1, [80, 155, 255]); put(10, 2, [80, 155, 255]); put(10, 3, [80, 155, 255]); put(10, 4, [80, 155, 255]); put(9, 5, [80, 155, 255]); }
+  } else bmp(1, 0, BT, [50, 130, 255]);
+
+  let word = '', wc = [0, 0, 0], wa = 1;
+  if (off) { word = 'offline'; wc = [95, 95, 105]; }
+  else if (asleep) { word = 'suche'; wc = [140, 140, 168]; }
+  else if (waking) { if (st < 1600) { word = 'verbinde'; wc = [110, 170, 255]; } else { word = 'hallo!'; wc = [255, 220, 80]; } }
+  else if (unsafe) { word = 'achtung'; wc = [255, 70, 60]; wa = Math.floor(t / 400) % 2 === 0 ? 1 : 0.35; }
+  else if (low) { word = 'akku!'; wc = [255, 170, 60]; }
+  else { word = 'bereit'; wc = [90, 225, 130]; }
+  text3(word, 32, 1, wc, wa);
+
+  if (battery != null) {
+    const bc = batteryLow ? [255, 60, 50] : battery <= 50 ? [255, 180, 40] : [70, 220, 110];
+    const on = !batteryLow || (t % 800) < 500;
+    const oc = batteryLow ? bc : [150, 150, 162];
+    rect(52, 1, 10, 1, oc); rect(52, 5, 10, 1, oc); rect(52, 1, 1, 5, oc); rect(61, 1, 1, 5, oc); rect(62, 2, 1, 3, oc);
+    if (on) rect(53, 2, Math.max(1, Math.round(battery / 100 * 8)), 3, bc);
+  }
+}
+
 export default {
   name: "funkeykid",
   pretty_name: "FunKeyKid",
@@ -445,7 +674,6 @@ export default {
   _settings: null,
   _unsubscribeSettings: null,
   _bgImages: {},     // Preloaded bg images keyed by letter
-  _idlePhase: 0,
   // FKID-2: volume bar-graph overlay — shown when funkeykid publishes
   // {bar:true, percent, bars_total, bars_filled} instead of a letter.
   _volumeBar: null,  // { percent, bars_filled, bars_total, color:[r,g,b] }
@@ -455,6 +683,11 @@ export default {
     this._bgImages = Object.create(null);
     this._messageVersion = 0;
     this._destroyed = false;
+    this._keyboardInfo = null;
+    this._keyboardInfoAt = null;
+    this._wakingAt = null;
+    this._startAt = Date.now();
+    this._startPixels = new Uint8ClampedArray(64 * 64 * 3);
     this._settings = context.settings.all();
     this._unsubscribeSettings = context.settings.subscribe((values) => {
       this._settings = values;
@@ -474,6 +707,41 @@ export default {
       }
     }
     context.logger.info(`[funkeykid] Loaded ${Object.keys(this._bgImages).length}/26 bg images`);
+
+    context.mqtt.subscribe(KEYBOARD_INFO_TOPIC, (msg) => {
+      if (this._destroyed) return;
+      try {
+        const data = JSON.parse(msg);
+        if (!data || typeof data !== "object" || Array.isArray(data) ||
+          typeof data.online !== "boolean" ||
+          (data.online && typeof data.connected !== "boolean") ||
+          (data.exclusive != null && typeof data.exclusive !== "boolean") ||
+          (data.battery_low != null && typeof data.battery_low !== "boolean")) return;
+        const now = Date.now();
+        const wasConnected = this._keyboardOnline(now) && this._keyboardInfo.connected;
+        const connected = data.online && data.connected === true;
+        // An initial retained snapshot is not a connection edge. Repeated
+        // heartbeats must not restart the one-shot animation; stale status is
+        // disconnected, so recovery after missed beats does play it again.
+        if (this._keyboardInfo && !wasConnected && connected) this._wakingAt = now;
+        if (!connected || data.exclusive !== true) this._wakingAt = null;
+        this._keyboardInfo = {
+          online: data.online,
+          connected,
+          exclusive: data.exclusive === true,
+          battery_low: data.battery_low === true,
+          battery_level: typeof data.battery_level === "number" &&
+            Number.isFinite(data.battery_level) && data.battery_level >= 0 &&
+            data.battery_level <= 100 ? data.battery_level : null,
+          heartbeat_s: typeof data.heartbeat_s === "number" && data.heartbeat_s > 0 &&
+            Number.isFinite(data.heartbeat_s * 3000) ? data.heartbeat_s : HEARTBEAT_S,
+        };
+        // Use reception time: the producer's timestamp belongs to another clock.
+        this._keyboardInfoAt = now;
+      } catch (e) {
+        context.logger.warn("[funkeykid] Bad keyboard-info payload");
+      }
+    });
 
     // Subscribe to funkeykid display topic
     context.mqtt.subscribe(MQTT_TOPIC, async (msg) => {
@@ -533,7 +801,35 @@ export default {
       }
     });
 
-    context.logger.info(`[funkeykid] Scene initialized, listening on ${MQTT_TOPIC}`);
+    context.logger.info(`[funkeykid] Scene initialized, listening on ${MQTT_TOPIC} and ${KEYBOARD_INFO_TOPIC}`);
+  },
+
+  _keyboardOnline(now) {
+    return this._keyboardInfo?.online === true && this._keyboardInfoAt !== null &&
+      now - this._keyboardInfoAt < this._keyboardInfo.heartbeat_s * 3000;
+  },
+
+  _keyboardState(now) {
+    if (!this._keyboardOnline(now)) return "offline";
+    if (!this._keyboardInfo.connected) return "searching";
+    if (!this._keyboardInfo.exclusive) return "unsafe";
+    if (this._keyboardInfo.battery_low) return "lowbat";
+    if (this._wakingAt !== null && now - this._wakingAt < WAKE_MS) return "waking";
+    return "ready";
+  },
+
+  async _renderStart(device, now, state) {
+    const st = this._wakingAt === null ? 0 : Math.max(0, now - this._wakingAt);
+    // Offline is deliberately still. Animation time is local to this instance,
+    // independent of frame cadence, so the same elapsed time draws the same art.
+    const t = state === "offline" ? 0 : Math.max(0, now - this._startAt);
+    const battery = state === "offline" || state === "searching" ||
+      (state === "waking" && st < 1600) ? null : this._keyboardInfo?.battery_level;
+    drawStartScreen(this._startPixels, state, st, t, battery,
+      this._keyboardInfo?.battery_low === true);
+    device.buf.set(this._startPixels);
+    await device.push();
+    return 60;
   },
 
   async render(device) {
@@ -587,24 +883,20 @@ export default {
     // device is otherwise idle.
     const volumeBarActive = this._volumeBar && (now - this._volumeBarAt) < 1500;
 
+    const keyboardState = this._keyboardState(now);
+    if (!volumeBarActive && this._keyboardInfo &&
+      ["offline", "searching", "unsafe"].includes(keyboardState)) {
+      return this._renderStart(device, now, keyboardState);
+    }
+
     if (isIdle && !volumeBarActive) {
-      // Idle: show last image (no text), or color-cycle if no letter yet
+      // Idle: show the last image (no text), or keyboard status before a key.
       const bgImg = this._currentImage || (this._lastImageName ? this._bgImages[this._lastImageName] : null);
 
       if (bgImg) {
         drawPixooImage(device, bgImg, 0, 0);
       } else {
-        // No letter pressed yet: gentle color-cycling title
-        this._idlePhase = (this._idlePhase + 1) % 360;
-        const hue = this._idlePhase;
-        const r = Math.round(128 + 127 * Math.sin(hue * Math.PI / 180));
-        const g = Math.round(128 + 127 * Math.sin((hue + 120) * Math.PI / 180));
-        const b = Math.round(128 + 127 * Math.sin((hue + 240) * Math.PI / 180));
-        await device.drawTextRgbaAligned("fun", [32, 20], [r, g, b], "center");
-        await device.drawTextRgbaAligned("key", [32, 30], [g, b, r], "center");
-        await device.drawTextRgbaAligned("kid", [32, 40], [b, r, g], "center");
-        await device.push();
-        return 100;
+        return this._renderStart(device, now, keyboardState);
       }
 
       await device.push();
@@ -737,5 +1029,8 @@ export default {
     this._currentLetter = null;
     this._currentWord = null;
     this._lastKeypressAt = 0;
+    this._keyboardInfo = null;
+    this._keyboardInfoAt = null;
+    this._wakingAt = null;
   },
 };

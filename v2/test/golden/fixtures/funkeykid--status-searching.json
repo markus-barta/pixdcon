@@ -1,0 +1,25 @@
+{
+  "name": "funkeykid--status-searching",
+  "scene": "funkeykid",
+  "deviceType": "pixoo",
+  "now": "2026-11-24T20:00:00Z",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "online": true,
+        "connected": false,
+        "exclusive": false,
+        "battery_level": 80,
+        "battery_low": false,
+        "heartbeat_s": 10
+      }
+    }
+  ],
+  "http": [],
+  "elapsedMs": 450,
+  "frames": 1,
+  "note": "A sleeping blue keycap floats under grey Bluetooth and SUCHE text, rising Zzz and dim coloured FUN KEY KID caps."
+}

@@ -1,0 +1,25 @@
+{
+  "name": "funkeykid--status-low-battery",
+  "scene": "funkeykid",
+  "deviceType": "pixoo",
+  "now": "2026-11-24T20:00:00Z",
+  "timeZone": "Europe/Vienna",
+  "settings": {},
+  "mqtt": [
+    {
+      "topic": "home/hsb1/funkeykid/keyboard-info",
+      "payload": {
+        "online": true,
+        "connected": true,
+        "exclusive": true,
+        "battery_level": 14,
+        "battery_low": true,
+        "heartbeat_s": 10
+      }
+    }
+  ],
+  "http": [],
+  "elapsedMs": 900,
+  "frames": 1,
+  "note": "A sweating keycap with a wavy mouth sits under orange AKKU and a red low battery above bright title caps."
+}
